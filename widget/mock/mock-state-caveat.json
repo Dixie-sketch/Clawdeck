@@ -1,0 +1,108 @@
+{
+  "schema": 4,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": { "version": "0.4.0", "startedAt": "2026-08-26T06:41:09Z", "hooksSeen": 3310 },
+
+  "quiet": { "active": false, "start": "22:00", "end": "07:00", "override": { "mode": "off", "until": "2026-08-26T19:04:00Z" } },
+
+  "recap": {
+    "sessionsToday": 5,
+    "doneToday": 2,
+    "commits": [{ "repo": "sidecrab", "count": 9 }],
+    "computedAt": "2026-08-26T18:01:30Z"
+  },
+
+  "limits": {
+    "available": true,
+    "note": "limits as of 2:41 PM",
+    "fiveHour": { "utilization": 0.61, "resetsAt": "2026-08-26T21:00:00Z" },
+    "weekly": { "utilization": 0.44, "resetsAt": "2026-08-31T07:00:00Z" },
+    "extra": [],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 210400, "outputTokens": 318900, "cacheReadTokens": 9410000, "cacheCreationTokens": 620000, "messages": 742 },
+    "hourly": [
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 2100 },
+      { "hourStart": "2026-08-26T06:00:00", "outputTokens": 18400 },
+      { "hourStart": "2026-08-26T07:00:00", "outputTokens": 44900 },
+      { "hourStart": "2026-08-26T08:00:00", "outputTokens": 61300 },
+      { "hourStart": "2026-08-26T09:00:00", "outputTokens": 52700 },
+      { "hourStart": "2026-08-26T10:00:00", "outputTokens": 71100 },
+      { "hourStart": "2026-08-26T11:00:00", "outputTokens": 39400 },
+      { "hourStart": "2026-08-26T12:00:00", "outputTokens": 29000 }
+    ],
+    "daily": [
+      { "dayStart": "2026-08-20", "outputTokens": 412900 },
+      { "dayStart": "2026-08-21", "outputTokens": 588400 },
+      { "dayStart": "2026-08-22", "outputTokens": 86100 },
+      { "dayStart": "2026-08-23", "outputTokens": 31700 },
+      { "dayStart": "2026-08-24", "outputTokens": 724600 },
+      { "dayStart": "2026-08-25", "outputTokens": 987300 },
+      { "dayStart": "2026-08-26", "outputTokens": 318900 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "c31d8e55-2a10-4b77-9c04-6d8b02f50001",
+      "title": "crabd — usage endpoint lockout",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:41:12Z",
+      "lastActivityAt": "2026-08-26T18:04:55Z",
+      "lastEvent": "serving last-good limits behind the lockout",
+      "turnStartedAt": "2026-08-26T18:00:30Z",
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 1 },
+      "subagentDetail": [],
+      "todayOutputTokens": 141200,
+      "events": [
+        { "at": "2026-08-26T18:04:55Z", "text": "serving last-good limits" },
+        { "at": "2026-08-26T18:00:30Z", "text": "prompt submitted" }
+      ]
+    },
+    {
+      "id": "c31d8e55-2a10-4b77-9c04-6d8b02f50002",
+      "title": "SideCrab widget — limits note",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:40Z",
+      "lastActivityAt": "2026-08-26T18:04:58Z",
+      "lastEvent": "rendering the caveat note",
+      "turnStartedAt": "2026-08-26T18:03:10Z",
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "subagentDetail": [],
+      "todayOutputTokens": 96400,
+      "events": [
+        { "at": "2026-08-26T18:04:58Z", "text": "rendering the caveat note" },
+        { "at": "2026-08-26T17:52:40Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "c31d8e55-2a10-4b77-9c04-6d8b02f50003",
+      "title": "nightly backup verify",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:58:02Z",
+      "lastActivityAt": "2026-08-26T17:58:02Z",
+      "lastEvent": "finished — all restore points verified",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 41300,
+      "events": [{ "at": "2026-08-26T17:58:02Z", "text": "finished a turn" }]
+    }
+  ]
+}

@@ -1,0 +1,449 @@
+{
+  "schema": 5,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": {
+    "version": "0.2.0",
+    "startedAt": "2026-08-26T09:12:44Z",
+    "hooksSeen": 2907
+  },
+  "quiet": null,
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": {
+      "utilization": 0.86,
+      "resetsAt": "2026-08-26T20:00:00Z"
+    },
+    "weekly": {
+      "utilization": 0.93,
+      "resetsAt": "2026-08-31T07:00:00Z"
+    },
+    "extra": [
+      {
+        "label": "Opus weekly",
+        "utilization": 0.71,
+        "resetsAt": "2026-08-31T07:00:00Z"
+      }
+    ],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+  "burn": {
+    "today": {
+      "inputTokens": 902410,
+      "outputTokens": 1284300,
+      "cacheReadTokens": 41208800,
+      "cacheCreationTokens": 2841000,
+      "messages": 3187
+    },
+    "hourly": [
+      {
+        "hourStart": "2026-08-25T13:00:00",
+        "outputTokens": 41200
+      },
+      {
+        "hourStart": "2026-08-25T14:00:00",
+        "outputTokens": 52800
+      },
+      {
+        "hourStart": "2026-08-25T15:00:00",
+        "outputTokens": 38400
+      },
+      {
+        "hourStart": "2026-08-25T16:00:00",
+        "outputTokens": 61300
+      },
+      {
+        "hourStart": "2026-08-25T17:00:00",
+        "outputTokens": 29700
+      },
+      {
+        "hourStart": "2026-08-25T18:00:00",
+        "outputTokens": 12400
+      },
+      {
+        "hourStart": "2026-08-25T19:00:00",
+        "outputTokens": 4100
+      },
+      {
+        "hourStart": "2026-08-25T20:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T21:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T22:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T23:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T00:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T01:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T02:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T03:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T04:00:00",
+        "outputTokens": 2200
+      },
+      {
+        "hourStart": "2026-08-26T05:00:00",
+        "outputTokens": 9800
+      },
+      {
+        "hourStart": "2026-08-26T06:00:00",
+        "outputTokens": 44100
+      },
+      {
+        "hourStart": "2026-08-26T07:00:00",
+        "outputTokens": 88600
+      },
+      {
+        "hourStart": "2026-08-26T08:00:00",
+        "outputTokens": 132400
+      },
+      {
+        "hourStart": "2026-08-26T09:00:00",
+        "outputTokens": 174900
+      },
+      {
+        "hourStart": "2026-08-26T10:00:00",
+        "outputTokens": 151200
+      },
+      {
+        "hourStart": "2026-08-26T11:00:00",
+        "outputTokens": 198300
+      },
+      {
+        "hourStart": "2026-08-26T12:00:00",
+        "outputTokens": 86500
+      }
+    ]
+  },
+  "sessions": [
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10001",
+      "title": "acme-api — retry backoff policy",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:03:12Z",
+      "lastActivityAt": "2026-08-26T18:03:12Z",
+      "lastEvent": "waiting on permission: Bash",
+      "pendingPermission": {
+        "tool": "Bash",
+        "summary": "Remove the build output directory before the next release build",
+        "requestedAt": "2026-08-26T18:04:44Z"
+      },
+      "queuedContinue": null,
+      "model": "claude-opus-5[1m]",
+      "contextTokens": 972000,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 88420
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10002",
+      "title": "orbit-desktop — installer signing",
+      "cwd": "C:\\Dev\\orbit-desktop",
+      "repo": "orbit-desktop",
+      "branch": "release",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:01:40Z",
+      "lastActivityAt": "2026-08-26T18:01:40Z",
+      "lastEvent": "notification: needs your answer",
+      "question": "The signing certificate on this machine expires in nine days. Renew it now, or ship this build with the current one?",
+      "queuedContinue": null,
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 61200
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10003",
+      "title": "acme-web — route split",
+      "cwd": "C:\\Dev\\acme-web",
+      "repo": "acme-web",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "edited the route index",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": {
+        "prompt": "Run the tests and report the results.",
+        "queuedAt": "2026-08-26T18:04:10Z"
+      },
+      "model": "claude-opus-5[1m]",
+      "contextTokens": 784000,
+      "speed": "standard",
+      "subagents": {
+        "running": 2,
+        "total": 3
+      },
+      "todayOutputTokens": 132400
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10004",
+      "title": "acme-api — migration dry run",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "db-migrate",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "ran the migration in dry-run mode",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": null,
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 97800
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10005",
+      "title": "orbit-desktop — crash report triage",
+      "cwd": "C:\\Dev\\orbit-desktop",
+      "repo": "orbit-desktop",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "read six crash reports",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": null,
+      "model": "claude-sonnet-4-6[200k]",
+      "contextTokens": 61000,
+      "speed": "fast",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 74100
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10006",
+      "title": "infra-tools — log shipper config",
+      "cwd": "C:\\Dev\\infra-tools",
+      "repo": "infra-tools",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "wrote the shipper config",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": null,
+      "model": "claude-opus-5[1m]",
+      "contextTokens": null,
+      "speed": "standard",
+      "subagents": {
+        "running": 1,
+        "total": 1
+      },
+      "todayOutputTokens": 55300
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10007",
+      "title": "acme-web — accessibility sweep",
+      "cwd": "C:\\Dev\\acme-web",
+      "repo": "acme-web",
+      "branch": "a11y",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "checked contrast on twelve components",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": {
+        "prompt": "Commit the changes and push.",
+        "queuedAt": "2026-08-26T18:04:10Z"
+      },
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 43900
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10008",
+      "title": "sample-app — dependency bump",
+      "cwd": "C:\\Dev\\sample-app",
+      "repo": "sample-app",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:52:00Z",
+      "lastActivityAt": "2026-08-26T18:04:30Z",
+      "lastEvent": "bumped four dependencies",
+      "turnStartedAt": "2026-08-26T17:58:00Z",
+      "queuedContinue": null,
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 184300,
+      "speed": "fast",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 31600
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10009",
+      "title": "acme-api — rate limit tests",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:49:10Z",
+      "lastActivityAt": "2026-08-26T17:49:10Z",
+      "lastEvent": "finished: all tests pass",
+      "queuedContinue": null,
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 28400
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10010",
+      "title": "infra-tools — backup verification",
+      "cwd": "C:\\Dev\\infra-tools",
+      "repo": "infra-tools",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:41:02Z",
+      "lastActivityAt": "2026-08-26T17:41:02Z",
+      "lastEvent": "finished: restore point verified",
+      "queuedContinue": {
+        "prompt": "Open a pull request for this work.",
+        "queuedAt": "2026-08-26T18:04:10Z"
+      },
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 19800
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10011",
+      "title": "sample-app — readme rewrite",
+      "cwd": "C:\\Dev\\sample-app",
+      "repo": "sample-app",
+      "branch": "docs",
+      "state": "done",
+      "stateSince": "2026-08-26T17:33:55Z",
+      "lastActivityAt": "2026-08-26T17:33:55Z",
+      "lastEvent": "finished: readme rewritten",
+      "queuedContinue": null,
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 12300
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10012",
+      "cwd": "C:\\Dev\\acme-web",
+      "repo": "acme-web",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T17:10:00Z",
+      "lastActivityAt": "2026-08-26T17:10:00Z",
+      "lastEvent": "session idle",
+      "queuedContinue": null,
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 8600
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10013",
+      "title": "orbit-desktop",
+      "cwd": "C:\\Dev\\orbit-desktop",
+      "repo": "orbit-desktop",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T16:58:20Z",
+      "lastActivityAt": "2026-08-26T16:58:20Z",
+      "lastEvent": "session idle",
+      "queuedContinue": null,
+      "model": "claude-opus-5",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 6100,
+      "titleSource": "cwd"
+    },
+    {
+      "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10014",
+      "title": "scratch",
+      "cwd": "C:\\Dev\\scratch",
+      "repo": "scratch",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T16:44:05Z",
+      "lastActivityAt": "2026-08-26T16:44:05Z",
+      "lastEvent": "session idle",
+      "queuedContinue": null,
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 184300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 2400
+    }
+  ],
+  "toast": {
+    "thresholdSec": 90,
+    "enabled": true
+  },
+  "host": { "cpuPct": null, "memPct": 71.9, "memUsedGB": 23.0, "memTotalGB": 32.0 },
+  "continuePrompts": [
+    "Open a pull request for this work."
+  ]
+}

@@ -1,0 +1,6 @@
+# sidecrab-glow. Everything else is stdlib (urllib for the feed, no `requests`).
+# Pinned: 4.0.84 is what was spiked against iCUE 5.49.34 / SDK server 4.0.19.
+# Checked 2026-08-26: 4.0.84 (2023-11-21) is also the NEWEST release on PyPI --
+# there is no upgrade to move to, so don't go looking for one. The headless-crash
+# hunt that prompted the check found the bug on our side anyway (icue.py docstring).
+cuesdk==4.0.84

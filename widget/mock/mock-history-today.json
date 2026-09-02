@@ -1,0 +1,163 @@
+{
+ "day": "2026-08-27",
+ "events": [
+  {
+   "ts": "2026-08-27T22:02:00Z",
+   "kind": "session ended",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-27T21:40:00Z",
+   "kind": "approved from panel: Edit",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit - npm advisories"
+  },
+  {
+   "ts": "2026-08-27T21:09:00Z",
+   "kind": "session started",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit - npm advisories"
+  },
+  {
+   "ts": "2026-08-27T20:26:00Z",
+   "kind": "continue sent: Commit and push",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api - OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-27T19:55:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api - OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-27T19:55:00Z",
+   "kind": "turn finished",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api - OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-27T19:17:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api - OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-27T18:42:00Z",
+   "kind": "permission passed through: Write",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-27T18:41:00Z",
+   "kind": "permission requested",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-27T18:30:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-27T17:58:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-27T17:15:00Z",
+   "kind": "continue sent: Run the tests",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T17:02:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T17:02:00Z",
+   "kind": "turn finished",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T16:44:00Z",
+   "kind": "subagent finished",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T16:21:00Z",
+   "kind": "denied from panel: WebFetch",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T16:20:00Z",
+   "kind": "permission requested",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T16:03:00Z",
+   "kind": "answered outside the panel",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T15:52:00Z",
+   "kind": "acknowledged from Edge",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T15:48:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T15:07:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T15:05:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget - presence gating sweep"
+  },
+  {
+   "ts": "2026-08-27T14:32:00Z",
+   "kind": "approved from panel: Bash",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T14:31:00Z",
+   "kind": "permission requested",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T14:14:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  },
+  {
+   "ts": "2026-08-27T14:12:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.19.0 - needs_input clearing"
+  }
+ ],
+ "count": 26,
+ "truncated": false
+}

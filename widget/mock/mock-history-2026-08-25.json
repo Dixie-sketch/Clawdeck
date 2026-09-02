@@ -1,0 +1,151 @@
+{
+ "day": "2026-08-25",
+ "events": [
+  {
+   "ts": "2026-08-26T02:11:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-26T01:34:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-26T00:57:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-26T00:20:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-25T23:43:00Z",
+   "kind": "finished a turn",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-25T23:06:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-25T22:29:00Z",
+   "kind": "subagent finished: ceiling-constant",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-25T21:52:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-25T21:15:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-25T20:38:00Z",
+   "kind": "session started",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-25T20:01:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-25T19:24:00Z",
+   "kind": "finished a turn",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-25T18:47:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-25T18:10:00Z",
+   "kind": "subagent finished: ceiling-constant",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-25T17:33:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-25T16:56:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-25T16:19:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-25T15:42:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-25T15:05:00Z",
+   "kind": "finished a turn",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-25T14:28:00Z",
+   "kind": "asked a question",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-25T13:51:00Z",
+   "kind": "subagent finished: ceiling-constant",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-25T13:14:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-25T12:37:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-25T12:00:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  }
+ ],
+ "count": 200,
+ "truncated": true
+}

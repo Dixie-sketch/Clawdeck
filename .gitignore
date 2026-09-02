@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+dist/
+*.icuewidget
+.DS_Store
+node_modules/

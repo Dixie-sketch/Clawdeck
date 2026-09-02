@@ -1,0 +1,49 @@
+{
+ "day": "2026-08-21",
+ "events": [
+  {
+   "ts": "2026-08-21T22:38:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-21T20:02:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-21T17:20:00Z",
+   "kind": "finished a turn",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-21T16:47:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-21T15:04:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-21T14:31:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-21T14:12:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  }
+ ],
+ "count": 7,
+ "truncated": false
+}

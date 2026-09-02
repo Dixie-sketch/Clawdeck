@@ -1,0 +1,121 @@
+{
+  "schema": 2,
+  "generatedAt": "2026-08-26T05:12:00Z",
+  "crabd": { "version": "0.2.0", "startedAt": "2026-08-25T09:12:44Z", "hooksSeen": 4180 },
+
+  "quiet": { "active": true, "start": "22:00", "end": "07:00", "override": { "mode": "on", "until": "2026-08-26T06:11:00Z" } },
+
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": { "utilization": 0.12, "resetsAt": "2026-08-26T08:00:00Z" },
+    "weekly": { "utilization": 0.58, "resetsAt": "2026-08-31T07:00:00Z" },
+    "extra": [],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 41200, "outputTokens": 58800, "cacheReadTokens": 1840000, "cacheCreationTokens": 122000, "messages": 173 },
+    "hourly": [
+      { "hourStart": "2026-08-25T06:00:00", "outputTokens": 31200 },
+      { "hourStart": "2026-08-25T07:00:00", "outputTokens": 58800 },
+      { "hourStart": "2026-08-25T08:00:00", "outputTokens": 74100 },
+      { "hourStart": "2026-08-25T09:00:00", "outputTokens": 92300 },
+      { "hourStart": "2026-08-25T10:00:00", "outputTokens": 88600 },
+      { "hourStart": "2026-08-25T11:00:00", "outputTokens": 101400 },
+      { "hourStart": "2026-08-25T12:00:00", "outputTokens": 64200 },
+      { "hourStart": "2026-08-25T13:00:00", "outputTokens": 51900 },
+      { "hourStart": "2026-08-25T14:00:00", "outputTokens": 47300 },
+      { "hourStart": "2026-08-25T15:00:00", "outputTokens": 39800 },
+      { "hourStart": "2026-08-25T16:00:00", "outputTokens": 28100 },
+      { "hourStart": "2026-08-25T17:00:00", "outputTokens": 16400 },
+      { "hourStart": "2026-08-25T18:00:00", "outputTokens": 9200 },
+      { "hourStart": "2026-08-25T19:00:00", "outputTokens": 4100 },
+      { "hourStart": "2026-08-25T20:00:00", "outputTokens": 2600 },
+      { "hourStart": "2026-08-25T21:00:00", "outputTokens": 1200 },
+      { "hourStart": "2026-08-25T22:00:00", "outputTokens": 800 },
+      { "hourStart": "2026-08-25T23:00:00", "outputTokens": 21400 },
+      { "hourStart": "2026-08-26T00:00:00", "outputTokens": 14900 },
+      { "hourStart": "2026-08-26T01:00:00", "outputTokens": 8200 },
+      { "hourStart": "2026-08-26T02:00:00", "outputTokens": 6100 },
+      { "hourStart": "2026-08-26T03:00:00", "outputTokens": 5400 },
+      { "hourStart": "2026-08-26T04:00:00", "outputTokens": 3900 },
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 1100 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "e1a70cd4-6b22-4f18-a730-55c0be9a0001",
+      "title": "restore-point audit — archive job overlap",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T04:41:07Z",
+      "lastActivityAt": "2026-08-26T04:41:07Z",
+      "lastEvent": "asked a question: extend the backup window?",
+      "question": "The nightly backup job for the primary database is still copying at 04:40 and will collide with the 05:00 archive rotation.\n\nExtend tonight's window by 90 minutes, or let the archive job start and accept a partial copy that retries tomorrow?",
+      "turnStartedAt": "2026-08-26T04:12:55Z",
+      "acked": true,
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 1, "total": 3 },
+      "subagentDetail": [
+        { "label": "backup-job-timeline", "ageSec": 320 }
+      ],
+      "todayOutputTokens": 24800
+    },
+    {
+      "id": "e1a70cd4-6b22-4f18-a730-55c0be9a0002",
+      "title": "Overnight dependency sweep — acme-api",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T02:00:00Z",
+      "lastActivityAt": "2026-08-26T05:11:22Z",
+      "lastEvent": "walking the dependency tree",
+      "turnStartedAt": "2026-08-26T02:00:00Z",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 2, "total": 2 },
+      "subagentDetail": [
+        { "label": "host-discovery", "ageSec": 1140 },
+        { "label": "advisory-import", "ageSec": 3600 }
+      ],
+      "todayOutputTokens": 18300
+    },
+    {
+      "id": "e1a70cd4-6b22-4f18-a730-55c0be9a0003",
+      "title": "Nightly docs lint",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T05:05:31Z",
+      "lastActivityAt": "2026-08-26T05:05:31Z",
+      "lastEvent": "finished — 0 findings",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 6200
+    },
+    {
+      "id": "e1a70cd4-6b22-4f18-a730-55c0be9a0004",
+      "title": "analytics export dry run",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T04:20:00Z",
+      "lastActivityAt": "2026-08-26T04:20:00Z",
+      "lastEvent": "no activity for 52 minutes",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 1900
+    }
+  ]
+}

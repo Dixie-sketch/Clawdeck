@@ -1,0 +1,49 @@
+{
+ "day": "2026-08-26",
+ "events": [
+  {
+   "ts": "2026-08-26T23:41:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-26T22:48:00Z",
+   "kind": "finished a turn",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-26T21:22:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+   "title": "docs: getting started guide"
+  },
+  {
+   "ts": "2026-08-26T19:05:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-26T17:40:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-26T15:14:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  },
+  {
+   "ts": "2026-08-26T14:02:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+   "title": "SideCrab widget — presence gating sweep"
+  }
+ ],
+ "count": 7,
+ "truncated": false
+}

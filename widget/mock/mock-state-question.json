@@ -1,0 +1,430 @@
+{
+  "schema": 3,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": {
+    "version": "0.3.0",
+    "startedAt": "2026-08-26T09:12:44Z",
+    "hooksSeen": 3411
+  },
+  "quiet": {
+    "active": false,
+    "start": "22:00",
+    "end": "07:00"
+  },
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": {
+      "utilization": 0.61,
+      "resetsAt": "2026-08-26T20:00:00Z"
+    },
+    "weekly": {
+      "utilization": 0.44,
+      "resetsAt": "2026-08-31T07:00:00Z"
+    },
+    "extra": [],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+  "burn": {
+    "today": {
+      "inputTokens": 611200,
+      "outputTokens": 884100,
+      "cacheReadTokens": 29440000,
+      "cacheCreationTokens": 1920000,
+      "messages": 2244
+    },
+    "hourly": [
+      {
+        "hourStart": "2026-08-25T13:00:00",
+        "outputTokens": 22100
+      },
+      {
+        "hourStart": "2026-08-25T14:00:00",
+        "outputTokens": 38700
+      },
+      {
+        "hourStart": "2026-08-25T15:00:00",
+        "outputTokens": 41100
+      },
+      {
+        "hourStart": "2026-08-25T16:00:00",
+        "outputTokens": 30200
+      },
+      {
+        "hourStart": "2026-08-25T17:00:00",
+        "outputTokens": 18400
+      },
+      {
+        "hourStart": "2026-08-25T18:00:00",
+        "outputTokens": 6100
+      },
+      {
+        "hourStart": "2026-08-25T19:00:00",
+        "outputTokens": 2200
+      },
+      {
+        "hourStart": "2026-08-25T20:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T21:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T22:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T23:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T00:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T01:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T02:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T03:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T04:00:00",
+        "outputTokens": 1100
+      },
+      {
+        "hourStart": "2026-08-26T05:00:00",
+        "outputTokens": 7400
+      },
+      {
+        "hourStart": "2026-08-26T06:00:00",
+        "outputTokens": 33800
+      },
+      {
+        "hourStart": "2026-08-26T07:00:00",
+        "outputTokens": 71200
+      },
+      {
+        "hourStart": "2026-08-26T08:00:00",
+        "outputTokens": 104600
+      },
+      {
+        "hourStart": "2026-08-26T09:00:00",
+        "outputTokens": 133900
+      },
+      {
+        "hourStart": "2026-08-26T10:00:00",
+        "outputTokens": 118700
+      },
+      {
+        "hourStart": "2026-08-26T11:00:00",
+        "outputTokens": 156400
+      },
+      {
+        "hourStart": "2026-08-26T12:00:00",
+        "outputTokens": 62900
+      }
+    ],
+    "daily": [
+      {
+        "dayStart": "2026-08-20",
+        "outputTokens": 612400
+      },
+      {
+        "dayStart": "2026-08-21",
+        "outputTokens": 741900
+      },
+      {
+        "dayStart": "2026-08-22",
+        "outputTokens": 118300
+      },
+      {
+        "dayStart": "2026-08-23",
+        "outputTokens": 64200
+      },
+      {
+        "dayStart": "2026-08-24",
+        "outputTokens": 905700
+      },
+      {
+        "dayStart": "2026-08-25",
+        "outputTokens": 1043500
+      },
+      {
+        "dayStart": "2026-08-26",
+        "outputTokens": 884100
+      }
+    ]
+  },
+  "sessions": [
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70001",
+      "title": "checkout API — coupon stacking decision",
+      "cwd": "C:\\Dev\\acme-web",
+      "repo": "acme-web",
+      "branch": "feat/coupon-stacking",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:02:10Z",
+      "lastActivityAt": "2026-08-26T18:02:10Z",
+      "lastEvent": "asked a question: reuse the existing customer record?",
+      "question": "A returning customer signed up again with a new account id but the same email and billing hash as an account closed in 2024.\n\nDo you want the importer to reuse the old customer record (cust_48211) and reactivate it, or create a fresh one and leave the old record archived? Reusing it keeps the order history; creating fresh keeps the audit trail clean.",
+      "turnStartedAt": "2026-08-26T17:48:33Z",
+      "acked": false,
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": {
+        "running": 2,
+        "total": 4
+      },
+      "subagentDetail": [
+        {
+          "label": "coupon-rule-diff",
+          "ageSec": 96
+        },
+        {
+          "label": "user-record-lookup",
+          "ageSec": 415
+        },
+        {
+          "label": "order-history-check",
+          "ageSec": 900
+        }
+      ],
+      "todayOutputTokens": 141900,
+      "events": [
+        {
+          "at": "2026-08-26T18:02:10Z",
+          "text": "asked a question: reuse the existing customer record?"
+        },
+        {
+          "at": "2026-08-26T17:58:44Z",
+          "text": "subagent finished: order-history-check"
+        },
+        {
+          "at": "2026-08-26T17:51:02Z",
+          "text": "subagent started: user-record-lookup"
+        },
+        {
+          "at": "2026-08-26T17:48:33Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:44:19Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:29:55Z",
+          "text": "session started"
+        }
+      ]
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70002",
+      "title": "acme-api — retry backoff policy",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:03:40Z",
+      "lastActivityAt": "2026-08-26T18:03:40Z",
+      "lastEvent": "waiting on permission: Bash (docker compose up)",
+      "turnStartedAt": "2026-08-26T17:59:02Z",
+      "acked": false,
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 1
+      },
+      "subagentDetail": [],
+      "todayOutputTokens": 88420,
+      "events": [
+        {
+          "at": "2026-08-26T18:03:40Z",
+          "text": "waiting on permission: Bash (docker compose up)"
+        },
+        {
+          "at": "2026-08-26T17:59:02Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:55:10Z",
+          "text": "session started"
+        }
+      ]
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70003",
+      "title": "crabd companion — usage endpoint reader",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:31:12Z",
+      "lastActivityAt": "2026-08-26T18:04:41Z",
+      "lastEvent": "running pytest companion/tests",
+      "turnStartedAt": "2026-08-26T17:51:00Z",
+      "model": "claude-opus-5",
+      "speed": "fast",
+      "subagents": {
+        "running": 6,
+        "total": 9
+      },
+      "subagentDetail": [
+        {
+          "label": "hook-replay-fixtures",
+          "ageSec": 42
+        },
+        {
+          "label": "usage-endpoint-probe",
+          "ageSec": 128
+        },
+        {
+          "label": "transcript-tail-parser",
+          "ageSec": 240
+        },
+        {
+          "label": "cors-preflight-check",
+          "ageSec": 505
+        },
+        {
+          "label": "quiet-hours-clock",
+          "ageSec": 780
+        }
+      ],
+      "todayOutputTokens": 121440,
+      "events": [
+        {
+          "at": "2026-08-26T18:04:41Z",
+          "text": "running pytest companion/tests"
+        },
+        {
+          "at": "2026-08-26T18:01:12Z",
+          "text": "subagent started: hook-replay-fixtures"
+        },
+        {
+          "at": "2026-08-26T17:58:30Z",
+          "text": "subagent finished: cors-preflight-check"
+        },
+        {
+          "at": "2026-08-26T17:51:00Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:44:08Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:39:21Z",
+          "text": "asked a question: bind 2722 or 2723?"
+        },
+        {
+          "at": "2026-08-26T17:33:40Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:31:12Z",
+          "text": "session started"
+        }
+      ]
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70004",
+      "title": "SideCrab widget — schema 2 consumer",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:40:02Z",
+      "lastActivityAt": "2026-08-26T18:04:55Z",
+      "lastEvent": "writing styles/sidecrab.css",
+      "turnStartedAt": "2026-08-26T18:03:20Z",
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "subagentDetail": [],
+      "todayOutputTokens": 96300
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70005",
+      "title": "frontend build pipeline cache warm-up with a very long title that must ellipsize",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:22:41Z",
+      "lastActivityAt": "2026-08-26T18:02:58Z",
+      "lastEvent": "warming the dependency cache",
+      "turnStartedAt": "2026-08-26T16:41:10Z",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": {
+        "running": 1,
+        "total": 2
+      },
+      "subagentDetail": [
+        {
+          "label": "target-list-reconcile",
+          "ageSec": 61
+        }
+      ],
+      "todayOutputTokens": 44210
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70006",
+      "title": "docs-site 1.0.15 packaging",
+      "cwd": "C:\\Dev\\docs-site",
+      "repo": "docs-site",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:59:40Z",
+      "lastActivityAt": "2026-08-26T17:59:40Z",
+      "lastEvent": "finished — bundle signed",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 22100,
+      "events": [
+        {
+          "at": "2026-08-26T17:59:40Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:52:03Z",
+          "text": "prompt submitted"
+        }
+      ]
+    },
+    {
+      "id": "c74f2b90-3ac1-4d55-8e10-9ab3c1d70007",
+      "title": "acme-api — OpenAPI spec reconcile",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T17:34:00Z",
+      "lastActivityAt": "2026-08-26T17:34:00Z",
+      "lastEvent": "no activity for 31 minutes",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "todayOutputTokens": 5400
+    }
+  ]
+}

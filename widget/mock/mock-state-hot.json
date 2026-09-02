@@ -1,0 +1,245 @@
+{
+  "schema": 5,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": { "version": "0.6.0", "startedAt": "2026-08-26T05:12:44Z", "hooksSeen": 11840 },
+
+  "quiet": { "active": false, "start": "22:00", "end": "07:00" },
+
+  "recap": {
+    "sessionsToday": 14,
+    "doneToday": 6,
+    "commits": [
+      { "repo": "sidecrab", "count": 27 },
+      { "repo": "acme-api", "count": 11 },
+      { "repo": "orbit-desktop", "count": 4 }
+    ],
+    "computedAt": "2026-08-26T18:02:10Z"
+  },
+
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": { "utilization": 0.97, "resetsAt": "2026-08-26T19:00:00Z" },
+    "weekly": { "utilization": 0.81, "resetsAt": "2026-08-31T07:00:00Z", "exhaustAt": "2026-08-26T17:40:00Z" },
+    "extra": [
+      { "label": "Opus weekly", "utilization": 0.62, "resetsAt": "2026-08-31T07:00:00Z" }
+    ],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 918400, "outputTokens": 1342700, "cacheReadTokens": 44900000, "cacheCreationTokens": 3180000, "messages": 3241 },
+    "byModel": [
+      { "model": "claude-opus-5", "outputTokens": 902100 },
+      { "model": "claude-fable-5", "outputTokens": 288500 },
+      { "model": "claude-sonnet-4-6", "outputTokens": 131400 },
+      { "model": "claude-haiku-4-5", "outputTokens": 20700 }
+    ],
+    "hourly": [
+      { "hourStart": "2026-08-25T13:00:00", "outputTokens": 62100 },
+      { "hourStart": "2026-08-25T14:00:00", "outputTokens": 71800 },
+      { "hourStart": "2026-08-25T15:00:00", "outputTokens": 58400 },
+      { "hourStart": "2026-08-25T16:00:00", "outputTokens": 33200 },
+      { "hourStart": "2026-08-25T17:00:00", "outputTokens": 18900 },
+      { "hourStart": "2026-08-25T18:00:00", "outputTokens": 7400 },
+      { "hourStart": "2026-08-25T19:00:00", "outputTokens": 1200 },
+      { "hourStart": "2026-08-25T20:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T21:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T22:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T23:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T00:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T01:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T02:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T03:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T04:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 26800 },
+      { "hourStart": "2026-08-26T06:00:00", "outputTokens": 94300 },
+      { "hourStart": "2026-08-26T07:00:00", "outputTokens": 138600 },
+      { "hourStart": "2026-08-26T08:00:00", "outputTokens": 176200 },
+      { "hourStart": "2026-08-26T09:00:00", "outputTokens": 211900 },
+      { "hourStart": "2026-08-26T10:00:00", "outputTokens": 189400 },
+      { "hourStart": "2026-08-26T11:00:00", "outputTokens": 243100 },
+      { "hourStart": "2026-08-26T12:00:00", "outputTokens": 158700 }
+    ],
+    "daily": [
+      { "dayStart": "2026-08-20", "outputTokens": 512900 },
+      { "dayStart": "2026-08-21", "outputTokens": 688400 },
+      { "dayStart": "2026-08-22", "outputTokens": 96100 },
+      { "dayStart": "2026-08-23", "outputTokens": 41700 },
+      { "dayStart": "2026-08-24", "outputTokens": 824600 },
+      { "dayStart": "2026-08-25", "outputTokens": 1187300 },
+      { "dayStart": "2026-08-26", "outputTokens": 1342700 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110001",
+      "title": "Release cut — orbit-desktop v5.36.0",
+      "cwd": "C:\\Dev\\orbit-desktop",
+      "repo": "orbit-desktop",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:02:41Z",
+      "lastActivityAt": "2026-08-26T18:02:41Z",
+      "lastEvent": "asked a question: promote beta to stable now?",
+      "question": "The v5.36.0 beta has been on the three pilot machines for 26 hours with no crash reports and the signing transaction closed clean.\n\nPromote it to stable now, or hold until the Thursday maintenance window?",
+      "turnStartedAt": "2026-08-26T17:51:03Z",
+      "acked": true,
+      "contextTokens": 1954200,
+      "contextWindowTokens": 1000000,
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 2, "total": 4 },
+      "subagentDetail": [
+        { "label": "signing-transaction-verify", "ageSec": 61 },
+        { "label": "pilot-crash-sweep", "ageSec": 284 }
+      ],
+      "todayOutputTokens": 418300,
+      "events": [
+        { "at": "2026-08-26T18:02:41Z", "text": "asked a question" },
+        { "at": "2026-08-26T17:58:20Z", "text": "subagent started: pilot-crash-sweep" },
+        { "at": "2026-08-26T17:51:03Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:44:12Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:20:55Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T16:58:31Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110002",
+      "title": "dependency audit — transitive advisories",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T16:41:08Z",
+      "lastActivityAt": "2026-08-26T18:04:55Z",
+      "lastEvent": "importing 218 findings into the tracker",
+      "turnStartedAt": "2026-08-26T17:49:26Z",
+      "contextTokens": 549300,
+      "contextWindowTokens": 1000000,
+      "model": "claude-opus-5",
+      "speed": "fast",
+      "subagents": { "running": 3, "total": 7 },
+      "subagentDetail": [
+        { "label": "target-list-reconcile", "ageSec": 44 },
+        { "label": "lockfile-probe", "ageSec": 233 },
+        { "label": "tracker-import", "ageSec": 511 }
+      ],
+      "todayOutputTokens": 331500,
+      "events": [
+        { "at": "2026-08-26T18:04:55Z", "text": "importing findings into the tracker" },
+        { "at": "2026-08-26T17:59:02Z", "text": "subagent started: tracker-import" },
+        { "at": "2026-08-26T17:53:37Z", "text": "subagent finished: scan-window-check" },
+        { "at": "2026-08-26T17:49:26Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:31:44Z", "text": "finished a turn" },
+        { "at": "2026-08-26T16:41:08Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110003",
+      "title": "crabd — fleet observer for the Scheduled Tasks",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T15:58:12Z",
+      "lastActivityAt": "2026-08-26T18:04:58Z",
+      "lastEvent": "caching schtasks query for 60 s",
+      "turnStartedAt": "2026-08-26T18:01:19Z",
+      "contextTokens": 302700,
+      "contextWindowTokens": 1000000,
+      "model": "claude-fable-5",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 2 },
+      "subagentDetail": [],
+      "todayOutputTokens": 288500,
+      "events": [
+        { "at": "2026-08-26T18:04:58Z", "text": "caching the schtasks query" },
+        { "at": "2026-08-26T18:01:19Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:55:40Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:33:08Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:02:51Z", "text": "finished a turn" },
+        { "at": "2026-08-26T15:58:12Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110004",
+      "title": "SideCrab widget — schema 6 consumer",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T16:12:30Z",
+      "lastActivityAt": "2026-08-26T18:04:59Z",
+      "lastEvent": "writing styles/sidecrab.css",
+      "turnStartedAt": "2026-08-26T18:03:44Z",
+      "contextTokens": 87400,
+      "contextWindowTokens": null,
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 1, "total": 1 },
+      "subagentDetail": [
+        { "label": "badge-geometry-check", "ageSec": 96 }
+      ],
+      "todayOutputTokens": 194600,
+      "events": [
+        { "at": "2026-08-26T18:04:59Z", "text": "writing styles/sidecrab.css" },
+        { "at": "2026-08-26T18:03:44Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:47:15Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:26:02Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T16:49:38Z", "text": "finished a turn" },
+        { "at": "2026-08-26T16:12:30Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110005",
+      "title": "API gateway rate-limit baseline",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:52:07Z",
+      "lastActivityAt": "2026-08-26T17:52:07Z",
+      "lastEvent": "finished — baseline written, no policy change",
+      "contextTokens": 143900,
+      "contextWindowTokens": 1000000,
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 1 },
+      "todayOutputTokens": 71200,
+      "events": [
+        { "at": "2026-08-26T17:52:07Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:38:19Z", "text": "subagent finished: rate-limit-read" },
+        { "at": "2026-08-26T17:29:55Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:14:41Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "f7e21a90-3c55-4b17-9ae4-2d6b8f110006",
+      "title": "acme-api — OpenAPI spec reconcile (v2 paths)",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T17:09:00Z",
+      "lastActivityAt": "2026-08-26T17:09:00Z",
+      "lastEvent": "no activity for 56 minutes",
+      "contextTokens": null,
+      "contextWindowTokens": 200000,
+      "model": "claude-haiku-4-5",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 20700,
+      "events": [
+        { "at": "2026-08-26T17:09:00Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T16:55:12Z", "text": "session started" }
+      ]
+    }
+  ],
+
+  "fleet": { "glow": "running", "toast": "stopped" },
+
+  "host": { "cpuPct": null, "memPct": null, "memUsedGB": null, "memTotalGB": null }
+}

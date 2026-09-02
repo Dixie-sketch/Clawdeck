@@ -1,0 +1,225 @@
+{
+  "schema": 5,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": { "version": "0.6.0", "startedAt": "2026-08-26T06:41:09Z", "hooksSeen": 5120 },
+
+  "quiet": { "active": false, "start": "22:00", "end": "07:00" },
+
+  "recap": {
+    "sessionsToday": 9,
+    "doneToday": 3,
+    "commits": [
+      { "repo": "sidecrab", "count": 14 },
+      { "repo": "acme-api", "count": 6 },
+      { "repo": "orbit-desktop", "count": 2 }
+    ],
+    "computedAt": "2026-08-26T18:01:30Z"
+  },
+
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": { "utilization": 0.38, "resetsAt": "2026-08-26T21:00:00Z" },
+    "weekly": { "utilization": 0.72, "resetsAt": "2026-08-31T07:00:00Z" },
+    "extra": [],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 402700, "outputTokens": 596300, "cacheReadTokens": 18220000, "cacheCreationTokens": 1140000, "messages": 1487 },
+    "budget": { "dailyOutputTokens": 1750000, "todayPct": 0.3407 },
+    "byModel": [
+      { "model": "claude-opus-5", "outputTokens": 381400 },
+      { "model": "claude-sonnet-4-6", "outputTokens": 158900 },
+      { "model": "claude-fable-5", "outputTokens": 48200 },
+      { "model": "claude-haiku-4-5", "outputTokens": 7800 }
+    ],
+    "hourly": [
+      { "hourStart": "2026-08-25T13:00:00", "outputTokens": 41800 },
+      { "hourStart": "2026-08-25T14:00:00", "outputTokens": 55200 },
+      { "hourStart": "2026-08-25T15:00:00", "outputTokens": 47600 },
+      { "hourStart": "2026-08-25T16:00:00", "outputTokens": 29900 },
+      { "hourStart": "2026-08-25T17:00:00", "outputTokens": 14300 },
+      { "hourStart": "2026-08-25T18:00:00", "outputTokens": 5200 },
+      { "hourStart": "2026-08-25T19:00:00", "outputTokens": 900 },
+      { "hourStart": "2026-08-25T20:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T21:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T22:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T23:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T00:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T01:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T02:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T03:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T04:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 3100 },
+      { "hourStart": "2026-08-26T06:00:00", "outputTokens": 26400 },
+      { "hourStart": "2026-08-26T07:00:00", "outputTokens": 58900 },
+      { "hourStart": "2026-08-26T08:00:00", "outputTokens": 91300 },
+      { "hourStart": "2026-08-26T09:00:00", "outputTokens": 112700 },
+      { "hourStart": "2026-08-26T10:00:00", "outputTokens": 88100 },
+      { "hourStart": "2026-08-26T11:00:00", "outputTokens": 134900 },
+      { "hourStart": "2026-08-26T12:00:00", "outputTokens": 79400 }
+    ],
+    "daily": [
+      { "dayStart": "2026-08-20", "outputTokens": 512900 },
+      { "dayStart": "2026-08-21", "outputTokens": 688400 },
+      { "dayStart": "2026-08-22", "outputTokens": 96100 },
+      { "dayStart": "2026-08-23", "outputTokens": 41700 },
+      { "dayStart": "2026-08-24", "outputTokens": 824600 },
+      { "dayStart": "2026-08-25", "outputTokens": 1187300 },
+      { "dayStart": "2026-08-26", "outputTokens": 596300 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40001",
+      "title": "build agent 3 — offline since 04:12",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:01:05Z",
+      "lastActivityAt": "2026-08-26T18:01:05Z",
+      "lastEvent": "asked a question: drain the agent or fail the job?",
+      "question": "Build agent 3 has been unreachable since 04:12 and tonight's release job is queued behind it.\n\nMark it drained and let the job run on the remaining agents, or fail the job loudly and leave the agent alone until you have eyes on it?",
+      "turnStartedAt": "2026-08-26T17:54:40Z",
+      "acked": false,
+      "model": "claude-opus-5",
+      "contextTokens": 412800,
+      "speed": "standard",
+      "subagents": { "running": 1, "total": 3 },
+      "subagentDetail": [
+        { "label": "backup-job-state", "ageSec": 74 },
+        { "label": "disk-smart-read", "ageSec": 320 }
+      ],
+      "todayOutputTokens": 132700,
+      "events": [
+        { "at": "2026-08-26T18:01:05Z", "text": "asked a question" },
+        { "at": "2026-08-26T17:57:12Z", "text": "subagent started: backup-job-state" },
+        { "at": "2026-08-26T17:54:40Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:49:58Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:41:03Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40002",
+      "title": "dependency audit — npm advisories",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:36:20Z",
+      "lastActivityAt": "2026-08-26T18:04:52Z",
+      "lastEvent": "importing findings into the tracker",
+      "turnStartedAt": "2026-08-26T17:52:11Z",
+      "model": "claude-opus-5",
+      "contextTokens": 183400,
+      "speed": "fast",
+      "subagents": { "running": 3, "total": 5 },
+      "subagentDetail": [
+        { "label": "target-list-reconcile", "ageSec": 38 },
+        { "label": "lockfile-probe", "ageSec": 190 },
+        { "label": "tracker-import", "ageSec": 402 }
+      ],
+      "todayOutputTokens": 148200,
+      "events": [
+        { "at": "2026-08-26T18:04:52Z", "text": "importing findings into the tracker" },
+        { "at": "2026-08-26T18:00:10Z", "text": "subagent started: tracker-import" },
+        { "at": "2026-08-26T17:56:44Z", "text": "subagent finished: scan-window-check" },
+        { "at": "2026-08-26T17:52:11Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:47:30Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:36:20Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40003",
+      "title": "crabd — history file parser",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:12:44Z",
+      "lastActivityAt": "2026-08-26T18:04:58Z",
+      "lastEvent": "replaying history.jsonl",
+      "turnStartedAt": "2026-08-26T18:02:05Z",
+      "model": "claude-opus-5",
+      "contextTokens": 96200,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 2 },
+      "subagentDetail": [],
+      "todayOutputTokens": 104900,
+      "events": [
+        { "at": "2026-08-26T18:04:58Z", "text": "replaying history.jsonl" },
+        { "at": "2026-08-26T18:02:05Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:58:41Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:12:44Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40004",
+      "title": "SideCrab widget — schema 3 consumer",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:44:02Z",
+      "lastActivityAt": "2026-08-26T18:04:59Z",
+      "lastEvent": "writing scripts/sidecrab.js",
+      "turnStartedAt": "2026-08-26T18:03:50Z",
+      "model": "claude-opus-5",
+      "contextTokens": 549300,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "subagentDetail": [],
+      "todayOutputTokens": 88400,
+      "events": [
+        { "at": "2026-08-26T18:04:59Z", "text": "writing scripts/sidecrab.js" },
+        { "at": "2026-08-26T18:03:50Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:44:02Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40005",
+      "title": "docs: getting started guide review",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:57:31Z",
+      "lastActivityAt": "2026-08-26T17:57:31Z",
+      "lastEvent": "finished — guide published",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 61500,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 1 },
+      "todayOutputTokens": 31600,
+      "events": [
+        { "at": "2026-08-26T17:57:31Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:40:12Z", "text": "prompt submitted" }
+      ]
+    },
+    {
+      "id": "a10b7c44-9d21-4f08-b3e6-5c7a91e40006",
+      "title": "acme-api — OpenAPI spec reconcile",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "idle",
+      "stateSince": "2026-08-26T17:21:00Z",
+      "lastActivityAt": "2026-08-26T17:21:00Z",
+      "lastEvent": "no activity for 44 minutes",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": null,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 9200,
+      "events": []
+    }
+  ],
+
+  "fleet": { "glow": "running", "toast": "running" },
+
+  "_mock": { "config400": ["toast.approvalThresholdSec"] }
+}

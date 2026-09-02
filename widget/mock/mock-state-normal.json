@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": { "version": "0.1.0", "startedAt": "2026-08-26T13:41:12Z", "hooksSeen": 418 },
+
+  "limits": {
+    "available": true,
+    "note": null,
+    "fiveHour": { "utilization": 0.42, "resetsAt": "2026-08-26T20:00:00Z" },
+    "weekly": { "utilization": 0.18, "resetsAt": "2026-08-31T07:00:00Z" },
+    "extra": [],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 184320, "outputTokens": 96140, "cacheReadTokens": 8412770, "cacheCreationTokens": 512400, "messages": 611 },
+    "hourly": [
+      { "hourStart": "2026-08-25T13:00:00", "outputTokens": 8120 },
+      { "hourStart": "2026-08-25T14:00:00", "outputTokens": 11450 },
+      { "hourStart": "2026-08-25T15:00:00", "outputTokens": 9870 },
+      { "hourStart": "2026-08-25T16:00:00", "outputTokens": 14210 },
+      { "hourStart": "2026-08-25T17:00:00", "outputTokens": 6340 },
+      { "hourStart": "2026-08-25T18:00:00", "outputTokens": 2210 },
+      { "hourStart": "2026-08-25T19:00:00", "outputTokens": 900 },
+      { "hourStart": "2026-08-25T20:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T21:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T22:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T23:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T00:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T01:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T02:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T03:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T04:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T06:00:00", "outputTokens": 1480 },
+      { "hourStart": "2026-08-26T07:00:00", "outputTokens": 7320 },
+      { "hourStart": "2026-08-26T08:00:00", "outputTokens": 15960 },
+      { "hourStart": "2026-08-26T09:00:00", "outputTokens": 18740 },
+      { "hourStart": "2026-08-26T10:00:00", "outputTokens": 12110 },
+      { "hourStart": "2026-08-26T11:00:00", "outputTokens": 21480 },
+      { "hourStart": "2026-08-26T12:00:00", "outputTokens": 9330 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a01",
+      "title": "SideCrab widget — build widget/",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:58:11Z",
+      "lastActivityAt": "2026-08-26T18:04:41Z",
+      "lastEvent": "editing styles/sidecrab.css",
+      "model": "claude-opus-5",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 2 },
+      "todayOutputTokens": 31240
+    },
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a02",
+      "title": "crabd companion — hook receiver + state machine",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:51:03Z",
+      "lastActivityAt": "2026-08-26T18:03:56Z",
+      "lastEvent": "running companion tests",
+      "model": "claude-opus-5",
+      "speed": "fast",
+      "subagents": { "running": 2, "total": 3 },
+      "todayOutputTokens": 24810
+    },
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a03",
+      "title": "docs: getting started guide write-up",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:33:20Z",
+      "lastActivityAt": "2026-08-26T18:02:10Z",
+      "lastEvent": "reading docs/adr",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 12980
+    },
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a04",
+      "title": "orbit-desktop 5.35.2 release notes",
+      "cwd": "C:\\Dev\\orbit-desktop",
+      "repo": "orbit-desktop",
+      "branch": "release/5.35.2",
+      "state": "working",
+      "stateSince": "2026-08-26T17:20:44Z",
+      "lastActivityAt": "2026-08-26T17:59:02Z",
+      "lastEvent": "updating CHANGELOG.md",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 8110
+    },
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a05",
+      "title": "docs-site backlog cleanup",
+      "cwd": "C:\\Dev\\docs-site",
+      "repo": "docs-site",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:56:30Z",
+      "lastActivityAt": "2026-08-26T17:56:30Z",
+      "lastEvent": "finished — 8 rows closed",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 6420
+    },
+    {
+      "id": "6a1f4c02-6d1e-4a77-9a51-0e2c4b8d1a06",
+      "title": "acme-web session-cookie spike",
+      "cwd": "C:\\Dev\\acme-web",
+      "repo": "acme-web",
+      "branch": "feat/session-cookie",
+      "state": "idle",
+      "stateSince": "2026-08-26T17:32:00Z",
+      "lastActivityAt": "2026-08-26T17:32:00Z",
+      "lastEvent": "no activity for 33 minutes",
+      "model": "claude-sonnet-4-6",
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "todayOutputTokens": 3190
+    }
+  ]
+}

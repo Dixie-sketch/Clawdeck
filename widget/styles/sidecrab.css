@@ -1,0 +1,3573 @@
+/* SideCrab — Xeneon Edge (dashboard_lcd), designed at 2560x720 landscape.
+   QtWebEngine 6.9.3 / Chromium 130: no :has(), no container queries, no
+   backdrop-filter, no subgrid. Everything below is flexbox/grid + custom props. */
+
+:root {
+	/* Rule 1/2: ONE baseline; every component token derives from it and no
+	   component selector uses a raw viewport unit. */
+	--layout-unit: 1vmin;
+
+	--fs-clock: calc(var(--layout-unit) * 15);
+	--fs-clock-sec: calc(var(--layout-unit) * 4.2);
+	--fs-date: calc(var(--layout-unit) * 2.9);
+	--fs-zone-label: calc(var(--layout-unit) * 2.1);
+	--fs-gauge-pct: calc(var(--layout-unit) * 4.4);
+	--fs-gauge-name: calc(var(--layout-unit) * 2.4);
+	--fs-meta: calc(var(--layout-unit) * 2.1);
+	--fs-stat: calc(var(--layout-unit) * 3.2);
+	--fs-card-title: calc(var(--layout-unit) * 2.9);
+	--fs-card-meta: calc(var(--layout-unit) * 2.15);
+	--fs-banner: calc(var(--layout-unit) * 2.8);
+	/* The question is the whole point of a needs_input card, so it outranks
+	   lastEvent (--fs-card-meta) in the type scale rather than matching it. */
+	--fs-card-question: calc(var(--layout-unit) * 2.65);
+	--fs-sub-row: calc(var(--layout-unit) * 1.95);
+	--fs-sensor: calc(var(--layout-unit) * 2.9);
+	--fs-sheet-meta: calc(var(--layout-unit) * 2.3);
+	--fs-sheet-title: calc(var(--layout-unit) * 3.4);
+	--fs-sheet-question: calc(var(--layout-unit) * 4);
+	--fs-sheet-btn: calc(var(--layout-unit) * 3.2);
+	--fs-sheet-status: calc(var(--layout-unit) * 2.6);
+	--fs-burn-row: calc(var(--layout-unit) * 2.7);
+
+	/* Fingertip floor. 48 px is the hard minimum for every hit target on the
+	   Xeneon Edge glass; the vmin term only ever makes a target BIGGER. */
+	--touch-min: max(48px, calc(var(--layout-unit) * 8.4));
+
+	--space-pad: calc(var(--layout-unit) * 4);
+	--space-gap: calc(var(--layout-unit) * 2.6);
+	--space-zone: calc(var(--layout-unit) * 3.4);
+	--radius-card: calc(var(--layout-unit) * 1.6);
+	--bar-h: calc(var(--layout-unit) * 2.2);
+	/* 8.5 -> 7.4 vmin at v0.17.0 (61.2 -> 53.3 px at the Edge slot). The bars are
+	   drawn as a percentage of this height, so the SERIES is unchanged; only the
+	   box it is drawn in is shorter. Part of the 77 px the Limits zone had to find
+	   to fit the sensors row — see .zone-limits. */
+	--spark-h: calc(var(--layout-unit) * 7.4);
+
+	/* Runtime values written by JS from the iCUE properties. Declared here so the
+	   widget renders correctly in a plain browser where iCUE injects nothing. */
+	--text-color: #EDE7DF;
+	/* v0.26.0 (AUD-F1): #CC785C -> #BE7E6E. The old default sat on TOP of the
+	   mascot — oklch H 39.15 against Claw'd's 39.51, 0.36 degrees apart — so every
+	   piece of brand chrome was the same colour as a permanently orange animal, and
+	   the attention band had to fight both. Cooler and, more to the point, QUIETER:
+	   H 39.15 -> 34.72, C 0.1131 -> 0.0838, L 0.6580 -> 0.6553. Chroma is now the
+	   loudness rank the panel reads by — crab 0.181 > red 0.165 > esc2 0.154 >
+	   amber 0.140 > accent 0.084 — so nothing branded can be mistaken for a signal.
+	   L IS DELIBERATELY HELD: measured 8-bit gray only moves 141 -> 143, because the
+	   panel's gray axis has no free slot (crab 127, esc2 139, green 150, muted 157,
+	   amber 172) and buying crab separation in lightness would have spent the
+	   alert-vs-brand separation the same audit demands. Hue and chroma are free;
+	   lightness is not. Contrast on --surface is unchanged at 5.5:1.
+	   THE DEFAULT ONLY — iCUE's accentColor property still overwrites this at
+	   runtime (setVar in sidecrab.js), and the same default is restated in
+	   index.html's property meta; all three move together or the panel renders one
+	   colour in a browser and another on the glass. */
+	--accent: #BE7E6E;
+	/* rgb triple, not a hex: the background needs an alpha channel for the
+	   Background Transparency property and QtWebEngine has no #RRGGBBAA path
+	   through a CSS variable that also stays readable. */
+	--bg-rgb: 15, 14, 13;
+	--bg-alpha: 1;
+	--dim: 1;
+
+	--muted: #A39C93;
+	--faint: #6E675F;
+	--surface: #191614;
+	--surface-line: #2A2522;
+
+	--amber: #E8A33D;
+	--red: #D4553F;
+	--green: #6FAF7E;
+
+	/* Limit gauges are BLUE, and deliberately NOT the personalization accent
+	   (matching the Claude app's own usage panel). The gauges are a
+	   reading of an external system, so their colour has to mean the same thing on
+	   every panel: blue below 75%, amber from 75, red from 95. A user-tinted accent
+	   would make one person's "fine" another person's "nearly out". Everything else
+	   on the panel still follows --accent. */
+	--gauge-blue: #2E7FF2;
+
+	--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+	--font-mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+body {
+	background-color: rgba(var(--bg-rgb), var(--bg-alpha));
+	color: var(--text-color);
+	font-family: var(--font-ui);
+	-webkit-font-smoothing: antialiased;
+	display: flex;
+	flex-direction: column;
+	/* Touch panel, not a desktop: kill the tap flash and text selection that a
+	   dragged fingertip would otherwise leave smeared across the cards. */
+	-webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+/* ---------- attention overlays (§4.4) ---------- */
+
+/* Panel edge glow: steady while any session needs input. No animation — a
+   static inset shadow costs nothing on a display that runs 24/7. */
+.glow {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	opacity: 0;
+	/* Both colours are variables so the escalation tiers can re-tint the glow
+	   without restating the geometry. The halo is a literal rgba, not a fade of
+	   the line colour: QtWebEngine has no way to add an alpha channel to a
+	   variable colour that also stays readable in a box-shadow list. */
+	--glow-line: var(--amber);
+	--glow-halo: rgba(232, 163, 61, 0.30);
+	box-shadow: inset 0 0 0 calc(var(--layout-unit) * 0.7) var(--glow-line),
+	            inset 0 0 calc(var(--layout-unit) * 7) calc(var(--layout-unit) * 1.5) var(--glow-halo);
+	z-index: 40;
+}
+body.alert .glow { opacity: 1; }
+
+/* THE LINE'S JOB IS LIGHTNESS, THE HALO'S IS HUE (v0.26.0, AUD-F1). The tiers used
+   to escalate by walking the LINE toward red, and red is the luma-poorest corner
+   of sRGB: measured on ?mock=attention&age=20 and ?mock=dense at 2560x720, the
+   ring read 8-bit gray 140 at esc2 and 120 at approval against a crab body of 127
+   — i.e. the panel's two loudest states had a ring that vanished into the mascot
+   in a monochrome photo (deltas of 13 and 7), while the CALMEST tier's amber line
+   read 172 and cleared it by 45. The ramp was inverted.
+   Both escalated lines are now the SAME oklch hue and chroma they were, lifted in
+   L only: #E0703C -> #FF8D59 (L 0.667 -> 0.758, H 43.86 -> 44.29, C 0.155 -> 0.154)
+   and the approval line off var(--red)'s #D4553F -> #FF7D64 (L 0.612 -> 0.736,
+   H 31.95 -> 32.37, C 0.165 -> 0.164). Nothing about which tier means what moved;
+   only how much of the ring survives grayscale. Measured after: 169 and 161, so
+   every tier now clears the crab by >= 34.
+   The approval line is a literal rather than var(--red) BY DESIGN: --red is a
+   label colour that sits next to text (the banner, the approval spine, Stop), and
+   this is a 5 px line read across a room. Same hue, different job, different L. */
+body.esc1 .glow { --glow-halo: rgba(232, 163, 61, 0.48); }
+body.esc2 .glow { --glow-line: #FF8D59; --glow-halo: rgba(212, 85, 63, 0.52); }
+/* Approval (v0.12.0) is the loudest thing the panel shows — a pendingPermission
+   is a hard stop, not a question that can wait. Red line and the widest halo,
+   above every escalation tier. Placed AFTER the esc rules so a card that
+   is both aged and awaiting a decision takes this tint, not esc2's. Quiet still
+   wins on opacity below, and JS only sets body.approval when not quiet. */
+body.approval .glow { --glow-line: #FF7D64; --glow-halo: rgba(212, 85, 63, 0.66); }
+
+/* One-shot flash: the class is added on the transition INTO the alert state and
+   removed on animationend, so nothing animates in steady state. */
+.flash {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: var(--amber);
+	opacity: 0;
+	z-index: 50;
+}
+.flash.fire { animation: flashOnce 420ms ease-out 1; }
+@keyframes flashOnce {
+	0%   { opacity: 0; }
+	18%  { opacity: 0.32; }
+	100% { opacity: 0; }
+}
+
+/* ---------- banner (§4.5 honest failure) ---------- */
+
+.banner {
+	display: none;
+	flex: 0 0 auto;
+	padding: calc(var(--layout-unit) * 1.3) var(--space-pad);
+	font-size: var(--fs-banner);
+	font-family: var(--font-mono);
+	letter-spacing: 0.02em;
+	border-bottom: 1px solid var(--surface-line);
+	z-index: 30;
+}
+body.stale .banner { display: block; color: var(--red); background: rgba(212, 85, 63, 0.10); }
+
+/* ---------- the gesture confirmation line (v0.14.0) ---------- */
+
+/* Same strip, same type, same padding as the banner — it is deliberately the
+   panel's one place for a line of prose about itself, so a second visual idiom
+   would be a second thing to learn.
+
+   ABSOLUTE, not a flex sibling: this line comes and goes in a second and a half,
+   and a transient row in the column would reflow every zone under it — at the
+   344 px slot it would cost the card grid a row for as long as it showed, and a
+   card moving under a finger already travelling toward it is the exact failure a
+   touch panel cannot afford. Overlaying also settles what happens when the feed
+   is stale: for its moment it covers the failure banner, and the failure is still
+   there underneath when it goes, rather than the two fighting for the strip. */
+/* ADDRESSED BY ID, and the body class is deliberately a DIFFERENT WORD. A bare
+   `.notice` rule and a `body.notice` state class collide: the class selector
+   matches any element carrying the class, and `<body class="notice">` is one of
+   them, so `display: none` landed on the body and the whole panel rendered blank
+   (caught in a headless shot, 2026-08-26 — the shot was white, the DOM was
+   perfect, and the only wrong value in it was body's own computed display).
+   Every body state class here reads as a state (stale, quiet, alert, empty);
+   `notice-on` keeps that and cannot be a component name. */
+#notice {
+	display: none;
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	padding: calc(var(--layout-unit) * 1.3) var(--space-pad);
+	font-size: var(--fs-banner);
+	font-family: var(--font-mono);
+	letter-spacing: 0.02em;
+	border-bottom: 1px solid var(--surface-line);
+	/* Above the banner and the glow, below the alert flash: this is a receipt, and
+	   an alert firing in the same instant outranks a receipt. */
+	z-index: 40;
+	background: rgba(25, 22, 20, 0.96);
+}
+body.notice-on #notice { display: block; }
+/* An ack is a thing that happened (accent); a pull is a thing being asked for
+   (muted). Never red or amber: neither gesture is a failure or a warning, and the
+   panel's two loud colours have to keep meaning what they mean. */
+#notice[data-kind="ack"] .notice-text { color: var(--accent); }
+#notice[data-kind="pull"] .notice-text { color: var(--muted); }
+/* v0.20.0 (CD-13, CD-40) — the third kind, and the one the rule above says the
+   first two must never borrow: a write that did NOT happen. It gets red because
+   it IS a failure, which is exactly the distinction the accent/muted pair was
+   drawn to protect. The words carry it too ("could not", "not sent"), so the
+   line is not a colour on a panel read from across a room. */
+#notice[data-kind="err"] .notice-text { color: var(--red); }
+/* No banner in the STANDALONE state. A banner is the panel reporting a failure,
+   and a widget installed before its companion has not failed at anything — the
+   one calm line in the sessions zone says the whole of it. The stale banner is
+   untouched: a companion that answered and then stopped IS a failure. */
+
+/* ---------- zones ---------- */
+
+.zones {
+	flex: 1 1 auto;
+	display: flex;
+	min-height: 0;
+	opacity: var(--dim);
+	/* BOTH AXES BELONG TO THE PAGE (v0.14.0). This surface is a control panel, not
+	   a document: html and body are overflow:hidden and nothing inside .zones
+	   scrolls in either direction, so there is no panning for the compositor to be
+	   doing here — and while it believed there might be, it claimed the vertical
+	   axis and answered the pull-down gesture with pointercancel instead of moves
+	   (measured 2026-08-26: the swipe worked and the pull silently did nothing,
+	   which is exactly the asymmetry a `manipulation` default produces).
+	   Declared on the container rather than per control so a control added later
+	   inherits the same answer. THE SHEET IS NOT AFFECTED: it lives outside .zones,
+	   and all four of its scrollable regions keep the browser's own panning. */
+	touch-action: none;
+}
+/* Quiet hours: ambient brightness and NOTHING moves. Declared BEFORE the
+   stale/connecting dims (equal specificity, later wins) so a dead feed during
+   quiet hours still reads at the failure state's dim, not the calmer one. */
+body.quiet .zones { --dim: 0.5; }
+body.stale .zones { --dim: 0.45; }
+/* The STANDALONE state is NOT dimmed. It was, at 0.62, back when it only ever
+   lasted the three seconds before the first poll landed; on the store it is the
+   permanent state of anyone who has not installed the companion yet, and a dimmed
+   panel reads as a panel that is not working. Everything it CAN show — clock,
+   badge, crab, sensors — is shown at full brightness, and the placeholder-only
+   blocks are hidden outright rather than shown greyed (below). */
+
+/* Belt and braces: JS already withholds the alert class, the pulse class and
+   both one-shots under quiet, but a future edit to render() must not be able to
+   put a flashing panel in a dark room. */
+body.quiet .glow { opacity: 0; }
+body.quiet .flash.fire,
+body.quiet .card.pulse,
+body.quiet .card.esc1.pulse,
+body.quiet .card.esc2.pulse,
+body.quiet .card.approval.pulse,
+body.quiet .crab.waveonce .arm-right { animation: none; }
+
+.zone {
+	min-width: 0;
+	min-height: 0;
+	padding: var(--space-pad);
+	display: flex;
+	flex-direction: column;
+}
+/* 520 / 620 / 1420 of 2560 (PRD §4), expressed proportionally so the layout
+   also holds at the 2536x696 XL slot. */
+/* v0.17.0: 2.6 -> 2.2 vmin, and this is bought back rather than styled. The badge
+   grew 20% (+11.5 px tall) and the fleet row grew with its words (+2.9 px), and
+   .crab-wrap is flex:1 1 auto — so the crab silently paid for both, dropping out
+   of WIDTH-limited into HEIGHT-limited and losing 1.3% (462.1 x 391.0 -> 456.2 x
+   386.0). Two gaps at 0.4 vmin each hand back 5.8 px, which is more than the 4.9
+   the crab needed to be width-limited again, so its painted size is back to
+   462.1 x 391.0 — the figure the badge note below still quotes. */
+.zone-identity { flex: 0 0 20.3%; align-items: center; justify-content: center; gap: calc(var(--layout-unit) * 2.2); }
+/* v0.17.0 — the Limits zone runs on a TIGHTER vertical rhythm than the other two,
+   and the reason is measured, not stylistic. The zone is a fixed-height flex
+   column (720 px at the Edge slot, 28.8 px of padding, content box ending at
+   691.2) whose `today` block carries margin-top:auto — so every spare pixel in
+   the zone collects in that ONE auto margin, and the sensors row is the last
+   child, after it. On ?mock=rework (the full production shape: a forecast line, a
+   limits note, the budget line and the cost line) that auto margin was already
+   down to 4.67 px with the sensors row hidden. Revealing the row costs 62.4 px
+   (18.72 zone gap + 10.08 own margin + 33.6 border-box height), so it landed at
+   715.3..749.0 — 24 px BELOW the panel's bottom edge and 57.8 px past the zone's
+   content box — and body{overflow:hidden} ate it silently. Nothing scrolled;
+   the operator's hardware readout simply did not exist on glass.
+   The gap and the vertical padding are overridden HERE rather than on the shared
+   --space-gap / --space-pad tokens because the identity and grid zones measured
+   fine and must not move. Together with the four other trims below (the header's
+   touch floor, the today gap, the sensors row's own margins and --spark-h) this
+   frees 77 px, which covers the 57.8 and leaves the zone real headroom: measured
+   after, the auto margin holds 20.0 px on rework, 123.9 on hot, 183.4 on caveat,
+   193.0 on recap and 217.5 on normal, and the sensors row ends exactly on the
+   content-box bottom (697.7) on every one of them.
+   STILL OPEN: two limits.extra windows (the contract allows extras.slice(0, 2),
+   and no fixture carries two) put the row 78.6 px past the content box even
+   after this. Gap tuning cannot close that — a second window costs 98.6 px on
+   its own — so it needs a Rule 6 decision about what the zone drops. */
+.zone-limits   {
+	flex: 0 0 24.2%;
+	border-left: 1px solid var(--surface-line);
+	border-right: 1px solid var(--surface-line);
+	gap: calc(var(--layout-unit) * 1.9);
+	padding-top: calc(var(--layout-unit) * 3.1);
+	padding-bottom: calc(var(--layout-unit) * 3.1);
+}
+.zone-grid     { flex: 1 1 55.5%; gap: var(--space-gap); }
+
+/* ---------- standalone state (no companion has ever answered) ---------- */
+
+/* Everything in the Limits zone is a reading of the companion's feed, so with no
+   feed it is all placeholder: four "--" stats, two empty gauge tracks and an
+   axis with no series. Hidden, not greyed — a row of dashes is the panel
+   claiming to report a figure it does not have, and six of them is what makes an
+   otherwise fine display look broken. The SENSORS row stays: iCUE feeds it, not
+   the companion, so it is real data on a panel that has none of the other kind.
+   The two headers go with their blocks — a "Limits" heading over nothing is a
+   promise the zone cannot keep, and both are tap targets for sheets that would
+   open empty. */
+body.connecting .limits-head,
+body.connecting .gauge,
+body.connecting .gauge-extra,
+body.connecting .limits-note,
+body.connecting .today,
+body.connecting .grid-head { display: none; }
+/* The row is the only thing left in the zone, so its separator has nothing above
+   it to separate from, and it centres in the space the hidden blocks left. */
+body.connecting .zone-limits { justify-content: center; }
+body.connecting .sensors.shown { margin-top: 0; padding-top: 0; border-top: 0; }
+/* ...and with no sensor reading either — a dev browser, or a machine iCUE reports
+   no temperature for — the zone has nothing at all in it, so it is not a zone.
+   Dropped outright rather than left as an empty column between two rules, and the
+   two survivors take the 36 / 64 split the 1200px breakpoint already uses. */
+body.connecting:not(.has-sensors) .zone-limits { display: none; }
+body.connecting:not(.has-sensors) .zone-identity { flex: 0 0 36%; }
+body.connecting:not(.has-sensors) .zone-grid { flex: 1 1 64%; }
+
+.zone-label {
+	margin: 0;
+	font-size: var(--fs-zone-label);
+	font-weight: 600;
+	letter-spacing: 0.22em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+
+/* ---------- identity zone (§4.1) ---------- */
+
+.crab-wrap {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.crab-wrap.tappable { cursor: pointer; touch-action: manipulation; }
+.crab { width: 100%; height: 100%; max-height: 100%; overflow: visible; }
+/* v0.17.0: nudge the crab DOWN a few pixels, asked for off the physical screen.
+   A transform and not padding or a margin, because the SVG is width-limited in
+   this zone and centres itself inside its box: anything that changed the BOX
+   would resize the crab as a side effect, and this has to move it and nothing
+   else. 1.4 vmin is 10.08 px at the 2560x720 slot.
+   Clearance is measured on the ART, not on the SVG box: the viewBox carries 10
+   units of empty headroom for the hats above the shell and 6 below the legs
+   (2.5 and 1.5 cells on the v0.17.0 grid, where a cell is 4 units), so a
+   box-to-box gap overstates the risk badly (the box is 124.2..515.2, the painted
+   animal is 213.1..461.9). Against the badge above at 97.9 and the clock row
+   below at 521.4 that leaves 115.2 px clear above and 59.5 px clear below —
+   nothing collides. On the 840x344 slot vmin is 3.44 px, so the same rule moves
+   it 4.8 px, and the clock-date and fleet rows are hidden there anyway.
+   .crab has no other transform — the mood parks, the claw snap and the bounce all
+   ride .rig / .arm / .claw INSIDE the SVG — so nothing here is overwritten by an
+   animation, and .crab keeps overflow:visible so the nudge cannot clip the hats. */
+.crab { transform: translateY(calc(var(--layout-unit) * 1.4)); }
+
+/* Claw'd is flat single colour on every mood except worried, which desaturates
+   ~40% toward its own grey. No outlines, no gradients.
+   v0.5.0 warmed the fill from #D97757 toward the Claw'deck badge orange, but
+   stopped one step short of it (#E45C28 vs the badge's #E8511F) so the badge
+   still reads as the hotter of the two and pops off the crab.
+   The worried tint is COMPUTED, not picked: same hue (16.6 deg) and same
+   lightness (0.526) as the fill, saturation multiplied by 0.60. Eyeballing a
+   replacement instead drifts the hue and the worried crab stops reading as the
+   same animal. */
+.crab { --crab-fill: #E45C28; --crab-eye: #14120F; }
+.crab[data-mood="worried"] { --crab-fill: #BE6D4E; }
+
+.pix rect { fill: var(--crab-fill); }
+.eyes rect { fill: var(--crab-eye); }
+
+/* Mood switching: show/hide only, never rebuild. */
+.eyes-sleep, .eyes-worried { display: none; }
+.crab[data-mood="asleep"] .eyes-open { display: none; }
+.crab[data-mood="asleep"] .eyes-sleep { display: block; }
+
+/* The sleep Z is HARD-gated to the asleep mood, and deliberately not folded into
+   the one-class base rule above: at .crab .zzz the off state outranks anything a
+   single class can say, so only a mood-scoped rule can ever turn it on. A z over
+   a crab that is plainly awake reads as a broken panel, and it was seen on the
+   glass once already. Every other mood — worried, waving,
+   content, celebrating — and every dimming state leaves this at none. */
+.crab .zzz { display: none; }
+.crab[data-mood="asleep"] .zzz { display: block; }
+.crab[data-mood="worried"] .eyes-open { display: none; }
+.crab[data-mood="worried"] .eyes-worried { display: block; }
+
+/* SWEAT (v0.22.0). Hard-gated to the sweating mood exactly the way the sleep Z is,
+   and for the same reason spelled out above it: the off state is a bare-class rule,
+   so only a mood-scoped rule can ever paint a drop and no stuck class can leave the
+   crab sweating at a window that has since reset.
+   The sweating crab keeps the OPEN eyes (nothing here touches .eyes-*), so it is the
+   content crab plus three drops — which is what makes the pixel diff a real proof
+   rather than a hope, and it is why the blink still works on this mood: the blink
+   swaps .eyes-open for .eyes-sleep and knows nothing about sweat. */
+.crab .sweat { display: none; }
+.crab[data-mood="sweating"] .sweat { display: block; }
+/* The juggle takes the head — the balls' arc runs x 2..46 across y -4..2 and would
+   pass straight through the left and right drops. Same rule, same mechanism and the
+   same required source position as .crab.juggling .acc: equal specificity to the
+   rule above, so LATER WINS is the whole thing keeping it below. */
+.crab.juggling .sweat { display: none; }
+/* render() never picks sweating under quiet — quiet outranks it in the mood ladder,
+   which is a decision recorded beside that ladder in sidecrab.js. This is the belt
+   the celebrating and waving arms already wear, and it keeps that true if render()
+   ever changes its mind. */
+body.quiet .crab .sweat { display: none; }
+/* Literal, like the wardrobe's and the badge's: a bead of sweat is not a reading of
+   anything, so the personalization accent must not be able to repaint it — and the
+   one cool note on a warm animal is the whole reason it reads as sweat rather than
+   as three more crab pixels. */
+.sweat-drop rect { fill: #8FD8E8; }
+.sweat-glint rect { fill: #FFFFFF; }
+
+/* Blink (v0.4.0): one 150 ms frame of the sleep-bar eyes the asleep mood already
+   paints, so nothing new is drawn and nothing animates. On the SLEEPING crab it
+   runs the other way — the eyes open for a frame — so a tap answers whatever the
+   mood is. The worried crab is excluded outright: its eyes are a third group, and
+   showing the sleep bars alongside them would paint four eyes. */
+.crab.blink .eyes-open { display: none; }
+.crab.blink .eyes-sleep { display: block; }
+.crab[data-mood="asleep"].blink .eyes-sleep { display: none; }
+.crab[data-mood="asleep"].blink .eyes-open { display: block; }
+.crab[data-mood="worried"].blink .eyes-sleep { display: none; }
+
+/* Celebrating (v0.4.0): BOTH arms parked one grid cell up, held for ten seconds
+   after a turn longer than half an hour lands. Same mechanism as waving — a
+   static transform on the existing arm groups, not an animation and not new art —
+   so it costs nothing and survives prefers-reduced-motion intact. */
+.crab[data-mood="celebrating"] .arm { transform: translateY(-4px); }
+/* render() never picks celebrating under quiet; this keeps that true if it ever does. */
+body.quiet .crab[data-mood="celebrating"] .arm { transform: none; }
+
+/* Waving = one arm's blocks parked one grid cell up. Steady state is STATIC —
+   a raised arm, not a loop. transform-box is set explicitly: relying on the SVG
+   default reference box is a portability trap. */
+.crab .arm { transform-box: view-box; }
+.crab[data-mood="waving"] .arm-right { transform: translateY(-4px); }
+/* Tier 2 (15 min unanswered) is a SECOND waving frame, not new art: the same
+   arm blocks parked two grid cells up instead of one. viewBox units are
+   quarter-cells since v0.17.0, so -8 is exactly one more cell of lift.
+   Every px figure in this block and the keyframes below is a viewBox UNIT, not a
+   panel pixel (transform-box: view-box), so all ten of them doubled with the crab
+   grid at v0.17.0. The CELL COUNTS these comments describe are unchanged — one
+   cell up is still one cell up. A cell is simply 4 units now where it was 2. */
+body.esc2 .crab[data-mood="waving"] .arm-right { transform: translateY(-8px); }
+/* Quiet never paints the waving mood today; this keeps that true if render()
+   ever changes its mind. */
+body.quiet .crab[data-mood="waving"] .arm-right { transform: translateY(-4px); }
+
+/* The two-frame toggle runs only on the transition into the alert state (the
+   same trigger as the one-shot panel flash) and then stops. steps(1,end) keeps
+   it snapping between two frames — a tween would break the pixel grammar. */
+.crab.waveonce .arm-right { animation: pixwave 640ms steps(1, end) 3; }
+@keyframes pixwave {
+	0%   { transform: translateY(0); }
+	50%  { transform: translateY(-4px); }
+	100% { transform: translateY(0); }
+}
+
+/* ---------- the wardrobe (v0.11.0) ---------- */
+
+/* Costume colours are LITERAL, like the badge's, and deliberately not tokens: an
+   accessory is a joke the crab is wearing, not a reading of anything, so the
+   personalization accent must not be able to repaint it — and a hard hat that is
+   not safety yellow has stopped being a hard hat. */
+/* v0.18.0: the palette is FAMILY-matched to the crab rather than freely chosen —
+   but "family" is not "the same colour", and the first cut of the party hat found
+   that edge the hard way. It was #E06A2B against a crab of #E45C28: four units
+   apart in red, fourteen in green, and on the glass the hat did not read as a hat
+   at all, it read as a lumpy extension of the crab's own head. The gold below is
+   two clear steps up in luminance and yellowness while staying inside the widget's
+   warm range (the amber token is #E8A33D), so the hat belongs to this animal and
+   is still plainly something the animal is WEARING.
+   The nightcap slate is the one cool note in the wardrobe, which is exactly what
+   makes it read as night beside four warm moods. The retired hard hat's
+   --acc-hard went with it. */
+.crab {
+	--acc-party: #F4BC45;
+	--acc-stripe: #D4553F;
+	--acc-topper: #F7F3EC;
+	--acc-cap: #7C86A8;
+	--acc-band: #F0EBE2;
+	--acc-pom: #F7F3EC;
+	--acc-frame: #0B0907;
+	--acc-lens: #1E2A33;
+	--acc-glare: #FFFFFF;
+}
+.acc-hat rect { fill: var(--acc-party); }
+.acc-stripe rect { fill: var(--acc-stripe); }
+.acc-topper rect { fill: var(--acc-topper); }
+.acc-cap rect { fill: var(--acc-cap); }
+.acc-band rect { fill: var(--acc-band); }
+.acc-pom rect { fill: var(--acc-pom); }
+.acc-frame rect { fill: var(--acc-frame); }
+.acc-lens rect { fill: var(--acc-lens); }
+.acc-glare rect { fill: var(--acc-glare); }
+
+/* One accessory at a time, chosen by the attribute alone. Same discipline as the
+   sleep Z: the OFF state is a bare-class rule, so only an attribute-scoped rule
+   can ever turn a costume on, and a stuck class cannot leave a hat on a crab. */
+.acc { display: none; }
+.crab[data-acc="sunglasses"] .acc-shades,
+.crab[data-acc="party"] .acc-party,
+.crab[data-acc="nightcap"] .acc-nightcap { display: block; }
+
+/* The juggle takes the head: one thing up there at a time, and the balls' arc
+   passes through exactly where a hat's tip is. Equal specificity to the four
+   rules above (three class-level terms each), so this MUST stay below them —
+   later wins, and that is the whole mechanism. It hides the accessory without
+   touching the wardrobe's state machine, so nothing switches and the hysteresis
+   never sees the trick happen. */
+.crab.juggling .acc { display: none; }
+
+.juggle { display: none; }
+.crab.juggling .juggle { display: block; }
+.ball { fill: var(--crab-fill); transform-box: view-box; }
+/* Three discrete positions, snapped — a tween would put a pixel ball at a
+   fractional coordinate, which is the one thing this grammar cannot do.
+   0.75 s x 8 iterations = the 6 s the trick is latched for; change one and the
+   other has to move with it (JUGGLE_MS in sidecrab.js). */
+.crab.juggling .ball { animation: juggle 750ms steps(1, end) 8; }
+.crab.juggling .ball-2 { animation-delay: -250ms; }
+.crab.juggling .ball-3 { animation-delay: -500ms; }
+/* The arc is wider than the shell on purpose (measured 2026-08-26, on a shot):
+   the first cut put the low balls at x 4 and x 20, which is exactly the body's
+   own top corners — they fused with the silhouette and read as two bumps on the
+   crab rather than as anything in the air. Out at x 1 and x 23 they clear the
+   shell by a cell, and the low row sits a cell above its top edge. */
+@keyframes juggle {
+	0%      { transform: translate(-22px, 6px); }
+	33.33%  { transform: translate(0, 0); }
+	66.66%  { transform: translate(22px, 6px); }
+	100%    { transform: translate(-22px, 6px); }
+}
+
+/* Claw click (v0.11.0): the raised claw snaps one HALF cell toward the body and
+   back, twice. It rides the nested .claw group so it composes with whatever the
+   mood has done to the arm — see the note in index.html. */
+.crab .claw { transform-box: view-box; }
+.crab.snap .arm-right .claw { animation: clawsnap 260ms steps(1, end) 2; }
+@keyframes clawsnap {
+	0%   { transform: translateX(0); }
+	50%  { transform: translateX(-2px); }
+	100% { transform: translateX(0); }
+}
+
+/* Bounce (v0.11.0): the whole animal hops one grid cell, twice, when the last
+   working session lands and nothing is waiting. Two frames per hop, same
+   steps(1, end) grammar as the wave. */
+.crab .rig { transform-box: view-box; }
+.crab.bounce .rig { animation: crabhop 380ms steps(1, end) 2; }
+@keyframes crabhop {
+	0%   { transform: translateY(0); }
+	50%  { transform: translateY(-4px); }
+	100% { transform: translateY(0); }
+}
+
+/* Quiet hours: the accessories are static art and stay (the nightcap is the
+   POINT of quiet), but nothing may move. JS never fires a trick under quiet;
+   this is the belt, and the juggle is hidden outright rather than frozen —
+   three balls stopped mid-air read as a broken panel, not as a still one. */
+body.quiet .crab.snap .arm-right .claw,
+body.quiet .crab.bounce .rig { animation: none; }
+body.quiet .crab.juggling .juggle { display: none; }
+
+.clock { flex: 0 0 auto; text-align: center; width: 100%; }
+/* position:relative for the quiet-override chip below, and for nothing else — the
+   chip is absolutely positioned so it takes no part in this row's flex layout, and
+   the baseline alignment of the clock and its seconds is untouched by it. */
+.clock-row { position: relative; display: flex; align-items: baseline; justify-content: center; gap: calc(var(--layout-unit) * 1); }
+.clock-hm {
+	font-family: var(--font-mono);
+	font-size: var(--fs-clock);
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	line-height: 1;
+	letter-spacing: -0.02em;
+}
+.clock-ss {
+	font-family: var(--font-mono);
+	font-size: var(--fs-clock-sec);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+}
+/* ---------- the quiet override chip (v0.22.0) ---------- */
+
+/* OUT OF FLOW ON PURPOSE, and it is the load-bearing property of this control.
+   The identity zone is a flex column whose crab absorbs all slack, and the crab
+   was measured at 0.8 px of height slack at 2560x720 and ZERO at three other
+   slots — so a control that took one pixel of column height would take it off the
+   animal. Absolute inside the clock row costs the column nothing at all and
+   spends the horizontal slack instead: 87.5 px of clear width to the right of the
+   seconds at 2560x720, 90.8 at 2536x696, 108.4 at 416x696, 253.4 at 840x696, and
+   68.8 at the tightest slot, 840x344.
+   The width budget is therefore 68.8 px, and the chip's own content is sized to
+   fit it: the type is --fs-sub-row rather than --fs-meta because at meta size the
+   five-letter mode word ("quiet"/"awake") took the chip to 85.8 px against 87.5
+   available at the authored slot — a 1.7 px margin, which is not a margin. */
+.moon-chip {
+	display: none;
+	position: absolute;
+	/* v0.24.1 — anchored to the ZONE edge, not the clock-row's content-box edge.
+	   Measured on real glass 2026-08-28: right:0 put the chip's left edge at the
+	   clock-row content-box right (491 px at 2560x720), only 57 px past the
+	   seconds — but the chip is 70 px, so it sat 13 px ON the seconds. The 28.8 px
+	   of zone padding to the right of the content box is empty; reaching into it
+	   with a negative right gives the chip the zone's full 86 px of clear width
+	   and clears the seconds. The seconds and the chip are re-measured against
+	   each other at three slots in DEV.md. */
+	right: calc(-1 * var(--space-pad));
+	top: 50%;
+	transform: translateY(-50%);
+	/* The fingertip floor, which costs nothing here precisely because the chip is
+	   out of flow: 60.5 px of button inside a 108 px clock-row line box at
+	   2560x720, and 48 px inside 51.6 px at 840x344. */
+	min-width: var(--touch-min);
+	min-height: var(--touch-min);
+	align-items: center;
+	justify-content: center;
+	gap: calc(var(--layout-unit) * 0.6);
+	padding: 0 calc(var(--layout-unit) * 0.9);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sub-row);
+	line-height: 1.15;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-appearance: none;
+	appearance: none;
+	color: var(--faint);
+}
+.moon-chip.shown { display: flex; }
+.moon-chip:active { background: rgba(237, 231, 223, 0.16); }
+.moon-glyph {
+	flex: 0 0 auto;
+	width: calc(var(--layout-unit) * 2.2);
+	height: calc(var(--layout-unit) * 2.2);
+	fill: currentColor;
+	/* A UI shape, not crab art: at this size a pixel crescent lands ~1.2 px per
+	   cell and renders as mush. Same split the Claw'deck badge makes between its
+	   pixel crab and its plate. */
+	shape-rendering: geometricPrecision;
+}
+.moon-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.moon-mode { white-space: nowrap; letter-spacing: 0.04em; }
+/* The remaining time is absent on auto, and the element collapses rather than
+   holding an empty line: a chip that was two lines tall on a one-line state would
+   be reserving room for a countdown that is not running. */
+.moon-left { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--faint); }
+.moon-left:empty { display: none; }
+/* AUTO IS THE RESTING STATE and reads as one — faint, like the fleet dots beside
+   it, because "the schedule is in charge" is the normal condition of this panel
+   and a control that shouted it would be shouting 24 hours a day.
+   An override in EITHER direction lights the chip, and the WORD says which: the
+   panel is read from a photograph often enough that a direction carried only in a
+   colour is a direction nobody reads. */
+.moon-chip[data-quiet="auto"] { color: var(--faint); }
+.moon-chip[data-quiet="on"],
+.moon-chip[data-quiet="off"] { color: var(--accent); border-color: var(--accent); }
+.moon-chip[data-quiet="on"] .moon-mode,
+.moon-chip[data-quiet="off"] .moon-mode { color: var(--text-color); }
+
+/* ---------- the touch-diagnostics indicator (v0.23.0) ---------- */
+
+/* OUT OF FLOW, the moon chip's own argument mirrored to the other side of the
+   clock. The identity zone's crab absorbs every spare pixel of column height, so
+   an indicator that took one would take it off the animal; absolute inside the
+   clock row costs the column nothing and spends the horizontal slack instead —
+   56.9 px of clear column to the left of the hours at 2560x720, and 61.3 / 54.3 /
+   223.8 / 90.8 at the other four slots.
+   The WORD and the COUNT are stacked because that budget is a four-character mono
+   string: at --fs-meta the full "diag: N events" measures 160.9 px against the
+   56.9 available and the stack measures 35.2. The full form is on title and
+   aria-label, which is where the sensor row already puts a string too long for
+   its cell.
+   pointer-events:none is load-bearing and not tidiness. This layer exists to
+   record what the glass sends; an indicator that could absorb a tap would be
+   changing the very measurement it is reporting on. */
+.diag-chip {
+	display: none;
+	position: absolute;
+	/* v0.24.1 — mirror of the moon chip's fix: anchored to the zone edge, not the
+	   clock-row content box, so it reaches into the zone's left padding instead of
+	   sitting on the hours. Dev-mode-only (touch diagnostics), but it is the same
+	   latent overlap the moon chip had, so it is corrected symmetrically. */
+	left: calc(-1 * var(--space-pad));
+	top: 50%;
+	transform: translateY(-50%);
+	flex-direction: column;
+	align-items: flex-start;
+	pointer-events: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	line-height: 1.15;
+	letter-spacing: 0.04em;
+	/* The dim/meta treatment the fleet dots and the quiet note already use: this is
+	   an ambient statement about the panel's own mode, not an alert, and it sits on
+	   the glass for as long as a diagnostic session lasts. */
+	color: var(--faint);
+}
+.diag-chip.shown { display: flex; }
+.diag-word { white-space: nowrap; }
+/* Tabular figures so a climbing counter does not shuffle its own left edge — the
+   one thing the operator is watching is whether the number MOVES, and digits that
+   reflowed as they changed would make a still panel look busy. */
+.diag-count { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+.clock-date {
+	margin-top: calc(var(--layout-unit) * 1.2);
+	font-size: var(--fs-date);
+	color: var(--muted);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+/* Fleet dots (v0.6.0). Ambient: faint, small, no animation ever. The row is
+   display:none until renderFleet sees a fleet block, so a schema < 6 feed shows
+   nothing here rather than grey dots that read as dead services. */
+.fleet {
+	display: none;
+	justify-content: center;
+	/* v0.17.0: the gap between the two PAIRS has to beat the gap inside a pair, or
+	   "glow o toast o" reads as one run of four things instead of two labelled
+	   dots. 3.4 vs 0.9 below is that ratio. */
+	gap: calc(var(--layout-unit) * 3.4);
+	margin-top: calc(var(--layout-unit) * 1);
+}
+.fleet.shown { display: flex; }
+.fleet-item {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 0.9);
+	font-family: var(--font-mono);
+	/* 2.5 vmin (18 px here), deliberately between --fs-meta (15.12) and the date
+	   above it (--fs-date, 20.88): the row has to be READABLE from the desk, and
+	   it must still sit under the date rather than competing with it. */
+	font-size: calc(var(--layout-unit) * 2.5);
+	letter-spacing: 0.08em;
+	line-height: 1;
+	color: var(--faint);
+}
+/* Fixed box for every state so the row cannot reflow when a task stops: the
+   dash is drawn INSIDE this box rather than by shrinking it. */
+.fleet-dot {
+	/* Grown with the word (v0.17.0). A 9.4 px dot beside an 18 px label reads as a
+	   speck; this keeps the dot and the cap height in the same weight class. */
+	width: calc(var(--layout-unit) * 1.6);
+	height: calc(var(--layout-unit) * 1.6);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+/* Colour is the fast cue and SHAPE is the redundant one, per not-color-alone:
+   running is a filled disc, stopped a hollow ring, absent/unknown a bare dash.
+   The three read apart in a monochrome photo of the glass, which is how this
+   panel is most often looked at from across the room. */
+.fleet-dot::before {
+	content: "";
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	background: var(--faint);
+}
+.fleet-item[data-state="running"] .fleet-dot::before { background: var(--green); }
+.fleet-item[data-state="stopped"] .fleet-dot::before {
+	background: transparent;
+	border: calc(var(--layout-unit) * 0.35) solid var(--amber);
+}
+.fleet-item[data-state="absent"] .fleet-dot::before,
+.fleet-item[data-state="unknown"] .fleet-dot::before {
+	height: calc(var(--layout-unit) * 0.35);
+	border-radius: 0;
+	background: var(--faint);
+}
+.fleet-item[data-state="running"] { color: var(--muted); }
+.fleet-item[data-state="stopped"] { color: var(--muted); }
+
+.quiet-note {
+	display: none;
+	margin-top: calc(var(--layout-unit) * 0.8);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.08em;
+	color: var(--faint);
+}
+body.quiet .quiet-note { display: block; }
+
+/* ---------- limits zone (§4.2) ---------- */
+
+/* The zone heading doubles as the burn-by-session sheet's button, so it carries
+   the fingertip floor. The height is paid for out of the slack the `today` block's
+   margin-top:auto was already holding, not out of any gauge. */
+.limits-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: calc(var(--layout-unit) * 1.5);
+	flex: 0 0 auto;
+	/* v0.17.0: --touch-min is max(48px, 8.4vmin) and resolved to 60.48 px here for
+	   a 20 px label — 12.3 px of it was headroom above the fingertip floor, not the
+	   floor itself. 6.7 vmin is 48.24 px at the Edge slot, so this still clears the
+	   48 px minimum the whole panel is built to, and the max() keeps it at 48 on any
+	   slot where vmin is smaller. Re-measure this before trimming it again: below
+	   48 px the header stops being a fingertip target. */
+	min-height: max(48px, calc(var(--layout-unit) * 6.7));
+	min-width: 0;
+}
+.limits-head.tappable { cursor: pointer; touch-action: manipulation; }
+.limits-head .zone-label { flex: 0 0 auto; }
+/* The only affordance the header has — a heading that silently opens a sheet is
+   a gesture nobody discovers. */
+.limits-head-hint {
+	flex: 0 1 auto;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	letter-spacing: 0.06em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.limits-head-hint::after { content: "\00A0\203A"; }
+
+/* Provenance tag (v0.12.0). Sits between the heading and the "by session" hint,
+   with margin-right:auto so it hugs the heading and pushes the hint to the far
+   edge rather than floating in the middle of the space-between row. Muted and
+   bordered like a chip — it is a source label, not an alert, and it must not
+   read louder than the gauge figures it annotates. display:none until JS adds
+   .shown for a statusline source, so an oauth feed shows nothing at all. */
+.limits-source {
+	display: none;
+	flex: 0 0 auto;
+	margin-right: auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.06em;
+	color: var(--faint);
+	padding: calc(var(--layout-unit) * 0.3) calc(var(--layout-unit) * 0.8);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.5);
+	white-space: nowrap;
+}
+.limits-source.shown { display: inline-block; }
+
+.gauge { flex: 0 0 auto; }
+/* v0.19.0: a gauge opens its own forecast detail. The affordance is a chevron on
+   the NAME, in the name's existing line box — the Limits zone had 20 px of
+   headroom left after the v0.17.0 trim, so a hint line of its own per gauge would
+   have cost more than the zone has. Same glyph the two zone headers use, so the
+   panel has one word for "this opens something". */
+.gauge.tappable { cursor: pointer; touch-action: manipulation; }
+.gauge.tappable .gauge-name::after { content: "\00A0\203A"; color: var(--faint); }
+.gauge-head { display: flex; align-items: baseline; justify-content: space-between; }
+.gauge-name { font-size: var(--fs-gauge-name); color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.gauge-pct {
+	font-family: var(--font-mono);
+	font-size: var(--fs-gauge-pct);
+	font-variant-numeric: tabular-nums;
+	font-weight: 700;
+	color: var(--gauge-color, var(--gauge-blue));
+}
+.gauge-track {
+	margin-top: calc(var(--layout-unit) * 0.8);
+	height: var(--bar-h);
+	border-radius: calc(var(--bar-h) / 2);
+	background: var(--surface);
+	border: 1px solid var(--surface-line);
+	overflow: hidden;
+}
+.gauge-fill {
+	height: 100%;
+	width: calc(1% * var(--w, 0));
+	background: var(--gauge-color, var(--gauge-blue));
+	border-radius: calc(var(--bar-h) / 2);
+	/* no width transition: gauges must render true on the FIRST painted frame (headless/on-glass QA reads a mid-tween sliver as an empty bar) */
+}
+.gauge-foot {
+	margin-top: calc(var(--layout-unit) * 0.6);
+	font-size: var(--fs-meta);
+	font-family: var(--font-mono);
+	color: var(--faint);
+}
+/* Depletion forecast (v0.13.0): a muted hint, deliberately quieter than the foot
+   above it and far below the % — never alarming. Hidden until it has a value, so
+   an absent forecast (the common case) leaves the gauge byte-for-byte its pre-
+   0.13.0 self and takes no vertical space. */
+.gauge-forecast {
+	display: none;
+	margin-top: calc(var(--layout-unit) * 0.4);
+	font-size: var(--fs-meta);
+	font-family: var(--font-mono);
+	color: var(--muted);
+	font-style: italic;
+}
+.gauge-forecast.shown { display: block; }
+
+.gauge-extra { display: flex; flex-direction: column; gap: var(--space-gap); }
+.gauge-extra:empty { display: none; }
+
+.limits-note {
+	display: none;
+	font-size: var(--fs-meta);
+	color: var(--amber);
+	line-height: 1.35;
+}
+.limits-note.shown { display: block; }
+/* A caveat on lit gauges is not a fault: amber is reserved for available:false,
+   where the numbers are actually missing. */
+.limits-note.caveat { color: var(--muted); }
+
+/* margin-top:auto is what bottom-anchors this block, and it is therefore also the
+   zone's entire slack budget — see the .zone-limits note. The inner gap came down
+   from 1.2 to 0.9 vmin at v0.17.0 (four gaps: label, grid, budget, cost, spark). */
+.today { margin-top: auto; display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.9); }
+/* align-items:end is the F4 demotion's other half. A demoted cell is 8.0 px
+   shorter (38.0 against 46.0 at 2560x720), and a stretched cell starts its
+   content at the TOP — which would have put the two demoted KEYS 8.0 px above the
+   other two, a ragged label row under four numbers. Bottom-aligned, all four keys
+   sit on one line exactly (kTop 492.38, kBase 508.38 on all four, measured) and
+   the row's height is unchanged at 46.0, set by the two stat-size cells — so the
+   demotion costs the Limits zone nothing at all, which is what leaves F2's
+   collapse the whole of its own saving. What stays staggered is the VALUE
+   baselines, by the two fonts' descent difference: 1.0 px at 2560x720, 2.0 px at
+   2536x696. That reads as the hierarchy it is. */
+.today-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: calc(var(--layout-unit) * 1.2); align-items: end; }
+.stat { display: flex; flex-direction: column; min-width: 0; }
+/* v0.26.0, AUD-F4 — see index.html for why these two and not the other two. */
+.stat.meta .stat-v { font-size: var(--fs-meta); }
+.stat-v {
+	font-family: var(--font-mono);
+	font-size: var(--fs-stat);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.stat-k { font-size: var(--fs-meta); color: var(--faint); letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* Today's spend against the budget (v0.10.0). display:none rather than an empty
+   block, because .today is a flex column with a gap: an empty-but-displayed line
+   would still cost the zone that gap, and a feed with no budget has to render
+   byte-for-byte its v0.9.0 self.
+   The three steps are amber at 100% and red at 150%, and the TEXT says "over" /
+   "far over" at the same two points — colour is never the only cue on glass that
+   gets read from across a room and photographed in monochrome. */
+.budget-line {
+	display: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.budget-line.shown { display: block; }
+.budget-line.over { color: var(--amber); }
+.budget-line.far { color: var(--red); }
+
+/* Today's dollar spend (v0.12.0), the muted sibling of the budget line. Same
+   display:none-until-.shown discipline and the same reason: .today is a flex
+   column with a gap, so an empty-but-displayed line would still cost the zone
+   that gap, and a feed with no burn.costUSD must render byte-for-byte its
+   pre-v0.12.0 self. Faint, never coloured — it is a figure, not a warning. */
+.cost-line {
+	display: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.cost-line.shown { display: block; }
+
+/* The whole block is the 24h/7d toggle's hit target, so the fingertip does not
+   have to find the bars themselves. It clears the 48 px floor on its own at
+   every declared slot (bars + axis + labels), so no min-height is imposed. */
+.spark-wrap { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.6); }
+.spark-wrap.tappable { cursor: pointer; touch-action: manipulation; }
+.spark {
+	/* relative for the budget target marker only; the bars are still plain flex
+	   children and are unaffected by it. */
+	position: relative;
+	height: var(--spark-h);
+	display: flex;
+	align-items: flex-end;
+	gap: calc(var(--layout-unit) * 0.35);
+	border-bottom: 1px solid var(--surface-line);
+}
+/* The budget target (v0.10.0). Measured from the SAME bottom edge the bars grow
+   from, so its level is directly comparable to them. Dashed and muted on
+   purpose: it is a target, not a reading, and the state of the day is carried by
+   the budget line's words and colour below. It is never the panel's loudest
+   thing, and it must not be mistaken for a bar. */
+.spark-target {
+	display: none;
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(1% * var(--t, 0));
+	height: 0;
+	border-top: 1px dashed var(--muted);
+	opacity: 0.8;
+	pointer-events: none;
+}
+.spark-target.shown { display: block; }
+.spark-bar {
+	flex: 1 1 0;
+	min-width: 0;
+	height: max(3px, calc(1% * var(--h, 0)));
+	background: var(--accent);
+	opacity: 0.55;
+	border-radius: 1px;
+}
+.spark-bar.recent { opacity: 1; }
+.spark-axis {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: calc(var(--layout-unit) * 1);
+	font-size: var(--fs-meta);
+	font-family: var(--font-mono);
+	color: var(--faint);
+}
+.spark-axis-left {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 0.8);
+	min-width: 0;
+	overflow: hidden;
+}
+#sparkLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Which window the bars are showing. It is a control's state, not a label, so
+   it carries the accent even when the toggle is unavailable — where it goes
+   muted instead, which is the only cue that a tap will do nothing. */
+.spark-mode {
+	flex: 0 0 auto;
+	padding: calc(var(--layout-unit) * 0.25) calc(var(--layout-unit) * 0.7);
+	border: 1px solid var(--accent);
+	border-radius: calc(var(--layout-unit) * 0.5);
+	color: var(--accent);
+	line-height: 1;
+	letter-spacing: 0.06em;
+}
+.spark-mode.disabled { border-color: var(--surface-line); color: var(--faint); }
+
+/* Weekday letters, one per 7-day bucket. Same flex geometry and gap as the bar
+   row so every letter lands under its own bar without a grid or a measurement. */
+.spark-labels {
+	display: none;
+	gap: calc(var(--layout-unit) * 0.35);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	line-height: 1;
+}
+.spark-labels.shown { display: flex; }
+.spark-labels span { flex: 1 1 0; min-width: 0; text-align: center; }
+
+/* ---------- the two-extras collapse (v0.26.0, AUD-F2) ---------- */
+
+/* WHAT IS BEING PAID FOR. The contract has always allowed two limits.extra
+   windows (extras.slice(0, 2)) and no fixture carried two until ?mock=extras.
+   Measured at HEAD on that fixture: the second window costs 98.61 px, the
+   sensors row lands 99.45 px past the zone's content box at 2560x720 (98.20 at
+   2536x696) and body{overflow:hidden} eats it silently — the v0.17.0 failure,
+   which that wave halved and could not close. 93.03 px is what has to come out of
+   this zone at 2560x720 (91.99 at 2536x696), and gap tuning cannot find it.
+
+   WHAT IT DROPS, and why those. The stat row goes to ONE line carrying the two
+   figures F4 kept at stat size — OUT (what the day cost) and MSGS (how much was
+   asked) — and the sparkline goes. Measured saving: 20.00 px for the row and
+   84.78 for the sparkline and its gap, 104.78 against 93.03. BOTH are needed:
+   the sparkline alone misses by 8.25 px and the stat row alone by 73.03. The
+   TODAY label, the budget line and the cost line stay — they are the two lines
+   that say the day is over budget and what it cost, for 24.48 px between them.
+   Nothing else on the panel carries IN, CACHE RD or the 24 h series (the burn
+   sheet is per-session output, byModel and commits), so this is a real loss and
+   not a re-route — the same trade the 840x696 layout has made since v0.25.0.
+
+   PRESENCE-DRIVEN, NEVER SLOT-DRIVEN: renderLimits toggles body.limits-two-extras
+   off the served document, so a panel that never sees two windows renders
+   byte-identically to v0.25.0 at every slot (proven by fingerprint, 65 captures).
+   Above the responsive section on purpose — the narrow layouts hide .today
+   outright, so there is nothing here for them to contradict. */
+body.limits-two-extras .stat.meta { display: none; }
+body.limits-two-extras .today-grid {
+	/* auto columns, not 4 x 1fr: two of the four cells are gone and stretched
+	   thirds would put "1.6k msgs" in the middle of the zone. */
+	grid-template-columns: repeat(2, auto);
+	justify-content: start;
+	/* the gap BETWEEN the pairs has to beat the gap INSIDE one, or "642k out 1.6k
+	   msgs" reads as one run of four things — the v0.17.0 fleet-dot lesson.
+	   24.48 px against 5.76 at 2560x720. */
+	gap: calc(var(--layout-unit) * 3.4);
+}
+body.limits-two-extras .stat {
+	flex-direction: row;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 0.8);
+}
+body.limits-two-extras .spark-wrap { display: none; }
+
+/* ---------- hardware sensors row (iCUE Sensors plugin) ---------- */
+
+/* display:none until JS has a real reading in hand. Nothing about the layout
+   reserves space for it, so a machine with no sensors is not paying a gap. */
+.sensors {
+	display: none;
+	flex: 0 0 auto;
+	/* For the drill-in chevron below, which is absolutely positioned. Nothing else
+	   in this row is positioned, so this changes no existing measurement. */
+	position: relative;
+	/* v0.17.0: the separator still has to read as a separator, so these came down
+	   together rather than to zero — 1.4/1.2 to 0.9/0.9 vmin. */
+	margin-top: calc(var(--layout-unit) * 0.9);
+	padding-top: calc(var(--layout-unit) * 0.9);
+	border-top: 1px solid var(--surface-line);
+	/* 3 -> 2.2 vmin at v0.21.0 (21.6 -> 15.8 px here), and it is bought to pay for
+	   the name cap rather than trimmed for looks: 11.5 px across the two gaps is
+	   what takes .sensor-n from a cap that clipped "CPU Package" at 87.0 px to one
+	   that holds it. The v0.17.0 rule still holds with room — the gap BETWEEN
+	   cells is 15.8 px against 5.8 px inside one, so a cell still reads as a cell
+	   and not as a run of four things. */
+	gap: calc(var(--layout-unit) * 2.2);
+}
+.sensors.shown { display: flex; }
+.sensor { display: none; align-items: baseline; gap: calc(var(--layout-unit) * 0.8); min-width: 0; }
+/* NO CELL SHRINKS, and the name is capped instead (.sensor-n max-width). Both
+   halves of that were arrived at by measuring the alternatives fail:
+   - cells shrinking with min-width: 0 (what this rule carried from v0.3.0, when
+     every child was unshrinkable and it could never bite) spreads the shrink
+     across ALL cells, including MEM, whose key and value cannot give — measured
+     at 2560x720 with two long names: MEM 74.2 px wide holding 83.7 px, its value
+     hanging 9.4 px past the zone edge.
+   - cells shrinking with min-width: auto does not shrink them at all, because
+     Chromium's min-content contribution for the name is its text width and not
+     the 0 its own min-width allows. Measured: 65.4 px past the zone, worse.
+   Capping the name is what makes the row's worst case a NUMBER rather than a
+   hope: every other part of every cell is fixed text, so the widest row this can
+   ever paint is the fixed parts plus two capped names. Measured with both names
+   at the cap in the widest glyphs the font has: 543.1 px of 561.9, 18.8 px spare,
+   at 2560x720 and again at 2536x696. With the names at their ordinary length the
+   row leaves 61.3 px. */
+.sensor.shown { display: flex; flex: 0 0 auto; }
+.sensor-k {
+	font-size: var(--fs-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	flex: 0 0 auto;
+	color: var(--faint);
+}
+.sensor-v {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sensor);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	flex: 0 0 auto;
+	color: var(--sensor-color, var(--text-color));
+}
+
+/* THE SENSOR NAME (v0.21.0). iCUE's own label for the sensor the operator picked,
+   beside the number it produced. It exists because the two failures look
+   identical from the far side of a desk: a bridge that has stopped answering and
+   a CPU cell pointed at a hub temperature that genuinely never moves. The
+   staleness cue (below) answers the first; only the name answers the second.
+   Small and --faint on purpose — it is an annotation on the reading, never a
+   second reading. It is also the ONE thing in this row allowed to shrink:
+   ellipsis plus flex 0 1 auto means a long name costs the row nothing, because
+   the row has no vertical slack to wrap into (see .zone-limits). JS shortens it
+   first (shortSensorName); this is the floor under a name JS did not expect. */
+.sensor-n {
+	display: none;
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+	flex: 0 1 auto;
+	/* 13.5 vmin = 97.2 px at 2560x720, and both the mechanism and the number are
+	   measured. The mechanism: this cap is the row's overflow guarantee, because
+	   with it the widest row that can ever paint is the fixed parts plus 2 x this.
+	   The number: it was 12 vmin (86.4 px) for one round of shots, and the shots
+	   are how that was caught — "CPU Package", the single most likely name on the
+	   panel, needs 87.0 px and came out "CPU Packa...". A label ellipsed at its
+	   most ordinary value is a label nobody trusts. 97.2 also holds "GPU Hot Spot"
+	   (93.1) and "CPU Core Max" (96.1). In vmin so the guarantee travels to the
+	   2536x696 slot. shortSensorName clamps first; this is the floor under a name
+	   it did not catch. */
+	max-width: calc(var(--layout-unit) * 13.5);
+}
+/* block, not inline: text-overflow needs a block container to clip against. */
+.sensor-n.shown { display: block; }
+
+/* The host figures from the companion's feed (v0.21.0) — CPU utilization beside
+   the CPU temperature, memory as its own cell. Mono and tabular like a
+   temperature because they are the same kind of fact, --muted rather than
+   --text-color because the temperatures are what this row was built for.
+   No threshold colour: a machine at 100% CPU is a machine doing its job, and the
+   panel already has a place that says the work is heavy. */
+.sensor-x {
+	display: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sensor);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	flex: 0 0 auto;
+	color: var(--muted);
+}
+.sensor-x.shown { display: block; }
+
+/* Two absences that are worth saying out loud, both in the SAME treatment the
+   staleness cue uses (opacity 0.38 on the body text colour), because all three
+   say the same kind of thing: there is no live reading in this spot.
+   .sensor-w — both temperature properties hold ONE sensor id. Rendering that
+   sensor twice would be misinformation, so the second cell says why it is empty.
+   .sensor-hint — the plugin is here and neither property has been set, which is
+   what every fresh import looks like. Silence there reads as "this machine has
+   no sensors"; it is actually "nobody has picked one yet". */
+.sensor-w,
+.sensor-hint {
+	display: none;
+	font-size: var(--fs-meta);
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+	color: var(--text-color);
+	opacity: 0.38;
+}
+.sensor-w.shown,
+.sensor-hint.shown { display: block; }
+/* A cell reduced to its warning keeps its key and drops the number it cannot
+   honestly show — the value element is emptied by JS as well, and this is the
+   layout half so a stale reading cannot sit beside "same sensor". */
+.sensor.warn .sensor-v,
+.sensor.warn .sensor-n { display: none; }
+/* THE STALENESS CUE (v0.18.0). Every read of this sensor has FAILED for a
+   minute, and the number beside the label is the last one that did arrive. A
+   frozen-looking number must not read as live data, so it is dimmed — and the
+   dimming is opacity rather than a colour, on purpose: the value's colour is
+   already carrying the 80/90 threshold, and a stale reading that had been red
+   must go on being red while it fades, or the cue for "hot" and the cue for
+   "old" would be fighting over one property.
+   Keyed on READ FAILURES and never on the value not changing: a machine idling
+   at one temperature for an hour is healthy, and dimming that would be the panel
+   crying wolf at the truth. */
+.sensor-v.stale { opacity: 0.38; }
+
+/* THE DRILL-IN AFFORDANCE (v0.22.0). The row opens the host history sheet, and a
+   row that silently opens a sheet is a gesture nobody discovers — the rule the two
+   zone headers and the three gauges already keep, with the same chevron.
+
+   ABSOLUTELY POSITIONED, and that is a width measurement rather than a style. This
+   row's overflow guarantee is a NUMBER: the widest it can ever paint is the fixed
+   parts plus two capped names, measured at v0.21.0 as 543.1 px of 561.9, leaving
+   18.8 px. A chevron added as a flex child costs its own glyph AND one 15.8 px
+   inter-cell gap — 23.8 px against 18.8 px spare, which overflows the zone in the
+   worst case. Out of flow it costs the row nothing at all and sits in that 18.8 px
+   of clear right-hand column (61.3 px with names at their ordinary length).
+   Shown only when the row is actually tappable, so a panel with no host figures
+   offers nothing: openHostSheet turns that tap away anyway, and a chevron over an
+   inert control is the panel promising something it will not do (v0.19.0's rule
+   for the gauges, one row down). */
+.sensors.tappable { cursor: pointer; touch-action: manipulation; }
+/* THE HIT AREA, GROWN WITHOUT GROWING THE ROW (v0.26.0, AUD-F3). A tappable
+   sensors row paints 31.47 px at 2560x720 against a --touch-min of 60.48 — the
+   one control on this panel under the fingertip floor, at 2560x720, 2536x696 and
+   840x696 alike.
+
+   THE ROW CANNOT GROW, and that is a number rather than a preference: the Limits
+   zone's whole slack budget is .today's auto margin, measured at 20.04 px on
+   ?mock=rework at the authored slot, and 29.01 px is what min-height would cost —
+   an 8.97 px overflow of the zone that v0.17.0 spent 77 px closing. (16.71 px of
+   slack against 27.21 at 2536x696: the same answer, 10.50 px short.) At 840x696
+   there IS room — 125.34 px clear — but one mechanism at every slot beats a row
+   whose height depends on which glass it is on. F4 frees nothing here on purpose:
+   the demotion keeps the row's height (see .today-grid).
+
+   So the TARGET grows and the row does not: an out-of-flow box of exactly
+   --touch-min, centred on the row, costing the flex column zero. Measured by
+   HIT TEST rather than by box arithmetic (elementFromPoint down the row's own
+   column): 60.47 px of reachable band at 2560x720, 58.45 at 2536x696 and 840x696.
+   It reaches nothing else — 5.39 px of clear air above it to .today, whose
+   sparkline is itself a tap target (5.47 at 2536x696; 124.56 at 840x696), and it
+   ends inside the zone's own bottom padding, 7.53 px clear of the panel edge
+   (7.56 at both 696-tall slots). Pseudo-elements are not event targets, so the row stays
+   the click's target and onSensorsClick is untouched. Not on a non-tappable row:
+   a hit area over a control that turns the tap away is the promise v0.22.0's
+   chevron rule exists to refuse. */
+.sensors.tappable::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 50%;
+	height: var(--touch-min);
+	transform: translateY(-50%);
+}
+.sensor-more {
+	display: none;
+	position: absolute;
+	right: 0;
+	top: 50%;
+	transform: translateY(-50%);
+	font-size: var(--fs-meta);
+	line-height: 1;
+	color: var(--faint);
+}
+.sensors.tappable .sensor-more { display: block; }
+.sensor-more::after { content: "\203A"; }
+
+/* ---------- session grid (§4.3) ---------- */
+
+/* v0.5.0: the header line is the Today-timeline button, so it takes the same
+   fingertip floor the Limits header carries. align-items moves from baseline to
+   center because the line now has a declared height rather than being as tall as
+   its tallest glyph. The count keeps its right edge via margin-left, NOT via
+   space-between, which would have parked the new hint in the middle of the line. */
+.grid-head {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.5);
+	flex: 0 0 auto;
+	min-width: 0;
+	min-height: var(--touch-min);
+}
+.grid-head.tappable { cursor: pointer; touch-action: manipulation; }
+.grid-head .zone-label { flex: 0 0 auto; }
+.grid-head-hint {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	letter-spacing: 0.06em;
+	white-space: nowrap;
+}
+.grid-head-hint::after { content: "\00A0\203A"; }
+.grid-head .session-count { margin-left: auto; }
+/* Carries either the session count or the v4 recap line. It ellipsizes rather
+   than wraps: a two-line header would shorten every card in the grid below it. */
+.session-count {
+	flex: 0 1 auto;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* The waiting fragment of the recap line. Amber, not the faint the rest of the
+   header carries: it is the same signal as the needs_input spine, the glow and
+   the ACKED badge, and muting it would make the day summary outrank the thing
+   that actually wants a human. */
+.session-waiting { color: var(--amber); }
+
+/* The two header chips (v0.15.0): the session filter and the density toggle.
+   Sized from --touch-min on BOTH axes, which is the whole reason they are chips
+   and not the two-word text links they look like: this glass is driven by a
+   fingertip and the header already carries a tap target of its own, so a chip
+   that was only as big as its label would be a 30 px miss next to a 60 px hit.
+   The header's own min-height is the same token, so adding them does not make
+   the line any taller than it already was.
+   Flat until pressed. The panel runs 24/7 and a pair of permanently outlined
+   controls in the corner of the sessions zone would read as an alert state from
+   across the room, which is the one visual language this widget reserves. */
+.head-chip {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	min-width: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 1.6);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	color: var(--muted);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-appearance: none;
+	appearance: none;
+}
+.head-chip:active { background: rgba(237, 231, 223, 0.16); }
+/* A filter that is HIDING something says so in the chip as well as in the count
+   beside it: the accent border is the second half of "showing 3 of 10", and it
+   is the half that survives a photograph taken from the doorway. "All" hides
+   nothing and stays flat. */
+.head-chip[data-filter="all"] { color: var(--faint); }
+.head-chip[data-filter="waiting"],
+.head-chip[data-filter="working"],
+.head-chip[data-filter="quiet"] {
+	border-color: var(--accent);
+	color: var(--text-color);
+}
+.head-chip[data-density="comfortable"] { color: var(--faint); }
+.head-chip[data-density="compact"] { color: var(--text-color); }
+
+/* The History chip (v0.19.0). Hidden until JS says the feed is live — a control
+   that could only ever report its own absence is worse than no control — so it is
+   display:none by default and the standalone panel is exactly its pre-0.19.0
+   self. The shown value is spelled out rather than left to the UA: a button's own
+   default is inline-block, and centring the label needs the flex box the other two
+   chips get from the header's layout anyway.
+   data-history="off" is the last tap's failure, said in the chip. Muted rather
+   than amber on purpose: an unreadable history file is a thing to notice, not an
+   alert, and amber on this panel means a session wants a human. The WORD is the
+   signal ("No history"), which is what survives a photograph and what a person
+   reading this glass at a glance actually parses. */
+.head-chip[data-history] { display: none; }
+.head-chip[data-history].shown { display: inline-flex; align-items: center; justify-content: center; }
+.head-chip[data-history=""] { color: var(--faint); }
+.head-chip[data-history="off"] { color: var(--muted); border-style: dashed; }
+
+.cards {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	grid-template-rows: repeat(2, minmax(0, 1fr));
+	gap: var(--space-gap);
+	align-content: stretch;
+}
+.grid-empty {
+	display: none;
+	flex: 1 1 auto;
+	align-items: center;
+	justify-content: center;
+	color: var(--faint);
+	font-size: var(--fs-card-title);
+	/* The standalone line is a sentence, not a label: it has to be allowed to wrap
+	   at the narrow slots and to stay centred when it does. The other two strings
+	   this element carries are short and are unaffected. */
+	text-align: center;
+	padding: 0 var(--space-pad);
+}
+body.empty .cards { display: none; }
+body.empty .grid-empty { display: flex; }
+
+.card {
+	min-width: 0;
+	min-height: 0;
+	/* For the context hairline (v0.22.0) and nothing else. No other descendant of a
+	   card is positioned, so this changes no existing rendering — it only gives the
+	   bar a containing block, which is what keeps it OUT of the card's flex column
+	   and therefore out of the shrink discipline the rest of this block is about. */
+	position: relative;
+	overflow: hidden;
+	background: var(--surface);
+	border: 1px solid var(--surface-line);
+	border-left: calc(var(--layout-unit) * 0.8) solid var(--state-color, var(--faint));
+	border-radius: var(--radius-card);
+	padding: calc(var(--layout-unit) * 1.6) calc(var(--layout-unit) * 2);
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	gap: calc(var(--layout-unit) * 0.8);
+}
+.card[data-state="working"]     { --state-color: var(--accent); }
+.card[data-state="needs_input"] { --state-color: var(--amber); }
+.card[data-state="done"]        { --state-color: var(--green); opacity: 0.55; }
+.card[data-state="idle"]        { --state-color: var(--faint); opacity: 0.75; }
+
+/* The waiting card pulses. Same rule as the glow: it only exists while someone
+   is actually waiting, so idle CPU stays at zero. */
+.card.pulse { animation: cardPulse 1.8s ease-in-out infinite; }
+@keyframes cardPulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(232, 163, 61, 0.0); border-color: var(--surface-line); }
+	50%      { box-shadow: 0 0 calc(var(--layout-unit) * 2.4) 0 rgba(232, 163, 61, 0.45); border-color: var(--amber); }
+}
+/* Escalation is per-CARD, from that card's own stateSince — one session waiting
+   16 minutes must not make a question asked 20 seconds ago shout too. Wider
+   halo and a shorter cycle, never a colour change: the card stays amber and its
+   ESCALATED text badge is what says why it got louder. */
+.card.esc1.pulse { animation: cardPulseEsc1 1.4s ease-in-out infinite; }
+@keyframes cardPulseEsc1 {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(232, 163, 61, 0.0); border-color: var(--surface-line); }
+	50%      { box-shadow: 0 0 calc(var(--layout-unit) * 3.6) 0 rgba(232, 163, 61, 0.68); border-color: var(--amber); }
+}
+.card.esc2.pulse { animation: cardPulseEsc2 1.1s ease-in-out infinite; }
+@keyframes cardPulseEsc2 {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(212, 85, 63, 0.0); border-color: var(--amber); }
+	50%      { box-shadow: 0 0 calc(var(--layout-unit) * 4.6) 0 rgba(212, 85, 63, 0.72); border-color: #FF8D59; }
+}
+/* One colour per tier: this is the same #E0703C -> #FF8D59 lift the esc2 glow line
+   took (see the AUD-F1 note there). Kept in lockstep deliberately — a card border
+   and a panel edge that disagreed about what tier 2 looks like is the drift that
+   makes two cues read as three states. */
+.badge-esc { border-color: #FF8D59; color: #FF8D59; letter-spacing: 0.1em; }
+
+/* Approval card (v0.12.0). A needs_input session carrying a live pendingPermission
+   is the panel's loudest card: its spine and dot go red (a permission gate is
+   past amber), and its pulse is faster and wider than esc2's. Placed AFTER the
+   esc pulses at equal specificity so it wins for a card that is both aged and
+   awaiting a decision. */
+.card.approval { --state-color: var(--red); }
+.card.approval.pulse { animation: cardPulseApproval 1.0s ease-in-out infinite; }
+@keyframes cardPulseApproval {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(212, 85, 63, 0.0); border-color: var(--amber); }
+	50%      { box-shadow: 0 0 calc(var(--layout-unit) * 5.2) 0 rgba(212, 85, 63, 0.85); border-color: var(--red); }
+}
+
+/* Shrink discipline (fixed 2026-08-26, on-glass): a card whose content is
+   taller than its grid cell used to let flex squeeze the TITLE below its line
+   height, so the card's overflow:hidden sliced the title in half. Everything
+   that identifies the session is flex:0 0 auto; the question is the only region
+   allowed to give up space, and it loses whole lines from the bottom. */
+.card-top { display: flex; align-items: center; gap: calc(var(--layout-unit) * 1); min-width: 0; flex: 0 0 auto; }
+.dot {
+	flex: 0 0 auto;
+	width: calc(var(--layout-unit) * 1.2);
+	height: calc(var(--layout-unit) * 1.2);
+	border-radius: 50%;
+	background: var(--state-color, var(--faint));
+}
+/* The writing tick (v0.11.0): two frames on the state dot, one second apart, on a
+   working card whose last activity is fresh. It is the ONLY thing on the panel
+   that says "this session is thinking, not hung", and it is deliberately a
+   two-frame toggle driven by the existing 1 Hz tick rather than a CSS animation:
+   a card that stops being fresh stops toggling, so an idle grid costs nothing,
+   and there is no perpetual animation on a 24/7 panel. Transform only — the dot
+   is a circle in a flex row, and anything that changed its box would nudge the
+   state word beside it once a second.
+   The hint text below is the other half: colour and motion never carry this
+   alone. */
+.card.writing.w2 .dot { transform: scale(0.62); }
+body.quiet .card.writing.w2 .dot { transform: none; }
+/* "quiet 3m" beside the turn chip: a working card that has not touched anything
+   for 90 s. Muted and worded, never a colour — the difference between a session
+   thinking and a session hung is the reason anyone walks over to the desk, and
+   half this panel's defects arrive as a photograph. The element is built with
+   every working card and left EMPTY until the age crosses, so the 1 Hz tick
+   writes text into a node that already exists. */
+.card-hint {
+	/* Never the thing that gives way. The turn chip beside it is shrinkable and
+	   ellipsises, and it is the row's least-load-bearing part once a card has gone
+	   quiet — the state word already says WORKING and the sheet carries the turn
+	   whole. */
+	flex: 0 0 auto;
+	margin-left: calc(var(--layout-unit) * 0.6);
+	font-family: var(--font-mono);
+	/* A step below the card meta scale: this annotates the row, it is not one of
+	   its figures. It is also part of how the row fits — see the measurement in
+	   tickAges, which is where the turn chip's verb is dropped for the same
+	   reason, and the age below is hidden for a different one. */
+	font-size: var(--fs-sub-row);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.card-hint:empty { display: none; }
+/* The hint IS the age. Both are now minus lastActivityAt, so a hung card that
+   showed both would print one figure twice and spend a quarter of the row doing
+   it; the hint is the one that carries the word. The moment the card is fresh
+   again the hint empties, this class comes off and the bare figure is back. */
+.card.hung .card-age { display: none; }
+
+/* State is spelled out as well as coloured — never colour alone. */
+.card-state {
+	font-size: var(--fs-card-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--state-color, var(--faint));
+	white-space: nowrap;
+}
+/* Turn duration vs. last activity: deliberately NOT the same object. The turn
+   chip is a pill carrying its own verb ("working 14m") and sits next to the
+   state; the last-activity age stays a bare right-aligned figure.
+   THE PLATE IS NEUTRAL, THE INK IS THE ACCENT (v0.26.0, AUD-F1). It used to be
+   filled with rgba(204, 120, 92, 0.14) — a WARM WASH on a card, which is the one
+   idiom this panel reserves for the alert flash, and it sat inches from the amber
+   spine of a waiting card. Two further reasons the literal had to go: it was a
+   hardcoded copy of the pre-AUD-F1 accent, so it went stale the moment the token
+   moved, and it never tracked the iCUE accentColor override at all — a user who
+   picked a green accent got a green chip on an orange plate. The neutral wash is
+   the same rgba(237, 231, 223, ...) the sheet buttons use. */
+.card-turn {
+	min-width: 0;
+	margin-left: calc(var(--layout-unit) * 0.6);
+	padding: calc(var(--layout-unit) * 0.45) calc(var(--layout-unit) * 0.8);
+	border-radius: calc(var(--layout-unit) * 0.5);
+	background: rgba(237, 231, 223, 0.07);
+	color: var(--accent);
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* The pin marker (v0.8.0). Drawn rather than typed: a pushpin emoji is a font
+   the Edge may not have, and a coloured dot would be colour alone — this is a
+   SHAPE (round head, straight needle) that survives a monochrome photo of the
+   glass, which is how half of this panel's defects have been reported.
+   currentColor throughout, so the accent recolours the glyph without a second
+   rule ever knowing about it. */
+.card-pin {
+	position: relative;
+	flex: 0 0 auto;
+	width: calc(var(--layout-unit) * 1.4);
+	height: calc(var(--layout-unit) * 2);
+	color: var(--accent);
+}
+.card-pin::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: calc(var(--layout-unit) * 1.4);
+	height: calc(var(--layout-unit) * 1.2);
+	border-radius: 50% 50% 45% 45%;
+	background: currentColor;
+}
+.card-pin::after {
+	content: "";
+	position: absolute;
+	left: calc(var(--layout-unit) * 0.55);
+	top: calc(var(--layout-unit) * 1.1);
+	width: calc(var(--layout-unit) * 0.3);
+	height: calc(var(--layout-unit) * 0.9);
+	background: currentColor;
+}
+.card-age {
+	margin-left: auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.card-title {
+	margin: 0;
+	flex: 0 0 auto;
+	font-size: var(--fs-card-title);
+	font-weight: 600;
+	line-height: 1.15;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* A DERIVED title (v0.11.0) — crabd's own cwd fallback (titleSource "cwd"), or
+   the widget's repo-name fallback when a session carries no title at all. Muted
+   italic: still perfectly readable, but visibly not the sentence someone wrote,
+   so a grid of folder names does not read as a grid of badly named work. One
+   class for both because they are one fact — nobody titled this session — and
+   which side derived it is not something the glass can usefully say. */
+.card-title.title-derived,
+.sheet-title.title-derived {
+	font-style: italic;
+	color: var(--muted);
+}
+
+.card-repo {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.card-bottom {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.8);
+	min-width: 0;
+	min-height: 0;
+	flex: 0 1 auto;
+}
+.card-event {
+	flex: 0 1 auto;
+	min-height: 0;
+	font-size: var(--fs-card-meta);
+	color: var(--muted);
+	line-height: 1.25;
+	max-height: calc(var(--fs-card-meta) * 2.5);
+	overflow: hidden;
+}
+/* The question the session is stuck on. -webkit-line-clamp is the only
+   multi-line ellipsis QtWebEngine 6.9.3 has; max-height is the fallback cap so
+   a build without it clips at the same four lines instead of blowing the cell. */
+.card-question {
+	flex: 0 1 auto;
+	min-height: 0;
+	font-size: var(--fs-card-question);
+	line-height: 1.28;
+	color: var(--text-color);
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 4;
+	overflow: hidden;
+	max-height: calc(var(--fs-card-question) * 1.28 * 4);
+}
+
+/* The approval body (v0.12.0), rendered in place of the question on a
+   pendingPermission card. The TOOL is the prominent line — that is the thing a
+   grant is about — with a small label above it and the summary clamped below,
+   so a long summary loses lines from the bottom instead of pushing the badges
+   out of the cell (the same shrink discipline as .card-question). */
+/* SHRINK DISCIPLINE (fixed 2026-08-26, v0.15.0 — D15). This block was
+   flex: 0 1 auto with a flex: 0 1 auto summary inside it, which is the
+   .card-question bug one element over: a -webkit-line-clamp only ellipsises the
+   line it is ALLOWED TO FINISH, so a box squeezed below a whole number of line
+   boxes ends its last line mid-glyph and overflow: hidden eats the descenders.
+   Measured before the fix, headless Edge, comfortable density at 2560x720 on the
+   fixture with the long summary: the summary rendered 1.755 line boxes of a
+   2-line clamp (33.95 px against a 19.35 px line height) with the countdown
+   2.16 px under it, and at 840x344 in compact this block itself was squeezed 4 px
+   so the countdown line was painted BELOW its own clipping box.
+   Now every child has a definite height and neither this block nor the summary
+   may shrink; what gives instead is the subagent list, per Rule 6 — see below. */
+.card-approval {
+	flex: 0 0 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.3);
+	overflow: hidden;
+}
+/* Rule 6 on an approval card: the subagent rows go, and they go rather than
+   shrink. The "N sub" badge still says they exist and the sheet still lists them
+   whole, whereas a permission request that loses the bottom of its summary or
+   its countdown has lost the thing the card is for. This is the room the pinned
+   summary above is spending. */
+.card.approval .card-subs { display: none; }
+.card-approval-label {
+	flex: 0 0 auto;
+	font-size: var(--fs-card-meta);
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--red);
+}
+.card-approval-tool {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-question);
+	font-weight: 700;
+	color: var(--text-color);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* Pinned to exactly two line boxes and refusing to shrink, which makes the clamp
+   the only thing that ever ends this block — so it ends with an ellipsis or not
+   at all. max-height is cleared so the two rules cannot disagree. The identical
+   treatment .card-question got at the small slot; the number here has to move
+   with the -webkit-line-clamp above it, always. */
+.card-approval-summary {
+	flex: 0 0 auto;
+	min-height: 0;
+	font-size: var(--fs-card-meta);
+	line-height: 1.25;
+	color: var(--muted);
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	height: calc(var(--fs-card-meta) * 1.25 * 2);
+	max-height: none;
+}
+
+/* The approval hold countdown (v0.15.0), filled by the 1 Hz tick. Muted while
+   it is counting: the card is already the loudest thing on the panel and a
+   second red line on it would be shouting twice. At zero the WORDS change
+   ("expired — decide in terminal") and the colour follows them, never the other
+   way round — this panel is read from a photograph often enough that a state
+   carried only in a colour is a state nobody reads. */
+.card-approval-left {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	font-variant-numeric: tabular-nums;
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.card-approval-left:empty { display: none; }
+/* An expired hold stops pulsing. The request is still real and the card keeps
+   its red spine, but the panel has stopped claiming a tap here reaches it, and
+   a card that went on shouting for a decision it can no longer take is the
+   exact noise that trains an operator to ignore the next one. */
+.card.approval-expired .card-approval-left { color: var(--red); }
+.card.approval.approval-expired.pulse { animation: none; border-color: var(--surface-line); }
+
+/* The queued next step (v0.15.0). Its own line under the body and above the
+   badges, not a badge: a badge would be the first thing to wrap when the card
+   gets tight, and this is the only line on a working or done card that says what
+   happens NEXT. Faint, because it is a fact about the future rather than a
+   signal about now — nothing here is waiting on a human. */
+.card-queued {
+	flex: 0 0 auto;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Subagent drill-down. The rows are the last thing to get space: the container
+   is allowed to shrink and clip, and JS caps the row count, so a card with five
+   subagents can never push the badges out of its grid cell. */
+.card-subs {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.3);
+	flex: 0 0 auto;
+	min-height: 0;
+	min-width: 0;
+	overflow: hidden;
+}
+.sub-row {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 0.8);
+	min-width: 0;
+	font-size: var(--fs-sub-row);
+	color: var(--muted);
+	line-height: 1.3;
+}
+.sub-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.sub-label::before { content: "\00B7\00A0"; color: var(--faint); }
+.sub-age {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+}
+.sub-row.sub-more { color: var(--faint); }
+.sub-row.sub-more .sub-label::before { content: ""; }
+
+.card-badges { display: flex; flex-wrap: wrap; gap: calc(var(--layout-unit) * 0.7); flex: 0 0 auto; }
+.badge {
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-meta);
+	line-height: 1;
+	padding: calc(var(--layout-unit) * 0.55) calc(var(--layout-unit) * 0.9);
+	border-radius: calc(var(--layout-unit) * 0.6);
+	border: 1px solid var(--surface-line);
+	color: var(--muted);
+	white-space: nowrap;
+}
+.badge-fast { border-color: var(--accent); color: var(--accent); letter-spacing: 0.1em; }
+/* The context-window figure (v0.6.0). Deliberately the quietest badge on the
+   card: it sits next to the model because it is a property OF the model's last
+   request, and it is a number to glance at, never a signal. */
+.badge-ctx { border-color: transparent; color: var(--faint); padding-left: 0; padding-right: 0; }
+.badge-sub { border-color: var(--surface-line); color: var(--text-color); }
+/* An acked card keeps its amber identity — the question is still unanswered —
+   and only loses the pulse. The badge is why it stopped pulsing, spelled out. */
+.badge-ack { border-color: var(--amber); color: var(--amber); letter-spacing: 0.1em; }
+
+/* ---------- the context hairline (v0.22.0) ---------- */
+
+/* How full this session's context window is, as a 2-3 px rule along the card's
+   BOTTOM edge. The bottom, because the LEFT edge is the state spine and has been
+   since v0.2.0 — two readings on one edge would be two things fighting over the
+   one cue the card is scanned by.
+
+   ABSOLUTELY POSITIONED, which is the point. The card is a flex column with a
+   carefully argued shrink order (see .card-question and .card-approval above), and
+   a new flex child would have joined that argument and cost every card a row of
+   its own height. Out of flow it costs zero, cannot push a badge out of a cell,
+   and cannot appear in the overflow probe as a zone offender.
+
+   It is drawn only when the window size is DERIVABLE — see ctxWindowTokens() in
+   sidecrab.js. There is deliberately no track drawn under it for a session that
+   has no bar: an empty rule along the bottom of a card would be the panel showing
+   a gauge for a quantity it cannot measure. */
+.card-ctx {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: max(2px, calc(var(--layout-unit) * 0.32));
+	background: rgba(237, 231, 223, 0.09);
+	pointer-events: none;
+}
+.card-ctx::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: calc(var(--w, 0) * 1%);
+	background: var(--ctx-color, var(--faint));
+}
+/* THE BASE IS --faint AND NOT THE GAUGES' BLUE, deliberately. The two STEPS are the
+   gauges' own constants (GAUGE_AMBER_PCT / GAUGE_RED_PCT, read straight out of
+   sidecrab.js so the card and the gauges can never disagree about where hot starts)
+   but the resting colour is not: blue is the usage gauges' identity on this panel,
+   and a blue bar along every card would read as a fourth gauge rather than as an
+   annotation on the card it sits under. Faint below the amber step is the same
+   choice the ctx BADGE makes two lines up, and for the same reason — this is a
+   number to glance at, never a signal. */
+
+.card.tappable { cursor: pointer; touch-action: manipulation; }
+
+/* ---------- swipe to dismiss (v0.14.0) ---------- */
+
+/* The class is what the STYLESHEET and the screenshot flag address; the handler
+   re-checks the live row instead, because a card's rendered state is one render
+   old and a dismissal must not be decided on it. The axis claim lives on .zones —
+   an earlier pan-y here released the vertical axis to the compositor, which is
+   fine for a swipe and is why the pull-down gesture had to be able to say
+   otherwise one level up. */
+.card.swipeable { cursor: pointer; }
+
+/* NO transition while the finger is down: the transform is written per move and
+   a transition on it would make the card lag the fingertip by its own duration,
+   which reads as a panel that is running behind. The transition is added for the
+   trip BACK (or off the edge) and removed again after it, so it exists only for
+   the moments nothing is driving the transform directly. */
+.card.swiping { transition: none; will-change: transform, opacity; }
+.card.swipe-settle {
+	transition: transform 180ms ease-out, opacity 180ms ease-out;
+}
+/* Past the dismiss threshold: the left edge picks up the state colour the card
+   would lose. A SHAPE change, not only a colour one, for the same reason the pin
+   marker is a drawn glyph — this panel is read from across a room. */
+.card.swipe-armed {
+	border-left-color: var(--red);
+	border-left-width: calc(var(--layout-unit) * 1.6);
+}
+
+/* ---------- the long-press pin confirm (v0.14.0) ---------- */
+
+/* The glyph arriving IS the confirmation, so the animation only has to make the
+   arrival legible — a fingertip held for 600 ms has already left the eye
+   somewhere other than the card's top corner. Both directions are scale plus
+   opacity on a mark that is a few pixels across; nothing moves in layout. */
+.card-pin.pin-confirm-on { animation: pinIn 260ms ease-out 1; }
+.card-pin.pin-confirm-off { animation: pinOut 260ms ease-in 1 forwards; }
+@keyframes pinIn {
+	0%   { opacity: 0; transform: scale(0.4); }
+	60%  { opacity: 1; transform: scale(1.25); }
+	100% { opacity: 1; transform: scale(1); }
+}
+@keyframes pinOut {
+	0%   { opacity: 1; transform: scale(1); }
+	100% { opacity: 0; transform: scale(0.4); }
+}
+/* Dev-only, set by &pinflash= in mock mode only. A NEGATIVE delay starts the
+   animation part-way through and the pause holds it there, so the frame in the
+   shot is one the animation genuinely produces — 140 of 260 ms, just past the
+   overshoot, which is the moment the arrival actually reads at. */
+body.pinflash-frozen .card-pin.pin-confirm-on,
+body.pinflash-frozen .card-pin.pin-confirm-off {
+	animation-delay: -140ms;
+	animation-play-state: paused;
+}
+
+.chip {
+	align-items: center;
+	justify-content: center;
+	border-left-color: var(--faint);
+	color: var(--faint);
+	font-family: var(--font-mono);
+	font-size: var(--fs-card-title);
+	background: transparent;
+	border-style: dashed;
+}
+
+/* ---------- touch action sheet (v0.2.0) ---------- */
+
+/* display:none, not opacity/visibility: a closed sheet must not sit over the
+   panel eating taps, and nothing about it should cost a composited layer while
+   it is shut. There is no open/close transition — this display runs 24/7. */
+.sheet { display: none; position: absolute; inset: 0; z-index: 60; }
+.sheet.open { display: block; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(8, 7, 6, 0.78); }
+
+.sheet-panel {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	width: min(62%, calc(var(--layout-unit) * 135));
+	/* 92%, up from v0.2.0's 88%: the events list added a fixed block below the
+	   buttons and the question was paying for all of it. */
+	max-height: 92%;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 2.2);
+	padding: calc(var(--layout-unit) * 3);
+	background: var(--surface);
+	border: 1px solid var(--surface-line);
+	/* v0.26.0 (AUD-F1): the BASE spine is chrome, not alert. It was var(--amber),
+	   which happened to render correctly only because every mode except "action"
+	   overrides it below — so the alert colour was the inherited default and a mode
+	   added without an override would have opened with an alert spine over a burn
+	   chart. Amber is now applied BY the action mode (the needs_input sheet), which
+	   is the only place it means anything. No pixel of any existing mode moves. */
+	border-left: calc(var(--layout-unit) * 0.9) solid var(--accent);
+	border-radius: var(--radius-card);
+	box-shadow: 0 0 calc(var(--layout-unit) * 6) rgba(0, 0, 0, 0.6);
+}
+
+.sheet-head { display: flex; align-items: flex-start; gap: calc(var(--layout-unit) * 2); flex: 0 0 auto; }
+.sheet-titles { flex: 1 1 auto; min-width: 0; }
+.sheet-title {
+	font-size: var(--fs-sheet-title);
+	font-weight: 600;
+	line-height: 1.15;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.sheet-repo {
+	margin-top: calc(var(--layout-unit) * 0.6);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.sheet-close {
+	flex: 0 0 auto;
+	width: var(--touch-min);
+	height: var(--touch-min);
+	padding: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--font-ui);
+	font-size: calc(var(--layout-unit) * 4.4);
+	line-height: 1;
+	color: var(--muted);
+	background: transparent;
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 1);
+	cursor: pointer;
+	touch-action: manipulation;
+}
+
+.sheet-question {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	font-size: var(--fs-sheet-question);
+	line-height: 1.32;
+	/* pre-line, unlike the card preview: the sheet shows the question WHOLE,
+	   and a multi-line prompt's own line breaks are part of the question. */
+	white-space: pre-line;
+	color: var(--text-color);
+}
+
+.sheet-status {
+	display: none;
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+}
+.sheet-status.shown { display: block; }
+.sheet-status.ok { color: var(--green); }
+.sheet-status.pending { color: var(--faint); }
+/* 501 is "not built yet", not a fault — muted, never red. */
+.sheet-status.note { color: var(--muted); }
+.sheet-status.err { color: var(--red); }
+
+/* ---------- sheet: detail mode + the events list (v0.3.0) ---------- */
+
+/* Mode switching is display only — both modes are one DOM, so opening a sheet
+   never builds a panel. detail is read-only: the close button is its only
+   control, which is why the whole actions row goes rather than being disabled. */
+.sheet[data-mode="detail"] .sheet-question,
+.sheet[data-mode="detail"] .sheet-status,
+.sheet[data-mode="detail"] .sheet-actions { display: none; }
+.sheet[data-mode="action"] .sheet-meta,
+.sheet[data-mode="action"] .sheet-subs { display: none; }
+/* The alert spine, stated where it is earned: JS sets data-mode="action" only for
+   s.state === 'needs_input', so this is the one sheet with a session waiting on a
+   human. Every other mode already names its own spine colour below. */
+.sheet[data-mode="action"] .sheet-panel { border-left-color: var(--amber); }
+/* In action mode the events list is small and fixed, and the QUESTION is the
+   only region allowed to give up space. Letting both shrink sliced the last
+   event row in half against the panel edge, which reads as a broken panel;
+   a question that is genuinely longer than the sheet scrolls, as it has since
+   v0.2.0. */
+.sheet[data-mode="action"] .sheet-events { flex: 0 0 auto; overflow: visible; }
+/* A detail sheet is not an alert: it borrows the state colour of the card that
+   opened it instead of the action sheet's amber spine. */
+.sheet[data-mode="detail"] .sheet-panel { border-left-color: var(--sheet-accent, var(--accent)); }
+
+/* ---------- sheet: burn by session + Dismiss (v0.4.0) ---------- */
+
+/* A third mode of the same panel. Everything session-scoped goes; the list is
+   the only content, and it is the one region allowed to scroll, because the
+   session count is the feed's business and not a number this view may cap. */
+.sheet-burn { display: none; }
+.sheet[data-mode="burn"] .sheet-burn {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 1);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="burn"] .sheet-question,
+.sheet[data-mode="burn"] .sheet-meta,
+.sheet[data-mode="burn"] .sheet-subs,
+.sheet[data-mode="burn"] .sheet-status,
+.sheet[data-mode="burn"] .sheet-actions,
+.sheet[data-mode="burn"] .sheet-detail-actions,
+.sheet[data-mode="burn"] .sheet-events { display: none; }
+.sheet[data-mode="burn"] .sheet-panel { border-left-color: var(--accent); }
+
+/* ---------- sheet: one window's forecast (v0.19.0) ---------- */
+
+/* It renders into the burn region rather than a region of its own: the content is
+   the same kind of thing — a short read-only list with notes under it — and a
+   second region would have needed a second copy of the hide list below, which is
+   the drift the day view was built to avoid. The mode is its own because the two
+   never share a screen, so nothing has to gate the same region two ways. */
+.sheet[data-mode="forecast"] .sheet-burn {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 1);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="forecast"] .sheet-question,
+.sheet[data-mode="forecast"] .sheet-timeline,
+.sheet[data-mode="forecast"] .sheet-week,
+.sheet[data-mode="forecast"] .sheet-day-foot,
+.sheet[data-mode="forecast"] .sheet-meta,
+.sheet[data-mode="forecast"] .sheet-subs,
+.sheet[data-mode="forecast"] .sheet-status,
+.sheet[data-mode="forecast"] .sheet-actions,
+.sheet[data-mode="forecast"] .sheet-detail-actions,
+.sheet[data-mode="forecast"] .sheet-events { display: none; }
+.sheet[data-mode="forecast"] .sheet-panel { border-left-color: var(--accent); }
+
+/* ---------- sheet: host history (v0.22.0) ---------- */
+
+/* The seventh mode, and the first with a REGION of its own since the timeline. The
+   forecast sheet borrowed the burn region because its content is the same kind of
+   thing — a short read-only list with notes under it. Two charts are not, and
+   drawing them into a column tuned for text rows would have meant gating that one
+   region three different ways. */
+.sheet-host { display: none; }
+.sheet[data-mode="host"] .sheet-host {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 1.6);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="host"] .sheet-question,
+.sheet[data-mode="host"] .sheet-burn,
+.sheet[data-mode="host"] .sheet-timeline,
+.sheet[data-mode="host"] .sheet-week,
+.sheet[data-mode="host"] .sheet-day-foot,
+.sheet[data-mode="host"] .sheet-meta,
+.sheet[data-mode="host"] .sheet-subs,
+.sheet[data-mode="host"] .sheet-status,
+.sheet[data-mode="host"] .sheet-actions,
+.sheet[data-mode="host"] .sheet-detail-actions,
+.sheet[data-mode="host"] .sheet-pin-actions,
+.sheet[data-mode="host"] .sheet-events { display: none; }
+.sheet[data-mode="host"] .sheet-panel { border-left-color: var(--accent); }
+
+.hs-chart { flex: 0 0 auto; display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.7); }
+.hs-head { display: flex; align-items: baseline; gap: calc(var(--layout-unit) * 1.4); min-width: 0; }
+.hs-name {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.hs-now {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-burn-row);
+	font-variant-numeric: tabular-nums;
+	color: var(--text-color);
+}
+/* The range this chart's own line is drawn against, said out loud beside it: a
+   sparkline whose peak is not stated is a shape with no scale, and this one is
+   deliberately drawn against a FIXED 0..100% rather than against its own peak, so
+   a machine that idled all ten minutes reads as a flat line near the floor instead
+   of as a dramatic mountain range of 2% noise. */
+.hs-range { flex: 1 1 auto; min-width: 0; text-align: right; font-family: var(--font-mono); font-size: var(--fs-sheet-meta); color: var(--faint); white-space: nowrap; }
+.hs-plot {
+	width: 100%;
+	height: calc(var(--layout-unit) * 9);
+	display: block;
+	background: rgba(237, 231, 223, 0.04);
+	border-radius: calc(var(--layout-unit) * 0.4);
+}
+.hs-grid { stroke: rgba(237, 231, 223, 0.10); stroke-width: 1; vector-effect: non-scaling-stroke; }
+/* non-scaling-stroke throughout: the plot is stretched to the panel width with
+   preserveAspectRatio="none", so without it the horizontal and vertical stroke
+   widths would differ by the aspect ratio and the line would render as a wedge. */
+.hs-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.hs-dot { fill: var(--accent); }
+.hs-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: var(--fs-sheet-meta); color: var(--faint); }
+/* "collecting…" and the temperature line. Same treatment as the burn sheet's notes,
+   because they are the same kind of thing: a statement about the view rather than a
+   row in it. */
+.hs-note {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--faint);
+	line-height: 1.35;
+}
+.hs-temps {
+	flex: 0 0 auto;
+	margin-top: calc(var(--layout-unit) * 0.4);
+	padding-top: calc(var(--layout-unit) * 1.2);
+	border-top: 1px solid var(--surface-line);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--muted);
+	line-height: 1.5;
+}
+
+/* Key on the left, value on the right, the value in the panel's reading colour
+   because the value is what was tapped for. The key column is FIXED rather than
+   auto: four rows whose labels each start at a different x read as four unrelated
+   lines, and "no forecast" must line up under a clock time it is standing in for. */
+.fc-row {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 1.4);
+	min-width: 0;
+	flex: 0 0 auto;
+	font-size: var(--fs-burn-row);
+}
+.fc-key {
+	/* 18 units, MEASURED, not rounded: the widest label is "utilization" and at
+	   840x344 it needs 56.2 px. At 16 units the basis was 55.03 there, so min-content
+	   won and that ONE row's column came out 1.2 px wider than the other three —
+	   which is the misalignment a fixed column exists to prevent, arriving through
+	   the basis being a floor rather than a width. 18 units is 61.9 px at the small
+	   slot, so the label fits and the basis is what decides. Re-measure against
+	   "utilization" if a longer key is ever added. */
+	flex: 0 0 calc(var(--layout-unit) * 18);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.06em;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.fc-val {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--text-color);
+}
+
+.burn-row {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 1.4);
+	min-width: 0;
+	font-size: var(--fs-burn-row);
+	flex: 0 0 auto;
+}
+.burn-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.burn-model { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-sheet-meta); color: var(--faint); }
+.burn-tokens {
+	flex: 0 0 auto;
+	width: calc(var(--layout-unit) * 11);
+	text-align: right;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--accent);
+}
+/* The day total and the commits list are notes, not rows: they are a different
+   number from the list above and must not read as its last line. */
+.burn-note {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--faint);
+	line-height: 1.35;
+}
+.burn-row + .burn-note {
+	margin-top: calc(var(--layout-unit) * 0.8);
+	padding-top: calc(var(--layout-unit) * 1.2);
+	border-top: 1px solid var(--surface-line);
+}
+
+/* ---------- sheet: burn by model (v0.5.0, burn.byModel) ---------- */
+
+/* Deliberately compact and deliberately BELOW the day total: the per-session
+   list above is the answer to "who spent it", this is the answer to "on what",
+   and stacking them as equals would read as one table that fails to add up. */
+.burn-models {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.7);
+	margin-top: calc(var(--layout-unit) * 1.2);
+}
+/* The commits line is a note about a different thing again, so it does not butt
+   straight up against the last model bar. */
+.burn-models + .burn-note { margin-top: calc(var(--layout-unit) * 1); }
+.burn-models-head {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.burn-model-row {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.2);
+	min-width: 0;
+	font-size: var(--fs-sheet-meta);
+}
+.bm-name {
+	flex: 0 0 calc(var(--layout-unit) * 18);
+	min-width: 0;
+	font-family: var(--font-mono);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--muted);
+}
+/* Proportional to the LARGEST model, not to the day total: the byModel list is
+   capped at 4 by the contract, so it need not sum to anything and a bar scaled
+   against the total would silently shrink as the tail is dropped. */
+.bm-bar {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: calc(var(--layout-unit) * 1.2);
+	border-radius: calc(var(--layout-unit) * 0.6);
+	background: var(--surface-line);
+	overflow: hidden;
+}
+.bm-fill {
+	display: block;
+	height: 100%;
+	width: calc(1% * var(--w, 0));
+	background: var(--accent);
+	border-radius: calc(var(--layout-unit) * 0.6);
+}
+.bm-tokens {
+	flex: 0 0 calc(var(--layout-unit) * 9);
+	text-align: right;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--accent);
+}
+
+/* ---------- sheet: Today timeline (v0.5.0) ---------- */
+
+/* The fourth mode. It is the only view that crosses sessions, so the rows carry
+   a session tag the per-session events list has no need of. Scrolls, because the
+   cap is a display cap and the day is as long as it is. */
+.sheet-timeline { display: none; }
+/* The gap was 0.6 in v0.5.0, which fitted every fixture that existed then —
+   none of which reached the 20-row cap. mock-state-hot does, and at 0.6 the
+   twenty rows PLUS the "+N earlier" tail overran the region by 7 px, slicing the
+   tail through its glyphs (measured 2026-08-26 at 2560x720: 548 px of content in
+   541 px of box). 0.4 buys 29 px back, so the full cap plus the tail fits with
+   room to spare — 0.45 fitted to the exact pixel, which is not a margin on a
+   different browser's font metrics. Any future row added here has to be
+   re-measured against TIMELINE_MAX + 1 lines, not against a fixture that
+   happens to be shorter. */
+.sheet[data-mode="timeline"] .sheet-timeline {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.4);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="timeline"] .sheet-question,
+.sheet[data-mode="timeline"] .sheet-burn,
+.sheet[data-mode="timeline"] .sheet-meta,
+.sheet[data-mode="timeline"] .sheet-subs,
+.sheet[data-mode="timeline"] .sheet-status,
+.sheet[data-mode="timeline"] .sheet-actions,
+.sheet[data-mode="timeline"] .sheet-detail-actions,
+.sheet[data-mode="timeline"] .sheet-events { display: none; }
+.sheet[data-mode="timeline"] .sheet-panel { border-left-color: var(--accent); }
+
+.tl-row {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 1);
+	min-width: 0;
+	flex: 0 0 auto;
+	font-size: var(--fs-sheet-meta);
+}
+/* Fixed column, nowrap: a clock that wraps doubles the height of every row, and
+   twenty of them then walk straight out of the panel (the v0.3.0 events-list
+   bug, in a list four times longer). */
+.tl-time {
+	flex: 0 0 calc(var(--layout-unit) * 11);
+	text-align: right;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+}
+/* The session tag is what makes a merged list readable, so it gets its own
+   column rather than being folded into the text. */
+.tl-session {
+	/* Wide enough that shortTitle's own 26-character clamp is what trims a tag,
+	   not the column: two ellipses on one label reads as a rendering fault. */
+	flex: 0 0 calc(var(--layout-unit) * 31);
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--text-color);
+}
+.tl-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--muted);
+}
+.tl-session::before,
+.tl-text::before { content: "\00B7\00A0"; color: var(--faint); }
+.tl-empty { font-size: var(--fs-sheet-meta); color: var(--faint); }
+
+/* ---------- sheet: the sessions the grid cut (v0.20.0, CD-14) ---------- */
+
+/* Same list region and the same row metrics as the timeline — this IS a list of
+   rows, and a second scrolling block styled to match is a second one to keep in
+   step. It differs in one way that matters: these rows are CONTROLS, so they
+   carry the fingertip floor every other target on this panel has, and the
+   timeline's text rows deliberately do not. */
+.sheet[data-mode="overflow"] .sheet-timeline {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.4);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="overflow"] .sheet-question,
+.sheet[data-mode="overflow"] .sheet-burn,
+.sheet[data-mode="overflow"] .sheet-week,
+.sheet[data-mode="overflow"] .sheet-day-foot,
+.sheet[data-mode="overflow"] .sheet-meta,
+.sheet[data-mode="overflow"] .sheet-subs,
+.sheet[data-mode="overflow"] .sheet-status,
+.sheet[data-mode="overflow"] .sheet-actions,
+.sheet[data-mode="overflow"] .sheet-detail-actions,
+.sheet[data-mode="overflow"] .sheet-pin-actions,
+.sheet[data-mode="overflow"] .sheet-events { display: none; }
+.sheet[data-mode="overflow"] .sheet-panel { border-left-color: var(--accent); }
+
+.ov-row {
+	min-height: var(--touch-min);
+	align-items: center;
+	padding: 0 calc(var(--layout-unit) * 0.6);
+	border-radius: calc(var(--layout-unit) * 0.5);
+	background: var(--surface);
+	border: 1px solid var(--surface-line);
+	cursor: pointer;
+}
+/* The state word is a fixed left column so the titles line up down the list —
+   the same reason .tl-time is a fixed column in the timeline. */
+.ov-state {
+	flex: 0 0 calc(var(--layout-unit) * 10);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--muted);
+	font-family: var(--font-mono);
+}
+/* Colour follows the card dots, and never carries the state on its own: the word
+   is right there. needs_input is the only one that gets the alert colour. */
+.ov-row[data-state="needs_input"] .ov-state { color: var(--amber); }
+.ov-row[data-state="working"] .ov-state { color: var(--accent); }
+.ov-row[data-state="done"] .ov-state { color: var(--green); }
+.ov-row[data-state="idle"] .ov-state { color: var(--faint); }
+/* The leading middot belongs between the timeline's three text columns; here the
+   state word is a column of its own with a gap, and the separator reads as a
+   stray glyph in front of every title. */
+.ov-row .tl-session::before { content: none; }
+
+/* ---------- sheet: week strip (v0.7.0) ---------- */
+
+/* The timeline sheet's footer, and the only part of that sheet that is not
+   today. It is display:none everywhere else and collapses on :empty, so a feed
+   without recap.week costs the sheet nothing at all — not even the panel's row
+   gap, which an empty-but-displayed block would still pay for.
+   flex: 0 0 auto is the load-bearing half: the rows above are the region that
+   scrolls, so the summary must not be the thing that gets pushed out of view by
+   a long day. */
+.sheet-week { display: none; }
+.sheet[data-mode="timeline"] .sheet-week {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.8);
+	flex: 0 0 auto;
+	padding-top: calc(var(--layout-unit) * 1.4);
+	border-top: 1px solid var(--surface-line);
+}
+.sheet[data-mode="timeline"] .sheet-week:empty { display: none; }
+.week-head {
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+/* One label column plus seven equal days. The letters and both number rows share
+   the grid, so a two-digit commit count cannot shunt its column out of line with
+   the day it belongs to. */
+.week-grid {
+	display: grid;
+	grid-template-columns: auto repeat(7, 1fr);
+	/* The three rows are declared EXPLICITLY since v0.14.0, and it is load-bearing
+	   rather than tidiness: the column hit target is an absolutely positioned child
+	   placed with `grid-row: 1 / -1`, and a negative line number resolves against
+	   the EXPLICIT grid only. With the rows left implicit, -1 resolved back to line
+	   1 and every hit element came out one row tall (measured 2026-08-26: 19 px,
+	   which is exactly the bug the hit element was added to fix). */
+	grid-template-rows: repeat(3, auto);
+	align-items: baseline;
+	column-gap: calc(var(--layout-unit) * 0.8);
+	row-gap: calc(var(--layout-unit) * 0.5);
+}
+.week-key {
+	font-size: var(--fs-sheet-meta);
+	color: var(--faint);
+	padding-right: calc(var(--layout-unit) * 1.2);
+	white-space: nowrap;
+}
+.week-cell {
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	font-size: var(--fs-sheet-meta);
+	text-align: center;
+}
+.week-day { color: var(--muted); letter-spacing: 0.06em; }
+/* done is the figure the strip is for; commits is context, so it is muted. The
+   row LABELS are what actually tell them apart - this is emphasis, not the cue. */
+.week-done { color: var(--text-color); font-weight: 700; }
+.week-commits { color: var(--faint); }
+/* Today is the column everything else is read against, so it is marked once, on
+   the letter row: a rule under all three cells would read as a selected column
+   and compete with the done row for the eye. */
+.week-day.week-today {
+	color: var(--text-color);
+	box-shadow: inset 0 calc(var(--layout-unit) * -0.25) 0 0 var(--accent);
+}
+
+/* ---------- sheet: pinning + the day drill (v0.8.0) ---------- */
+
+/* A day column is a button, so it has to look like one — but only just. The
+   strip is a seven day summary first and a menu second, and a row of seven
+   loud targets would turn a thing people read into a thing people operate.
+   The gate is the data attribute the JS only sets on a column with a usable
+   day, so an unmarked column is inert BY CONSTRUCTION rather than by a second
+   rule that could disagree with the handler.
+
+   v0.14.0 moved that attribute off the three cells and onto ONE element per
+   column. Measured 2026-08-26 at 2560x720: each cell was 115.8 x 19 px with a
+   3.6 px gap between them, so what the v0.8.0 comment called one column-sized
+   target was three 19 px ones with dead air in the joins — the only control on
+   the panel under the 48 px floor --touch-min exists to hold. The hit element
+   spans all three rows INCLUDING the gaps, which is what makes the column
+   contiguous as well as tall enough.
+
+   Absolutely positioned, so it is not a grid item and does not displace the
+   auto-placed cells; its containing block is the grid area grid-row/grid-column
+   name it into, which is how the geometry stays derived from the same grid the
+   numbers use. It paints in FRONT of the cells (appended last) because it has to
+   be in front to be hit — and the wash is the same 0.045 the cells used to carry
+   behind them, which at that alpha reads identically either side of the text. */
+.week-grid { position: relative; }
+.week-hit {
+	position: absolute;
+	inset: 0;
+	cursor: pointer;
+	touch-action: manipulation;
+	border-radius: calc(var(--layout-unit) * 0.4);
+	background: rgba(237, 231, 223, 0.045);
+}
+.week-hit:active { background: rgba(237, 231, 223, 0.16); }
+
+/* The drilled day. Same mode, same list region, same scroll — the two views
+   differ by which footer they carry and by the back control in the head. */
+.sheet-day-foot { display: none; }
+.sheet[data-mode="timeline"][data-tl-view="day"] .sheet-day-foot {
+	display: block;
+	flex: 0 0 auto;
+	padding-top: calc(var(--layout-unit) * 1.4);
+	border-top: 1px solid var(--surface-line);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--faint);
+}
+/* The week strip is TODAY's footer. In a drilled day it would be the navigation
+   the person is already standing inside, offering to re-enter the day they are
+   reading — and it would push the count line off the panel to do it. */
+.sheet[data-mode="timeline"][data-tl-view="day"] .sheet-week { display: none; }
+
+/* Back is the day view's only navigation and appears nowhere else, so no other
+   view ever shows two ways out. Sized and shaped as the close button's sibling
+   because that is what it is: same 48 px floor, same box, opposite direction. */
+.sheet-back { display: none; }
+.sheet[data-mode="timeline"][data-tl-view="day"] .sheet-back {
+	display: flex;
+	flex: 0 0 auto;
+	width: var(--touch-min);
+	height: var(--touch-min);
+	padding: 0;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--font-ui);
+	font-size: calc(var(--layout-unit) * 3.6);
+	line-height: 1;
+	color: var(--muted);
+	background: transparent;
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 1);
+	cursor: pointer;
+	touch-action: manipulation;
+}
+
+/* ---------- sheet: day navigation (v0.10.0) ---------- */
+
+/* Prev / next day, in the day view only and beside Back for the same reason Back
+   is there: they are all ways of moving through one week, and a fingertip
+   reaching for one should not have to look in two places. Same box and the same
+   48 px floor as Back and Close, so the head reads as one row of controls rather
+   than as a control and two decorations. */
+.sheet-daynav { display: none; }
+.sheet[data-mode="timeline"][data-tl-view="day"] .sheet-daynav {
+	display: flex;
+	flex: 0 0 auto;
+	width: var(--touch-min);
+	height: var(--touch-min);
+	padding: 0;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--font-ui);
+	font-size: calc(var(--layout-unit) * 4.4);
+	line-height: 1;
+	color: var(--muted);
+	background: transparent;
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 1);
+	cursor: pointer;
+	touch-action: manipulation;
+}
+.sheet-daynav:active { background: rgba(237, 231, 223, 0.16); }
+/* Inert at today. Kept in the row rather than hidden: an arrow that vanishes at
+   the end of the week moves the two beside it under a finger already travelling
+   toward them. The attribute is the button's own disabled property reflected, so
+   the look and the click can never disagree.
+   The selector repeats the whole view gate above it deliberately: a bare
+   .sheet-daynav[disabled] is two classes to that rule's four and LOSES, so the
+   button went inert while still painting as live (measured 2026-08-26, and the
+   same specificity trap that left a v0.9.0 media query dead for its whole life).
+   Anything added here carries the gate too. */
+.sheet[data-mode="timeline"][data-tl-view="day"] .sheet-daynav[disabled] {
+	color: var(--faint);
+	border-color: rgba(42, 37, 34, 0.6);
+	cursor: default;
+}
+
+/* Pin is offered by every sheet that carries a session — both session modes —
+   and by none of the panel-wide views, which have no session to pin. */
+.sheet-pin-actions { display: none; flex: 0 0 auto; }
+.sheet[data-mode="action"] .sheet-pin-actions,
+.sheet[data-mode="detail"] .sheet-pin-actions { display: flex; }
+.sheet-btn-pin { flex: 1 1 100%; border-color: var(--surface-line); color: var(--muted); }
+/* Pinned reads as pinned on the button as well as on the card: the LABEL is the
+   cue (it says Unpin), and this is emphasis on top of it, never instead of it. */
+.sheet-btn-pin[data-pinned="1"] { border-color: var(--accent); color: var(--accent); }
+
+/* Dismiss exists on a DONE detail sheet and nowhere else — the attribute gate is
+   set at open time, so no other state can render the button at all. */
+.sheet-detail-actions { display: none; flex: 0 0 auto; }
+/* v0.6.0: idle joins done as a dismissable state. Two selectors rather than one
+   attribute meaning "dismissable" so the attribute keeps saying which state the
+   sheet was opened against, which is what onSheetDismiss re-checks. */
+.sheet[data-mode="detail"][data-detail-state="done"] .sheet-detail-actions,
+.sheet[data-mode="detail"][data-detail-state="idle"] .sheet-detail-actions { display: flex; }
+.sheet-btn-dismiss { flex: 1 1 100%; border-color: var(--surface-line); color: var(--muted); }
+
+.sheet-meta { display: flex; flex-wrap: wrap; gap: calc(var(--layout-unit) * 1.2); flex: 0 0 auto; }
+.sheet-chip {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	line-height: 1;
+	padding: calc(var(--layout-unit) * 0.7) calc(var(--layout-unit) * 1.1);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.6);
+	color: var(--muted);
+	white-space: nowrap;
+}
+.sheet-chip-state { border-color: var(--sheet-accent, var(--accent)); color: var(--sheet-accent, var(--accent)); }
+.sheet-chip-fast { border-color: var(--accent); color: var(--accent); letter-spacing: 0.1em; }
+
+/* Scrollless by contract: the list is capped in JS and clamped with a +N row,
+   so the panel height is a function of the cap, never of the feed. */
+.sheet-subs { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.5); flex: 0 0 auto; }
+.sheet-subs:empty { display: none; }
+.sheet-subs .sub-row { font-size: var(--fs-sheet-meta); }
+
+.sheet-events { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.6); flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.sheet-events:empty { display: none; }
+.event-row { display: flex; align-items: baseline; gap: calc(var(--layout-unit) * 1); min-width: 0; font-size: var(--fs-sheet-meta); }
+/* Fixed column so the event texts line up, and nowrap because they must not:
+   "21s ago" wrapping to two lines doubled the height of all eight rows and
+   pushed the list past the panel's max-height (caught on glass, v0.3.0). */
+.event-age {
+	flex: 0 0 auto;
+	width: calc(var(--layout-unit) * 9.5);
+	text-align: right;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+}
+.event-text { flex: 1 1 auto; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.event-text::before { content: "\00B7\00A0"; color: var(--faint); }
+.sheet-events-empty { font-size: var(--fs-sheet-meta); color: var(--faint); }
+
+.sheet-actions { display: flex; flex-wrap: wrap; gap: calc(var(--layout-unit) * 1.8); flex: 0 0 auto; }
+.sheet-btn {
+	flex: 1 1 calc(var(--layout-unit) * 20);
+	min-height: var(--touch-min);
+	min-width: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 2);
+	font-family: var(--font-ui);
+	font-size: var(--fs-sheet-btn);
+	color: var(--text-color);
+	background: rgba(237, 231, 223, 0.06);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 1);
+	cursor: pointer;
+	touch-action: manipulation;
+}
+.sheet-btn:active { background: rgba(237, 231, 223, 0.16); }
+.sheet-btn-ack { flex: 1 1 100%; border-color: var(--amber); color: var(--amber); }
+.sheet-btn-stop { border-color: var(--red); color: var(--red); }
+/* One POST in flight at a time — the buttons go inert rather than queueing. */
+.sheet.busy .sheet-actions { opacity: 0.5; pointer-events: none; }
+
+/* ---------- sheet: FULL panel approval (v0.12.0) ---------- */
+
+/* The approval variant of the ACTION sheet. Everything here is gated on the
+   sheet's data-approval="1", which JS sets only for a needs_input session with a
+   live pendingPermission — so a plain question sheet is byte-for-byte its v0.11.0
+   self. In the variant the question gives way to the tool+summary block and the
+   ack/reply row gives way to Approve/Deny. */
+.sheet-approval-detail { display: none; }
+.sheet[data-approval="1"] .sheet-approval-detail {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.8);
+	flex: 0 1 auto;
+	min-height: 0;
+}
+.sheet[data-approval="1"] .sheet-question,
+.sheet[data-approval="1"] .sheet-actions { display: none; }
+.sheet-approval-req {
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--red);
+}
+.sheet-approval-tool {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-btn);
+	font-weight: 700;
+	color: var(--text-color);
+	word-break: break-word;
+}
+.sheet-approval-summary {
+	font-size: var(--fs-sheet-status);
+	line-height: 1.35;
+	color: var(--muted);
+}
+/* The hold countdown (v0.15.0), the sheet's copy of the card's. Same rule: the
+   words carry the state and the colour only follows them at zero. */
+.sheet-approval-left {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+	font-variant-numeric: tabular-nums;
+	color: var(--muted);
+}
+.sheet-approval-left:empty { display: none; }
+/* The effective approval-toast threshold (v0.17.0). Deliberately the quietest
+   line in the block: it is a SETTING, not a state, and it must not compete with
+   the countdown above it, which is the one figure the decision depends on.
+   display:none until JS adds .shown, so a feed with no toast seed costs the
+   sheet nothing. */
+.sheet-approval-threshold {
+	display: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.04em;
+	color: var(--faint);
+}
+.sheet-approval-threshold.shown { display: block; }
+.sheet.approval-expired .sheet-approval-left { color: var(--red); }
+/* Past the hold the buttons are still LIVE, and that is deliberate: the panel's
+   clock is not crabd's, so a countdown this widget cannot verify must not take a
+   control away from the person standing in front of it. It is dimmed, which says
+   "probably too late" — the line above says it in words. */
+.sheet.approval-expired .sheet-approval-actions { opacity: 0.55; }
+.sheet-approval-actions { display: none; }
+.sheet[data-approval="1"] .sheet-approval-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: calc(var(--layout-unit) * 1.8);
+	flex: 0 0 auto;
+}
+/* Deny is the safe default: the calm, filled, primary button on the LEFT, the
+   one nearest the thumb of a hand reaching in a hurry. Approve is the
+   cautionary outline in amber and carries the tool name — approving Bash from a
+   touchscreen must show WHAT is being approved. */
+/* v0.26.0 (AUD-F1): the fill is neutral. "Calm" and "warm wash" were in conflict —
+   this button sits beside an amber Approve on the panel's one irreversible
+   decision, and a warm plate under the safe option is the worst place on the glass
+   to spend the alert idiom. It stays FILLED (that is what makes it primary) and
+   keeps the accent border. The old rgba(204, 120, 92, 0.16) was also a hardcoded
+   copy of the pre-AUD-F1 accent that never tracked the iCUE override. */
+.sheet-btn-deny { flex: 1 1 calc(var(--layout-unit) * 20); border-color: var(--accent); color: var(--text-color); background: rgba(237, 231, 223, 0.16); }
+.sheet-btn-approve { flex: 1 1 calc(var(--layout-unit) * 20); border-color: var(--amber); color: var(--amber); }
+.sheet.busy .sheet-approval-actions { opacity: 0.5; pointer-events: none; }
+
+/* ---------- sheet: tap-to-continue (v0.12.0) ---------- */
+
+/* The continue row is offered on the DETAIL sheet of a working or done session
+   (data-continue="1"), and by no other sheet. Its own status line lives inside
+   it because the shared sheet-status is display:none in detail mode. */
+.sheet-continue { display: none; }
+.sheet[data-continue="1"] .sheet-continue {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 1);
+	flex: 0 0 auto;
+}
+.sheet-continue-head {
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.sheet-continue-btns { display: flex; flex-wrap: wrap; gap: calc(var(--layout-unit) * 1.4); }
+.sheet-continue-btn { flex: 1 1 calc(var(--layout-unit) * 18); }
+.sheet-continue-status {
+	min-height: calc(var(--fs-sheet-status) * 1.3);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+	color: var(--muted);
+}
+.sheet-continue-status.ok { color: var(--green); }
+.sheet-continue-status.note { color: var(--muted); }
+.sheet-continue-status.err { color: var(--red); }
+
+/* ---------- compact density (v0.15.0) ---------- */
+
+/* The one place this widget deliberately BREAKS Rule 6 (hide, never shrink) —
+   and it breaks it because the operator asked, by tapping a chip, which is the
+   difference between a layout decision and a slot the panel found itself in.
+   Comfortable stays the default and stays untouched.
+
+   The third grid ROW is the feature; everything below it is what pays for that
+   row. A third row on the comfortable card's type and padding would slice every
+   card in half, which is the 840x344 bug the capacity constant caused, so type,
+   padding and gap all come down together and the secondary lines go the way
+   Rule 6 sends them at a small slot: subagent rows and the last question line
+   first, because the sheet still carries both whole on a tap.
+
+   gridCapacity() reads the row count off the computed style, so nothing in JS
+   knows the number is three. */
+body.density-compact .cards {
+	grid-template-rows: repeat(3, minmax(0, 1fr));
+	gap: calc(var(--layout-unit) * 1.2);
+}
+body.density-compact .card {
+	padding: calc(var(--layout-unit) * 0.9) calc(var(--layout-unit) * 1.2);
+	gap: calc(var(--layout-unit) * 0.4);
+	border-left-width: calc(var(--layout-unit) * 0.6);
+}
+/* The type scale comes down as a SET, from the same tokens the comfortable card
+   uses, so the card keeps its hierarchy at the smaller size instead of becoming
+   four lines of the same weight. */
+body.density-compact .card-title { font-size: calc(var(--layout-unit) * 2.2); }
+body.density-compact .card-repo,
+body.density-compact .card-event,
+body.density-compact .card-queued,
+body.density-compact .card-approval-left,
+body.density-compact .card-state,
+body.density-compact .card-turn,
+body.density-compact .card-hint,
+body.density-compact .card-age { font-size: calc(var(--layout-unit) * 1.7); }
+body.density-compact .badge {
+	font-size: calc(var(--layout-unit) * 1.6);
+	padding: calc(var(--layout-unit) * 0.4) calc(var(--layout-unit) * 0.7);
+}
+body.density-compact .card-badges { gap: calc(var(--layout-unit) * 0.5); }
+/* Rule 6's order, applied inside the density rather than inside a slot: the
+   subagent rows are drill-down detail and the sheet still carries them whole. */
+body.density-compact .card-subs { display: none; }
+/* The question keeps the same pinned-height clamp discipline the small slot
+   uses — a clamp only ellipsises the line it is ALLOWED to finish, so the box is
+   pinned to exactly two line boxes and refuses to shrink. Two, not four: this is
+   a third of a cell. */
+body.density-compact .card-question,
+body.density-compact .card-approval-summary {
+	font-size: calc(var(--layout-unit) * 1.75);
+	line-height: 1.28;
+	-webkit-line-clamp: 2;
+	flex: 0 0 auto;
+	height: calc(var(--layout-unit) * 1.75 * 1.28 * 2);
+	max-height: none;
+}
+body.density-compact .card-approval-label { font-size: calc(var(--layout-unit) * 1.6); }
+body.density-compact .card-approval-tool { font-size: calc(var(--layout-unit) * 2.1); }
+/* The compact summary is pinned the same way and to the same TWO lines the
+   comfortable card keeps; only the type comes down. The one-line variant lives
+   in the small-slot block below, where the measurement says it is needed. */
+
+/* ---------- the core line (v0.20.0, CD-33) ---------- */
+
+/* display:none is the DEFAULT and the media query BELOW is the exception, not the
+   other way round: a line that appeared by default and was hidden per-slot would
+   need a hide rule at every future breakpoint, and the one that got forgotten
+   would be a duplicate of the zones sitting under the clock.
+
+   AND THAT IS WHY THIS BLOCK SITS ABOVE THE RESPONSIVE SECTION. `.core-line` and
+   the media query's `.core-line` have identical specificity, so source order is
+   the whole of the cascade here — with this block written after the media query
+   the base rule won at every slot and the line never appeared anywhere. Measured
+   at 840x696 and 416x696: the text rendered correctly and computed display:none.
+   Anything added here must stay above the Rule 6 section. */
+.core-line { display: none; margin-top: calc(var(--layout-unit) * 1.2); }
+.core-sessions {
+	font-size: var(--fs-date);
+	font-family: var(--font-mono);
+	color: var(--text-color);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.core-limits {
+	font-size: var(--fs-date);
+	font-family: var(--font-mono);
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.core-limits:empty { display: none; }
+/* The alert colour reaches the one line that survives these slots. It is a colour
+   ON TOP of a count that is already in words, never instead of one. */
+body.alert .core-sessions { color: var(--amber); }
+body.quiet .core-sessions { color: var(--muted); }
+
+/* MOVED ABOVE THE RESPONSIVE SECTION at v0.25.0, for the reason the core-line
+   block one section up spells out: it lived at the very BOTTOM of this file, so
+   `.brand-badge-wrap { display: flex }` beat the narrow-slot layout's
+   `.brand-badge-wrap { display: none }` on source order at identical
+   specificity — measured, the badge painted 334.1 px wide in the 840x696 band
+   and took the crab to zero. Nothing in the block changed. Anything added to it
+   must stay here. */
+/* Claw'deck badge above the crab (v0.5.0, replacing the Claude Max lockup).
+   Width is the sizing input and the height follows from the 5:1 viewBox, so the
+   badge cannot be squashed by a slot that is narrower than expected. */
+.brand-badge-wrap {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 100%;
+	min-width: 0;
+}
+.brand-badge {
+	/* 40 x 8 units. v0.5.0 shipped 32 (230 x 46 px at the 2560x720 slot); the
+	   badge was scaled ~25%, so 40 -> 288 x 58 px, the 5:1 viewBox ratio untouched.
+	   The growth is paid for out of the identity zone's slack, not out of the
+	   crab: the crab SVG is WIDTH-limited in that zone (462 px wide fits in a
+	   355 px tall box, and the box is ~399 px even after this and the fleet row),
+	   so its painted size is byte-identical either side of this change. Measure
+	   the painted size, not the wrapper, before assuming that still holds. */
+	/* 40 -> 48 units at v0.17.0 (+20%): 288 x 57.6 -> 345.6 x 69.1 px at the
+	   2560x720 slot, the 5:1 viewBox ratio untouched. Still paid for out of the
+	   identity zone's slack and not out of the crab, which is WIDTH-limited in
+	   that zone — measured after the change, the painted crab is 462.1 px wide
+	   either side of it. 345.6 leaves 58 px of clear column on each side, so
+	   nothing is crowded at this slot; min(100%, ...) is what keeps it honest on
+	   a narrower one. */
+	width: min(100%, calc(var(--layout-unit) * 48));
+	height: auto;
+	/* The pixel parts carry crispEdges locally; everything else in the badge is a
+	   curve or a letterform and antialiases. */
+	shape-rendering: geometricPrecision;
+}
+.badge-plate { fill: #1A150F; stroke: #E8511F; stroke-width: 3; }
+.badge-crab { shape-rendering: crispEdges; }
+.badge-word {
+	font-family: var(--font-mono);
+	font-weight: 700;
+	/* User units of the badge viewBox, not CSS pixels of the panel. */
+	font-size: 15px;
+	letter-spacing: 0.005em;
+	fill: #F7F3EC;
+}
+
+/* ---------- smaller dashboard_lcd slots: hide, never shrink (Rule 6) ---------- */
+
+@media (max-width: 1800px) {
+	.cards { grid-template-columns: repeat(3, 1fr); }
+	/* Rule 6 again, on width this time. Measured at 1799x720: the 3-column card is
+	   266 px of content, and model + ctx + FAST + "3 sub" is 277 px — the badges
+	   row wraps and the card grows a line. ctx is the badge that has to go: it
+	   annotates the model, it does not identify the session, and the full figure
+	   is one tap away in the sheet. The 2560x720 Edge slot keeps it. */
+	.badge-ctx { display: none; }
+}
+@media (max-width: 1200px) {
+	.zone-limits { display: none; }
+	.zone-identity { flex: 0 0 36%; }
+	.zone-grid { flex: 1 1 64%; }
+	.cards { grid-template-columns: repeat(2, 1fr); }
+}
+/* Rule 6: hide secondary content, never shrink it. The subagent rows and the
+   question preview go before the card does — the sheet still carries the full
+   question on a tap, so nothing is unreachable at the small slots. */
+@media (max-height: 420px) {
+	.card-event, .card-subs, .spark-wrap, .clock-date { display: none; }
+	/* The fleet row is ambient detail and goes with the date, Rule 6. */
+	.fleet.shown { display: none; }
+	/* The ctx chip is the FIRST badge dropped when a card gets tight: the model
+	   name identifies the session, the token figure only annotates it. */
+	.badge-ctx { display: none; }
+	/* Fixed 2026-08-26 (v0.6.0). The clamp was already 2 here, but flex:0 1 auto
+	   let a short grid cell squeeze the box BELOW two line boxes, and then
+	   overflow:hidden sliced the second line through the glyphs - a clamp only
+	   ellipsises the line it is allowed to finish. Pinning the height to exactly
+	   two line boxes and refusing to shrink makes the clamp the only thing that
+	   ever ends this block, so it ends with an ellipsis or not at all.
+	   max-height is cleared so the two rules cannot disagree. */
+	.card-question {
+		-webkit-line-clamp: 2;
+		flex: 0 0 auto;
+		height: calc(var(--fs-card-question) * 1.28 * 2);
+		max-height: none;
+	}
+	/* The approval summary at the small slot in COMPACT (v0.15.0, D15). Measured
+	   at 840x344: label + tool + a two-line summary + the countdown is 41 px of
+	   content in a 36.77 px block, so the countdown was painted below its own
+	   clipping box. One line sheds 7.7 px and leaves 3.4 px of margin. The height
+	   is pinned to the clamp for the same reason it is everywhere else — a clamp
+	   that is not allowed to finish its line ends mid-glyph.
+	   COMFORTABLE at this slot measured clean at two lines and is left alone. */
+	body.density-compact .card-approval-summary {
+		-webkit-line-clamp: 1;
+		height: calc(var(--layout-unit) * 1.75 * 1.28);
+	}
+	/* The sensor row and the sheet's subagent list are the next things to go:
+	   both are drill-down detail, and the sheet still carries state and events. */
+	.sensors.shown, .sheet-subs { display: none; }
+	/* Rule 6 for the week strip: at this height the timeline sheet has room for
+	   the day itself and little else, and TODAY is what that sheet is for. The
+	   seven-day footer is the summary around it, so it goes first. */
+	.sheet[data-mode="timeline"] .sheet-week { display: none; }
+}
+/* ---------- narrow slots: the real layouts (v0.25.0, CD-33 closed) ----------
+
+   THE THREE QUERIES BELOW PARTITION THE ≤3:2 SPACE AND DO NOT OVERLAP, on
+   purpose. CD-33's block was a single `max-aspect-ratio: 3/2`, and its one cascade
+   trap was a rule beaten by source order at identical specificity; ranges that
+   cannot both match remove that failure mode from this section outright. Read the
+   three conditions together — every ≤3:2 slot lands in exactly one:
+
+     ≤3:2, height ≥ 421   , width ≥ 641  → NEAR-SQUARE. Identity band across the
+                                            top, Limits + Sessions side by side
+                                            under it.   (840x696 = 1.21:1)
+     ≤3:2, height ≥ 421   , width ≤ 640  → PORTRAIT. All three stacked.
+                                            (416x696 = 0.60:1)
+     ≤3:2, height ≤ 420                  → TOO SHORT for three zones. The CD-33
+                                            core line, unchanged.
+
+   421 px is not a guess: it is the 420 px `max-height` breakpoint this file
+   already uses for the short slot, read from the other side. Measured at 416x400
+   (1.04:1), the near-square band alone wants 202 px of a 400 px panel and the
+   Sessions zone is left with 108 px against a 60 px header — which is the CD-33
+   state with extra steps, so that slot takes CD-33 instead.
+
+   WHAT WAS MEASURED BEFORE ANY OF THIS WAS WRITTEN, at HEAD (b461748), headless
+   Edge, device metrics pinned, twelve fixtures:
+     840x696 — identity zone 840x696, Limits and Sessions both display:none, crab
+               PAINTED 381.1 x 322.5 in a 784.3 px box: HEIGHT-limited, and 403.2
+               px of horizontal slack doing nothing.
+     416x696 — identity zone 416x696, crab PAINTED 382.8 x 323.9: WIDTH-limited,
+               149.7 px of vertical slack doing nothing.
+   Both slots had the room. The slack is what pays for the zones below. */
+
+/* ===== SHARED by both real layouts — AND IT COMES FIRST =====
+   The two family queries below are strict subsets of this one's condition, so a
+   rule in either of them that touches the same property at the same specificity
+   has to be able to win, and source order is the only thing that lets it. Put
+   this block after them and the shared value wins everywhere — which is exactly
+   the failure CD-33 shipped one section down, one level up. Family overrides
+   that exist because of it are marked where they sit. */
+@media (max-aspect-ratio: 3/2) and (min-height: 421px) {
+	/* THE CORE LINE IS OFF HERE, and that is the whole point of this wave. It was
+	   CD-33's admission that the two zones were missing; the zones are on the glass
+	   at these slots now, so the line would be a second, shorter copy of what they
+	   already say. It stays in the DOM and stays rendered — the short-slot query
+	   below is still a real slot. */
+	.core-line { display: none; }
+	/* The band is a ROW: crab, then clock. The identity zone is a flex column at
+	   every other slot and the crab absorbs its slack vertically; here it absorbs
+	   horizontally instead, which is exactly the 403.2 px the 840x696 measurement
+	   found going spare.
+	   flex-basis 0, NOT auto. `.crab { width: 100% }` inside an auto-width flex item
+	   is circular and resolves to zero: measured with basis:auto the crab-wrap came
+	   out 0 px wide and the clock overflowed the zone by 214 px to the left. Basis 0
+	   + grow means the wrap is exactly the row's leftover, which is what the crab is
+	   for in this band. */
+	.crab-wrap { flex: 1 1 0; min-width: 0; width: auto; height: 100%; }
+	/* THE v0.17.0 NUDGE IS OFF HERE. It moves the crab down 1.4 vmin, and it is free
+	   at every slot where the wrap has vertical slack to absorb it. In this band the
+	   wrap is exactly the zone's content height, so the same transform pushed the
+	   animal 8.8 px out of the zone at 840x696 and 4.8 at 416x696 — measured, and
+	   the only zone overflow the first build of this layout had. */
+	.crab { transform: none; }
+	.clock { flex: 0 0 auto; width: auto; }
+	/* THE WORDMARK GOES, at both narrow layouts. In a row band the badge is not
+	   free the way it is in a column — it is width, and width here is the crab.
+	   Measured at 416x696: 382.7 px of content has to carry the clock row (273.8 px
+	   with the chips' clearance below) and the animal, which leaves the crab a 99.8
+	   px column. The badge at even a 24 vmin cap is another 99.8 — the crab's whole
+	   column and 12.6 px more than the row has. The plate is a wordmark and the crab
+	   IS the product on this glass, so the wordmark is what goes; it is still on
+	   every 2560x720 store shot. */
+	.brand-badge-wrap { display: none; }
+	/* THE CHIPS' CLEARANCE, and this is a real trap the band creates. Both chips
+	   anchor at ±--space-pad OUTSIDE the clock row's padding box (v0.24.1), which
+	   was correct when .clock was width:100% and that edge WAS the zone edge. In
+	   the band the clock row is only as wide as "12:12 23", so the same anchor puts
+	   the chip back on the seconds — the exact defect 0.24.1 fixed, re-created by
+	   the new layout. Padding on the ROW moves the glyphs inward while the chip
+	   stays pinned to the outer edge, which is the one lever that fixes it without
+	   touching the chip's own rule.
+	   THE TWO SIDES ARE NOT THE SAME NUMBER, because the two chips are not, and the
+	   RIGHT one is sized to the chip's WIDEST state rather than its usual one. The
+	   moon chip is 68.0 px at 840x696 on a plain fixture but 76.5 on ?mock=quiet and
+	   ?mock=caveat, where an override paints a five-character mode word AND a
+	   countdown ("quiet 58m"); fmtDur caps that countdown at three characters, so
+	   76.5 is the widest it ever gets. Sized to the 68 the chip sat 1.0 px ON the
+	   seconds on those two fixtures — measured, and the reason the figure below is
+	   taken from the override state and not from a plain one.
+	     right: 1.2 x --touch-min  = 70.2 / 57.6 px against an overhang of 61.2 / 38.8
+	     left : 6.5 vmin           = 45.2 / 27.0 px against a diag chip of 36.6 / 21.4
+	   The left figure is the chip's FULL width, not its overhang, because the diag
+	   chip is re-anchored below; 5.5 vmin fit it and left only 1.7 / 1.0 px of
+	   clear, which is a fit and not a margin. Measured at 6.5: 8.6 / 5.6 px clear. */
+	.clock-row {
+		padding-left: calc(var(--layout-unit) * 6.5);
+		padding-right: calc(var(--touch-min) * 1.2);
+	}
+	/* AND BOTH CHIPS STOP REACHING PAST THE PANEL'S OWN EDGE.
+	   The DIAG chip had `left: -(--space-pad)` (v0.24.1) so it could use the identity
+	   zone's left padding, which was empty in the column layout. In the band that
+	   space is the CRAB's column: measured with &touchdiag=1 at 840x696 the chip
+	   crossed 12.5 px into the crab wrapper's box. Anchored to the row's own edge it
+	   sits in the padding above instead, and the crab's column is nobody else's.
+	   The MOON chip keeps reaching into the zone padding, but not all of it. At every
+	   other slot the identity zone is a COLUMN in the middle or at the left of the
+	   panel, so its right padding is interior and the chip lands well inside the
+	   glass; in this band the zone spans the full width, so `-(--space-pad)` put the
+	   chip's right border exactly on the panel edge at both slots (measured: right
+	   edge 840.0 of 840, 416.0 of 416) and it read as a control running off the
+	   display. 0.55 of the padding leaves 12.5 / 7.5 px of glass beside it and still
+	   spends most of the room the v0.24.1 fix was written to find. */
+	.diag-chip { left: 0; }
+	.moon-chip { right: calc(-0.55 * var(--space-pad)); }
+	/* THE DATE GOES at both narrow layouts. It is already dropped at 840x344 on
+	   height, so the precedent is the file's own, and here it is load-bearing twice:
+	     - at 416x696 .clock is sized by its WIDEST child and the date is that child
+	       (278.0 px against the clock row's 250.1), so it costs the crab 27.9 px of
+	       column on the one slot where the crab is WIDTH-limited.
+	     - at 840x696 it is the line that makes the band overflow on ?mock=quiet:
+	       clock row 104.4 + date 35.4 + the quiet note 22.6 is 162.3 px of clock in
+	       146.1 px of band, and the note (which says WHY the panel is dim) is the
+	       one of the three that cannot be inferred from anything else on the glass.
+	   Measured after: 126.9 px of clock on quiet, 21.2 px clear. */
+	.clock-date { display: none; }
+	/* Rule 6 for the band: the fleet dots are ambient (a stopped helper is a thing
+	   to notice on the next walk past) and they are already dropped at 840x344 for
+	   the same 25 px they cost here. */
+	.fleet.shown { display: none; }
+	/* THE SESSIONS HEADER, trimmed to the label + the COUNT. Measured before the
+	   trim at 840x696: the header is 473.5 px wide and label + hint + three chips is
+	   493.5 px of it, so .session-count — the only flexible item in that row — was
+	   squeezed to nothing and the amber "1 waiting" fragment hung 141.6 px past the
+	   zone's content box, clipped. The waiting figure is the panel; the hint, the
+	   density toggle and the history chip are conveniences, so they are what go.
+	   THE FILTER CHIP STAYS at both slots — it is the only control that changes what
+	   the short grid is showing, which is exactly the control a short grid needs.
+	   The history chip's rule is restated at its own specificity (.head-chip +
+	   [data-history] + .shown): escalating this one would have taken a third class,
+	   and the .shown rule above is (0,3,0). */
+	.grid-head-hint,
+	.head-chip[data-density],
+	.head-chip[data-history].shown { display: none; }
+	/* AND THE COUNT WRAPS HERE INSTEAD OF ELLIPSISING, which is the other half of
+	   the same defect. The base rule ellipsises "because a two-line header would
+	   shorten every card in the grid below it" — true at the wide slots, and NOT
+	   true here: .grid-head carries min-height:--touch-min (58.5 px at 840x696,
+	   48.0 at 416x696) and two lines of --fs-meta are 34.0 / 20.0, so the second
+	   line lands inside a box the header already had. Measured after: the header is
+	   58.5 / 48.0 px, unchanged, and no card lost a pixel.
+	   Without it the trim above was not enough on ?mock=rework, where the header
+	   carries the day RECAP: 437 px of text in 302.6 px of box, and the ellipsis
+	   falls exactly on the amber "1 waiting" fragment that CD-34 put there so a
+	   glowing panel says where the waiting card went. */
+	.session-count { white-space: normal; overflow: visible; text-overflow: clip; }
+	/* Rule 6 for the card, in the order the small slot already sends things: the
+	   subagent rows and the badges row are annotation, and the sheet carries both
+	   whole on a tap. What is left is the state, the age, the title, the repo and
+	   the question — which is a session card, not a shrunken one. */
+	.card-subs, .card-badges { display: none; }
+	/* THE APPROVAL CARD is the tallest card the panel builds and the only one that
+	   did not fit. Measured on ?mock=rework with the trim off: 182.7 px of content
+	   in a 147.7 px cell at 840x696, with 22 px clipped off the bottom — and what is
+	   at the bottom is the countdown, the line that says whether a tap still reaches
+	   the hook.
+	   The repo line is what goes, on THIS CARD ONLY, in the order .card.approval
+	   already uses one section up (where the subagent rows go so the pinned summary
+	   can keep its lines). Every other card keeps it — a working session is
+	   identified by where it is working — but a permission request is identified by
+	   its tool, and the countdown outranks the branch name.
+	   Measured after: 159.1 px at 840x696 (still 11.4 over — see the near-square
+	   block for the second trim) and 93.7 px in 108.7 at 416x696, 15.0 clear. */
+	.card.approval .card-repo { display: none; }
+	/* The clamp is PINNED to its own line boxes for the reason it is pinned
+	   everywhere else in this file: flex may not squeeze the block below the lines
+	   the clamp is allowed to finish, or overflow:hidden slices the last line
+	   through the glyphs instead of ellipsising it. */
+	.card-question {
+		-webkit-line-clamp: 2;
+		flex: 0 0 auto;
+		height: calc(var(--fs-card-question) * 1.28 * 2);
+		max-height: none;
+	}
+}
+
+/* ===== NEAR-SQUARE (840x696) ===== */
+@media (max-aspect-ratio: 3/2) and (min-height: 421px) and (min-width: 641px) {
+	/* One flex line for the band, one for the two zones. wrap + explicit heights
+	   rather than a nested wrapper, because a wrapper element would have to exist
+	   at the authored 2560x720 slot too and change a layout that is correct.
+	   align-content:flex-start so the two lines take the heights below and are not
+	   stretched into halves. */
+	.zones { flex-wrap: wrap; align-content: flex-start; }
+	/* 29 / 71, and both ends of that number are measured. FLOOR: the clock row is
+	   --fs-clock (15 vmin = 104.4 px here), and its worst case is ?mock=quiet, where
+	   the note that says why the panel is dim takes it to 127.0. 29% of 696 leaves
+	   146.1 px inside the zone's padding — 19.1 px clear — and everything left over
+	   is the crab, painted 171.6 x 145.2 and height-limited.
+	   CEILING: the tallest card the grid builds is the approval card, at 140.1 px of
+	   content after the two trims, in a 147.7 px cell. A two-row grid stops being
+	   able to give it that at about a 32% band, so 29% leaves it 7.6 px. */
+	.zone-identity {
+		flex: 0 0 100%;
+		height: 29%;
+		flex-direction: row;
+		border-bottom: 1px solid var(--surface-line);
+	}
+	.zone-limits {
+		/* Restated against `@media (max-width: 1200px) { .zone-limits { display:none } }`
+		   above: same specificity, and this query is later, so `flex` alone would
+		   have left the zone hidden and the declaration silently dead. */
+		display: flex;
+		flex: 0 0 37%;
+		height: 71%;
+		/* The zone's left edge is the panel's left edge here, so the rule that used
+		   to separate it from the identity zone now separates it from nothing. */
+		border-left: 0;
+	}
+	.zone-grid { flex: 1 1 63%; height: 71%; }
+	/* Rule 6 inside the Limits zone, and the order is measured rather than chosen.
+	   The zone is 310.8 px wide and 451.0 px of content tall here; on ?mock=rework —
+	   the fixture that carries every field at once — the untrimmed zone wants 649.9
+	   (head 48 + 5-hour 96.8 + weekly 77 + the extra window 77 + the note 19.7 + the
+	   Today block 220.8 + sensors 31.3, plus 79.3 of gaps). The three hidden here
+	   are 324.2 px of that, and every one is drill-down the operator can still
+	   reach: the extra window and the day's stats are both in the burn sheet on a
+	   tap of the header, and the sparkline is its own toggle inside it. What is KEPT
+	   is the two windows, their forecast lines, the note and the hardware row — the
+	   readings that answer "can I keep working" without a tap.
+	   Measured after: 325.7 px against 451.0, 125.3 px clear on the widest fixture. */
+	.gauge-extra, .today, .spark-wrap { display: none; }
+	/* ...and the provenance tag goes with them, for a WIDTH reason rather than a
+	   height one. The zone header is 254.1 px here and holds "LIMITS" (64) + the tag
+	   (89) + the hint (113): measured on ?mock=rework the hint was cut to 80 px and
+	   read "by sess…", which takes the chevron — the header's ONLY affordance for
+	   the burn sheet — inside the ellipsis with it. The tag is an annotation on the
+	   numbers ("these came from Claude Code's own status line"); the chevron is the
+	   one thing that says the header opens something. Restated at .shown's own
+	   specificity, which is (0,2,0). */
+	.limits-source.shown { display: none; }
+	/* THE SECOND APPROVAL TRIM, and it is HERE and not in the shared block because
+	   only this slot needs it. With the repo line already gone the card still wanted
+	   159.1 px in a 147.7 px cell; the portrait slot's taller one-column cell fits
+	   the untrimmed card with 15.0 px to spare, so the full summary survives there.
+	   One line sheds 18.7 px and leaves 7.6 clear. The tool is what a grant is about
+	   and it is untouched; the whole summary is in the sheet on a tap, and the
+	   height is pinned to the clamp for the reason it is pinned everywhere else —
+	   a clamp that is not allowed to finish its line ends mid-glyph. */
+	.card-approval-summary {
+		-webkit-line-clamp: 1;
+		height: calc(var(--fs-card-meta) * 1.25);
+	}
+	/* COMPACT DENSITY is the operator's own choice of a third grid row, and it lands
+	   on the same card: measured with &density=compact, the approval card wanted
+	   123.6 px in a 100.5 px cell and the countdown was painted 16 px below its own
+	   clipping box. The label is the last thing on this card that repeats something
+	   already on it — the spine is red, the state word reads "needs input", the tool
+	   is the bold line and the countdown is under it — so the label is what pays for
+	   the third row. The comfortable card at this slot measured clean with the label
+	   and keeps it. */
+	body.density-compact .card-approval-label { display: none; }
+	/* .today carried `margin-top:auto` and was therefore the zone's whole slack
+	   budget; with it hidden the sensors row has to take that job or the readings
+	   float up against the gauges. */
+	.sensors.shown { margin-top: auto; }
+	/* STANDALONE, restated for this layout — the defect CD-33 found, generalised.
+	   `body.connecting:not(.has-sensors) .zone-*` is (0,3,1) and every rule in this
+	   query is (0,1,0), so without these three the standalone panel would take the
+	   36/64 SIDE-BY-SIDE split into a wrapped layout and put a 36%-wide identity
+	   zone on the first line with a 177 px clock in it. The rule that knows about
+	   this slot has to be the one that wins, so it is restated, not out-specified.
+	   The Limits zone still drops out with no sensors to show, and .zone-grid's
+	   flex-grow is what refills the line — nothing here needs to know it went. */
+	body.connecting:not(.has-sensors) .zone-identity { flex: 0 0 100%; height: 29%; }
+	body.connecting:not(.has-sensors) .zone-grid { flex: 1 1 63%; height: 71%; }
+	body.connecting .zone-limits { justify-content: flex-start; }
+}
+
+/* ===== PORTRAIT (416x696) ===== */
+@media (max-aspect-ratio: 3/2) and (min-height: 421px) and (max-width: 640px) {
+	/* A column, NOT the wrap trick above: at 416 px the two lower zones cannot sit
+	   side by side, and a column lets .zone-limits size to its own content
+	   (flex:0 0 auto) so the Sessions zone gets everything left over — including
+	   the whole strip when the standalone state drops it. No height percentage has
+	   to be restated for that case, which is one fewer rule that can go stale. */
+	.zones { flex-direction: column; flex-wrap: nowrap; }
+	/* 19%, deliberately LOWER than the near-square band, because the crab here
+	   cannot spend height. It is WIDTH-limited in the 99.8 px column the clock
+	   leaves it — painted 99.8 x 84.4 — while the clock row is 62.4 px and the quiet
+	   note takes its worst case to 75.7. 98.9 px of band content clears both, with
+	   14.5 px spare over the animal; every percent above that is band the crab
+	   cannot use and the Sessions zone can. */
+	.zone-identity {
+		flex: 0 0 19%;
+		flex-direction: row;
+		border-bottom: 1px solid var(--surface-line);
+	}
+	/* FAMILY OVERRIDE of the shared clock-row padding — see the note at the head of
+	   the shared block: it comes first so this can win on source order. The moon
+	   chip is 76.5 px at 840x696 but only 48.0 here, sitting on its --touch-min
+	   floor with room to spare inside it, so the shared 1.2 x --touch-min is 12.0 px
+	   more clearance than this slot needs — and 12 px here is 12 px of the crab's
+	   column, on the one slot where column width IS the animal's size. 0.95 leaves
+	   6.8 px clear of the seconds, measured. */
+	.clock-row { padding-right: calc(var(--touch-min) * 0.95); }
+	.zone-limits {
+		display: flex;
+		flex: 0 0 auto;
+		flex-direction: row;
+		/* flex-start, not center. On ?mock=rework the 5-hour gauge carries a
+		   depletion forecast and the weekly one does not (57.6 px against 45.9), and
+		   centred that put the two tracks on different baselines 5.9 px apart — two
+		   bars that are meant to be read against each other, drawn on a slant. Top
+		   alignment puts every name, figure and track on one line and lets the
+		   forecast hang below the gauge it belongs to. */
+		align-items: flex-start;
+		gap: var(--space-gap);
+		border-left: 0;
+		border-right: 0;
+		border-bottom: 1px solid var(--surface-line);
+		padding-top: calc(var(--layout-unit) * 2.4);
+		padding-bottom: calc(var(--layout-unit) * 2.4);
+	}
+	.zone-grid { flex: 1 1 auto; }
+	/* The two gauges share the strip and nothing else is in it (below). */
+	.gauge { flex: 1 1 0; min-width: 0; }
+	/* Rule 6 for the strip: everything here except the two gauges is drill-down or
+	   ambient, and the strip is a ROW — every survivor takes width off the two
+	   windows, not height off the panel. Measured with the sensors row left in on
+	   ?mock=rework: three items put the gauges at 85.8 px each against 186.0 with
+	   the row to themselves. The zone header goes too, so the burn-by-session sheet
+	   loses its route at this slot — each gauge is still its own tap target for its
+	   own forecast detail, and the hardware readings survive at 840x696.
+	   THE .shown VARIANTS ARE RESTATED, not left to the bare class: `.sensors.shown`
+	   and `.limits-note.shown` are (0,2,0) against this rule's (0,1,0), so they win
+	   on specificity no matter where they sit in the file. Measured before the
+	   restatement: both painted in the strip. */
+	.limits-head, .gauge-extra, .limits-note, .today, .spark-wrap, .sensors { display: none; }
+	.sensors.shown, .limits-note.shown { display: none; }
+	/* ...and with the sensors row hidden there is nothing at all left in the strip
+	   for a panel with no companion, so the whole zone goes rather than leaving an
+	   empty ruled band. Both halves of the standalone split are restated for the
+	   same reason as the near-square query. */
+	body.connecting .zone-limits { display: none; }
+	body.connecting:not(.has-sensors) .zone-identity { flex: 0 0 19%; }
+	body.connecting:not(.has-sensors) .zone-grid { flex: 1 1 auto; }
+	/* The two gauges are the only tap targets left in this zone, so they have to
+	   carry the fingertip floor the zone header was carrying for them. Measured
+	   without it: 186.0 x 45.9 px, 2.1 px under the 48 px minimum this whole panel
+	   is built to. It costs the strip 2.1 px and the grid nothing. */
+	.gauge { min-height: var(--touch-min); }
+	/* One column of cards. gridCapacity() reads the track counts off the computed
+	   style, so the capacity follows this rule and nothing in JS learns the slot. */
+	.cards { grid-template-columns: 1fr; grid-template-rows: repeat(3, minmax(0, 1fr)); }
+}
+
+/* ===== TOO SHORT for three zones — the CD-33 core line, unchanged ===== */
+@media (max-aspect-ratio: 3/2) and (max-height: 420px) {
+	.zone-limits, .zone-grid { display: none; }
+	.zone-identity { flex: 1 1 100%; }
+	/* The core line (v0.20.0, CD-33), shown in the same rule that hides the two
+	   zones it stands in for — so the substitution cannot drift out of step with
+	   the thing it substitutes for. Everywhere else, including the two real narrow
+	   layouts above, the zones are on the glass and this line would be a third copy
+	   of what they already say. */
+	.core-line { display: block; }
+	/* THE STANDALONE SPLIT DOES NOT SURVIVE THIS SLOT (found while measuring CD-33,
+	   present since the split was written). With no companion and no sensor reading,
+	   `body.connecting:not(.has-sensors) .zone-identity` pins the identity zone to
+	   36% — a 36/64 split with the Sessions zone, which is exactly what that rule is
+	   for. Here the Sessions zone is display:none, so 36% is 36% of nothing to split
+	   with: measured at 416x696 the zone came out 150 px wide holding a 177 px clock,
+	   which hung 42.4 px out of it (45.0 at 840x696). The selector is restated rather
+	   than the media query being made stronger, because the two rules are answering
+	   the same question in two layouts and the one that knows about this slot has to
+	   be the one that wins. */
+	body.connecting:not(.has-sensors) .zone-identity { flex: 1 1 100%; }
+}
+
+/* ---------- focus (v0.20.0, CD-15) ---------- */
+
+/* Two rules, and the pair is the point. :focus is silenced because the panel is
+   driven by a fingertip and a ring drawn under every tap is a rendering artefact
+   on a 24/7 display; :focus-visible then paints one for the keyboard, which the
+   engine raises only for a keyboard interaction. Declaring only the first would
+   have been the accessibility regression this section exists to avoid — an
+   invisible focus point is a keyboard UI nobody can follow. */
+:focus { outline: none; }
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: calc(var(--layout-unit) * 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.crab.waveonce .arm-right,
+	.card.pulse,
+	.card.esc1.pulse,
+	.card.esc2.pulse,
+	/* The v0.11.0 tricks. JS refuses to fire any of them under reduced motion, so
+	   these are the belt — with one exception that is NOT belt: the writing tick
+	   is driven by a class the 1 Hz tick toggles, and a run that turned the
+	   setting on mid-session would otherwise keep a two-frame dot going. Steady
+	   dot, and the card's own age figure still says how fresh it is. */
+	.crab.snap .arm-right .claw,
+	.crab.bounce .rig,
+	.flash.fire { animation: none; }
+	.crab.juggling .juggle { display: none; }
+	.card.writing.w2 .dot { transform: none; }
+	/* With the pulse gone the escalation still has to be visible, so the tier
+	   lands as a static border instead. The ESCALATED badge carries it in text
+	   either way. */
+	.card.esc1 { border-color: var(--amber); }
+	.card.esc2 { border-color: #FF8D59; }
+	/* v0.14.0. The pin confirm loses its animation and keeps its MEANING: the
+	   glyph's presence (or, for the length of an unpin flash, its last appearance)
+	   is the confirmation, and the animation was only ever making the arrival
+	   legible. dismissSwiped skips the fly-out in JS under this setting, so the
+	   card simply goes; this is the belt for a setting turned on mid-gesture. */
+	.card-pin.pin-confirm-on, .card-pin.pin-confirm-off { animation: none; }
+	.card.swipe-settle { transition: none; }
+}
+

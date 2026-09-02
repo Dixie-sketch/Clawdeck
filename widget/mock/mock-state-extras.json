@@ -1,0 +1,257 @@
+{
+  "schema": 5,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": { "version": "0.6.1", "startedAt": "2026-08-26T06:41:09Z", "hooksSeen": 7431 },
+
+  "quiet": { "active": false, "start": "22:00", "end": "07:00", "override": null },
+
+  "recap": {
+    "sessionsToday": 11,
+    "doneToday": 4,
+    "commits": [
+      { "repo": "sidecrab", "count": 19 },
+      { "repo": "acme-api", "count": 8 },
+      { "repo": "orbit-desktop", "count": 3 },
+      { "repo": "acme-web", "count": 1 }
+    ],
+    "week": [
+      { "day": "2026-08-20", "done": null, "commits": 14 },
+      { "day": "2026-08-21", "done": 5, "commits": 22 },
+      { "day": "2026-08-22", "done": 0, "commits": 2 },
+      { "day": "2026-08-23", "done": 1, "commits": 0 },
+      { "day": "2026-08-24", "done": 6, "commits": 27 },
+      { "day": "2026-08-25", "done": 4, "commits": 18 },
+      { "day": "2026-08-26", "done": 4, "commits": 31 }
+    ],
+    "computedAt": "2026-08-26T18:01:30Z"
+  },
+
+  "limits": {
+    "available": true,
+    "source": "statusline",
+    "note": "limits as of 2:41 PM",
+    "fiveHour": { "utilization": 0.44, "resetsAt": "2026-08-26T18:38:00Z", "exhaustAt": "2026-08-26T18:33:00Z" },
+    "weekly": { "utilization": 0.79, "resetsAt": "2026-08-31T07:00:00Z", "exhaustAt": null },
+    "extra": [
+      { "label": "opus weekly", "utilization": 0.63, "resetsAt": "2026-08-26T20:15:00Z", "exhaustAt": "2026-08-26T20:30:00Z" },
+      { "label": "sonnet weekly", "utilization": 0.41, "resetsAt": "2026-08-31T07:00:00Z", "exhaustAt": "2026-08-30T22:10:00Z" }
+    ],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+
+  "burn": {
+    "today": { "inputTokens": 448300, "outputTokens": 641900, "cacheReadTokens": 19640000, "cacheCreationTokens": 1208000, "messages": 1612 },
+    "costUSD": 12.47,
+    "costSource": "otlp",
+    "budget": { "dailyOutputTokens": 2000000, "todayPct": 0.321 },
+    "byModel": [
+      { "model": "claude-opus-5", "outputTokens": 402100 },
+      { "model": "claude-sonnet-4-6", "outputTokens": 171300 },
+      { "model": "claude-fable-5", "outputTokens": 56900 },
+      { "model": "claude-haiku-4-5", "outputTokens": 11600 }
+    ],
+    "hourly": [
+      { "hourStart": "2026-08-25T13:00:00", "outputTokens": 44100 },
+      { "hourStart": "2026-08-25T14:00:00", "outputTokens": 57800 },
+      { "hourStart": "2026-08-25T15:00:00", "outputTokens": 49200 },
+      { "hourStart": "2026-08-25T16:00:00", "outputTokens": 31500 },
+      { "hourStart": "2026-08-25T17:00:00", "outputTokens": 15100 },
+      { "hourStart": "2026-08-25T18:00:00", "outputTokens": 6300 },
+      { "hourStart": "2026-08-25T19:00:00", "outputTokens": 1200 },
+      { "hourStart": "2026-08-25T20:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T21:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T22:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-25T23:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T00:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T01:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T02:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T03:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T04:00:00", "outputTokens": 0 },
+      { "hourStart": "2026-08-26T05:00:00", "outputTokens": 4200 },
+      { "hourStart": "2026-08-26T06:00:00", "outputTokens": 28700 },
+      { "hourStart": "2026-08-26T07:00:00", "outputTokens": 61400 },
+      { "hourStart": "2026-08-26T08:00:00", "outputTokens": 94800 },
+      { "hourStart": "2026-08-26T09:00:00", "outputTokens": 118200 },
+      { "hourStart": "2026-08-26T10:00:00", "outputTokens": 90600 },
+      { "hourStart": "2026-08-26T11:00:00", "outputTokens": 141300 },
+      { "hourStart": "2026-08-26T12:00:00", "outputTokens": 83700 }
+    ],
+    "daily": [
+      { "dayStart": "2026-08-20", "outputTokens": 512900 },
+      { "dayStart": "2026-08-21", "outputTokens": 688400 },
+      { "dayStart": "2026-08-22", "outputTokens": 96100 },
+      { "dayStart": "2026-08-23", "outputTokens": 41700 },
+      { "dayStart": "2026-08-24", "outputTokens": 824600 },
+      { "dayStart": "2026-08-25", "outputTokens": 1187300 },
+      { "dayStart": "2026-08-26", "outputTokens": 641900 }
+    ]
+  },
+
+  "sessions": [
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+      "title": "crabd 0.6.1 — schema rework rollout",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:01:05Z",
+      "lastActivityAt": "2026-08-26T18:01:05Z",
+      "lastEvent": "asked a question: pin the ceiling at 5 or hold at 6?",
+      "question": "crabd now serves \"schema\": 5 as the last BREAKING shape, with fleet and contextTokens riding on it as additive fields.\n\nPin the widget ceiling at 5 and let every future additive field land without an iCUE import, or hold the ceiling at 6 so the two stay lockstep?",
+      "turnStartedAt": "2026-08-26T17:54:40Z",
+      "acked": false,
+      "pendingPermission": { "tool": "Bash", "summary": "Run a shell command that removes the build output directory (rm -rf ./dist) before the next release build", "requestedAt": "2026-08-26T18:04:50Z" },
+      "model": "claude-opus-5",
+      "contextTokens": 487200,
+      "speed": "standard",
+      "subagents": { "running": 2, "total": 4 },
+      "subagentDetail": [
+        { "label": "contract-diff", "ageSec": 61 },
+        { "label": "fixture-sweep", "ageSec": 288 }
+      ],
+      "queuedContinue": null,
+      "todayOutputTokens": 141900,
+      "events": [
+        { "at": "2026-08-26T18:01:05Z", "text": "asked a question" },
+        { "at": "2026-08-26T17:57:12Z", "text": "subagent started: contract-diff" },
+        { "at": "2026-08-26T17:54:40Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:49:58Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:41:03Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+      "title": "SideCrab widget — presence gating audit",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:36:20Z",
+      "lastActivityAt": "2026-08-26T18:04:52Z",
+      "lastEvent": "converting the /v1/config schema gate",
+      "turnStartedAt": "2026-08-26T17:52:11Z",
+      "model": "claude-opus-5",
+      "contextTokens": 196400,
+      "speed": "fast",
+      "subagents": { "running": 3, "total": 5 },
+      "subagentDetail": [
+        { "label": "grep-schema-compares", "ageSec": 42 },
+        { "label": "render-presence-check", "ageSec": 205 },
+        { "label": "capability-probe-review", "ageSec": 417 }
+      ],
+      "queuedContinue": { "prompt": "Run the tests and report the results.", "queuedAt": "2026-08-26T18:04:20Z" },
+      "todayOutputTokens": 152800,
+      "events": [
+        { "at": "2026-08-26T18:04:52Z", "text": "converting the /v1/config schema gate" },
+        { "at": "2026-08-26T18:00:10Z", "text": "subagent started: capability-probe-review" },
+        { "at": "2026-08-26T17:56:44Z", "text": "subagent finished: ceiling-constant" },
+        { "at": "2026-08-26T17:52:11Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:47:30Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:36:20Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50003",
+      "title": "build agent 3 — disk health walk",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:12:44Z",
+      "lastActivityAt": "2026-08-26T18:01:15Z",
+      "lastEvent": "reading SMART off the disk",
+      "turnStartedAt": "2026-08-26T17:56:40Z",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 1954200,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 2 },
+      "subagentDetail": [],
+      "queuedContinue": null,
+      "todayOutputTokens": 109400,
+      "events": [
+        { "at": "2026-08-26T18:04:58Z", "text": "reading SMART off the disk" },
+        { "at": "2026-08-26T18:02:05Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:58:41Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:12:44Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50004",
+      "title": "dependency audit — npm advisories",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "working",
+      "stateSince": "2026-08-26T17:44:02Z",
+      "lastActivityAt": "2026-08-26T18:04:59Z",
+      "lastEvent": "importing findings into the tracker",
+      "turnStartedAt": "2026-08-26T18:03:50Z",
+      "model": "claude-fable-5",
+      "contextTokens": 74800,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "subagentDetail": [],
+      "queuedContinue": null,
+      "todayOutputTokens": 92600,
+      "events": [
+        { "at": "2026-08-26T18:04:59Z", "text": "importing findings into the tracker" },
+        { "at": "2026-08-26T18:03:50Z", "text": "prompt submitted" },
+        { "at": "2026-08-26T17:44:02Z", "text": "session started" }
+      ]
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+      "title": "acme-api",
+      "titleSource": "cwd",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "done",
+      "stateSince": "2026-08-26T17:57:31Z",
+      "lastActivityAt": "2026-08-26T17:57:31Z",
+      "lastEvent": "finished — guide published",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 68300,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 1 },
+      "queuedContinue": { "prompt": "Open a pull request for this work.", "queuedAt": "2026-08-26T18:04:20Z" },
+      "todayOutputTokens": 34100,
+      "events": [
+        { "at": "2026-08-26T17:57:31Z", "text": "finished a turn" },
+        { "at": "2026-08-26T17:40:12Z", "text": "prompt submitted" }
+      ]
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+      "cwd": "C:\\Dev\\scratch-notes",
+      "repo": null,
+      "branch": null,
+      "state": "idle",
+      "stateSince": "2026-08-26T17:21:00Z",
+      "lastActivityAt": "2026-08-26T17:21:00Z",
+      "lastEvent": "no activity for 44 minutes",
+      "model": "claude-haiku-4-5",
+      "contextTokens": null,
+      "speed": "standard",
+      "subagents": { "running": 0, "total": 0 },
+      "queuedContinue": null,
+      "todayOutputTokens": 9200,
+      "events": []
+    }
+  ],
+
+  "fleet": { "glow": "running", "toast": "stopped" },
+
+  "host": { "cpuPct": 34.2, "memPct": 58.4, "memUsedGB": 18.7, "memTotalGB": 32.0 },
+
+  "toast": {
+    "thresholdSec": 120,
+    "enabled": true,
+    "approvalThresholdSec": 45
+  },
+  "continuePrompts": ["Open a pull request for this work."],
+
+  "_mock": { "config400": ["toast", "budget"] }
+}

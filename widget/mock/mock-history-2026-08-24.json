@@ -1,0 +1,79 @@
+{
+ "day": "2026-08-24",
+ "events": [
+  {
+   "ts": "2026-08-25T00:27:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-24T23:03:00Z",
+   "kind": "done",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-24T21:18:00Z",
+   "kind": "finished a turn",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-24T19:52:00Z",
+   "kind": "subagent finished: ceiling-constant",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-24T19:06:00Z",
+   "kind": "subagent started: contract-diff",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-24T18:41:00Z",
+   "kind": "session started",
+   "sessionId": "7f2a1c90-4b6e-4a11-9d33-0c5511ee0042",
+   "title": "dependency audit — npm advisories"
+  },
+  {
+   "ts": "2026-08-24T16:15:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-24T16:02:00Z",
+   "kind": "asked a question",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-24T15:30:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+   "title": "crabd 0.6.1 — schema rework rollout"
+  },
+  {
+   "ts": "2026-08-24T14:44:00Z",
+   "kind": "finished a turn",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-24T14:09:00Z",
+   "kind": "prompt submitted",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  },
+  {
+   "ts": "2026-08-24T13:55:00Z",
+   "kind": "session started",
+   "sessionId": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+   "title": "acme-api — OpenAPI spec reconcile"
+  }
+ ],
+ "count": 12,
+ "truncated": false
+}

@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>tr('SideCrab')</title>
+	<link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
+	<link rel="stylesheet" href="styles/sidecrab.css" />
+	<meta name="x-icue-widget-preview" content="resources/preview.png" />
+
+	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'2722'" />
+	<meta name="x-icue-property" content="clock24" data-label="tr('24-Hour Clock')" data-type="switch" data-default="false" />
+	<meta name="x-icue-property" content="alertFlash" data-label="tr('Flash On New Alert')" data-type="switch" data-default="true" />
+
+	<!-- The wardrobe switch (v0.11.0). The accessory system is "auto" (the crab
+	     dresses for what the sessions are doing) or "plain" (never any accessory),
+	     and it is declared as a SWITCH because switch/slider/textfield/color are the
+	     property types this widget has ever had confirmed on the Edge — guessing an
+	     enum type the import validator does not know would fail at the console, not
+	     here. The reader (crabStyle() in sidecrab.js) accepts the WORDS 'auto' and
+	     'plain' as well as the boolean, so a later enum control needs no code. -->
+	<meta name="x-icue-property" content="crabStyle" data-label="tr('Crab Accessories')" data-type="switch" data-default="true" />
+
+	<meta name="x-icue-property" content="quietEnabled" data-label="tr('Quiet Hours')" data-type="switch" data-default="false" />
+	<meta name="x-icue-property" content="quietStart" data-label="tr('Quiet Start (HH:MM)')" data-type="textfield" data-default="'22:00'" />
+	<meta name="x-icue-property" content="quietEnd" data-label="tr('Quiet End (HH:MM)')" data-type="textfield" data-default="'07:00'" />
+
+	<!-- THE MASTER TOAST SWITCH (label re-checked v0.20.0, CD-26). It reads as a
+	     global mute and, as of the notifier's v0.20.0 change, that is exactly what
+	     it is: `toast.enabled` gates EVERY SideCrab toast — waiting sessions,
+	     permission requests, the daily digest and the budget crossing alike — not
+	     only the waiting-session ones it used to gate.
+	     The label is therefore correct as written and is deliberately unchanged;
+	     what is new is that its correctness now depends on the notifier honouring
+	     the key globally. If that ever narrows again, this label and the group
+	     info line below are the two places that go wrong, and they go wrong
+	     silently, so they are named here.
+	     No per-property description attribute is invented for this: switch,
+	     slider, textfield, color and sensors-combobox with data-label are the only
+	     shapes this widget has ever had accepted by the import validator, and the
+	     group `info` is where per-group prose is contractually allowed. -->
+	<meta name="x-icue-property" content="toastEnabled" data-label="tr('Desktop Toast Alerts')" data-type="switch" data-default="true" />
+	<meta name="x-icue-property" content="toastThreshold" data-label="tr('Toast After')" data-type="slider" data-default="120" data-min="30" data-max="600" data-step="10" data-unit-label="'s'" />
+
+	<!-- The APPROVAL toast threshold (v0.16.0): how long a permission request may
+	     sit undecided before the notifier toasts it. A separate control from the
+	     one above because it is a different question, and it needs a range the
+	     other cannot give it: the contract allows 5 to 3600 s here and the shipped
+	     default is 20, which is below the waiting toast's own 30 s floor.
+	     The slider stops at 300 rather than the contract ceiling: a permission
+	     request is something the operator is already blocked on, so five minutes is
+	     past the far end of useful, and a slider that must travel an hour to be set
+	     is a slider nobody sets. Step 5 keeps every position a whole number of the
+	     unit shown beside it.
+	     THE SEQUENCING, which is the load bearing part: the value is written to
+	     crabd only once this control has actually been moved. crabd preserves the
+	     on-disk value when the key is omitted, and sending the default on every
+	     save would quietly delete a value hand-edited into config.json. See
+	     noteApprovalThreshold() in scripts/sidecrab.js. -->
+	<meta name="x-icue-property" content="approvalThreshold" data-label="tr('Approval Toast After')" data-type="slider" data-default="20" data-min="5" data-max="300" data-step="5" data-unit-label="'s'" />
+
+	<!-- The budget slider is in THOUSANDS of output tokens, not raw ones: the
+	     control renders its own value beside its unit label, and "5000000 tokens"
+	     is not a figure anyone reads on a settings panel. 100 (100k) is the
+	     contract's own floor; 20000 (20M) is the top of the plausible range
+	     rather than the contract's 100M ceiling, because a slider that must
+	     travel a thousand steps to reach a usable value is a slider nobody sets.
+	     The step is 100, so every position is a whole 100k. -->
+	<meta name="x-icue-property" content="budgetEnabled" data-label="tr('Daily Token Budget')" data-type="switch" data-default="false" />
+	<meta name="x-icue-property" content="budgetTokens" data-label="tr('Budget Per Day')" data-type="slider" data-default="5000" data-min="100" data-max="20000" data-step="100" data-unit-label="'k out'" />
+
+	<meta name="x-icue-property" content="cpuTempSensor" data-label="tr('CPU Temperature Sensor')" data-type="sensors-combobox" data-default="plugins.Sensorsdataprovider.getDefaultSensorIdBlock('temperature', 'cpu-temp')" />
+	<meta name="x-icue-property" content="gpuTempSensor" data-label="tr('GPU Temperature Sensor')" data-type="sensors-combobox" data-default="plugins.Sensorsdataprovider.getDefaultSensorIdBlock('temperature', 'gpu-temp')" />
+
+	<!-- TOUCH DIAGNOSTICS (v0.23.0). Default OFF, and a switch rather than anything
+	     cleverer because switch/slider/textfield/color/sensors-combobox are the
+	     property types this widget has ever had accepted by the import validator.
+	     It is in a group of its own so it cannot be mistaken for a feature: turning
+	     it on installs a document-level, capture-phase, PASSIVE event recorder and
+	     ships what it records to the companion, and turning it off REMOVES those
+	     listeners rather than muting them. Nothing about the panel's behaviour
+	     changes in either state — that is proved, not asserted, and the proof is in
+	     widget/DEV.md under v0.23.0. -->
+	<meta name="x-icue-property" content="touchDiag" data-label="tr('Touch Diagnostics')" data-type="switch" data-default="false" />
+
+	<meta name="x-icue-property" content="textColor" data-label="tr('Text Color')" data-type="color" data-default="'#EDE7DF'" />
+	<!-- The accent default is stated in THREE places — here, :root in sidecrab.css,
+	     and the strProp fallback in sidecrab.js — and they move together: iCUE
+	     writes this one over the CSS at runtime, so a mismatch renders one colour in
+	     a browser and another on the glass. v0.26.0 value and the measurements
+	     behind it: the AUD-F1 note on the accent token in sidecrab.css. -->
+	<meta name="x-icue-property" content="accentColor" data-label="tr('Accent Color')" data-type="color" data-default="'#BE7E6E'" />
+	<meta name="x-icue-property" content="backgroundColor" data-label="tr('Background Color')" data-type="color" data-default="'#0F0E0D'" />
+	<meta name="x-icue-property" content="transparency" data-label="tr('Background Transparency')" data-type="slider" data-default="0" data-min="0" data-max="100" data-step="1" data-unit-label="'%'" />
+
+	<script id="x-icue-groups" type="application/json">
+	[
+		{
+			"title": "tr('SideCrab')",
+			"properties": ["crabdPort", "clock24", "alertFlash", "crabStyle", "quietEnabled", "quietStart", "quietEnd", "toastEnabled", "toastThreshold", "approvalThreshold", "budgetEnabled", "budgetTokens"],
+			"info": "tr('Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions.')"
+		},
+		{
+			"title": "tr('Hardware Sensors')",
+			"properties": ["cpuTempSensor", "gpuTempSensor"],
+			"info": "tr('The sensor row is hidden entirely when iCUE reports no sensors, so the panel never shows a blank or invalid temperature. Pick a DIFFERENT sensor for each: importing the widget resets both of these, and one sensor selected twice would read the same temperature in both cells. The panel labels each reading with the name iCUE gives that sensor, and says so rather than printing the same number twice.')"
+		},
+		{
+			"title": "tr('Diagnostics')",
+			"properties": ["touchDiag"],
+			"info": "tr('Turn this on only while investigating touch problems, then turn it off. While it is on the panel records every touch, pen and mouse event it receives and sends the log to the SideCrab companion, and a small dim counter appears beside the clock so you can see it is recording. It changes nothing else about how the panel behaves. Leave it off for normal use.')"
+		},
+		{
+			"title": "tr('Widget Personalization')",
+			"properties": ["textColor", "accentColor", "backgroundColor", "transparency"]
+		}
+	]
+	</script>
+
+	<!-- iCUE plugin wrappers, bundled LOCALLY per the Corsair sensors reference
+	     ("copy common/plugins into your widget folder; do not reference iCUE
+	     installation paths"). Inline rather than script src because iCUE serves
+	     widgets from a file:// GUID folder where QtWebEngine silently refuses to
+	     execute a wrapper loaded by src — inline satisfies the same instruction:
+	     nothing here resolves against an iCUE-owned path, so no iCUE-injected
+	     global can shadow it. SimpleSensorApiWrapper extends the base, so the base
+	     must be declared first.
+	     The CDATA wrapper is load-bearing, not decoration: iCUE parses this file
+	     as strict XML, where the wrapper's own logical-AND is a raw ampersand and
+	     an illegal token. The two marker lines are line comments to JavaScript and
+	     markup to XML.
+
+	     v0.18.0 — THE FROZEN-SENSOR FIX. Three departures from the reference text,
+	     each one a defect the reference has and this panel was living with:
+
+	     1. THE ORDERING RACE, and the one that freezes a panel. The reference calls
+	        the plugin method BEFORE putting the request in pendingRequests. Qt
+	        delivers a signal synchronously whenever the connection is direct and
+	        the provider can answer without going to hardware — a warm cache, which
+	        is exactly what a sensor provider has after its first read. The
+	        asyncResponse callback then runs INSIDE method.call, finds an empty map,
+	        and drops the answer; the promise sits until the 5 s timeout and
+	        rejects. First read (cold, genuinely async) resolves and paints a number;
+	        every read after it is dropped, so the number never moves. Registering
+	        BEFORE the call makes a synchronous answer land in a map that already
+	        has somewhere to put it.
+	     2. requestId TYPE. The map is keyed by a JS number and the bridge may hand
+	        the id back as a string or a double; a Map lookup is strict, so a
+	        round-trip through the transport that changes the type misses silently
+	        and every request times out. Both sides go through Number().
+	     3. A THROWING method (an older provider missing one) left a pending entry
+	        to time out 5 s later with the real error lost. It rejects now, with the
+	        reason.
+	     Rejections carry a `code` ("timeout" / "call") so a caller can classify one
+	     without matching on message text. -->
+	<script>
+	//<![CDATA[
+	class IcueWidgetApiWrapper {
+	  constructor(plugin, timeoutMs = 5000) {
+	    this.plugin = plugin; this.timeoutMs = timeoutMs;
+	    this.pendingRequests = new Map(); this.nextRequestId = 0;
+	    if (this.plugin && this.plugin.asyncResponse)
+	      this.plugin.asyncResponse.connect(this._handleAsyncResponse.bind(this));
+	  }
+	  _nextRequestId() { return this.nextRequestId++; }
+	  _handleAsyncResponse(requestId, value) {
+	    const key = Number(requestId);
+	    const pending = this.pendingRequests.get(key);
+	    if (!pending) return;
+	    clearTimeout(pending.timeoutId);
+	    this.pendingRequests.delete(key);
+	    pending.resolve(value);
+	  }
+	  request(method, ...args) {
+	    return new Promise((resolve, reject) => {
+	      const requestId = this._nextRequestId();
+	      const timeoutId = setTimeout(() => {
+	        if (this.pendingRequests.has(requestId)) {
+	          this.pendingRequests.delete(requestId);
+	          const err = new Error("Request timeout"); err.code = "timeout"; reject(err);
+	        }
+	      }, this.timeoutMs);
+	      this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
+	      try { method.call(this.plugin, requestId, ...args); }
+	      catch (e) {
+	        clearTimeout(timeoutId);
+	        this.pendingRequests.delete(requestId);
+	        const err = e instanceof Error ? e : new Error(String(e)); err.code = "call"; reject(err);
+	      }
+	    });
+	  }
+	}
+	class SimpleSensorApiWrapper extends IcueWidgetApiWrapper {
+	  constructor(plugin, timeoutMs = 5000) { super(plugin, timeoutMs); }
+	  getSensorValue(sensorId)      { return this.request(this.plugin.getSensorValue, sensorId); }
+	  getSensorUnits(sensorId)      { return this.request(this.plugin.getSensorUnits, sensorId); }
+	  getSensorName(sensorId)       { return this.request(this.plugin.getSensorName, sensorId); }
+	  getSensorDeviceName(sensorId) { return this.request(this.plugin.getSensorDeviceName, sensorId); }
+	  getSensorType(sensorId)       { return this.request(this.plugin.getSensorType, sensorId); }
+	  getSensorKind(sensorId)       { return this.request(this.plugin.getSensorKind, sensorId); }
+	  getAllSensorIds()              { return this.request(this.plugin.getAllSensorIds); }
+	  sensorIsConnected(sensorId)   { return this.request(this.plugin.sensorIsConnected, sensorId); }
+	}
+	//]]>
+	</script>
+</head>
+<body>
+	<div id="flash" class="flash" aria-hidden="true"></div>
+	<div id="glow" class="glow" aria-hidden="true"></div>
+
+	<div id="banner" class="banner" role="status"><span id="bannerText" class="banner-text"></span></div>
+
+	<!-- Inline confirmation line (v0.14.0). The receipt for the two gestures that
+	     have no other visible result: a two finger tap acknowledges every waiting
+	     session, and a pull down from the top forces a refresh, and both would
+	     otherwise be indistinguishable from a fingertip that missed.
+	     ABSOLUTELY POSITIONED over the banner strip rather than sitting beside the
+	     banner in the column, and that is the whole reason it is a second element:
+	     a transient line that reflowed the panel would move every card under a
+	     finger already travelling toward one, and at the 344 px slot it would cost
+	     a row of the grid for as long as it showed. Overlaying also means it never
+	     fights the stale banner for the strip: for its second and a half it simply
+	     covers it, and the failure is still there underneath when it goes. -->
+	<div id="notice" class="notice" role="status" aria-hidden="true"><span id="noticeText" class="notice-text"></span></div>
+
+	<div id="zones" class="zones">
+
+		<section class="zone zone-identity">
+			<!-- Claw'deck badge (v0.5.0). Replaces the Claude Max lockup outright.
+			     Drawn, not linked: the widget bundles everything and a raster would
+			     go soft on the Edge's 2560 px glass. Two rendering modes on purpose,
+			     because the badge is two kinds of art in one box: the mini crab and
+			     its glasses are on the same half-cell pixel grid Claw'd uses and get
+			     crispEdges so the blocks stay hard; the plate and the wordmark are
+			     smooth shapes and get geometricPrecision, which is what keeps the
+			     border radius and the letterforms clean when the SVG is scaled to
+			     whatever the identity zone is that slot.
+			     Colours are literal here, not tokens: this is a logo, so it must NOT
+			     move when the personalization accent does. The badge orange is one
+			     step hotter than the main crab's fill so the badge pops off it. -->
+			<div class="brand-badge-wrap">
+				<svg class="brand-badge" viewBox="0 0 130 26" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claw'deck">
+					<rect class="badge-plate" x="1.5" y="1.5" width="127" height="23" rx="7.5" ry="7.5" />
+
+					<!-- Mini Claw'd, same rect grid as the panel crab (viewBox 26x20,
+					     2 units = 1 pixel cell), minus the eyes: the glasses replace
+					     them. Parked at translate 8,3 so the body sits on the badge's
+					     vertical centre line. -->
+					<g class="badge-crab" transform="translate(8 3)">
+						<g fill="#E8511F">
+							<rect x="4" y="3" width="18" height="10" />
+							<rect x="0" y="7" width="4" height="3" />
+							<rect x="22" y="7" width="4" height="3" />
+							<rect x="4" y="13" width="3" height="4" />
+							<rect x="10" y="13" width="2" height="4" />
+							<rect x="14" y="13" width="2" height="4" />
+							<rect x="19" y="13" width="3" height="4" />
+						</g>
+						<!-- Shading (v0.17.0), the detail the bigger badge can afford. Two
+						     literal tones either side of the badge orange, applied as
+						     grid-aligned rects INSIDE the existing silhouette — nothing here
+						     adds a pixel to the outline, so the badge crab is the same shape
+						     it was, only rounder. Drawn after the flat fill and before the
+						     shades, so the lens still paints over everything it used to.
+						     Shadow first (the underside of the shell, the lower row of each
+						     claw, the foot of each leg), then the half-cell highlight along
+						     the shell's top edge, which is the one strip the lens bar does
+						     not cover. -->
+						<g fill="#C0400F">
+							<rect x="4" y="11" width="18" height="2" />
+							<rect x="0" y="9" width="4" height="1" />
+							<rect x="22" y="9" width="4" height="1" />
+							<rect x="4" y="15" width="3" height="2" />
+							<rect x="10" y="15" width="2" height="2" />
+							<rect x="14" y="15" width="2" height="2" />
+							<rect x="19" y="15" width="3" height="2" />
+						</g>
+						<g fill="#F4783F">
+							<rect x="4" y="3" width="18" height="1" />
+							<rect x="0" y="7" width="4" height="1" />
+							<rect x="22" y="7" width="4" height="1" />
+						</g>
+						<!-- Deal-with-it shades: a 2-cell-thick lens bar across the eye
+						     row, plus 1-cell temple arms that run out past both body
+						     edges. The temples sit on the bar's TOP row, not its middle,
+						     so they clear the claws by a cell instead of fusing with
+						     them into one thick blob. -->
+						<g fill="#0B0907">
+							<rect x="4" y="4" width="18" height="4" />
+							<rect x="0" y="4" width="4" height="2" />
+							<rect x="22" y="4" width="4" height="2" />
+						</g>
+						<!-- Glare. Three whole cells per lens in a checker, weighted to
+						     the top left: a smooth highlight would break the pixel
+						     grammar the rest of the crab is drawn in. -->
+						<g fill="#FFFFFF">
+							<rect x="4" y="4" width="2" height="2" />
+							<rect x="8" y="4" width="2" height="2" />
+							<rect x="6" y="6" width="2" height="2" />
+							<rect x="14" y="4" width="2" height="2" />
+							<rect x="18" y="4" width="2" height="2" />
+							<rect x="16" y="6" width="2" height="2" />
+						</g>
+					</g>
+
+					<text class="badge-word" x="42" y="18.4">Claw'deck</text>
+				</svg>
+			</div>
+			<!-- v0.4.0: the whole crab is the ack-all button. Deliberately the largest
+			     hit target on the panel, because it is the one control meant to be hit
+			     while walking past the desk. It acks every waiting session; with nothing
+			     waiting it only blinks, so a stray palm cannot change any state. -->
+			<div id="crabWrap" class="crab-wrap tappable" role="button" tabindex="0" aria-label="Acknowledge every waiting session">
+				<!-- Claw'd, the Claude pixel-art crab. Strict blocky grid: every shape is a
+				     grid-aligned <rect>, no curves/outlines/gradients/radii. viewBox units are
+				     half-grid-cells (2 units = 1 cell) so the reference's half-step leg splay and
+				     1.5-cell arms land on exact integers. shape-rendering="crispEdges" keeps the
+				     block edges hard at any scale — without it the panel antialiases them into
+				     soft-edged mush and the pixel grammar is lost.
+				     Mood is switched by the data-mood attribute only: every mood part exists in
+				     the DOM and CSS shows/hides it, so no SVG is rebuilt at runtime. -->
+				<!-- viewBox grew UPWARD at v0.11.0 (0 0 26 20 -> 0 -2 26 22) to make room
+				     for the wardrobe's hats. Five units of headroom, and five is a
+				     MEASUREMENT, not a round number: at the 2560x720 slot the crab box is
+				     462x400 px, so the SVG is width-limited at any viewBox height up to
+				     22.5 and the painted crab is byte-identical either side of this change.
+				     23 costs 2% of the crab and 24 costs 6%, and the small 840x344 slot —
+				     where the box is 275x220 and the crab is HEIGHT-limited — pays for
+				     every unit (5.6% at 22, 13% at 24). Re-measure both slots before
+				     growing this again. (Those unit figures are the v0.11.0 grid; on the
+				     v0.17.0 grid below they are 44, 45, 46, 48 — the RATIOS are what the
+				     paragraph is about and they are unchanged.) -->
+				<!-- THE GRID DOUBLED AT v0.17.0 (0 -2 26 22 -> 0 -4 52 44). This is a
+				     RESOLUTION change and nothing else: every coordinate in here was
+				     multiplied by exactly 2 and the viewBox with it, so the painted crab is
+				     identical — same silhouette, same proportions, same palette, same four
+				     moods. Measured at the 2560x720 slot either side of the change: the
+				     painted crab is 462.1 x 391.0 px and the body rect is 319.9 x 177.7 px,
+				     unchanged; the viewBox UNIT halved from 17.772 px to 8.886 px.
+				     Read the grammar carefully, because the obvious reading is wrong. A
+				     CELL is the same physical size it always was (35.5 px here) — it is now
+				     4 units where it was 2. What doubled is the ADDRESSABLE STEP: the
+				     finest thing this art can express went from a half-cell to a
+				     quarter-cell. That is why the crab looks the same and must.
+				     Why do it at all, then: the wardrobe is the next piece of work and it
+				     had run out of grid. A hat brim, a lens bridge or a pompom could only
+				     ever be a half-cell block (~18 px at this slot); on this grid the same
+				     detail can be ~9 px, so an accessory can have a shape instead of a
+				     silhouette. NO accessory art changed here — the wardrobe groups were
+				     scaled with everything else and are otherwise untouched, deliberately:
+				     the accessory work is paused.
+				     Two things ride on the factor and both moved with it. The CSS
+				     transforms that park an arm, snap a claw or hop the rig are written in
+				     viewBox units (transform-box: view-box), so all ten doubled. And the
+				     BADGE crab in the identity zone is no longer on this grid — it kept the
+				     v0.11.0 numbers, so "the badge's own glasses, verbatim" below now means
+				     the same shape at twice the coordinates, not the same integers. -->
+				<svg id="crab" class="crab" data-mood="asleep" data-acc="" viewBox="0 -4 52 44" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SideCrab status crab">
+				  <!-- The rig exists so ONE transform can move the whole animal (the bounce
+				       trick hops it a cell). Everything below is selected by descendant
+				       combinators, so wrapping them changes no existing rule. -->
+				  <g class="rig">
+					<g class="pix">
+						<rect class="body" x="8" y="6" width="36" height="20" />
+
+						<!-- The claw is a group INSIDE the arm, not the arm itself: the mood
+						     rules park the arm with a static transform, and an animation on
+						     the same element replaces that transform outright — the claw
+						     snap would drop a waving arm to its resting row for the length
+						     of the trick. Nested, the two compose. -->
+						<g class="arm arm-left"><g class="claw"><rect x="0" y="14" width="8" height="6" /></g></g>
+						<g class="arm arm-right"><g class="claw"><rect x="44" y="14" width="8" height="6" /></g></g>
+
+						<g class="legs">
+							<rect x="8" y="26" width="6" height="8" />
+							<rect x="20" y="26" width="4" height="8" />
+							<rect x="28" y="26" width="4" height="8" />
+							<rect x="38" y="26" width="6" height="8" />
+						</g>
+
+						<!-- The sleep Z. Four rows, not three: the v0.3.0 glyph was bar /
+						     centred block / bar, which has no diagonal at all and read as a
+						     capital I on the glass (reported from a photo of the panel). The single
+						     blocks now step right then left, which is the only thing that makes
+						     a 3-cell-wide Z legible at panel scale.
+						     Parked two cells right of the v0.3.0 position. The fourth row pushes
+						     the glyph's bottom bar down to y 3, which is the shell's top edge, so
+						     the separation has to come from x instead: the body ends at x 22 and
+						     this starts at x 23, leaving one clear grid cell. Measured at x 22 the
+						     two shapes kissed at the corner and read as one blob with a flag on it. -->
+						<g class="zzz">
+							<rect x="46" y="0" width="6" height="2" />
+							<rect x="50" y="2" width="2" height="2" />
+							<rect x="48" y="4" width="2" height="2" />
+							<rect x="46" y="6" width="6" height="2" />
+						</g>
+					</g>
+
+					<g class="eyes eyes-open">
+						<rect x="16" y="10" width="4" height="4" />
+						<rect x="32" y="10" width="4" height="4" />
+					</g>
+					<g class="eyes eyes-sleep">
+						<rect x="16" y="12" width="4" height="2" />
+						<rect x="32" y="12" width="4" height="2" />
+					</g>
+					<g class="eyes eyes-worried">
+						<rect x="16" y="10" width="2" height="6" />
+						<rect x="34" y="10" width="2" height="6" />
+					</g>
+
+					<!-- THE WARDROBE — REDRAWN AT THE DOUBLED GRID (v0.18.0). Every
+					     accessory is a grid-aligned rect group in the same pixel grammar as
+					     the crab, drawn AFTER the eyes so the shades paint over them instead
+					     of needing a rule to hide them, and switched by the data-acc
+					     attribute alone — nothing here is built, moved or removed at
+					     runtime. Exactly one is ever shown; the stylesheet decides which, JS
+					     only sets the attribute.
+					     Colours are literal, like the badge's: an accessory is a costume,
+					     not a reading, so the personalization accent must not recolour it.
+
+					     WHY THIS IS A REDRAW AND NOT A TWEAK. The first generation was
+					     rejected by the operator on sight, and the reason is legible in the
+					     old coordinates: every rect was a whole or half CELL, because that
+					     was the entire grid v0.11.0 had. A party hat was a two-step ziggurat,
+					     the sunglasses were one 36-unit black slab across the shell, and the
+					     nightcap was three stacked bars. Those are SILHOUETTES — the shape
+					     of a hat with none of the shape of a hat.
+					     v0.17.0 doubled the grid for exactly this, and these three are drawn
+					     on it: the addressable step is a QUARTER cell (1 unit, 8.9 px at the
+					     2560x720 slot), which is enough for a frame rim, a stripe, a taper
+					     step and a pompom. The rule the redraw keeps from the crab itself is
+					     blocky-but-crisp over detailed-but-mushy: nothing here is thinner
+					     than 1 unit, nothing is diagonal, and every edge lands on an integer.
+					     THREE accessories, not four. The hard hat is retired — see DEV.md;
+					     it was the weakest of the set, it preempted the sunglasses in the
+					     one state the sunglasses exist for, and a fourth costume nobody
+					     asked for is a fourth costume to defend. -->
+
+					<!-- Deal-with-it shades. The v0.11.0 pair was the BADGE's glasses at
+					     twice the coordinates: a single lens bar spanning the whole shell,
+					     which at big-crab scale is a blindfold. Drawn properly here — two
+					     separate lenses with a 1-unit frame rim, a bridge between them, and
+					     temple arms that run out PAST the shell edge, because a temple that
+					     stops at the silhouette reads as a painted stripe rather than as
+					     something worn.
+					     The temples sit on the lens TOP rows (y 9..11), five units clear of
+					     the claws at y 14 — the badge's own reasoning, re-measured for this
+					     grid rather than inherited from it. -->
+					<g class="acc acc-shades">
+						<g class="acc-frame">
+							<rect x="12" y="8" width="12" height="8" />
+							<rect x="28" y="8" width="12" height="8" />
+							<rect x="23" y="10" width="6" height="2" />
+							<rect x="5" y="10" width="8" height="2" />
+							<rect x="39" y="10" width="8" height="2" />
+						</g>
+						<g class="acc-lens">
+							<rect x="13" y="9" width="10" height="6" />
+							<rect x="29" y="9" width="10" height="6" />
+						</g>
+						<!-- Glare: a two-step shine per lens, top-left weighted. Half-cell
+						     blocks rather than the old full-cell ones, so the highlight sits
+						     INSIDE the lens instead of being most of it. -->
+						<g class="acc-glare">
+							<rect x="14" y="10" width="4" height="2" />
+							<rect x="19" y="12" width="2" height="2" />
+							<rect x="30" y="10" width="4" height="2" />
+							<rect x="35" y="12" width="2" height="2" />
+						</g>
+					</g>
+
+					<!-- Party hat: a TALL, NARROW cone — 12 units high against a 12-unit
+					     brim, drawn as four tiers that pull in 1 unit per side each.
+
+					     THE FIRST CUT WAS A CAKE, and the numbers say why. It was 22 units
+					     wide at the base against 10 tall, and it stepped in 2 units per side
+					     per tier: wider than it was high, with a 45-degree slope. On the
+					     glass that is not a cone, it is a stack of golden pancakes sitting on
+					     the crab. A party hat reads as a party hat because it is TALLER than
+					     it is wide and its sides are steep; nothing else about it matters
+					     nearly as much.
+
+					     WHERE THE HEIGHT CAME FROM, because the headroom did not grow. The
+					     viewBox is untouched (growing it would move every crab pixel and cost
+					     6% of the animal at the 840x344 slot — see the v0.17.0 notes), so the
+					     extra height is taken at the BOTTOM: the brim now sits at y 7..8,
+					     two units INTO the shell, instead of resting on its top edge at y 6.
+					     That is how a hat actually sits on a head, it clears the eyes at
+					     y 10 by two units, and it buys the two units that turn a 10-high
+					     pancake into a 12-high cone.
+
+					     The taper is 1 unit per side per tier over tiers 2 and 3 units tall,
+					     so the sides run at roughly 63 to 72 degrees off horizontal where the
+					     old ones ran at 45. Widths 4 / 6 / 8 under a 10-unit brim — each step
+					     is a quarter cell, 8.9 px at the big slot and 10.6 px at the small
+					     one, which is visible as a step without turning the silhouette into a
+					     staircase.
+					     THE POMPOM IS THE SAME WIDTH AS THE TIER IT SITS ON, and that is not
+					     incidental. A four-tier version tapered to a 2-unit tip, which put a
+					     4-unit pompom overhanging a half-cell neck: it stopped reading as a
+					     cone and started reading as a trophy. Three tiers, capped flush.
+
+					     THE WIDTH IS SET BY THE HEIGHT, not chosen. The vertical budget is
+					     fixed at 12 units by the viewBox, so "taller than it is wide" can
+					     only be bought by narrowing: measured on the DOM, a 12-wide brim gave
+					     a bounding box of exactly 12 x 12 — a square, which still read as a
+					     cone but was not what the shape needed to be. At a 10-unit brim the
+					     box is 10 x 12, 1.20:1, and it is the ratio that is load-bearing
+					     here. RE-MEASURE the bbox if these numbers are ever touched; eyeing
+					     it off a screenshot is what produced the square. -->
+					<g class="acc acc-party">
+						<g class="acc-hat">
+							<rect x="24" y="-2" width="4" height="4" />
+							<rect x="23" y="2" width="6" height="3" />
+							<rect x="22" y="5" width="8" height="3" />
+						</g>
+						<!-- Stripes and brim, one unit thick. A quarter-cell stripe is 8.9 px
+						     at the big slot and 5.5 px at the small one — the finest thing in
+						     the whole widget, and the exact detail the grid was doubled for.
+						     They are RED on the gold rather than cream: cream on gold is a 15%
+						     luminance step, which is a stripe you cannot see from across a
+						     room, and this hat is only ever on the glass for sixty seconds.
+						     Each stripe rides the LOWER edge of a tier, so the stripe and the
+						     step-in land on the same row and the eye reads one boundary per
+						     tier instead of two competing ones. -->
+						<g class="acc-stripe">
+							<rect x="24" y="1" width="4" height="1" />
+							<rect x="23" y="4" width="6" height="1" />
+							<rect x="21" y="7" width="10" height="1" />
+						</g>
+						<g class="acc-topper">
+							<rect x="24" y="-4" width="4" height="2" />
+						</g>
+					</g>
+
+					<!-- Nightcap: a fur band, a cone that leans left and flops over, and a
+					     pompom hanging off the left shoulder. Left on purpose — the sleep Z
+					     lives off the RIGHT shoulder (x 46..52) and this is the accessory
+					     worn in the one mood that paints it, so a right-hand droop would
+					     collide with the very thing it is meant to pair with.
+					     The v0.11.0 cap was three stacked bars and a block; the flop here is
+					     four rects that each step left and down while narrowing, so the tip
+					     has a direction.
+					     EVERY JOINT IS CONTINUOUS, and that is the whole difference between
+					     this and the first cut of it. Each piece shares a full edge with the
+					     one before — band to cone at y 3, cone to cone at y 0, cone to flop
+					     at y -2, flop to tip inside x 3..5, tip to pompom at y 0. The first
+					     cut left the pompom hanging in space below the tip with a clear gap,
+					     and what it read as on the glass was not a cap with a bobble but a
+					     grey square that had fallen off the crab. -->
+					<g class="acc acc-nightcap">
+						<g class="acc-cap">
+							<rect x="11" y="0" width="23" height="3" />
+							<rect x="9" y="-2" width="19" height="2" />
+							<rect x="4" y="-4" width="16" height="2" />
+							<rect x="3" y="-4" width="8" height="7" />
+						</g>
+						<g class="acc-band">
+							<rect x="9" y="3" width="29" height="3" />
+						</g>
+						<!-- The pompom hangs BELOW the band's bottom edge (y 6) rather than
+						     sitting beside it, and clears the band by exactly 2 units. Both
+						     numbers came off a shot: tucked level with the band it read as
+						     part of it, and at the first cut's 4-unit clearance the dark
+						     between them read as a hole punched in the cap. -->
+						<g class="acc-pom">
+							<rect x="0" y="1" width="7" height="6" />
+						</g>
+					</g>
+
+					<!-- SWEAT (v0.22.0), the art for the `sweating` mood: a usage window is
+					     at or past the gauges' RED step and the crab has noticed.
+
+					     THE WHOLE POINT OF THIS BEING A SEPARATE GROUP is that the crab
+					     underneath it does not move. Nothing above this comment changed
+					     in this release — no coordinate, no fill, no group — so the
+					     sweating crab is the content crab with three rects added, and
+					     that is a claim a pixel diff can settle rather than a claim
+					     anybody has to take on trust. Switched by the mood attribute
+					     alone, the same discipline the sleep Z and the wardrobe keep: the
+					     OFF state is a bare-class rule, so only a mood-scoped rule can
+					     ever paint a drop and a stuck class cannot leave the crab
+					     sweating.
+
+					     Three drops, on the quarter-cell grid v0.17.0 bought. Each is a
+					     1-unit tip over a 3x3 body with a 1-unit glint in its top-left
+					     corner — 3 units wide by 4 tall, which is 26.7 x 35.5 px at the
+					     2560x720 slot: small enough to read as sweat and not as a fourth
+					     limb.
+					     PLACEMENT IS CLEARANCE, not composition. They sit in the empty
+					     headroom either side of the shell (x 8..44, y 6..26), above the
+					     claws (y 14..20) and outside the party hat's column (x 21..31),
+					     which is the one accessory that can share a frame with this mood.
+					     The sunglasses cannot: they need limitsCalm(), which is false by
+					     definition at the red step. The nightcap cannot: it needs quiet
+					     hours, and quiet outranks sweating in the mood ladder. The sleep
+					     Z lives at x 46..52 and would collide with the right-hand pair —
+					     it is asleep-only, and asleep is not sweating. -->
+					<g class="sweat">
+						<g class="sweat-drop">
+							<rect x="46" y="0" width="1" height="1" />
+							<rect x="45" y="1" width="3" height="3" />
+						</g>
+						<g class="sweat-drop">
+							<rect x="49" y="6" width="1" height="1" />
+							<rect x="48" y="7" width="3" height="3" />
+						</g>
+						<g class="sweat-drop">
+							<rect x="4" y="1" width="1" height="1" />
+							<rect x="3" y="2" width="3" height="3" />
+						</g>
+						<g class="sweat-glint">
+							<rect x="45" y="1" width="1" height="1" />
+							<rect x="48" y="7" width="1" height="1" />
+							<rect x="3" y="2" width="1" height="1" />
+						</g>
+					</g>
+
+					<!-- The juggle easter egg: three one-cell balls that step around an arc
+					     above the crab. Each is the same rect at the same start position and
+					     the same keyframes; only the animation-delay differs, so the three
+					     are always one third of a cycle apart and the whole trick is one
+					     @keyframes block. Hidden unless the crab is juggling. -->
+					<g class="juggle">
+						<rect class="ball ball-1" x="24" y="-4" width="4" height="4" />
+						<rect class="ball ball-2" x="24" y="-4" width="4" height="4" />
+						<rect class="ball ball-3" x="24" y="-4" width="4" height="4" />
+					</g>
+				  </g>
+				</svg>
+			</div>
+
+			<div class="clock">
+				<div class="clock-row">
+					<span id="clockHm" class="clock-hm">--:--</span><span id="clockSs" class="clock-ss">--</span>
+					<!-- THE TOUCH-DIAGNOSTICS INDICATOR (v0.23.0). Shown only while the
+					     Diagnostics switch is on, and its whole job is to let the
+					     operator see that capture is alive without an external reader:
+					     a number that climbs as the glass is poked.
+
+					     PLACEMENT IS THE MIRROR OF THE MOON CHIP, and for the same
+					     measured reason. The identity zone is a flex column whose
+					     .crab-wrap is flex:1 1 auto, so any pixel of column height this
+					     took would come off the crab (0.8 px of height slack at
+					     2560x720, zero at three other slots). So it is absolutely
+					     positioned inside the clock row's own line box and costs the
+					     column nothing. The clock row is justify-content:center, so the
+					     clear room to the LEFT of the hours mirrors the room to the
+					     right that the moon chip already spends: 56.9 px at 2560x720,
+					     61.3 / 54.3 / 223.8 / 90.8 at the others.
+					     The word and the count are STACKED because that budget is a
+					     four-character mono string and not a sentence: "diag: N events"
+					     in full measures 160.9 px against the 56.9 available, so the
+					     full form rides on title/aria-label — the idiom the sensor
+					     names one zone over already keep.
+					     A DIV and not a button: it is an indicator, and pointer-events
+					     are off it, so the instrument can never swallow one of the taps
+					     it exists to record. -->
+					<div id="diagChip" class="diag-chip" role="status" aria-hidden="false">
+						<span class="diag-word">diag</span>
+						<span id="diagCount" class="diag-count">0</span>
+					</div>
+					<!-- THE QUIET OVERRIDE CHIP (v0.22.0). "Quiet hours" is a schedule;
+					     this is the override on top of it — quiet an hour early, or stay
+					     awake through tonight's window — and it writes
+					     POST /v1/action {action:"quiet"} rather than /v1/config, because
+					     it is a temporary state and not a change to the schedule.
+
+					     WHY IT IS ABSOLUTELY POSITIONED, which is the whole placement
+					     decision. The identity zone is a flex COLUMN whose middle child
+					     (.crab-wrap) is flex:1 1 auto, so it absorbs every spare pixel —
+					     "free space" in this zone IS the crab. Measured before this was
+					     written, at five slots: the painted crab has 0.8 px of height
+					     slack at the authored 2560x720 slot and ZERO at 2536x696,
+					     840x344 and 840x696, where it is height-limited outright. A new
+					     ROW here (the fleet row costs 25.2 px) would therefore come
+					     straight off the animal — 11% of it at the small slot.
+					     So the chip takes no part in layout at all. It rides in the
+					     clock row's own 108 px line box, pinned to the right edge, and
+					     costs the column exactly zero. The room it uses is the 87.5 px
+					     of clear column measured to the right of the seconds at
+					     2560x720 (68.8 px at the tightest slot, 840x344) — horizontal
+					     slack this zone has and vertical slack it does not.
+
+					     The WORD is the mode and the glyph is the second cue, never the
+					     only one: this panel is read from a photograph often enough that
+					     a state carried in a colour alone is a state nobody reads. -->
+					<button type="button" id="moonChip" class="moon-chip" data-quiet="auto" aria-label="Quiet override: auto">
+						<!-- Smooth, not the crab's pixel grammar, and deliberately: at
+						     this size a 16-cell pixel crescent lands ~1.2 px per cell and
+						     renders as mush. The badge plate and wordmark set the
+						     precedent — pixel art for the crab, geometricPrecision for a
+						     UI shape. Two arcs, no mask: an outer disc (r 6.6 at 8,8) and
+						     a bite (r 6.2 at 11.8,8), whose intersections at
+						     (10.574, 1.923) and (10.574, 14.078) are computed rather than
+						     eyeballed, so the horns are symmetric by construction. -->
+						<svg class="moon-glyph" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+							<path d="M10.574 1.923 A6.6 6.6 0 1 0 10.574 14.078 A6.2 6.2 0 0 1 10.574 1.923 Z" />
+						</svg>
+						<span class="moon-text">
+							<span id="moonMode" class="moon-mode">auto</span>
+							<span id="moonLeft" class="moon-left"></span>
+						</span>
+					</button>
+				</div>
+				<div id="clockDate" class="clock-date">&#160;</div>
+				<!-- Fleet dots (v0.6.0): SideCrab watching its own two Scheduled Tasks,
+				     glow and toast. Ambient, not an alert - the whole row is muted and
+				     nothing here ever pulses, because a stopped helper is a thing to
+				     notice on the next walk past, not a thing to interrupt for.
+				     crabd is deliberately absent from the row: if the panel is showing
+				     data at all, crabd is running, and a dot that can only ever be
+				     green is a dot that says nothing.
+				     Colour is never the only cue: each state also changes the dot's
+				     SHAPE (filled circle / hollow ring / dash) and the word names
+				     which component it belongs to. The row is hidden outright on a
+				     feed with no fleet block, so an older crabd shows nothing here
+				     rather than two grey dots that read as two dead services. -->
+				<!-- v0.17.0: the names are WORDS, not initials. They were literal
+				     "g" and "t" text nodes here from v0.6.0, and the word was only
+				     ever in the title/aria-label - a tooltip and a screen reader,
+				     neither of which exists on a 2560x720 panel behind glass. What
+				     the operator actually saw was a 15 px lowercase letter beside a
+				     coloured dot, reported off the physical screen as "a g and a t
+				     with an orange dot and a green dot, I don't understand what that
+				     is for". Nothing was truncating them; they were never long.
+				     The room was always there: the row uses ~160 px of a 462 px
+				     column even after this change. -->
+				<div id="fleet" class="fleet">
+					<span class="fleet-item" id="fleetGlow" data-state="unknown">
+						<span class="fleet-k">glow</span><span class="fleet-dot"></span>
+					</span>
+					<span class="fleet-item" id="fleetToast" data-state="unknown">
+						<span class="fleet-k">toast</span><span class="fleet-dot"></span>
+					</span>
+				</div>
+				<div id="quietNote" class="quiet-note"></div>
+				<!-- THE CORE LINE (v0.20.0, CD-33; re-scoped v0.25.0). Display:none at
+				     every slot that can show the real zones, and shown only where the
+				     stylesheet has already decided it cannot. Two short lines, not a
+				     shrunken layout: how many sessions want the operator, and how full
+				     the usage windows are. Rule 6 says hide, never shrink - this is the
+				     other half of that rule, which is that what is hidden still has to
+				     be ADMITTED.
+				     WHERE THAT IS HAS NARROWED. It shipped covering everything at 3:2
+				     and narrower, because both zones were hidden outright there. Since
+				     v0.25.0 the sub-3:2 slots have real layouts (840x696 near-square,
+				     416x696 portrait) and the zones are on the glass, so the line is off
+				     at both - it would be a second, shorter copy of what they say. What
+				     is LEFT is a narrow slot too SHORT for three zones (<= 420 px, where
+				     the identity band alone would take half the panel), and that is the
+				     one slot this line still speaks for. Nothing in JS knows any of it:
+				     the line is rendered on every slot and the stylesheet decides. -->
+				<div id="coreLine" class="core-line">
+					<div id="coreSessions" class="core-sessions"></div>
+					<div id="coreLimits" class="core-limits"></div>
+				</div>
+			</div>
+		</section>
+
+		<section class="zone zone-limits">
+			<!-- The zone header is the burn-by-session sheet's hit target (v0.4.0), so it
+			     carries the 48 px fingertip floor and says what a tap gets. The hint is
+			     the only affordance: a bare heading that opens a sheet is a hidden gesture. -->
+			<div id="limitsHead" class="limits-head tappable" role="button" tabindex="0" aria-label="Open the burn breakdown">
+				<h2 class="zone-label">Limits</h2>
+				<!-- Provenance (v0.12.0): the muted "official" tag rides beside the
+				     heading when limits.source is "statusline" — the numbers came from
+				     Claude Code's own status-line document rather than the OAuth
+				     reach-around. Presence-gated: an oauth source (or an older crabd
+				     that emits no source at all) shows nothing here, never a second tag
+				     that would claim a provenance the feed did not report. -->
+				<span id="limitsSource" class="limits-source">official</span>
+				<span class="limits-head-hint">by session</span>
+			</div>
+
+			<!-- v0.19.0: each gauge is its own tap target, opening that window's
+			     forecast detail. data-win is what the handler routes on, and it names
+			     the CONTRACT key so the lookup cannot drift from the element id.
+			     The affordance is a chevron on the gauge NAME rather than a hint line
+			     of its own: this zone had 20 px of headroom left after v0.17.0, so a
+			     third line per gauge would have cost more than the zone has. The
+			     chevron rides inside the name's existing line box and costs zero.
+			     The header above still opens burn-by-session; the two do not overlap
+			     because the header is a separate element with its own listener. -->
+			<div class="gauge tappable" id="gauge5h" data-win="fiveHour" role="button" tabindex="0" aria-label="5-hour window detail">
+				<div class="gauge-head">
+					<span class="gauge-name">5-hour</span>
+					<span class="gauge-pct" id="pct5h">--</span>
+				</div>
+				<div class="gauge-track"><div class="gauge-fill" id="fill5h"></div></div>
+				<div class="gauge-foot">resets <span id="reset5h" class="gauge-reset">--</span></div>
+				<div class="gauge-forecast" id="forecast5h"></div>
+			</div>
+
+			<div class="gauge tappable" id="gaugeWk" data-win="weekly" role="button" tabindex="0" aria-label="Weekly window detail">
+				<div class="gauge-head">
+					<span class="gauge-name">Weekly</span>
+					<span class="gauge-pct" id="pctWk">--</span>
+				</div>
+				<div class="gauge-track"><div class="gauge-fill" id="fillWk"></div></div>
+				<div class="gauge-foot">resets <span id="resetWk" class="gauge-reset">--</span></div>
+				<div class="gauge-forecast" id="forecastWk"></div>
+			</div>
+
+			<div id="gaugeExtra" class="gauge-extra"></div>
+			<div id="limitsNote" class="limits-note"></div>
+
+			<div class="today">
+				<h3 class="zone-label">Today</h3>
+				<!-- v0.26.0 (AUD-F4): IN and CACHE RD carry `meta`, which is the type
+				     size and nothing else. Four figures at stat size made CACHE RD —
+				     the largest number and the cheapest one — the loudest thing in the
+				     zone; OUT is what the day cost and MSGS is how much was asked, so
+				     those two keep stat size and the other two annotate them. PERMANENT
+				     and not slot-conditional: the hierarchy is wrong at every size.
+				     The class is also what the two-extras collapse hides (AUD-F2) —
+				     the demoted pair is the pair the zone can afford to lose.
+				     (No token names in here: a double hyphen is illegal inside an XML
+				     comment and the strict parse is one of this widget's gates.) -->
+				<div class="today-grid">
+					<div class="stat"><span class="stat-v" id="statOut">--</span><span class="stat-k">out</span></div>
+					<div class="stat meta"><span class="stat-v" id="statIn">--</span><span class="stat-k">in</span></div>
+					<div class="stat meta"><span class="stat-v" id="statCache">--</span><span class="stat-k">cache rd</span></div>
+					<div class="stat"><span class="stat-v" id="statMsg">--</span><span class="stat-k">msgs</span></div>
+				</div>
+				<!-- The day's spend against the configured budget (v0.10.0). It sits
+				     with the TODAY stats because it is one of them: a percentage of
+				     the same output figure the first stat reports. Muted under 100%
+				     and hidden outright when the feed carries no budget, so a
+				     companion with none set costs this zone nothing at all. -->
+				<div id="budgetLine" class="budget-line"></div>
+				<!-- Today's dollar spend (v0.12.0). A muted line beside the TODAY
+				     stats, from burn.costUSD when Claude Code's OTLP telemetry is
+				     flowing. Presence-gated on a finite number: absent (null, the
+				     no-telemetry case) it is display:none and costs the zone nothing,
+				     and a $0.00 is NEVER derived from absence — only a real zero the
+				     feed actually reported ever renders as $0.00. -->
+				<div id="costLine" class="cost-line"></div>
+				<div class="spark-wrap" id="sparkWrap" role="button" tabindex="0" aria-label="Switch the sparkline between 24 hours and 7 days">
+					<!-- The budget target marker (v0.10.0) rides INSIDE the bar row,
+					     positioned from its bottom edge, so it lands on the same scale
+					     the bars are drawn against. It is absolutely positioned and
+					     therefore out of the flex flow, so the bars do not know it is
+					     there. JS re-appends it whenever the bar row is rebuilt. -->
+					<div id="spark" class="spark"><div id="sparkTarget" class="spark-target"></div></div>
+					<div id="sparkLabels" class="spark-labels"></div>
+					<div class="spark-axis">
+						<span class="spark-axis-left"><span id="sparkLabel">24 h burn</span><span id="sparkMode" class="spark-mode">24h</span></span>
+						<span id="sparkMax">--</span>
+					</div>
+				</div>
+			</div>
+
+			<!-- Hardware sensors (iCUE Sensors data provider) and, since v0.21.0, the
+			     host CPU/memory figures the companion serves. The row starts hidden
+			     and is only revealed once it has something real to say, so a dev
+			     browser or a machine iCUE reports no sensors for shows nothing at all
+			     rather than a placeholder that reads as a broken temperature.
+			     ONE LINE, and that is a measured constraint rather than a style: the
+			     Limits zone had 20.0 px of vertical slack left on ?mock=rework after
+			     the v0.17.0 trim, and one more line of meta type costs more than that.
+			     Everything added here therefore rides inside the existing line box.
+			     The sensor NAME (v0.21.0) is the label iCUE itself gives the selected
+			     sensor. It exists because a wrong SELECTION and a frozen bridge look
+			     identical on the glass — the operator's cpuTempSensor and gpuTempSensor
+			     both held one hub sensor id, and the panel had no way to say so. -->
+			<div id="sensors" class="sensors">
+				<div class="sensor" id="sensorCpu"><span class="sensor-k">CPU</span><span class="sensor-v" id="sensorCpuVal"></span><span class="sensor-n" id="sensorCpuName"></span><span class="sensor-x" id="hostCpuVal"></span></div>
+				<div class="sensor" id="sensorGpu"><span class="sensor-k">GPU</span><span class="sensor-v" id="sensorGpuVal"></span><span class="sensor-n" id="sensorGpuName"></span><span class="sensor-w" id="sensorGpuWarn"></span></div>
+				<div class="sensor" id="hostMem"><span class="sensor-k">MEM</span><span class="sensor-x" id="hostMemVal"></span></div>
+				<div class="sensor-hint" id="sensorHint"></div>
+				<!-- The drill-in chevron (v0.22.0). Out of flow — see the CSS, where the
+				     reason is this row's own width guarantee rather than a preference. -->
+				<span class="sensor-more" id="sensorMore" aria-hidden="true"></span>
+			</div>
+		</section>
+
+		<section class="zone zone-grid">
+			<!-- The whole header LINE is one tap target for the Today timeline
+			     (v0.5.0), heading and recap alike. Deliberately not split: the recap's
+			     waiting fragment is a label, not a control, and two adjacent hit areas
+			     on one line is exactly the thing a fingertip gets wrong. Same 48 px
+			     floor and the same visible hint as the Limits header, because a
+			     heading that silently opens a sheet is a gesture nobody discovers. -->
+			<!-- v0.15.0: two chips join the line, and they are the reason the header
+			     is no longer ONE tap target. They are real buttons, so the click
+			     handler routes on the control rather than on coordinates, and each
+			     wears the same 48 px fingertip floor every other control here does.
+			     They sit to the RIGHT of the count so the tappable run of header
+			     that still opens the timeline stays the left-hand half, where the
+			     heading and its visible hint are. -->
+			<div id="gridHead" class="grid-head tappable" role="button" tabindex="0" aria-label="Open today's timeline">
+				<h2 class="zone-label">Sessions</h2>
+				<span class="grid-head-hint">today</span>
+				<span class="session-count" id="sessionCount">--</span>
+				<!-- The session filter: ONE chip cycling All / Waiting / Working /
+				     Done+Idle, showing the mode it is IN rather than the mode it
+				     would move to. A row of four toggles on a header that is also a
+				     tap target is four ways to open the timeline by accident. -->
+				<button type="button" id="filterChip" class="head-chip" data-filter="all" aria-label="Session filter: All">All</button>
+				<!-- Density: Comfortable or Compact. Compact is a third grid row plus
+				     smaller padding and type, so more sessions are on the glass at
+				     once; both numbers live in the stylesheet and gridCapacity reads
+				     the result. -->
+				<button type="button" id="densityChip" class="head-chip" data-density="comfortable" aria-label="Card density: Comfortable">Comfortable</button>
+				<!-- Today's PERSISTED history (v0.19.0). The header's own tap opens the
+				     ring-buffer Today timeline, which crabd rebuilds at start-up and
+				     caps at 8 entries per session; this chip opens GET /v1/history for
+				     today, which is the whole day including the approvals, denials and
+				     continues the ring has already dropped. Two different facts, so two
+				     controls rather than one that quietly changed meaning.
+				     HIDDEN until the feed is live: without a companion there is no
+				     history to read, and a control that opens an empty sheet would be
+				     the panel claiming a quiet day it cannot see. When the feed IS live
+				     and the fetch fails anyway (a crabd older than 0.8.0, a dead
+				     socket), the chip says so in place and the next tap tries again -
+				     the same never-latch rule the week strip's day tap keeps. -->
+				<button type="button" id="historyChip" class="head-chip" data-history="" aria-label="Open today's history">History</button>
+			</div>
+			<div id="cards" class="cards"></div>
+			<div id="gridEmpty" class="grid-empty">No active Claude sessions</div>
+		</section>
+
+	</div>
+
+	<!-- Touch action sheet (v0.2.0). Lives OUTSIDE #zones on purpose: the zones
+	     carry the dim custom property used by the stale and quiet states, and a
+	     sheet the user just opened with a finger must never render at ambient
+	     brightness. Every control is sized from the touch-min token (48 px
+	     floor) because this panel is driven by a fingertip, not a mouse.
+	     NB: XML comments cannot contain a double hyphen, so CSS custom property
+	     names are spelled out here rather than written literally. -->
+	<!-- Four modes on one panel, switched by data-mode. "action" is v0.2.0
+	     unchanged (question, then the ack/reply buttons) and is reached only from a
+	     needs_input card; "detail" is the read-only variant every other card
+	     opens, whose only control is the close button; "burn" and "timeline" are
+	     the two panel-wide read-only views, from the Limits and Sessions headers.
+	     The events list is the one region both session modes carry, and in action
+	     mode it sits BELOW the buttons so the thing the person walked over to
+	     press stays where it was. -->
+	<!-- v0.8.0 adds a FIFTH view without a fifth data-mode: a drilled day is the
+	     timeline's own mode with data-tl-view="day", because the two share the
+	     list region, the scroll and the whole hidden-region list. A separate mode
+	     would have meant a second copy of that list, and two copies drift. -->
+	<!-- v0.19.0 adds "forecast" - one usage window's detail, opened by tapping its
+	     gauge. It DOES take a data-mode of its own, unlike the day view, because it
+	     shares no region with any other view: it renders into the burn region and
+	     hides everything else, so borrowing "burn" would have meant a second
+	     attribute gating the same region two ways. -->
+	<div id="sheet" class="sheet" data-mode="action" data-tl-view="today" aria-hidden="true">
+		<div id="sheetBackdrop" class="sheet-backdrop"></div>
+		<div class="sheet-panel" role="dialog" aria-modal="true" tabindex="-1" aria-label="Session actions">
+			<div class="sheet-head">
+				<div class="sheet-titles">
+					<div id="sheetTitle" class="sheet-title"></div>
+					<div id="sheetRepo" class="sheet-repo"></div>
+				</div>
+				<!-- Back (v0.8.0). Exists for the day drill only: a day was opened
+				     FROM the timeline, so the way out of it is back to the week it
+				     was read in, not out of the panel altogether. It is hidden in
+				     every other view, so the head never carries two controls that
+				     both look like ways to leave. -->
+				<!-- Day navigation (v0.10.0), the drilled day view only. Chevrons,
+				     deliberately not arrows: Back beside them is already an arrow,
+				     and two glyphs pointing the same way with different meanings is
+				     the head asking to be misread. Next goes inert at today, which is
+				     why it is a button and not a plain span: the disabled state is
+				     the control's own, not a class the stylesheet has to keep in step
+				     with the handler. -->
+				<button type="button" id="sheetPrevDay" class="sheet-daynav" data-day-step="-1" aria-label="Previous day">&#8249;</button>
+				<button type="button" id="sheetNextDay" class="sheet-daynav" data-day-step="1" aria-label="Next day">&#8250;</button>
+				<button type="button" id="sheetBack" class="sheet-back" aria-label="Back to today">&#8592;</button>
+				<button type="button" id="sheetClose" class="sheet-close" aria-label="Close">&#215;</button>
+			</div>
+			<div id="sheetQuestion" class="sheet-question"></div>
+			<!-- FULL panel approval (v0.12.0). A needs_input session carrying a
+			     pendingPermission {tool, summary} opens the action sheet in its
+			     APPROVAL variant: this block replaces the question and makes the TOOL
+			     the prominent thing, because a permission grant from across a room is
+			     a decision about WHAT is being allowed, not a yes/no in a vacuum. The
+			     Approve button below carries the tool name for the same reason. The
+			     whole block is display:none until the sheet is data-approval="1", set
+			     only for a needs_input session whose pendingPermission is live — so a
+			     question with no permission attached renders exactly as it did before. -->
+			<div id="sheetApprovalDetail" class="sheet-approval-detail">
+				<span class="sheet-approval-req">permission request</span>
+				<span id="sheetApprovalTool" class="sheet-approval-tool"></span>
+				<span id="sheetApprovalSummary" class="sheet-approval-summary"></span>
+				<!-- The hold countdown (v0.15.0). crabd holds the PermissionRequest
+				     hook about 55 seconds and then returns the pass-through that lets
+				     the terminal dialog appear, so this line is the answer to the one
+				     question the sheet could not answer: does the button under your
+				     thumb still reach anything. Written by the 1 Hz tick, never by
+				     the 3 second poll. At zero it says the decision has moved back to
+				     the keyboard; the buttons are deliberately NOT disabled, because
+				     a clock this panel cannot verify must not take a control away. -->
+				<span id="sheetApprovalLeft" class="sheet-approval-left"></span>
+				<!-- The EFFECTIVE approval-toast threshold (v0.17.0). The setting lives
+				     on an iCUE slider, and a widget cannot write iCUE properties — so
+				     when the operator has set approvalThresholdSec in config.json the
+				     slider still reads its own default and there was no surface anywhere
+				     that said which figure was actually in force. crabd now serves the
+				     on-disk value in /v1/state's top-level `toast` block, and this line
+				     is where the panel reports it.
+				     It says only what is TRUE of the notifier: the slider is untouched,
+				     so the on-disk value is what governs. Once the operator moves the
+				     slider that becomes the operator's latest word, the property wins,
+				     and this line says so instead. Presence-gated on the seed, so an
+				     older crabd (no `toast` block) renders nothing at all here. -->
+				<span id="sheetApprovalThreshold" class="sheet-approval-threshold"></span>
+			</div>
+			<!-- Burn-by-session (v0.4.0), a third mode of the same panel rather than a
+			     second sheet: one backdrop, one close button, one set of close
+			     semantics. It is read-only and carries no session id. -->
+			<div id="sheetBurn" class="sheet-burn"></div>
+			<!-- Host history (v0.22.0), the seventh mode. It takes a REGION of its own
+			     rather than borrowing the burn region the way the forecast sheet does,
+			     and the reason is the one that comment gives in reverse: forecast
+			     borrowed because its content is the same KIND of thing (a short
+			     read-only list with notes under it). This is two charts, which is not,
+			     and drawing them into a flex column tuned for text rows would have
+			     meant gating that region three ways.
+			     Empty markup on purpose — JS fills it, and an empty region collapses,
+			     so every other mode is exactly what it was. -->
+			<div id="sheetHost" class="sheet-host"></div>
+			<!-- Today timeline (v0.5.0), the fourth mode of the same panel. It is the
+			     one view that crosses sessions, so it carries no session id either and
+			     is read-only; the per-session events list further down stays exactly
+			     what it was. -->
+			<div id="sheetTimeline" class="sheet-timeline"></div>
+			<!-- The day drill's count line (v0.8.0). It reports the figure the FEED
+			     gave for that day, which is not the number of rows above it: crabd
+			     caps a day at 200 and says so with its truncated flag, and this view
+			     caps the rows again and says so with its own "plus N earlier" tail.
+			     Shown in the drilled day view only; the timeline's footer is the
+			     week strip below. -->
+			<div id="sheetDayFoot" class="sheet-day-foot"></div>
+			<!-- The week strip (v0.7.0): the timeline sheet's footer, and the only
+			     part of it that is not today. It renders only when the feed carries
+			     recap.week, and it is a FOOTER rather than a row in the list above
+			     because the list scrolls and a seven day summary that scrolls out of
+			     sight is a summary nobody reads. Empty markup here on purpose: the
+			     element stays collapsed by an empty selector until JS fills it, so a
+			     feed without recap.week leaves the sheet exactly as it was. -->
+			<div id="sheetWeek" class="sheet-week"></div>
+			<div id="sheetMeta" class="sheet-meta"></div>
+			<div id="sheetSubs" class="sheet-subs"></div>
+			<div id="sheetStatus" class="sheet-status"></div>
+			<!-- Approve / Deny (v0.12.0), shown only in the approval variant. Deny is
+			     FIRST and styled as the safe default — a permission sheet read in a
+			     hurry must let the cautious answer be the one nearest the thumb — and
+			     Approve carries the tool name (filled by JS: "Approve Bash"), because
+			     approving a shell command from a touchscreen must show WHAT is being
+			     approved. Both wear .sheet-btn for their looks and carry data-decide,
+			     so onSheetClick routes them ABOVE the generic .sheet-btn branch (they
+			     are not ack/reply). Tapping either posts a decide action and closes
+			     the sheet optimistically. -->
+			<div id="sheetApproval" class="sheet-approval-actions">
+				<button type="button" id="sheetDeny" class="sheet-btn sheet-btn-deny" data-decide="deny">Deny</button>
+				<button type="button" id="sheetApprove" class="sheet-btn sheet-btn-approve" data-decide="allow">Approve</button>
+			</div>
+			<!-- Tap-to-continue (v0.12.0), the done/working detail sheet's own control
+			     row. The three default buttons are hardcoded; any strings the feed
+			     carries in a top-level continuePrompts array render as EXTRA buttons
+			     after them (presence-gated — an older crabd echoes none and just the
+			     three show). Each button's label is short; its data-continue-prompt is
+			     the FULL instruction that goes on the wire. Shown only when the sheet
+			     is data-continue="1" (a working or done session). Its own status line
+			     lives inside it because the shared sheet-status is hidden in detail
+			     mode; a queued confirmation must still show. -->
+			<div id="sheetContinue" class="sheet-continue">
+				<div class="sheet-continue-head">Continue this session</div>
+				<div id="sheetContinueBtns" class="sheet-continue-btns"></div>
+				<div id="sheetContinueStatus" class="sheet-continue-status"></div>
+			</div>
+			<div class="sheet-actions">
+				<button type="button" class="sheet-btn sheet-btn-ack" data-sheet-action="ack">Acknowledge</button>
+				<button type="button" class="sheet-btn" data-sheet-action="reply" data-sheet-text="Yes">Yes</button>
+				<button type="button" class="sheet-btn" data-sheet-action="reply" data-sheet-text="Proceed">Proceed</button>
+				<button type="button" class="sheet-btn sheet-btn-stop" data-sheet-action="reply" data-sheet-text="Stop">Stop</button>
+			</div>
+			<!-- Dismiss is offered on a DONE card only, and only hides that card locally:
+			     the row is keyed to sessionId + stateSince, so any state change at all
+			     brings it straight back. Nothing is sent to crabd. -->
+			<div class="sheet-detail-actions">
+				<button type="button" id="sheetDismiss" class="sheet-btn sheet-btn-dismiss">Dismiss card</button>
+			</div>
+			<!-- Pin / Unpin (v0.8.0). On its own row because it is offered by EVERY
+			     sheet that carries a session, action mode included, where the ack
+			     buttons above it are the reason the person walked over: a control
+			     that joined that row would move the buttons under a finger that is
+			     already reaching for them. Purely local, like Dismiss above it, so
+			     it has no pending state and nothing is sent to crabd. -->
+			<div class="sheet-pin-actions">
+				<button type="button" id="sheetPin" class="sheet-btn sheet-btn-pin" data-pinned="0">Pin session</button>
+			</div>
+			<div id="sheetEvents" class="sheet-events"></div>
+		</div>
+	</div>
+
+	<script src="scripts/sidecrab.js"></script>
+</body>
+</html>

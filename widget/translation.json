@@ -1,0 +1,32 @@
+{
+	"en": {
+		"translation": {
+			"SideCrab": "SideCrab",
+			"crabd Port": "crabd Port",
+			"24-Hour Clock": "24-Hour Clock",
+			"Flash On New Alert": "Flash On New Alert",
+			"Crab Accessories": "Crab Accessories",
+			"Quiet Hours": "Quiet Hours",
+			"Quiet Start (HH:MM)": "Quiet Start (HH:MM)",
+			"Quiet End (HH:MM)": "Quiet End (HH:MM)",
+			"Desktop Toast Alerts": "Desktop Toast Alerts",
+			"Toast After": "Toast After",
+			"Approval Toast After": "Approval Toast After",
+			"Daily Token Budget": "Daily Token Budget",
+			"Budget Per Day": "Budget Per Day",
+			"Hardware Sensors": "Hardware Sensors",
+			"CPU Temperature Sensor": "CPU Temperature Sensor",
+			"GPU Temperature Sensor": "GPU Temperature Sensor",
+			"The sensor row is hidden entirely when iCUE reports no sensors, so the panel never shows a blank or invalid temperature. Pick a DIFFERENT sensor for each: importing the widget resets both of these, and one sensor selected twice would read the same temperature in both cells. The panel labels each reading with the name iCUE gives that sensor, and says so rather than printing the same number twice.": "The sensor row is hidden entirely when iCUE reports no sensors, so the panel never shows a blank or invalid temperature. Pick a DIFFERENT sensor for each: importing the widget resets both of these, and one sensor selected twice would read the same temperature in both cells. The panel labels each reading with the name iCUE gives that sensor, and says so rather than printing the same number twice.",
+			"Diagnostics": "Diagnostics",
+			"Touch Diagnostics": "Touch Diagnostics",
+			"Turn this on only while investigating touch problems, then turn it off. While it is on the panel records every touch, pen and mouse event it receives and sends the log to the SideCrab companion, and a small dim counter appears beside the clock so you can see it is recording. It changes nothing else about how the panel behaves. Leave it off for normal use.": "Turn this on only while investigating touch problems, then turn it off. While it is on the panel records every touch, pen and mouse event it receives and sends the log to the SideCrab companion, and a small dim counter appears beside the clock so you can see it is recording. It changes nothing else about how the panel behaves. Leave it off for normal use.",
+			"Widget Personalization": "Widget Personalization",
+			"Text Color": "Text Color",
+			"Accent Color": "Accent Color",
+			"Background Color": "Background Color",
+			"Background Transparency": "Background Transparency",
+			"Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions.": "Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions."
+		}
+	}
+}
