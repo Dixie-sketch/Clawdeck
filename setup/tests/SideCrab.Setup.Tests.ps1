@@ -1278,7 +1278,7 @@ Describe 'SideCrab setup' {
             # They touch only the temp files created below.
             script:Import-AstFunction -Path $script:Common -Name @(
                 'Get-SideCrabPanelApprovalsState', 'Set-SideCrabPanelApprovals',
-                'Clear-SideCrabPanelApprovals',
+                'Clear-SideCrabPanelApprovals', 'Get-SideCrabPanelToken',
                 'Backup-SideCrabFile', 'Write-SideCrabFileAtomic', 'Get-SideCrabBackupFile',
                 'Get-SideCrabBackupPattern', 'Read-SideCrabBackupStamp',
                 'Save-SideCrabPriorStatusLine', 'Get-SideCrabSavedStatusLine'
@@ -1290,6 +1290,27 @@ Describe 'SideCrab setup' {
             if ($script:Tmp -and (Test-Path -LiteralPath $script:Tmp)) {
                 Remove-Item -LiteralPath $script:Tmp -Recurse -Force -ErrorAction SilentlyContinue
             }
+        }
+
+        It 'reads the pairing code (crabd 0.29.0) in display form, or Present=false' {
+            $missing = Join-Path $script:Tmp 'no-token'
+            (Get-SideCrabPanelToken -TokenPath $missing).Present | Should -BeFalse
+            $tokFile = Join-Path $script:Tmp 'panel-token'
+            Set-Content -LiteralPath $tokFile -Value "k7qxm-2pdab`n" -Encoding utf8NoBOM
+            $t = Get-SideCrabPanelToken -TokenPath $tokFile
+            $t.Present | Should -BeTrue
+            $t.Code    | Should -Be 'K7QXM-2PDAB'
+            Set-Content -LiteralPath $tokFile -Value 'abc' -Encoding utf8NoBOM        # unusable
+            (Get-SideCrabPanelToken -TokenPath $tokFile).Present | Should -BeFalse
+        }
+
+        It 'the installer never prints the pairing code on -Status, only on -PairingCode' {
+            $text = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw
+            ($text -match '\[switch\] \$PairingCode') | Should -BeTrue
+            # the status row names presence and the path, never $tok.Code
+            $statusLine = ($text -split "`n" | Where-Object { $_ -match 'pairing: code present' })
+            $statusLine | Should -Not -BeNullOrEmpty
+            ($statusLine -match '\$\(\$tok\.Code\)') | Should -BeFalse
         }
 
         It 'reads panelApprovals as null when the config file is absent' {

@@ -14,6 +14,49 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.29.0 (2026-09-01 — ADDITIVE fields + a TRANSPORT change on `decide`; schema stays 5)
+
+crabd `VERSION` → `0.29.0`, widget `0.27.0`. **Closes SEC-a and WID-a.** Two additive fields, one
+diagnostic, and one write path that now REQUIRES two new body members.
+
+**`approvals`** (top level, always present):
+```jsonc
+"approvals": { "enabled": false, "tokenRequired": true }
+```
+`enabled` mirrors config `panelApprovals.enabled` (strict-true). `tokenRequired` is `true` on
+every crabd from 0.29.0; a document without the block is an older crabd that never asks for one.
+
+**`sessions[].pendingPermission.requestId`** — `string` (16 hex), minted per `register()`. A
+replacing request for the same session gets a NEW id.
+
+**`POST /v1/action {"action":"decide"}`** now takes:
+```jsonc
+{ "sessionId": "...", "action": "decide", "decision": "allow" | "deny",
+  "token": "K7QXM-2PDAB",        // the pairing code; case- and hyphen-insensitive
+  "requestId": "0f3a9c...7e" }   // pendingPermission.requestId as displayed
+```
+Answers, in the order the gates run: `400` decision malformed · `503` crabd has no pairing gate
+(never falls open) · `429` gate locked (ten rejects inside a minute lock it for a minute; the
+right code is locked too) · `403 {"error":"pairing code required"}` / `{"error":"pairing code
+rejected"}` · `404` nothing pending · `400 {"error":"requestId required"}` (only when something IS
+pending) · `409 {"error":"stale permission request"}` (id is not the pending one; checked under the
+broker lock) · `204` applied. **A widget older than 0.27.0 sends neither member and is refused with
+403 — its "decide failed … decide in terminal" notice is the honest answer, and the hold passes
+through to the terminal dialog exactly as a no-tap does.** That is why this is a transport note and
+not a schema bump: nothing an old widget renders changes, and its one write that stops working
+stops SAFELY.
+
+**The pairing code.** `~/.sidecrab/panel-token`, 10 symbols of `0123456789ABCDEFGHJKMNPQRSTVWXYZ`
+(2^50), written atomically on first start, shown as `XXXXX-XXXXX`. Printed by
+`Install-SideCrab.ps1 -PairingCode`; held by the widget as the iCUE property `panelToken`
+("Approval Pairing Code"). NEVER served: `/v1/health` gains
+`"panelToken": {"present": bool, "rejectedRecently": int, "lockedUntil": ISO | null}`.
+
+**Why this and not the two candidates the SEC-a row listed.** The widget's true origin IS `null`
+(originsSeen measured it), so an allowlist cannot separate it from a forged one; and a nonce
+served in `/v1/state` is read by the same forged-null caller that would echo it. A secret that
+lives in a widget PROPERTY is the one thing a visited page cannot reach.
+
 ## v0.28.0 (2026-08-28 — ADDITIVE: the ctx-fill DENOMINATOR; schema stays 5)
 
 crabd `VERSION` → `0.28.0`. One new per-session member. No key moves, nothing is removed,

@@ -8,13 +8,18 @@ detail of every additive field and is the source of truth; this file is the shor
 
 | Component | Version | Notes |
 |---|---|---|
-| widget (`widget/manifest.json`) | 0.26.0 | design-audit wave: accent hue moved off the mascot, two `limits.extra` windows fit, touch-floor hit area on the sensors row, TODAY demotion, clamp invariant pinned |
-| crabd (`companion/crabd.py`) | 0.28.2 | done-reactivation zombie fixed; `SessionStart` maps to idle; ghost-session queue taps answer 409; `limits[].percent` outranks the utilization sniff |
+| widget (`widget/manifest.json`) | 0.27.0 | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
+| crabd (`companion/crabd.py`) | 0.29.0 | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
 | notifier (`notifier/sidecrab_toast.py`) | 0.20.0 | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
 | lighting (`lighting/sidecrab_glow.py`) | parked | ships disabled: the Corsair SDK crashes in every non-interactive console context tested |
 | schema (`/v1/state`) | 5 | marks the last breaking shape; additive fields are feature-detected by presence |
 
 ## Highlights by wave (newest first)
+
+- **0.29.0 crabd / 0.27.0 widget (2026-09-01)** - panel approvals are safe to turn on: the
+  pairing code and per-request id close SEC-a and WID-a. `Install-SideCrab.ps1 -PairingCode`
+  prints the code; it goes into the widget's iCUE settings. Older widgets cannot approve
+  against this crabd (refused, terminal dialog decides) - update both sides.
 
 - **0.28.x crabd (2026-09-01)** - two live incidents fixed: a session killed by an app restart
   stayed `working` and swallowed queued taps (GHOST-a, half closed, taps now refused with 409);

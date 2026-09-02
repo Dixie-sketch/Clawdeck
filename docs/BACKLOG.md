@@ -8,18 +8,19 @@
   loaded. An inherited tab produces verification against the wrong page — and, on a shared browser,
   can surface permission prompts for a site nobody involved intended to touch.
 
-- **SEC-a — the one open security decision (OPERATOR + MEASUREMENT gated).** A forged/opaque
-  `Origin: null` (sandboxed iframe on a visited page) can read `/v1/state` and `decide:allow` a
-  pending permission — because the real QtWebEngine widget ALSO sends `null`, so the gate can't
-  tell them apart. Reproduced by two audit lanes 2026-08-28. **MITIGATED: panelApprovals disabled
-  on the live host.** Real fix needs the widget's true origin measured (crabd 0.25.0's
-  `/v1/health.originsSeen` captures it passively from the live widget's polling) → then allowlist
-  it and re-enable, OR keep approvals off (original posture), OR a per-request nonce. The maintainer's call.
-  A-01/A-02 (permission stand-down) are FIXED (0.26.0) so re-enabling is otherwise safe.
-- **WID-a — decide payload has no per-request id.** Within the right session, a tap in the ≤3s
-  poll gap could land on a different pending tool than displayed. Fix = crabd exposes a request id
-  in `pendingPermission` that `decide` echoes and crabd rejects when stale. Contract change
-  touching crabd + widget; hardens the armed path. Pairs with the SEC-a re-enable decision.
+- ~~**SEC-a — the one open security decision.**~~ **CLOSED in crabd 0.29.0 / widget 0.27.0
+  (2026-09-01).** The fix is the one the original row did not list: a **pairing code** —
+  crabd mints `~/.sidecrab/panel-token` on first start, the widget holds it as an iCUE
+  property (unreadable from any web page) and sends it in every `decide`; crabd compares in
+  constant time, locks the gate for a minute after ten rejects, and answers 503 rather than
+  falling open when no gate object exists. Neither of the row's two candidates was taken: the
+  widget's true origin is `null` (measured via originsSeen — indistinguishable by design), and a
+  nonce delivered over `/v1/state` is readable by the same forged-null caller. Mutation-proven:
+  verify()→"ok" fails 4 tests, requestId check removed fails 1, fail-open fails 1. Re-enabling
+  approvals is now an operator choice, not a risk acceptance.
+- ~~**WID-a — decide payload has no per-request id.**~~ **CLOSED in the same release.**
+  `pendingPermission.requestId` (16 hex, per register) must be echoed; mismatch is 409, checked
+  under the broker lock so a replace between read and write cannot be approved with the old id.
 - **A-04 fuller fix (deferred, safe bound shipped).** GitLookup is now bounded to a 1s worker
   budget per unreachable cwd. A fully-async resolver the builder never waits on would remove even
   that per-miss cost but reworks ~8 GitLookup tests — not worth the blast radius yet.

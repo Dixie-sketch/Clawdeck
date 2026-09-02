@@ -9,6 +9,13 @@
 	<meta name="x-icue-widget-preview" content="resources/preview.png" />
 
 	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'2722'" />
+	<!-- The approval PAIRING CODE (v0.27.0, closes SEC-a). crabd mints it once into
+	     ~/.sidecrab/panel-token and requires it on every Approve/Deny; a widget
+	     property is the one place a web page the operator visits cannot read, which
+	     is the whole point. Read it with `Install-SideCrab.ps1 -PairingCode`. A
+	     textfield because that is a property type the import validator has accepted;
+	     the value is compared case- and hyphen-insensitively. -->
+	<meta name="x-icue-property" content="panelToken" data-label="tr('Approval Pairing Code')" data-type="textfield" data-default="''" />
 	<meta name="x-icue-property" content="clock24" data-label="tr('24-Hour Clock')" data-type="switch" data-default="false" />
 	<meta name="x-icue-property" content="alertFlash" data-label="tr('Flash On New Alert')" data-type="switch" data-default="true" />
 

@@ -94,6 +94,17 @@ class StubLimits:
 
 # ============================================================ pure-function bounds
 
+def decide_body(fixture, decision, session_id=None):
+    """The v0.29.0 decide body: the pairing code + the pending request's id."""
+    sid = session_id or fixture.SID
+    pending = fixture.permissions.pending(sid) or {}
+    body = {"sessionId": sid, "action": "decide", "decision": decision,
+            "token": fixture.TOKEN}
+    if pending.get("requestId"):
+        body["requestId"] = pending["requestId"]
+    return body
+
+
 class TimestampBoundTests(unittest.TestCase):
     """_parse_ts / _utc_iso - the pair that put a traceback on a live socket.
 
@@ -319,6 +330,9 @@ class LiveFireServed(unittest.TestCase):
             crabd.UserConfig(self.config_path), statusline=self.statusline,
             otlp=self.otlp, continues=self.continues, permissions=self.permissions)
         holder["b"] = self.builder
+        # v0.29.0: a pairing code, as a real crabd carries one.
+        self.TOKEN = "K7QXM2PDAB"
+        self.builder.panel_token = crabd.PanelToken(None, self.TOKEN)
         crabd.Handler.builder = self.builder
         # Proven-reachable port + one reused connection - see _httpkeepalive.
         self.server, self.thread, self.port, self.client = start_test_server(
@@ -611,9 +625,7 @@ class PermissionLiveFireTests(LiveFireServed):
         while time.time() < deadline and self.permissions.pending(self.SID) is None:
             time.sleep(0.01)
         self.assertIsNotNone(self.permissions.pending(self.SID))
-        self.assertEqual(self.post("/v1/action", {"sessionId": self.SID,
-                                                  "action": "decide",
-                                                  "decision": "deny"})[0], 204)
+        self.assertEqual(self.post("/v1/action", decide_body(self, "deny"))[0], 204)
         thread.join(timeout=10)
         self.assertEqual(json.loads(out[0][1]), {
             "hookSpecificOutput": {"hookEventName": "PermissionRequest",
@@ -1033,12 +1045,13 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.28.2")
+        self.assertEqual(crabd.VERSION, "0.29.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),
                          ["hooksSeen", "lastStatuslineAgeSec", "ok", "originsSeen",
-                          "otlpSeen", "statuslineSeen", "uptimeSec", "version"])
+                          "otlpSeen", "panelToken", "statuslineSeen", "uptimeSec",
+                          "version"])
 
     def test_a_statusline_that_has_never_posted_is_null_not_zero(self):
         """The sharp one. Null means the status line has NEVER posted, which is a
@@ -1577,8 +1590,7 @@ class PermissionRaisesTheCardTests(PermissionLiveFireTests):
         self.assertFalse(row["acked"])
         # The buttons and the sheet that renders them now agree.
         self.assertEqual(row["pendingPermission"]["tool"], "Bash")
-        self.post("/v1/action", {"sessionId": self.SID, "action": "decide",
-                                 "decision": "deny"})
+        self.post("/v1/action", decide_body(self, "deny"))
         thread.join(timeout=15)
 
     def test_a_panel_tap_stands_the_card_down(self):
@@ -1588,9 +1600,7 @@ class PermissionRaisesTheCardTests(PermissionLiveFireTests):
                 crabd.PERMISSION_POLL_SEC = 20
                 thread, _ = self.held()
                 self.assertEqual(self.row()["state"], "needs_input")
-                self.assertEqual(self.post("/v1/action", {
-                    "sessionId": self.SID, "action": "decide",
-                    "decision": decision})[0], 204)
+                self.assertEqual(self.post("/v1/action", decide_body(self, decision))[0], 204)
                 thread.join(timeout=15)
                 row = self.row()
                 self.assertEqual(row["state"], "working")
@@ -1622,8 +1632,7 @@ class PermissionRaisesTheCardTests(PermissionLiveFireTests):
         self.hooks.note_activity(self.SID,
                                  since + crabd.NEEDS_INPUT_ACTIVITY_GRACE_SEC + 1)
         self.assertEqual(self.row()["state"], "working")
-        self.post("/v1/action", {"sessionId": self.SID, "action": "decide",
-                                 "decision": "deny"})
+        self.post("/v1/action", decide_body(self, "deny"))
         thread.join(timeout=15)
 
     def test_a_stop_during_the_hold_leaves_the_card_finished_not_working(self):
@@ -1693,8 +1702,7 @@ class PermissionRaisesTheCardTests(PermissionLiveFireTests):
         self.assertEqual(row["pendingPermission"]["tool"], "Write")  # B's, still live
 
         # B now resolves; THIS is the exit that stands the card down.
-        self.assertEqual(self.post("/v1/action", {
-            "sessionId": self.SID, "action": "decide", "decision": "deny"})[0], 204)
+        self.assertEqual(self.post("/v1/action", decide_body(self, "deny"))[0], 204)
         thread_b.join(timeout=15)
         row = self.row()
         self.assertEqual(row["state"], "working")

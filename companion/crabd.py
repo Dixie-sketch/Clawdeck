@@ -49,10 +49,12 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -73,7 +75,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.28.2"
+VERSION = "0.29.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -82,6 +84,19 @@ PORT = int(os.environ.get("CRABD_PORT") or 2722)
 
 SIDECRAB_DIR = Path.home() / ".sidecrab"
 USER_CONFIG_FILE = SIDECRAB_DIR / "config.json"
+# The panel pairing code (v0.29.0, closes SEC-a + WID-a). A 10-symbol secret crabd mints
+# once and keeps in the user's profile; the widget presents it on every `decide`. It is the
+# one thing a web page the operator visits cannot obtain: iCUE widget PROPERTIES are not
+# reachable from a browser, and a forged `Origin: null` buys nothing without it. Same-user
+# local processes can read the file - they can also drive the terminal dialog, so they were
+# never in the threat model. Crockford-style alphabet (no I, L, O, U) so a code read off a
+# terminal and typed into iCUE's settings cannot be mis-transcribed.
+PANEL_TOKEN_FILE = SIDECRAB_DIR / "panel-token"
+PANEL_TOKEN_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+PANEL_TOKEN_LEN = 10                 # 32^10 = 2^50 - hopeless to guess at loopback speed once
+PANEL_TOKEN_MAX_FAILURES = 10        # ...the lockout below bounds the rate anyway
+PANEL_TOKEN_WINDOW_SEC = 60.0
+PANEL_TOKEN_LOCKOUT_SEC = 60.0
 # v0.7.0 history persistence. Like LIMITS_CACHE_FILE this is a module GLOBAL naming a
 # real file under ~, and HistoryLog resolves it per call - so the test module can patch
 # it once at module scope and no test can reach the operator's file. That is not a
@@ -4465,6 +4480,100 @@ class ContinueQueue:
 
 # ------------------------------------------------------------- panel approvals
 
+class PermissionRequestMismatch(Exception):
+    """decide() was given a requestId that is not the one pending for the session
+    (WID-a, v0.29.0): the tap was aimed at a request that has since been replaced."""
+
+
+class PanelToken:
+    """The panel pairing code (v0.29.0) - the second barrier on `decide` (SEC-a).
+
+    Three rules, structural rather than careful:
+      - **Never fails open.** No code loaded means every verify() is "rejected"; a
+        handler with no PanelToken at all answers 503, not 204 (see _do_decide).
+      - **Constant-time compare** (hmac.compare_digest) on the normalised code, so a
+        loopback caller cannot time its way to the code one symbol at a time.
+      - **Bounded guessing.** PANEL_TOKEN_MAX_FAILURES rejects inside PANEL_TOKEN_WINDOW_SEC
+        lock verify() for PANEL_TOKEN_LOCKOUT_SEC - the RIGHT code included, so a lockout
+        is visible on the panel rather than silently absorbed.
+    The code is never served: /v1/health reports presence and lockout only.
+    """
+
+    FORMAT = re.compile(r"^[0-9A-HJ-NP-TV-Z]{%d}$" % PANEL_TOKEN_LEN)
+
+    def __init__(self, path, code) -> None:
+        self.path = path
+        self._code = code if code and self.FORMAT.match(code) else None
+        self._lock = threading.Lock()
+        self._failures: list[float] = []
+        self._locked_until = 0.0
+
+    @classmethod
+    def load_or_create(cls, path: Path) -> "PanelToken":
+        """Read the code off disk, minting one when the file is missing or unusable.
+        Atomic write (tmp + os.replace) so a crash mid-write cannot leave a truncated
+        code that the next start would silently replace with a different one."""
+        code = None
+        try:
+            code = cls.normalize(path.read_text(encoding="utf-8"))
+        except OSError:
+            code = None
+        if not code or not cls.FORMAT.match(code):
+            code = cls.generate()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(cls.display(code) + "\n", encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)     # a no-op on Windows; the profile ACL does the job
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        return cls(path, code)
+
+    @staticmethod
+    def generate() -> str:
+        return "".join(secrets.choice(PANEL_TOKEN_ALPHABET) for _ in range(PANEL_TOKEN_LEN))
+
+    @staticmethod
+    def normalize(raw) -> str:
+        """Upper-case, keep only the alphabet's symbols: `k7qxm-2pdab`, `K7QXM 2PDAB`
+        and `K7QXM2PDAB` are the same code."""
+        return re.sub(r"[^0-9A-Z]", "", str(raw or "").upper())
+
+    @staticmethod
+    def display(code: str) -> str:
+        return code[:5] + "-" + code[5:] if len(code) == PANEL_TOKEN_LEN else code
+
+    def verify(self, presented, now: float) -> str:
+        """-> "ok" | "missing" | "rejected" | "locked". Only "ok" may allow anything."""
+        with self._lock:
+            if now < self._locked_until:
+                return "locked"
+            if not isinstance(presented, str) or not presented.strip():
+                return "missing"
+            if self._code is not None and hmac.compare_digest(
+                    self.normalize(presented), self._code):
+                self._failures.clear()
+                return "ok"
+            self._failures = [t for t in self._failures
+                              if now - t < PANEL_TOKEN_WINDOW_SEC]
+            self._failures.append(now)
+            if len(self._failures) >= PANEL_TOKEN_MAX_FAILURES:
+                self._locked_until = now + PANEL_TOKEN_LOCKOUT_SEC
+                self._failures.clear()
+                return "locked"
+            return "rejected"
+
+    def status(self, now: float) -> dict:
+        """Diagnostic for /v1/health. Never the code."""
+        with self._lock:
+            recent = [t for t in self._failures if now - t < PANEL_TOKEN_WINDOW_SEC]
+            locked = self._locked_until if now < self._locked_until else None
+        return {"present": self._code is not None,
+                "rejectedRecently": len(recent),
+                "lockedUntil": _utc_iso(locked) if locked else None}
+
+
 class PermissionBroker:
     """The PermissionRequest long poll (contract v0.12.0 §4).
 
@@ -4496,7 +4605,10 @@ class PermissionBroker:
         releases it as a pass-through: the older prompt is still sitting in a terminal
         waiting for someone, and leaving its holder parked would strand a live request
         on a panel entry nothing will ever answer."""
+        # WID-a (v0.29.0): a per-request id the widget must echo on decide, so a tap
+        # aimed at THIS request can never land on the one that replaced it.
         entry = {"tool": tool, "summary": summary, "requestedAt": now,
+                 "requestId": secrets.token_hex(8),
                  "event": threading.Event(), "decision": None}
         with self._lock:
             previous = self._pending.get(session_id)
@@ -4517,12 +4629,19 @@ class PermissionBroker:
         entry["event"].wait(timeout)
         return entry["decision"]
 
-    def decide(self, session_id: str, decision: str, now: float) -> str | None:
+    def decide(self, session_id: str, decision: str, now: float,
+               request_id=None) -> str | None:
         """-> the tool name the decision applied to, or None when nothing was pending.
 
         The tool name comes back so the caller can write the contract's history line
         ("approved from panel: Bash") without a second lookup that could race the entry
         being removed underneath it.
+
+        `request_id` (WID-a, v0.29.0): when given, it must equal the pending entry's
+        `requestId` or PermissionRequestMismatch is raised - checked UNDER the same lock
+        that applies the decision, so a replace landing between a check and the write
+        cannot be approved with the old id. None skips the check (unit callers only;
+        the HTTP handler always passes one).
         """
         if decision not in (PERMISSION_BEHAVIOR_ALLOW, PERMISSION_BEHAVIOR_DENY):
             return None
@@ -4530,6 +4649,9 @@ class PermissionBroker:
             entry = self._pending.get(session_id)
             if entry is None or entry["decision"] is not None:
                 return None
+            if request_id is not None and not hmac.compare_digest(
+                    str(request_id), entry["requestId"]):
+                raise PermissionRequestMismatch(session_id)
             entry["decision"] = decision
             del self._pending[session_id]
         entry["event"].set()
@@ -4602,7 +4724,8 @@ class PermissionBroker:
             if entry is None or entry["decision"] is not None:
                 return None
             return {"tool": entry["tool"], "summary": entry["summary"],
-                    "requestedAt": _utc_iso(entry["requestedAt"])}
+                    "requestedAt": _utc_iso(entry["requestedAt"]),
+                    "requestId": entry["requestId"]}
 
     def has_pending(self, session_id: str) -> bool:
         """A-01 (v0.26.0). True while a LIVE (registered, undecided) hold is parked for this
@@ -5236,6 +5359,10 @@ class StateBuilder:
             # hardcoded defaults, and a missing key and an empty one mean the same
             # thing to it.
             "continuePrompts": self.config.continue_extras(now),
+            # v0.29.0 (additive): whether taps may decide, and that `decide` now needs
+            # the pairing code + requestId. Presence-detected by the widget.
+            "approvals": {"enabled": self.config.panel_approvals(now),
+                          "tokenRequired": True},
             # v0.18.0: the toast settings, for the same reason continuePrompts rides here
             # - /v1/config is POST-only, so the feed is the widget's ONLY read path to
             # config.json. Always present; `approvalThresholdSec` inside it is not, and
@@ -5868,6 +5995,7 @@ class Handler(BaseHTTPRequestHandler):
         otlp = getattr(builder, "otlp", None) if builder else None
         hooks = getattr(builder, "hooks", None) if builder else None
         origins = getattr(builder, "origins", None) if builder else None
+        token = getattr(builder, "panel_token", None) if builder else None
         last_at = statusline.last_at if statusline is not None else None
         return {
             "ok": True,
@@ -5883,6 +6011,10 @@ class Handler(BaseHTTPRequestHandler):
             # enabler. Diagnostic - NOT the state contract, so no schema bump - and never
             # in /v1/state. See OriginRecorder.
             "originsSeen": origins.snapshot() if origins is not None else [],
+            # v0.29.0: the pairing code's presence and lockout - never the code.
+            "panelToken": (token.status(now) if token is not None
+                           else {"present": False, "rejectedRecently": 0,
+                                 "lockedUntil": None}),
         }
 
     def _do_history(self, query: str) -> None:
@@ -6043,7 +6175,13 @@ class Handler(BaseHTTPRequestHandler):
         also FORGE Origin:null, so this gate closes the visited-http(s)-page vector, not
         the local-process or forged-null one.
 
-        THE EXACT RESIDUAL, stated honestly (SEC-a, 2026-08-28 audit -
+        SEC-a is CLOSED as of v0.29.0: `decide` additionally requires the panel pairing
+        code (PanelToken) and the request's `requestId`, neither of which a forged-null
+        page can obtain - so the paragraph below now describes the pre-0.29.0 exposure
+        and why this gate alone was never enough. It is kept because the reasoning about
+        `null` is still what stops someone "fixing" this gate by rejecting null.
+
+        THE EXACT RESIDUAL as it stood (SEC-a, 2026-08-28 audit -
         docs/findings/QA-Audit-2026-08-28.md). When panelApprovals is enabled, a
         forged/opaque null Origin - a sandboxed allow-scripts iframe on any page the
         operator visits, or any local process - CAN reach `POST /v1/action decide` and
@@ -6449,7 +6587,8 @@ class Handler(BaseHTTPRequestHandler):
             self._do_queue_continue(session_id, body.get("prompt"))
             return
         if action == "decide":
-            self._do_decide(session_id, body.get("decision"))
+            self._do_decide(session_id, body.get("decision"),
+                            body.get("token"), body.get("requestId"))
             return
         if action == "reply":
             # 501 is the honest answer, not a stub. The 2026-08-26 spike found no way to
@@ -6559,13 +6698,21 @@ class Handler(BaseHTTPRequestHandler):
                                          create=True)
         self._send(204, None)
 
-    def _do_decide(self, session_id: str, decision) -> None:
-        """POST /v1/action {"action":"decide"} -> 204 (contract v0.12.0 §4).
+    def _do_decide(self, session_id: str, decision, token=None, request_id=None) -> None:
+        """POST /v1/action {"action":"decide"} -> 204 (contract v0.12.0 §4; v0.29.0 gate).
 
         404 when nothing is pending, and that is the important answer rather than a
         courtesy 204: a tap that lands after the 55 s hold expired must NOT read as an
         approval the widget can show, because by then the terminal dialog owns the
         decision and the operator is about to answer it a second time.
+
+        v0.29.0 - the order of the gates is the security argument:
+          1. decision shape (400) - malformed is malformed, no secret consulted;
+          2. the pairing code (403 missing/rejected, 429 locked, 503 when crabd has no
+             PanelToken at all - NEVER fall open to the pre-0.29.0 behaviour);
+          3. requestId (400 absent, 409 stale) - checked inside the broker's lock;
+          4. only then the decision is applied.
+        A caller that can forge `Origin: null` (SEC-a) stops at gate 2.
         """
         broker = getattr(self.builder, "permissions", None)
         if broker is None:
@@ -6574,7 +6721,33 @@ class Handler(BaseHTTPRequestHandler):
         if decision not in (PERMISSION_BEHAVIOR_ALLOW, PERMISSION_BEHAVIOR_DENY):
             self._send(400, b'{"error":"decision must be allow or deny"}')
             return
-        tool = broker.decide(session_id, decision, time.time())
+        gate = getattr(self.builder, "panel_token", None)
+        if gate is None:
+            self._send(503, b'{"error":"panel pairing unavailable"}')
+            return
+        verdict = gate.verify(token, time.time())
+        if verdict == "locked":
+            self._send(429, b'{"error":"pairing code locked after repeated rejects - wait a minute"}')
+            return
+        if verdict == "missing":
+            self._send(403, b'{"error":"pairing code required"}')
+            return
+        if verdict != "ok":
+            self._send(403, b'{"error":"pairing code rejected"}')
+            return
+        if not isinstance(request_id, str) or not request_id:
+            # A tap that arrives after the hold expired is the contract's 404, not a
+            # 400 about a field the widget had nothing to fill in.
+            if broker.pending(session_id) is None:
+                self._send(404, b'{"error":"no permission request pending"}')
+            else:
+                self._send(400, b'{"error":"requestId required"}')
+            return
+        try:
+            tool = broker.decide(session_id, decision, time.time(), request_id)
+        except PermissionRequestMismatch:
+            self._send(409, b'{"error":"stale permission request"}')
+            return
         if tool is None:
             self._send(404, b'{"error":"no permission request pending"}')
             return
@@ -6861,6 +7034,9 @@ def main() -> int:
                            history, statusline, otlp, continues, permissions,
                            models=ModelCatalog())
     holder["builder"] = builder
+    # v0.29.0: the pairing code is minted on first start and lives beside config.json.
+    # Attached to the builder (like the broker) so a test double can carry its own.
+    builder.panel_token = PanelToken.load_or_create(PANEL_TOKEN_FILE)
     Handler.builder = builder
     stop = threading.Event()
     thread = threading.Thread(target=_refresh_loop, args=(builder, stop), daemon=True)

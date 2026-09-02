@@ -167,6 +167,28 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.27.0 — the pairing code: a decide only the widget can send (SEC-a / WID-a closed)
+
+crabd 0.29.0 refuses `decide` without the pairing code and the request's id. The widget's
+half is small on purpose:
+
+- **`panelToken` iCUE property** ("Approval Pairing Code", textfield, default empty). Read
+  LIVE on every decide via `strProp` — the operator types it into iCUE while a request may
+  already be on the card, and a boot-time cache would refuse the very tap they are making.
+- **`tokenRequired()`** reads `approvals.tokenRequired` off the last good document. An older
+  crabd has no `approvals` block and is never asked for a code.
+- **`onSheetDecide`**: unpaired against a crabd that requires it = the sheet STAYS OPEN and the
+  notice says why (`not paired — set Approval Pairing Code in widget settings`); nothing goes on
+  the wire. Otherwise the sheet closes optimistically as before and the body carries `token` +
+  the displayed request's `requestId` (WID-a). `403` / `409` / `429` each get their own notice
+  line — a wrong code and a replaced request are different mistakes with different fixes.
+- Mock mode is unchanged: `postAction` never leaves the page there, so every fixture still
+  demos the sheet without a code.
+
+Not done, deliberately: an on-glass keypad for the code. iCUE's property panel is a desktop
+keyboard and a textfield is a property type the import validator has accepted; a keypad would
+be new surface with a real mis-tap risk for a value typed once.
+
 ## v0.26.0 — warm-on-warm: the ring got its lightness back (AUD-F1 closed)
 
 > **Version label is provisional.** `manifest.json` is deliberately NOT bumped in this

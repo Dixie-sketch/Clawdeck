@@ -1914,7 +1914,8 @@ class ServeTests(TempProjects):
         self.assertEqual(body["version"], crabd.VERSION)
         self.assertEqual(sorted(body),
                          ["hooksSeen", "lastStatuslineAgeSec", "ok", "originsSeen",
-                          "otlpSeen", "statuslineSeen", "uptimeSec", "version"])
+                          "otlpSeen", "panelToken", "statuslineSeen", "uptimeSec",
+                          "version"])
 
     def test_state_matches_the_contract_shape(self):
         response, state = self.get("/v1/state")
@@ -1929,7 +1930,7 @@ class ServeTests(TempProjects):
         # STATE-CONTRACT.md drops a top-level key, and a reintroduced one has to fail
         # here rather than ship to the store.
         self.assertEqual(sorted(state),
-                         ["burn", "continuePrompts", "crabd", "fleet", "generatedAt",
+                         ["approvals", "burn", "continuePrompts", "crabd", "fleet", "generatedAt",
                           "host", "limits", "quiet", "recap", "schema", "sessions",
                           "toast"])
         # v0.22.0: the host's own CPU and memory, beside the iCUE temperature sensors.
@@ -3070,7 +3071,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.28.2")
+        self.assertEqual(crabd.VERSION, "0.29.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5834,7 +5835,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.28.2")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.29.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -7084,7 +7085,23 @@ class V12ServedTests(ServedOverASocket):
         self.builder.otlp = self.otlp
         self.builder.continues = self.continues
         self.builder.permissions = self.permissions
+        # v0.29.0: every served fixture carries a pairing code, the way a real crabd does.
+        self.TOKEN = "K7QXM2PDAB"
+        self.panel_token = crabd.PanelToken(None, self.TOKEN)
+        self.builder.panel_token = self.panel_token
         self.rebuild()
+
+    def decide_body(self, decision, token=None, request_id=None, session_id=None):
+        """The v0.29.0 decide body: sessionId + decision + the pairing code + the
+        pending request's id (read straight off the broker unless given)."""
+        sid = session_id or self.SID
+        pending = self.permissions.pending(sid)
+        body = {"sessionId": sid, "action": "decide", "decision": decision,
+                "token": self.TOKEN if token is None else token}
+        rid = request_id if request_id is not None else (pending or {}).get("requestId")
+        if rid is not None:
+            body["requestId"] = rid
+        return body
 
     def rebuild(self):
         with self.builder._lock:
@@ -7824,7 +7841,7 @@ class PermissionBrokerUnitTests(unittest.TestCase):
     def test_the_pending_view_is_the_contract_shape(self):
         self.broker.register(self.SID, "Bash", "git push", self.now)
         pending = self.broker.pending(self.SID)
-        self.assertEqual(sorted(pending), ["requestedAt", "summary", "tool"])
+        self.assertEqual(sorted(pending), ["requestId", "requestedAt", "summary", "tool"])
         self.assertEqual((pending["tool"], pending["summary"]), ("Bash", "git push"))
         self.assertTrue(pending["requestedAt"].endswith("Z"))
 
@@ -7900,6 +7917,73 @@ class PanelApprovalConfigTests(V12ServedTests):
                                         encoding="utf-8")
             config = crabd.UserConfig(self.config_path)
             self.assertFalse(config.panel_approvals(time.time()), bad)
+
+
+class PanelTokenUnitTests(unittest.TestCase):
+    """PanelToken (v0.29.0): the pairing code that makes `decide` un-forgeable."""
+
+    def test_a_generated_code_is_ten_symbols_of_the_unambiguous_alphabet(self):
+        for _ in range(50):
+            code = crabd.PanelToken.generate()
+            self.assertEqual(len(code), crabd.PANEL_TOKEN_LEN)
+            self.assertTrue(set(code) <= set(crabd.PANEL_TOKEN_ALPHABET), code)
+            self.assertFalse(set(code) & set("ILOU"))
+
+    def test_load_or_create_mints_once_and_rereads_the_same_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested" / "panel-token"
+            first = crabd.PanelToken.load_or_create(path)
+            self.assertTrue(path.is_file())
+            on_disk = path.read_text(encoding="utf-8").strip()
+            self.assertRegex(on_disk, r"^[0-9A-HJ-NP-TV-Z]{5}-[0-9A-HJ-NP-TV-Z]{5}$")
+            self.assertEqual(first.verify(on_disk, 0.0), "ok")
+            second = crabd.PanelToken.load_or_create(path)
+            self.assertEqual(second.verify(on_disk, 0.0), "ok")
+
+    def test_an_unusable_file_is_replaced_not_trusted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "panel-token"
+            path.write_text("abc\n", encoding="utf-8")          # too short
+            gate = crabd.PanelToken.load_or_create(path)
+            self.assertEqual(gate.verify("abc", 0.0), "rejected")
+            self.assertEqual(gate.verify(path.read_text(encoding="utf-8"), 0.0), "ok")
+
+    def test_the_code_is_matched_without_case_or_hyphens(self):
+        gate = crabd.PanelToken(None, "K7QXM2PDAB")
+        for form in ("K7QXM-2PDAB", "k7qxm2pdab", " k7qxm 2pdab ", "K7QXM2PDAB"):
+            self.assertEqual(gate.verify(form, 0.0), "ok", form)
+
+    def test_missing_and_wrong_are_different_answers_and_neither_is_ok(self):
+        gate = crabd.PanelToken(None, "K7QXM2PDAB")
+        for missing in (None, "", "   ", 7, ["K7QXM2PDAB"]):
+            self.assertEqual(gate.verify(missing, 0.0), "missing", repr(missing))
+        for wrong in ("K7QXM2PDAC", "K7QXM2PDA", "K7QXM2PDABX", "0000000000"):
+            self.assertEqual(gate.verify(wrong, 0.0), "rejected", wrong)
+
+    def test_no_code_loaded_never_verifies(self):
+        gate = crabd.PanelToken(None, None)
+        self.assertEqual(gate.verify("K7QXM2PDAB", 0.0), "rejected")
+        self.assertFalse(gate.status(0.0)["present"])
+
+    def test_repeated_rejects_lock_the_gate_and_the_right_code_is_locked_too(self):
+        gate = crabd.PanelToken(None, "K7QXM2PDAB")
+        for i in range(crabd.PANEL_TOKEN_MAX_FAILURES - 1):
+            self.assertEqual(gate.verify("WRONG", float(i)), "rejected")
+        self.assertEqual(gate.verify("WRONG", 10.0), "locked")
+        self.assertEqual(gate.verify("K7QXM2PDAB", 11.0), "locked")
+        self.assertIsNotNone(gate.status(11.0)["lockedUntil"])
+        self.assertEqual(gate.verify("K7QXM2PDAB", 11.0 + crabd.PANEL_TOKEN_LOCKOUT_SEC), "ok")
+
+    def test_rejects_outside_the_window_do_not_accumulate(self):
+        gate = crabd.PanelToken(None, "K7QXM2PDAB")
+        for i in range(crabd.PANEL_TOKEN_MAX_FAILURES * 3):
+            self.assertEqual(gate.verify("WRONG", i * (crabd.PANEL_TOKEN_WINDOW_SEC + 1)),
+                             "rejected")
+
+    def test_status_never_carries_the_code(self):
+        gate = crabd.PanelToken(None, "K7QXM2PDAB")
+        self.assertNotIn("K7QXM2PDAB", json.dumps(gate.status(0.0)))
+        self.assertEqual(set(gate.status(0.0)), {"present", "rejectedRecently", "lockedUntil"})
 
 
 class PermissionEndpointTests(V12ServedTests):
@@ -7996,10 +8080,10 @@ class PermissionEndpointTests(V12ServedTests):
         self.assertTrue(self.await_pending())
         row = next(r for r in self.rebuild()["sessions"] if r["id"] == self.SID)
         self.assertEqual(sorted(row["pendingPermission"]),
-                         ["requestedAt", "summary", "tool"])
+                         ["requestId", "requestedAt", "summary", "tool"])
         self.assertEqual(row["pendingPermission"]["tool"], "Bash")
         self.assertEqual(row["pendingPermission"]["summary"], "git push --force")
-        self.action({"sessionId": self.SID, "action": "decide", "decision": "deny"})
+        self.action(self.decide_body("deny"))
         thread.join(timeout=10)
         self.assertTrue(out)
 
@@ -8012,8 +8096,7 @@ class PermissionEndpointTests(V12ServedTests):
         self.enable()
         out, thread = self.fire()
         self.assertTrue(self.await_pending())
-        self.assertEqual(self.action({"sessionId": self.SID, "action": "decide",
-                                      "decision": "allow"})[0], 204)
+        self.assertEqual(self.action(self.decide_body("allow"))[0], 204)
         thread.join(timeout=10)
         status, body = out[0]
         self.assertEqual(status, 200)
@@ -8025,7 +8108,7 @@ class PermissionEndpointTests(V12ServedTests):
         self.enable()
         out, thread = self.fire(tool="Write", tool_input={"file_path": "C:\\IT\\x.md"})
         self.assertTrue(self.await_pending())
-        self.action({"sessionId": self.SID, "action": "decide", "decision": "deny"})
+        self.action(self.decide_body("deny"))
         thread.join(timeout=10)
         self.assertEqual(json.loads(out[0][1]), {
             "hookSpecificOutput": {
@@ -8078,8 +8161,7 @@ class PermissionEndpointTests(V12ServedTests):
                                    ("deny", "denied from panel: Bash")):
             out, thread = self.fire()
             self.assertTrue(self.await_pending())
-            self.action({"sessionId": self.SID, "action": "decide",
-                         "decision": decision})
+            self.action(self.decide_body(decision))
             thread.join(timeout=10)
             self.assertIn(expected, self.ring(), decision)
 
@@ -8147,8 +8229,7 @@ class PermissionEndpointTests(V12ServedTests):
         status, body = self.post_json("/v1/hook/permission", self.hook_payload())
         self.assertEqual((status, json.loads(body)), (200, {}))
         self.assertIn("permission passed through: Bash", self.ring())
-        self.assertEqual(self.action({"sessionId": self.SID, "action": "decide",
-                                      "decision": "allow"})[0], 404)
+        self.assertEqual(self.action(self.decide_body("allow"))[0], 404)
 
     def test_the_pass_through_line_survives_a_row_that_aged_out_during_the_hold(self):
         """AUDIT F7 (fixed v0.17.0). The timeout branch wrote its history line with the
@@ -8172,8 +8253,7 @@ class PermissionEndpointTests(V12ServedTests):
     def test_deciding_with_nothing_pending_is_404(self):
         """A tap that lands after the hold expired must not read as an approval: by then
         the terminal dialog owns the decision."""
-        status, body = self.action({"sessionId": self.SID, "action": "decide",
-                                    "decision": "allow"})
+        status, body = self.action(self.decide_body("allow"))
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(body), {"error": "no permission request pending"})
 
@@ -8217,7 +8297,7 @@ class PermissionEndpointTests(V12ServedTests):
         # And the builder is still building underneath it.
         self.assertIn("generatedAt", self.rebuild())
         self.assertIsNotNone(self.permissions.pending(self.SID))
-        self.action({"sessionId": self.SID, "action": "decide", "decision": "deny"})
+        self.action(self.decide_body("deny"))
         thread.join(timeout=10)
         self.assertTrue(out)
 
@@ -8257,7 +8337,7 @@ class PermissionEndpointTests(V12ServedTests):
             "session_id": "cafecafe-0000-0000-0000-000000000099",
             "hook_event_name": "UserPromptSubmit", "cwd": "C:\\IT"})[0], 204)
         self.assertIsNotNone(self.permissions.pending(self.SID))
-        self.action({"sessionId": self.SID, "action": "decide", "decision": "deny"})
+        self.action(self.decide_body("deny"))
         thread.join(timeout=10)
 
     def test_a_subagent_stop_leaves_the_hold_parked(self):
@@ -8270,7 +8350,7 @@ class PermissionEndpointTests(V12ServedTests):
             "session_id": self.SID, "hook_event_name": "SubagentStop",
             "cwd": "C:\\IT"})[0], 204)
         self.assertIsNotNone(self.permissions.pending(self.SID))
-        self.action({"sessionId": self.SID, "action": "decide", "decision": "deny"})
+        self.action(self.decide_body("deny"))
         thread.join(timeout=10)
 
     def test_a_raise_inside_the_hold_cannot_strand_the_panel_row(self):
@@ -8312,6 +8392,160 @@ class PermissionEndpointTests(V12ServedTests):
 
 
 # ================================================= v0.12.0: the expiry sweep
+
+class PanelTokenEndpointTests(PermissionEndpointTests):
+    """POST /v1/action decide behind the pairing code + requestId (SEC-a / WID-a closed).
+    The fixture's hooks are the same as PermissionEndpointTests'; the helpers are
+    borrowed rather than re-declared."""
+
+    # Inherit the fixture (enable / fire / await_pending / hook_payload), NOT the parent's
+    # tests: a None attribute is not callable, so the loader skips it.
+    for _name in [n for n in dir(PermissionEndpointTests) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def _fire(self, **kw):
+        return self.fire(**kw)
+
+    def _enable(self):
+        return self.enable()
+
+    def _await(self):
+        return self.await_pending()
+
+    def test_state_serves_the_approvals_block_and_a_request_id(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        doc = self.rebuild()
+        self.assertEqual(doc["approvals"], {"enabled": True, "tokenRequired": True})
+        rid = self.row()["pendingPermission"]["requestId"]
+        self.assertRegex(rid, r"^[0-9a-f]{16}$")
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread.join(timeout=10)
+
+    def test_approvals_block_reads_off_while_disabled(self):
+        self.assertEqual(self.state()["approvals"], {"enabled": False, "tokenRequired": True})
+
+    def test_a_decide_without_the_code_is_403_and_the_hold_is_untouched(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        status, body = self.action(self.decide_body("allow", token=""))
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body), {"error": "pairing code required"})
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread.join(timeout=10)
+        self.assertEqual(json.loads(out[0][1])["hookSpecificOutput"]["decision"]["behavior"],
+                         "deny")
+
+    def test_a_forged_null_origin_with_no_code_cannot_approve(self):
+        """THE SEC-a reproduction, now refused: Origin null (what a sandboxed iframe
+        sends) + the sessionId and requestId harvested off /v1/state is still not enough."""
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        self.rebuild()
+        rid = self.row()["pendingPermission"]["requestId"]
+        body = json.dumps({"sessionId": self.SID, "action": "decide",
+                           "decision": "allow", "requestId": rid}).encode()
+        reply = self.client.post("/v1/action", body, headers={"Origin": "null"})
+        self.assertEqual(reply.status, 403)
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        crabd.PERMISSION_POLL_SEC = 0.4
+        self.permissions.stale(self.SID)
+        thread.join(timeout=10)
+        self.assertEqual(json.loads(out[0][1]), {})     # pass-through, never an allow
+
+    def test_a_wrong_code_is_403_and_counts_toward_the_lockout(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        status, body = self.action(self.decide_body("allow", token="0000000000"))
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body), {"error": "pairing code rejected"})
+        self.assertEqual(self.client.get("/v1/health").json()["panelToken"]["rejectedRecently"], 1)
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread.join(timeout=10)
+
+    def test_ten_wrong_codes_lock_the_gate_with_429(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        for _ in range(crabd.PANEL_TOKEN_MAX_FAILURES):
+            self.action(self.decide_body("allow", token="0000000000"))
+        status, body = self.action(self.decide_body("allow"))
+        self.assertEqual(status, 429)
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        self.assertIsNotNone(self.client.get("/v1/health").json()["panelToken"]["lockedUntil"])
+        self.permissions.stale(self.SID)
+        thread.join(timeout=10)
+
+    def test_the_right_code_with_no_request_id_is_400(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        body = self.decide_body("allow"); body.pop("requestId")
+        status, reply = self.action(body)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(reply), {"error": "requestId required"})
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread.join(timeout=10)
+
+    def test_a_stale_request_id_is_409_and_decides_nothing(self):
+        """WID-a: a tap aimed at the request the sheet showed must not land on the one
+        that replaced it in the poll gap."""
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        self.rebuild()
+        old = self.row()["pendingPermission"]["requestId"]
+        out2, thread2 = self._fire(tool="Write", tool_input={"file_path": "x"})
+        settle(lambda: self.permissions.pending(self.SID)["requestId"] != old,
+               what="the replacing request")
+        thread.join(timeout=10)                       # the first hold passed through
+        status, body = self.action(self.decide_body("allow", request_id=old))
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body), {"error": "stale permission request"})
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread2.join(timeout=10)
+        self.assertEqual(json.loads(out2[0][1])["hookSpecificOutput"]["decision"]["behavior"],
+                         "deny")
+
+    def test_the_code_is_accepted_in_any_written_form(self):
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        self.assertEqual(self.action(self.decide_body("allow", token="k7qxm-2pdab"))[0], 204)
+        thread.join(timeout=10)
+        self.assertEqual(json.loads(out[0][1])["hookSpecificOutput"]["decision"]["behavior"],
+                         "allow")
+
+    def test_a_crabd_with_no_pairing_gate_answers_503_never_204(self):
+        """Never fail open: a builder without a PanelToken cannot decide anything."""
+        self._enable()
+        out, thread = self._fire()
+        self.assertTrue(self._await())
+        self.builder.panel_token = None
+        try:
+            status, body = self.action(self.decide_body("allow"))
+        finally:
+            self.builder.panel_token = self.panel_token
+        self.assertEqual(status, 503)
+        self.assertIsNotNone(self.permissions.pending(self.SID))
+        self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
+        thread.join(timeout=10)
+
+    def test_health_reports_the_gate_without_the_code(self):
+        health = self.client.get("/v1/health").json()
+        self.assertEqual(health["panelToken"], {"present": True, "rejectedRecently": 0,
+                                                "lockedUntil": None})
+        self.assertNotIn(self.TOKEN, json.dumps(health))
+        self.assertNotIn(self.TOKEN, json.dumps(self.state()))
+
 
 class ExpiryLoopTests(unittest.TestCase):
     """_expiry_loop - the v0.12.0 stores age out on their own clock.

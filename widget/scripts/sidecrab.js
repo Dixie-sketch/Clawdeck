@@ -360,6 +360,20 @@ var CONTINUE_DEFAULTS = [
 var DECIDE_ALLOW = 'allow';
 var DECIDE_DENY = 'deny';
 
+/* The approval pairing code (v0.27.0, closes SEC-a). Read LIVE off the iCUE
+   property on every decide, never cached: the operator types it into the widget
+   settings while a permission may already be waiting. Sent in the body, not a
+   header, so the request stays the same application/json preflight crabd already
+   answers. crabd normalises (case, hyphens) so this only trims. */
+function panelToken() { return strProp('panelToken', '').trim(); }
+
+/* crabd >= 0.29.0 says so in the document (`approvals.tokenRequired`); an older
+   crabd has no `approvals` block and never asks for one. */
+function tokenRequired() {
+	var a = lastGoodDoc && lastGoodDoc.approvals;
+	return !!(a && typeof a === 'object' && a.tokenRequired === true);
+}
+
 /* v0.15.0 — the queued chip, the approval countdown, and the two header chips */
 
 /* How long crabd holds a PermissionRequest hook open before it gives up and
@@ -4796,11 +4810,26 @@ function onSheetDecide(decision) {
 	if (!sheetSessionId) return;
 	if (decision !== DECIDE_ALLOW && decision !== DECIDE_DENY) return;
 	var id = sheetSessionId;
+	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
+	   operator reads why instead of finding the card still armed after a close. */
+	if (tokenRequired() && !panelToken()) {
+		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in widget settings', 'err');
+		logLine('decide refused locally: no pairing code');
+		return;
+	}
+	/* WID-a: the id of the request the sheet is SHOWING, echoed so crabd can refuse a
+	   tap that lands on a request that replaced it in the poll gap. */
+	var live = findSession(id);
+	var pend = live && live.pendingPermission && typeof live.pendingPermission === 'object' ? live.pendingPermission : null;
+	var requestId = pend && typeof pend.requestId === 'string' ? pend.requestId : null;
 	fireSnap();
 	closeSheet();
-	postAction(id, 'decide', null, decision).then(function (res) {
+	postAction(id, 'decide', null, decision, null, requestId).then(function (res) {
 		if (res.status === 204 || res.status === 200) { logLine('decision sent: ' + decision); return; }
 		logLine('decide failed (HTTP ' + res.status + ')');
+		if (res.status === 403) { showNotice(decision + ' refused ' + EMDASH + ' pairing code wrong; check widget settings', 'err'); return; }
+		if (res.status === 409) { showNotice(decision + ' not applied ' + EMDASH + ' the request changed; reopen the card', 'err'); return; }
+		if (res.status === 429) { showNotice(decision + ' refused ' + EMDASH + ' pairing locked, wait a minute', 'err'); return; }
 		showNotice(decision + ' not sent ' + EMDASH + ' decide in terminal', 'err');
 	}).catch(function () {
 		logLine('decide failed: crabd not reachable');
@@ -4816,7 +4845,7 @@ function onSheetDecide(decision) {
    header first and fall back once, then remember which one worked — a network
    TypeError (not an HTTP status) is exactly what a missing preflight looks
    like from here. */
-function postAction(sessionId, action, text, decision, quiet) {
+function postAction(sessionId, action, text, decision, quiet, requestId) {
 	/* ack-all is panel-wide by contract and carries no session: sending a
 	   sessionId with it would invite a crabd that reads the first field it
 	   recognises to ack exactly one of them. `quiet` (v0.22.0) is panel-wide for
@@ -4828,7 +4857,15 @@ function postAction(sessionId, action, text, decision, quiet) {
 	/* queue-continue carries the FULL prompt; decide carries allow/deny. Each is a
 	   closed field the wire body names explicitly, never a free-form passthrough. */
 	else if (action === 'queue-continue') body.prompt = text;
-	else if (action === 'decide') body.decision = decision;
+	else if (action === 'decide') {
+		body.decision = decision;
+		/* v0.27.0: the pairing code and the request id are what make a decide
+		   un-forgeable from a web page (crabd 0.29.0, SEC-a / WID-a). Sent whenever
+		   present; an older crabd ignores unknown keys. */
+		var tok = panelToken();
+		if (tok) body.token = tok;
+		if (requestId) body.requestId = requestId;
+	}
 	else if (action === 'quiet') { body.mode = quiet.mode; body.minutes = quiet.minutes; }
 	var payload = JSON.stringify(body);
 

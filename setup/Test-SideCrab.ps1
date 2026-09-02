@@ -387,6 +387,10 @@ if (-not (Test-SideCrabStatusLineIsOurs -Command $slCmd)) {
 # is the silent failure worth catching - no prompt ever reaches the panel, and the operator
 # believes it is armed. The row names the wiring either way, so OFF is not a bare word.
 $pa = Get-SideCrabPanelApprovalsState -ConfigPath $ConfigPath
+# crabd 0.29.0: a decide is refused without the pairing code, so ON + no code = armed but
+# every tap 403s. Presence only - the code itself never lands in a smoke table.
+$tok = Get-SideCrabPanelToken -TokenPath (Join-Path (Split-Path -Parent $ConfigPath) 'panel-token')
+$tokMsg = if ($tok.Present) { 'pairing code present' } else { 'NO pairing code (crabd 0.29.0+ mints it on first start)' }
 $permUrl   = "$BaseUri/v1/hook/permission"
 $permWired = [bool] @(@(Get-SideCrabHookEvent -Settings $slSettings) |
                       Where-Object { $_.Event -eq 'PermissionRequest' })
@@ -401,12 +405,12 @@ $wiringMsg = "PermissionRequest hook $(if ($permWired) { 'wired' } else { 'NOT w
              $(if ($permAllowed -eq $false) { '; BLOCKED by allowedHttpHookUrls' } else { '' })
 
 if ($pa.Enabled) {
-    Add-Result -Check 'panel approvals' -Pass ($permWired -and $permAllowed -ne $false) `
-               -Detail "ENABLED - widget taps can allow/deny tool calls; $wiringMsg"
+    Add-Result -Check 'panel approvals' -Pass ($permWired -and $permAllowed -ne $false -and $tok.Present) `
+               -Detail "ENABLED - widget taps can allow/deny tool calls; $wiringMsg; $tokMsg"
 } else {
     $paMsg = if ($null -eq $pa.Enabled) { 'default OFF (key absent)' } else { 'disabled' }
     Add-Result -Check 'panel approvals' -Pass $true `
-               -Detail "$paMsg; $wiringMsg; never verified on a live prompt - run setup\Verify-PanelApproval.ps1 -DryRun before enabling"
+               -Detail "$paMsg; $wiringMsg; $tokMsg; never verified on a live prompt - run setup\Verify-PanelApproval.ps1 -DryRun before enabling"
 }
 
 # ------------------------------------------------------------------------------ verdict

@@ -80,7 +80,10 @@ param(
     [switch] $WithToast,
     [switch] $WithApprovals,
     [switch] $ForceEnable,
-    [switch] $Status
+    [switch] $Status,
+    # Prints the approval pairing code (crabd 0.29.0) and exits. The code goes into iCUE's
+    # widget settings under "Approval Pairing Code"; Approve/Deny taps are refused without it.
+    [switch] $PairingCode
 )
 
 Set-StrictMode -Version Latest
@@ -89,6 +92,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
 
 $HookUrlMarker = '127.0.0.1:2722/v1/hook'
+$TokenPath     = Join-Path (Split-Path -Parent $ConfigPath) 'panel-token'
 
 function Write-Step { param([string] $Message) Write-Host "  $Message" }
 
@@ -251,6 +255,15 @@ function Show-Status {
         Write-Step "approv:  panelApprovals ENABLED - widget taps can allow/deny tool calls; PermissionRequest hook $(if ($permWired) { 'wired' } else { 'NOT wired - approvals never arm' })"
     }
 
+    # the pairing code (crabd 0.29.0): its PRESENCE is status; the code itself is printed only
+    # by -PairingCode, so a status paste into a ticket never carries it.
+    $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
+    if ($tok.Present) {
+        Write-Step "pairing: code present ($TokenPath) - print it with -PairingCode, enter it in iCUE > widget settings > Approval Pairing Code"
+    } else {
+        Write-Step "pairing: NO code yet ($TokenPath) - crabd 0.29.0+ mints it on first start; until it exists Approve/Deny taps are refused"
+    }
+
     $widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
     if ($widget) { Write-Step "widget:  manifest $widget (installed into iCUE by import, not by this script)" }
 
@@ -261,6 +274,17 @@ function Show-Status {
 
 $plan = Get-ComponentPlan -RepoRoot $RepoRoot -WithGlow $WithGlow.IsPresent `
                           -WithToast $WithToast.IsPresent
+
+if ($PairingCode) {
+    $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
+    if ($tok.Present) {
+        Write-Host "Approval pairing code: $($tok.Code)"
+        Write-Host "Enter it in iCUE > the SideCrab widget's settings > Approval Pairing Code. Approve/Deny taps are refused until it matches."
+        exit 0
+    }
+    Write-Host "No pairing code at $TokenPath - crabd 0.29.0 or newer mints one on its first start. Start (or update) crabd, then run this again."
+    exit 1
+}
 
 if ($Status) {
     Show-Status -Plan $plan -RepoRoot $RepoRoot -SettingsPath $SettingsPath `
@@ -415,6 +439,12 @@ if ($PSCmdlet.ShouldProcess($ConfigPath, 'Configure panelApprovals')) {
         $res = Set-SideCrabPanelApprovals -ConfigPath $ConfigPath -Enabled $true
         Write-Step "approv:  panelApprovals.enabled = TRUE (was $(if ($null -eq $res.Previous) { 'unset' } else { $res.Previous }))"
         Write-Host '  SECURITY: panel approvals are ON. Approve/Deny taps on the on-glass widget can now allow or reject tool calls; crabd holds each permission prompt up to 55s, NEVER auto-allows, and falls back to the terminal dialog on no-tap. Disable with Uninstall-SideCrab.ps1 or by setting panelApprovals.enabled=false.' -ForegroundColor Yellow
+        $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
+        if ($tok.Present) {
+            Write-Host "  PAIRING: taps are only honoured with the pairing code. Enter $($tok.Code) in iCUE > widget settings > Approval Pairing Code (print it again any time with -PairingCode)." -ForegroundColor Yellow
+        } else {
+            Write-Host "  PAIRING: no code yet at $TokenPath - crabd 0.29.0+ mints it on first start. Re-run with -PairingCode once crabd is up, then enter the code in iCUE > widget settings." -ForegroundColor Yellow
+        }
     } else {
         # Default OFF. Only WRITE false when the key is absent, so a plain re-run does not
         # silently revert an operator who deliberately chose -WithApprovals earlier.

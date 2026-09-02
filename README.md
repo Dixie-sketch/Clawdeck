@@ -174,7 +174,17 @@ panel and no supported way to inject arbitrary text into a live session.
 
 When a session is waiting on a tool permission, the card shows the request with a countdown, and
 you can approve or deny it from the panel. **This ships off.** Read the next section before you
-turn it on.
+turn it on. Turning it on is three steps:
+
+```powershell
+pwsh -File .\setup\Install-SideCrab.ps1 -WithApprovals   # 1. arm it (prints the pairing code)
+pwsh -File .\setup\Install-SideCrab.ps1 -PairingCode     #    ...or print the code again later
+```
+
+2. In iCUE, open the SideCrab widget's settings and paste the code into **Approval Pairing
+   Code**. 3. Tap Approve or Deny on the next request. A tap without the code, or with a wrong
+   one, is refused and the terminal dialog keeps the decision, exactly as if the panel were not
+   there.
 
 ---
 
@@ -209,13 +219,13 @@ guarantees are worth reading rather than assuming:
 - **crabd never decides on its own.** There is no code path that answers "allow" without a
   `decide` request arriving on localhost first. The normal source of that request is a tap on
   the panel.
-- **Known residual - SEC-a, open.** crabd cannot tell the widget's opaque `null` Origin from a
-  forged one, so while approvals are ON, a sandboxed iframe on a web page you visit, or any
-  process running on this PC, could send that `decide` for a pending request you never tapped.
-  The queue-continue path is bounded by a fixed prompt whitelist; the approval path is not.
-  Until this is closed, leave approvals off on a machine where you browse the web while a
-  session sits on a pending permission. Tracked in [`docs/BACKLOG.md`](docs/BACKLOG.md) (SEC-a,
-  WID-a) and disclosed in [`SECURITY.md`](SECURITY.md).
+- **Only a paired panel can decide (crabd 0.29.0 / widget 0.27.0).** crabd mints a
+  ten-character **pairing code** into `~/.sidecrab/panel-token` on first start, and every
+  Approve or Deny must carry it. The code lives in the widget's iCUE settings, which no web
+  page can read, so a page you visit that forges the widget's `null` Origin gets a `403` and
+  nothing else. Ten wrong codes in a minute lock the gate for a minute. Each tap also names
+  the exact request it saw (`requestId`), so a tap can never land on a request that replaced
+  it. This closed the SEC-a and WID-a findings recorded in [`SECURITY.md`](SECURITY.md).
 - **Every failure is a pass-through.** Timeout, no tap, disabled, malformed, companion down: all
   return no decision, and the normal terminal dialog does its job. The worst case is the behaviour
   of a machine where SideCrab was never installed.
@@ -259,7 +269,9 @@ guarantees are worth reading rather than assuming:
 
 The honest list lives in [`docs/BACKLOG.md`](docs/BACKLOG.md). Worth knowing before you install:
 
-- **SEC-a / WID-a** - the panel-approval residuals above. Approvals ship off.
+- **Panel approvals need pairing** - a widget older than 0.27.0 or a companion older than
+  0.29.0 cannot approve anything: the tap is refused and the terminal dialog decides. Update
+  both, then enter the pairing code (see above). Approvals still ship off.
 - **GHOST-a** - after a crabd restart, a session that was killed by an app restart can read
   `working` for up to 15 minutes before transcript aging retires it.
 - About two dozen small cosmetic or edge-case items under "Small, known, not yet fixed".

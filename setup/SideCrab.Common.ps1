@@ -515,6 +515,25 @@ function Get-SideCrabPanelApprovalsState {
     $out
 }
 
+function Get-SideCrabPanelToken {
+    <# Read-only probe of the approval PAIRING CODE crabd mints into ~/.sidecrab/panel-token
+       (crabd 0.29.0, SEC-a). Never throws: an absent file means crabd 0.29.0 has not started
+       yet (or is older), which is a state the callers report, not an error. The code is
+       returned normalised (upper-case, hyphen shown) so it can be printed for the operator
+       to type into iCUE's widget settings. Present=$false when the file is missing or does
+       not hold a usable code. #>
+    param([Parameter(Mandatory)][string] $TokenPath)
+
+    $out = [pscustomobject]@{ TokenPath = $TokenPath; Present = $false; Code = $null }
+    if (-not (Test-Path -LiteralPath $TokenPath)) { return $out }
+    try { $raw = Get-Content -LiteralPath $TokenPath -Raw -Encoding utf8 } catch { return $out }
+    $code = (("$raw").ToUpperInvariant() -replace '[^0-9A-Z]', '')
+    if ($code -notmatch '^[0-9A-HJ-NP-TV-Z]{10}$') { return $out }
+    $out.Present = $true
+    $out.Code    = $code.Substring(0, 5) + '-' + $code.Substring(5)
+    $out
+}
+
 function Set-SideCrabPanelApprovals {
     <# Writes config.json's panelApprovals.enabled, PRESERVING every other key - the same
        whole-file-rewrite contract POST /v1/config honours. Creates the file/dir if absent. #>
