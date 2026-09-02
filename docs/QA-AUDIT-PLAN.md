@@ -1,4 +1,4 @@
-# SideCrab full QA audit — plan (Joe-requested, 2026-08-27)
+# SideCrab full QA audit — plan (maintainer-requested, 2026-08-27)
 
 Launches only when the tree is quiescent (no feature lanes writing) AND the crabd suite is
 proven deterministic. Fan-out of Opus 5 lanes by component ownership + cross-cutting concerns.

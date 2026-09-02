@@ -124,7 +124,7 @@ writable over HTTP (contract)" (sidecrab.js:3608) and never sends panelApprovals
 `POST /v1/action {"action":"decide","decision":"allow"}` approval path — a security-relevant expansion of
 the HTTP surface the contract's whitelist exists to bound. **Overlaps the security lane (5).** Fix is
 either "document panelApprovals as a /v1/config key" or "remove it from CONFIG_WRITABLE and keep it
-installer/file-only" — Joe's call; the second matches the contract as written. **Worst contract drift.**
+installer/file-only" — the maintainer's call; the second matches the contract as written. **Worst contract drift.**
 
 ### B2 — top-level `continuePrompts` is served and consumed but undocumented as a served field · MEDIUM · VERIFIED
 crabd emits `continuePrompts` at the /v1/state document top level (crabd.py:3126); the widget reads
@@ -163,7 +163,7 @@ evidence isn't misread as "digest is also undocumented".
   accepts 1–5, additive-by-presence" rework exactly, and test_decider.py:496-536 pins the consumer sets to
   the contract's own numbers.
 - **`estate` removal (v0.9.0) — SOUND both sides.** No `.estate`/`estateStrip` property read exists in the
-  widget (the many "estate" tokens are the crab's mood/accessory metaphor — "dress for the estate"), and
+  widget (the many "estate" tokens are the crab's mood/accessory metaphor — "dress for the fleet"), and
   crabd emits no `estate` key. Removal is honoured and deploy-order-free as the contract claims.
 - **Per-session fields + null semantics — CONFORMANT** for id/title/titleSource/cwd/repo/branch/state/
   stateSince/lastActivityAt/lastEvent/model/speed/subagents/todayOutputTokens/question/turnStartedAt/

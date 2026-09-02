@@ -1,6 +1,6 @@
 # External review register CD-01..43 — verification + fix record (2026-08-27)
 
-Joe delivered a 43-finding external review register (5 P1 / 26 P2 / 12 P3), compiled against
+The maintainer delivered a 43-finding external review register (5 P1 / 26 P2 / 12 P3), compiled against
 commit `ba050b3` — one commit behind the wave-19 ship (`291978d`). Worked as a verify-then-fix
 fan-out: four Opus lanes by component ownership, each required to reproduce or refute AT HEAD
 before touching anything, because two register claims already contradicted orchestrator

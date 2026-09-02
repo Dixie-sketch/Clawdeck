@@ -125,7 +125,7 @@ buys nothing — so it is gone. Count the table.)
 | `&day=YYYY-MM-DD` | open the timeline and then **drill that day**, so Back has somewhere to go and the flag photographs the real navigation rather than a view that can only be closed |
 | `&pin=<id\|prefix\|first>` | pre-pin one session so the sorted card and its glyph can be shot without a tap. Pins **in memory only** — a screenshot flag that wrote to the vendor store would leave the operator's own map holding a fixture session |
 | `&uid=<id>` | stand in for the host-injected `uniqueId` (see the persistence note below) so the **real** storage path is exercisable off-glass |
-| `&crab=<state>` | force one wardrobe state (v0.11.0). `sunglasses`, `party`, `nightcap`, `hardhat` are **held**: they outrank both the estate's own answer and the `crabStyle` setting, so a costume can be shot against any fixture; `none` holds the bare crab. `juggle`, `bounce`, `snap` are tricks, and they are **re-fired on a loop** — a 560 ms claw snap is not a window a screenshot can be aimed at. The loop bypasses the juggle's ten minute cooldown and its five-session threshold, but **not** reduced motion and **not** quiet hours: a flag that made the panel move in a dark room would be photographing a widget that does not exist |
+| `&crab=<state>` | force one wardrobe state (v0.11.0). `sunglasses`, `party`, `nightcap`, `hardhat` are **held**: they outrank both the fleet's own answer and the `crabStyle` setting, so a costume can be shot against any fixture; `none` holds the bare crab. `juggle`, `bounce`, `snap` are tricks, and they are **re-fired on a loop** — a 560 ms claw snap is not a window a screenshot can be aimed at. The loop bypasses the juggle's ten minute cooldown and its five-session threshold, but **not** reduced motion and **not** quiet hours: a flag that made the panel move in a dark room would be photographing a widget that does not exist |
 | `&approval=1` | auto-open the **approval** sheet on the first needs_input session carrying a `pendingPermission` (v0.12.0), so the Approve/Deny variant can be shot |
 | `&action400=1` | force the older-crabd **400** on `queue-continue` and `decide` (v0.12.0), so the "not available"/no-latch inline handling is demoable without a fixture edit |
 | `&swipe=<id\|prefix\|first>` | freeze one **dismissable** card mid-swipe (v0.14.0), at `&swipeX=<px>` (default **90**, past the 60 px threshold so the armed state — red left edge, thickened — is in the shot; pass a smaller number for the under-threshold rendering). The flag drives the shipping `paintSwipe()`, so the transform and the compounded fade in the shot are the ones the fingertip gets. Re-applied on every document, because the card grid rebuilds whenever its signature moves and a frozen transform lives on a node that rebuild throws away. Only `done`/`idle` cards match, which is also the fastest way to confirm a working card has no swipe rendering at all |
@@ -793,7 +793,7 @@ about it follows from that.
    findings.
 4. Turn **Touch Diagnostics** OFF. The counter disappears and every listener is
    removed.
-5. The co-admin reads the session back with **`GET /v1/panel-log`** on crabd
+5. The maintainer reads the session back with **`GET /v1/panel-log`** on crabd
    (0.24.0 or later). Nothing in the panel reads it — the widget only writes.
 
 If the counter never moves at all, that is the headline result and step 5 is
@@ -1791,7 +1791,7 @@ same x at both slots. Re-measure against "utilization" if a longer key is ever a
 saying *night mode*, and a busy night is the ordinary kind — a long run left going
 overnight is *every session working with the limits calm*, which is precisely the
 sunglasses' condition. With sunglasses above it in the ladder, the nightcap could only
-appear on a night the estate was **also** idle or mixed: the costume for "it is night" was
+appear on a night the fleet was **also** idle or mixed: the costume for "it is night" was
 unreachable on exactly the nights there was something to watch.
 
 Quiet is a fact about the **clock**; the sunglasses are a fact about the **work**. So the
@@ -1973,7 +1973,7 @@ a stripe, a taper step and a pompom.
 |---|---|---|
 | sunglasses | **every** session working, none waiting, **and no usage window into the amber** *(and, since v0.19.0, **not** during quiet hours — see that section)* | two separate lenses with a 1-unit frame rim, a bridge, and temple arms that run out past the shell edge — a temple that stops at the silhouette reads as a painted stripe rather than as something worn |
 | party hat | for 60 s after `recap.doneToday` **increments** | a tall narrow cone — **10 units wide by 12 high**, three tiers stepping 1 unit per side, a proud brim, 1-unit stripes and a flush cream pompom |
-| nightcap | quiet hours are active *(and since v0.19.0 that is enough — it no longer has to wait for the estate to go idle as well)* | a fur band, a cone that leans left and flops over, and a pompom hanging off the left shoulder — still left, because the sleep Z lives off the **right** shoulder |
+| nightcap | quiet hours are active *(and since v0.19.0 that is enough — it no longer has to wait for the fleet to go idle as well)* | a fur band, a cone that leans left and flops over, and a pompom hanging off the left shoulder — still left, because the sleep Z lives off the **right** shoulder |
 
 **"limits are calm" is new and it is load-bearing.** The sunglasses are the costume
 for *nothing needs attention*, so an estate three percent off its weekly cap has
@@ -2315,7 +2315,7 @@ narrow, the count to `showing N of M`, and only when rows were actually removed:
 a "Working" chip on a panel where everything is working hides nothing, so the
 header stays the header it was. A filter that empties the grid says so in its own
 words (`No sessions waiting on you`) rather than borrowing "No active Claude
-sessions", which would report the filter's answer as the estate's.
+sessions", which would report the filter's answer as the fleet's.
 
 **Density is the one place this widget breaks Rule 6 on purpose** (hide, never
 shrink) — because the operator asked, by tapping a chip, which is what separates
@@ -2664,7 +2664,7 @@ third source renders as a real title rather than as a mystery.
 > coordinates, the colours and the four-accessory count do not. See the v0.18.0
 > section at the top.
 
-**Four accessories, one at a time, chosen by the estate.** All of them are
+**Four accessories, one at a time, chosen by the fleet.** All of them are
 grid-aligned rect groups inside the existing crab SVG, drawn after the eyes,
 switched by `data-acc` alone — nothing is built or removed at runtime, exactly
 like the moods:
@@ -2683,7 +2683,7 @@ the exact failure the "alerts stay serious" rule exists to prevent. And **party
 bypasses the timer too**, because it is not a condition: it is a 60 s latch opened
 by an edge that has already happened, so it cannot flap, and holding a
 one-minute celebration back for a sixth of its life proves something the latch
-already guarantees. Everything the estate can strobe — hardhat, sunglasses,
+already guarantees. Everything the fleet can strobe — hardhat, sunglasses,
 nightcap — goes through the timer.
 
 **Suppressed outright** on any `needs_input` row (acked or not: the sentence is
@@ -2742,7 +2742,7 @@ lenses `#0B0907`. An accessory is a costume, not a reading, so the personalizati
 accent must not repaint it, and a hard hat that is not safety yellow has stopped
 being a hard hat.
 
-**`crabStyle` ships as a SWITCH.** `auto` (dress for the estate) / `plain` (never
+**`crabStyle` ships as a SWITCH.** `auto` (dress for the fleet) / `plain` (never
 any accessory) is the semantic, but switch / slider / textfield / color are the
 only property types this widget has ever had confirmed on the Edge, and guessing
 an enum type the import validator does not know fails at the console, not here.

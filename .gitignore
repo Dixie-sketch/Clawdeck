@@ -1,6 +1,22 @@
+# Python
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Build output
 dist/
 *.icuewidget
+
+# Editors / OS
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
+
+# Node (widget test tooling only; there are no runtime deps)
 node_modules/
+
+# Local state never belongs in the repo
+*.log

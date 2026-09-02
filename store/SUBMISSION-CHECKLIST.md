@@ -367,7 +367,7 @@ companion is an awkward paid product; that is an argument, not a decision.
 ### D4 — Where does the companion live *(DECIDED 2026-09-01: `github.com/Dixie-sketch/Clawdeck`)*
 
 **Decided by the owner 2026-09-01.** The public home is a fresh repo `Dixie-sketch/Clawdeck`
-under Joe's personal account, seeded from the current tree with no history (the private
+under the maintainer's personal account, seeded from the current tree with no history (the private
 working repository's history carries internal strings and stays private as the upstream). The README clone line now carries the real URL. Still owed here: the first release
 with the `.icuewidget` attached, and the URL in the listing copy and support links. The original
 row follows for the record.

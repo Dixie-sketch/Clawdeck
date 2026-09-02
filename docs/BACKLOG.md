@@ -14,7 +14,7 @@
   tell them apart. Reproduced by two audit lanes 2026-08-28. **MITIGATED: panelApprovals disabled
   on the live host.** Real fix needs the widget's true origin measured (crabd 0.25.0's
   `/v1/health.originsSeen` captures it passively from the live widget's polling) → then allowlist
-  it and re-enable, OR keep approvals off (original posture), OR a per-request nonce. Joe's call.
+  it and re-enable, OR keep approvals off (original posture), OR a per-request nonce. The maintainer's call.
   A-01/A-02 (permission stand-down) are FIXED (0.26.0) so re-enabling is otherwise safe.
 - **WID-a — decide payload has no per-request id.** Within the right session, a tap in the ≤3s
   poll gap could land on a different pending tool than displayed. Fix = crabd exposes a request id

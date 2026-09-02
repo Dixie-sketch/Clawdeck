@@ -82,7 +82,7 @@ POST /v1/action {"action":"decide","decision":"allow"} (nothing pending) -> HTTP
   {"error":"no permission request pending"}
 ```
 
-**Consequence.** On a machine where the operator ALREADY enabled panelApprovals (Joe's installer
+**Consequence.** On a machine where the operator ALREADY enabled panelApprovals (the maintainer's installer
 offers it), the config flip is unnecessary — the attacker just poll-and-pounces `decide allow` and
 silently approves Bash/Write/etc. On a default machine, the same surface flips it on first. Either
 way a security control lands in the hands of the unauthenticated caller it is meant to guard

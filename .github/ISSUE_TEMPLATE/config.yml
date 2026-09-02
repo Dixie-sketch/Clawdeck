@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/Dixie-sketch/Clawdeck/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue. See SECURITY.md.

@@ -107,7 +107,7 @@ crabd `VERSION` → `0.26.0`. This wave is the audit-0424 fixes; the observable 
 ## v0.24.0 (2026-08-28 — a SIDE CHANNEL; schema stays 5; NOT part of this contract)
 
 The **panel diagnostics log channel**: `POST /v1/panel-log` for the widget to say what it
-saw, `GET /v1/panel-log` for a co-admin to read it back. crabd `VERSION` → `0.24.0`.
+saw, `GET /v1/panel-log` for a maintainer to read it back. crabd `VERSION` → `0.24.0`.
 
 > **⚠ READ THIS FIRST — this endpoint is NOT part of the widget-facing state contract.**
 > It is **OPTIONAL** in both directions. `/v1/state` is unchanged, `schema` stays **5**, and
@@ -151,7 +151,7 @@ for a human to read it.
   off the end. A line that trims to empty is stored as an empty line; it is still evidence
   the widget posted.
 
-### 2. `GET /v1/panel-log` — the co-admin reads
+### 2. `GET /v1/panel-log` — the maintainer reads
 
 ```jsonc
 {
@@ -596,7 +596,7 @@ depends on, so it is written down here. crabd `VERSION` → `0.19.0`.
 
 ### 1. THE GAP — `needs_input` outlived the operator's in-app answer
 
-Reported by the operator: Joe answers a waiting session **in the Claude Code desktop app** and the
+Reported by the operator: the maintainer answers a waiting session **in the Claude Code desktop app** and the
 Xeneon panel keeps alerting — and keeps *escalating* (the widget deepens at 5 min and again at
 15 min unacked) — until the turn eventually ends.
 
@@ -606,7 +606,7 @@ to use Bash"` is a real measured message). Before v0.19.0 the ONLY things that m
 of `needs_input` were a later `SessionStart` / `UserPromptSubmit` / `Stop` / `SessionEnd` hook —
 and the two commonest in-app answers fire **none** of them:
 
-| How Joe answers | What fires at decision time | Cleared before v0.19.0? |
+| How the maintainer answers | What fires at decision time | Cleared before v0.19.0? |
 |---|---|---|
 | Types a prompt | `UserPromptSubmit` | yes — this path was always correct |
 | Clicks Allow/Deny on the terminal permission dialog | **nothing** — the `PermissionRequest` hook already returned its pass-through when the dialog appeared | no, not until `Stop` (an hour of tool work away) |
@@ -898,7 +898,7 @@ widget's TRUE origin has to be MEASURED before it can be allowlisted — and thi
 remotely from the widget's own live polling instead of at the glass.
 
 **Why `source` (v0.27.0).** Origin-only keying collapsed every no-Origin caller into one
-uninformative `"<absent>"` bucket — the notifier polling `/v1/state`, a co-admin's curl health
+uninformative `"<absent>"` bucket — the notifier polling `/v1/state`, a maintainer's curl health
 checks, and possibly the widget all landed there together (measured live 2026-08-28: `originsSeen`
 was only `{"origin":"<absent>"}`). `source` is a coarse bucket derived from the request's
 `User-Agent` (`"browser"` when it contains `Mozilla`/`Chrome`/`QtWebEngine`/`AppleWebKit` — the
@@ -960,7 +960,7 @@ emits additionalContext; `decision:block` is retained as an executable fallback 
 sheets gain Continue / Run the tests / Commit + push buttons + extras from config
 `continuePrompts: ["..."]`.
 
-**4. FULL panel approval (Joe's explicit choice).** PermissionRequest hook → type-http
+**4. FULL panel approval (the maintainer's explicit choice).** PermissionRequest hook → type-http
 `POST /v1/hook/permission` (long-poll): crabd registers the pending request
 (sessions[].pendingPermission: {"tool","summary","requestedAt"} — additive), holds the response
 up to 55 s awaiting `POST /v1/action {"sessionId","action":"decide","decision":"allow"|"deny"}`

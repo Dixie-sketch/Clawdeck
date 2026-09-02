@@ -263,7 +263,7 @@ var BOUNCE_MS = 800;           /* crabhop 380ms x 2, likewise */
    had, one rung down. Quiet hours is the operator saying "night mode", and a busy
    night — every session working, limits calm — is the ordinary shape of one: that
    is precisely when a long run is left going overnight. Sunglasses first meant the
-   nightcap could only ever appear on a night when the estate was ALSO idle or
+   nightcap could only ever appear on a night when the fleet was ALSO idle or
    mixed, so the costume for "it is night" was unreachable on exactly the nights
    there was something to watch. Quiet is a fact about the CLOCK and the sunglasses
    are a fact about the WORK, so the clock wins inside quiet hours and the
@@ -530,7 +530,7 @@ var crabBusy = false;
    re-detected, instead of a widget that decided "no config endpoint" at 09:00
    staying deaf to one installed at 09:05. */
 /* v0.11.0 wardrobe state. accCurrent is what the crab is WEARING; accCandidate is
-   what the estate has been asking for since accCandidateAt, and it only becomes
+   what the fleet has been asking for since accCandidateAt, and it only becomes
    accCurrent once it has held for ACC_STABLE_MS. Suppression (a waiting session,
    a dead feed, the plain style) bypasses the timer in both directions — an alert
    must never wait ten seconds to take the hat off. */
@@ -1120,7 +1120,7 @@ function fireCelebrate() {
 
 /* ---------------------------------------------- the wardrobe (v0.11.0) */
 
-/* auto (dress for the estate) or plain (never any accessory). The property ships
+/* auto (dress for the fleet) or plain (never any accessory). The property ships
    as a SWITCH, so the value that actually arrives is a boolean or the strings
    "true"/"false" — but the WORDS are accepted too, so the day this becomes a
    proper enum control nothing in here changes. Anything unrecognised is auto:
@@ -1135,11 +1135,11 @@ function crabPlain() {
 	return !v;
 }
 
-/* What the estate is asking the crab to wear, before any hysteresis. Returns ''
+/* What the fleet is asking the crab to wear, before any hysteresis. Returns ''
    for "nothing", which is a real answer and not an absence: a waiting session
    takes the hat off outright.
    Read off the DOCUMENT's sessions, not off the cards — a dismissed card is
-   still a session that is working, and the crab reports the estate rather than
+   still a session that is working, and the crab reports the fleet rather than
    the grid. */
 function desiredAccessory(sessions, quiet, status) {
 	/* A hat on a panel that cannot see anything is the panel lying. Stale and
@@ -1164,7 +1164,7 @@ function desiredAccessory(sessions, quiet, status) {
 	   is night, and a BUSY night is the ordinary kind — a long run left going
 	   overnight is every session working with the limits calm, which is exactly the
 	   sunglasses' condition. With sunglasses above it the nightcap could only appear
-	   on a night the estate was ALSO idle or mixed, so the costume for "it is night"
+	   on a night the fleet was ALSO idle or mixed, so the costume for "it is night"
 	   was unreachable on the nights there was anything to watch. See ACCESSORIES. */
 	if (quiet) return 'nightcap';
 	/* "Everything is cooking AND nothing is running hot" — every row working, not
@@ -1224,7 +1224,7 @@ function limitsRed() {
      latch opened by an edge that has already happened, so it cannot flap by
      construction — and holding a one-minute celebration back for a sixth of its
      life to prove something the latch already guarantees is a delay with nothing
-     on the other side of it. Everything the estate can strobe — sunglasses and
+     on the other side of it. Everything the fleet can strobe — sunglasses and
      nightcap — goes through the timer. */
 function applyWardrobe(desired) {
 	var now = Date.now();
@@ -2540,7 +2540,7 @@ function renderSessions(sessions, status, quiet, recap) {
 		/* A filter that emptied the grid says SO, and names the mode it emptied it
 		   in. "No active Claude sessions" under a Waiting chip with four working
 		   sessions behind it would be the panel reporting the filter's answer as
-		   the estate's. Only when the filter is the reason, though: total is the
+		   the fleet's. Only when the filter is the reason, though: total is the
 		   post-dismissal count, so an empty feed still falls through to the two
 		   lines below. */
 		: (currentFilter().match && total > 0) ? currentFilter().empty
@@ -7854,7 +7854,7 @@ function init() {
 		var bg = /[?&]budget=(\d+)/.exec(window.location.search);
 		if (bg && Number(bg[1]) > 0) budgetPctOverride = Number(bg[1]);
 		/*   &crab=<accessory|trick>  force one wardrobe state for the shot. An
-		     accessory is HELD (it outranks the estate's own answer and the plain
+		     accessory is HELD (it outranks the fleet's own answer and the plain
 		     style, so a costume can be photographed against any fixture); a trick
 		     is re-fired on a loop, because a 560 ms snap is not a window a
 		     screenshot can be aimed at. `none` holds the bare crab. */
@@ -8088,7 +8088,7 @@ function init() {
 }
 
 /* Dev-only, mock mode only: hold one trick running so it can be photographed.
-   The cooldown and the estate's own conditions are bypassed for the forced juggle
+   The cooldown and the fleet's own conditions are bypassed for the forced juggle
    — that is what "forced" means — but reduced motion and quiet hours are NOT: a
    screenshot flag that made the panel move in a dark room would be photographing
    a widget that does not exist. */

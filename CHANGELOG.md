@@ -28,7 +28,7 @@ detail of every additive field and is the source of truth; this file is the shor
 - **0.15.0 (2026-08-27)** - the control-surface wave: panel approvals (off by default),
   tap-to-continue, settings from the glass, session filter and density chips, verified live with
   the operator present.
-- **0.9.0 (2026-08-26)** - estate integration removed; repo genericised for publication; manifest
+- **0.9.0 (2026-08-26)** - internal-dashboard integration removed; repo genericised for publication; manifest
   id became `com.sidecrab.widget`.
 - **0.6.1 (2026-08-26)** - versioning rework: `schema` pinned at 5, additive fields by presence.
 - **0.1.0 (2026-08-26)** - first widget package.

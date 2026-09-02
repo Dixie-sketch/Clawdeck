@@ -146,9 +146,9 @@ credentials.
 
 ## Support links
 
-- Project homepage / source: **TBD — a public URL is required (D4)**
-- Companion download + setup instructions: **TBD — same URL (D4)**
-- Support contact: **TBD (D5)**
+- Project homepage / source: https://github.com/Dixie-sketch/Clawdeck *(D4 decided 2026-09-01)*
+- Companion download + setup instructions: https://github.com/Dixie-sketch/Clawdeck#install (releases: https://github.com/Dixie-sketch/Clawdeck/releases)
+- Support contact: GitHub issues, https://github.com/Dixie-sketch/Clawdeck/issues *(D5: decided 2026-09-01 — issue tracker, not a mailbox)*
 
 ---
 

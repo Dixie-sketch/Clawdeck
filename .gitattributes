@@ -1,0 +1,15 @@
+# Normalise line endings in the repository to LF; Git converts on checkout per core.autocrlf.
+* text=auto eol=lf
+
+# Windows-native files stay CRLF on disk so double-click / Notepad behave.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.icuewidget binary
+*.jpg binary
+*.gif binary

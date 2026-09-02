@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Companion (crabd)
+        run: python -m unittest discover -s companion/tests -t companion/tests
+
+      - name: Notifier
+        run: python -m unittest discover -s notifier/tests -t notifier/tests
+
+      - name: Lighting
+        run: python -m unittest discover lighting/tests
+
+      - name: Hooks
+        run: python -m unittest discover -s hooks/tests -t hooks/tests
+
+      - name: Widget ordering
+        run: node widget/tests/test_ordering.js
+
+      - name: Widget index.html is strict XML (iCUE requirement the CLI validator misses)
+        run: python -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
+
+      - name: Widget manifest parses
+        run: python -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
+
+      - name: Setup scripts (Pester)
+        shell: pwsh
+        run: |
+          Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser -SkipPublisherCheck
+          pwsh -NoProfile -File ./setup/tests/RunTests.ps1

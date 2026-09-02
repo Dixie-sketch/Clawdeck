@@ -1,5 +1,10 @@
 # SideCrab 🦀
 
+[![CI](https://github.com/Dixie-sketch/Clawdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/Dixie-sketch/Clawdeck/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)](#what-you-need)
+[![iCUE](https://img.shields.io/badge/iCUE-5.44%2B-yellow.svg)](#what-you-need)
+
 **An ambient Claude Code status panel for the Corsair Xeneon Edge.**
 
 SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on
@@ -269,6 +274,9 @@ vulnerability.
 ---
 
 ## For developers
+
+Want to contribute? Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: it is short, and it explains
+the four rules every change is held to.
 
 | Path | What |
 |---|---|

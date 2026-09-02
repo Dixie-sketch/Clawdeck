@@ -2304,7 +2304,7 @@ class AckTests(TempProjects):
 class AnsweredInTheAppTests(TempProjects):
     """The operator-reported gap, replayed end to end through build().
 
-    Joe answers a waiting session in the Claude Code desktop app and the panel keeps
+    The maintainer answers a waiting session in the Claude Code desktop app and the panel keeps
     alerting. Every case here is a REPLAY of a real event sequence, because the property
     that matters is not "does the clear work" but "can it ever fire while the question
     genuinely still stands".
@@ -2328,7 +2328,7 @@ class AnsweredInTheAppTests(TempProjects):
         return next(r for r in state["sessions"] if r["id"] == (session_id or self.SID))
 
     def test_a_permission_allowed_in_the_app_clears_the_alert(self):
-        """Notification (permission) -> Joe clicks Allow in the app -> the tool runs and
+        """Notification (permission) -> the maintainer clicks Allow in the app -> the tool runs and
         the model is called again. No hook fires at decision time; the round-trip is the
         only evidence there is, and it is enough."""
         now = time.time()
@@ -2483,7 +2483,7 @@ class ReFiredNotificationTests(unittest.TestCase):
 
     def test_a_re_fire_of_the_standing_question_changes_nothing(self):
         """THE HEALTHY-NIGHT REPLAY. Claude Code re-fires Notification for a prompt the
-        operator has walked away from; on an estate where that happens all night, a rule
+        operator has walked away from; on a fleet where that happens all night, a rule
         that reset on every one of them would un-ack every acknowledged card, forever."""
         hooks = crabd.HookTracker()
         self.notify(hooks, "Which branch?", at=1.0)
@@ -9904,7 +9904,7 @@ class PanelLogNormalizerTests(unittest.TestCase):
 
     def test_interior_control_and_ansi_bytes_are_stripped(self):
         """SEC-d (v0.25.0). `.strip()` only trims edge whitespace; a control byte in the
-        MIDDLE survived it. JSON-safe (dump_state escapes it) but a co-admin echoing the
+        MIDDLE survived it. JSON-safe (dump_state escapes it) but a maintainer echoing the
         line to a terminal would hit the ANSI. The stored line must carry no control
         byte."""
         out = self.norm(["red \x1b[31mALERT\x1b[0m done\x07\x00 tail"])
@@ -9970,7 +9970,7 @@ class PanelLogEndpointTests(ServedOverASocket):
         self.assertEqual(_unprefixed(line), raw)
 
     def test_reads_do_not_consume(self):
-        """A ring, not a queue: two co-admins reading must see the same lines."""
+        """A ring, not a queue: two readers must see the same lines."""
         self.post_log({"lines": ["a"]})
         self.assertEqual(self.read_log().json()["count"], 1)
         self.assertEqual(self.read_log().json()["count"], 1)
@@ -10088,7 +10088,7 @@ class PanelLogEndpointTests(ServedOverASocket):
         self.assertEqual(get.headers.get("Access-Control-Allow-Origin"), "null")
 
     def test_both_verbs_work_with_no_origin_and_send_no_wildcard(self):
-        """curl and the co-admin's own tooling send no Origin at all."""
+        """curl and the maintainer's own tooling send no Origin at all."""
         post = self.post_log({"lines": ["tap"]})
         self.assertEqual(post.status, 204)
         self.assertIsNone(post.headers.get("Access-Control-Allow-Origin"))

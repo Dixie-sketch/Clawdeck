@@ -38,7 +38,7 @@ quiet; reply is 501, see below), answers the Stop and PermissionRequest hooks on
 writes on /v1/config.
 
 /v1/panel-log (v0.24.0) is a SIDE CHANNEL, not a source: the widget POSTs short
-diagnostic lines to it and a co-admin GETs them back, because iCUE renders the widget on
+diagnostic lines to it and a maintainer GETs them back, because iCUE renders the widget on
 a surface no devtools can reach. It is in-memory only, it feeds nothing, and nothing in
 here ever reads a stored line back into a decision.
 
@@ -622,7 +622,7 @@ EXPIRY_POLL_SEC = 30.0
 #     already carries the same evidence on a path crabd polls anyway.
 #   - OTLP activity. MEASURED in this repo, not assumed: setup/*.ps1 sets no OTEL_*
 #     variable, so a default install emits no OTLP at all - a clearing signal that is
-#     absent on Joe's machine is not a fix. And crabd maps OTLP_SESSION_ATTR at exactly
+#     absent on the maintainer's machine is not a fix. And crabd maps OTLP_SESSION_ATTR at exactly
 #     ONE site (OtlpReceiver.ingest_logs, `api_error` events); cost metric points are
 #     keyed by attribute-set string and never resolved to a session, so per-session
 #     "token activity" does not exist here. note_external's docstring already forbids
@@ -749,7 +749,7 @@ SESSION_ID_MAX = 200
 # ---------------------------------------------------------------- v0.24.0 constants
 # The panel diagnostics log channel (POST/GET /v1/panel-log). The widget renders inside
 # iCUE on the Xeneon Edge, where no devtools can be attached - a console.log has nowhere
-# to go, so the widget ships short lines here instead and a co-admin reads them over
+# to go, so the widget ships short lines here instead and a maintainer reads them over
 # HTTP. These four bounds are the entire flood posture: there is no rate limit because
 # the ring itself is the bound.
 PANEL_LOG_MAX_LINES = 500          # the ring; oldest evicted first, counted in droppedTotal
@@ -758,7 +758,7 @@ PANEL_LOG_MAX_LINE_CHARS = 300     # a longer line is TRUNCATED, not rejected
 PANEL_LOG_MARKER = "[panel]"       # the short client marker inside the server-side prefix
 # SEC-d (2026-08-28 audit): interior C0/C1 control bytes are stripped from every stored
 # line. `.strip()` only trims edge whitespace, so an ANSI/ESC-laden line stored verbatim
-# is JSON-safe (dump_state escapes it) but hands raw control bytes to a co-admin who
+# is JSON-safe (dump_state escapes it) but hands raw control bytes to a maintainer who
 # echoes the line to a terminal. Same posture as the notifier's XML control-strip: keep
 # printable text and the ordinary whitespace (tab/LF/CR), drop C0 (0x00-0x1F less those
 # three), DEL (0x7F) and C1 (0x80-0x9F). Character-class only, so unicode above 0x9F -
@@ -780,7 +780,7 @@ PANEL_LOG_BAD_BODY = b'{"error":"lines must be an array of 1..50 strings"}'
 # flood of random forged origins cannot balloon it - the same posture as the panel ring.
 #
 # v0.27.0: MULTIPLE local sources send NO Origin - the notifier polling /v1/state, a
-# co-admin's curl health checks, AND possibly the widget - so keying on Origin alone
+# maintainer's curl health checks, AND possibly the widget - so keying on Origin alone
 # collapsed them all into one uninformative "<absent>" bucket (measured live 2026-08-28:
 # originsSeen was ONLY {"origin":"<absent>"}). We now also classify a coarse `source` from
 # the User-Agent and key on the DISTINCT (origin, source) pair, so the QtWebEngine widget
@@ -1788,7 +1788,7 @@ GIT_READ_BUDGET_SEC = 1.0
 GIT_RESOLVE_MAX_INFLIGHT = 8
 # A-06. _cache had no eviction path at all: 20,000 distinct cwds -> 20,000 entries forever.
 # Bounded LRU, same idiom as the forecaster (FORECAST_MAX_KEYS) and OTLP caps. cwds are few
-# in a real estate, so this is generous headroom, not a working limit.
+# in real use, so this is generous headroom, not a working limit.
 GIT_CACHE_MAX = 256
 
 
@@ -4823,7 +4823,7 @@ class PanelLog:
     is which input events iCUE actually delivers to the glass: a TAP is proven (panel
     approvals were verified live on 2026-08-27), while swipe, long-press and multi-touch
     are unknown. The only way to find out is for the widget to say what it saw, over the
-    same loopback port everything else already rides, and for a co-admin to read it.
+    same loopback port everything else already rides, and for a maintainer to read it.
 
     IN MEMORY ONLY, AND THAT IS A DECISION, not an omission. Nothing here touches disk
     and nothing survives a crabd restart. This is a scratch channel for a live debugging
@@ -4896,7 +4896,7 @@ class OriginRecorder:
 
     DIAGNOSTIC ONLY. This feeds GET /v1/health.originsSeen and NOTHING else - it is never
     a `build()` input, never in /v1/state, and never read back into a decision path. Its
-    single purpose is to let a co-admin read what Origin the real QtWebEngine widget sends
+    single purpose is to let a maintainer read what Origin the real QtWebEngine widget sends
     from its live polling, which is the measurement the SEC-a allowlist fix is blocked on.
 
     v0.27.0 - keyed on the DISTINCT (origin, source) PAIR, not origin alone. Several local
