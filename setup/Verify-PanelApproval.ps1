@@ -219,7 +219,10 @@ Write-Host '  3. APPROVE it - tap Approve on the widget sheet. That tap is the w
 Write-Host '     use the equivalent POST if the widget is unavailable, and type it yourself:'
 Write-Host ''
 Write-Host "       curl.exe -s -X POST $BaseUri/v1/action -H 'Content-Type: application/json' ``" -ForegroundColor White
-Write-Host '              --data ''{"sessionId":"<id from step 2>","action":"decide","decision":"allow"}''' -ForegroundColor White
+Write-Host '              --data ''{"sessionId":"<id from step 2>","action":"decide","decision":"allow",'
+Write-Host '                       "token":"<code from Install-SideCrab.ps1 -PairingCode>","requestId":"<pendingPermission.requestId from step 2>"}''' -ForegroundColor White
+Write-Host '     (crabd 0.29.0: without the pairing code a decide is 403, without the requestId 400,'
+Write-Host '      with a stale requestId 409 - the widget sends both once its Approval Pairing Code is set.)'
 Write-Host ''
 Write-Host '     Expect 204. A 404 means the hold already expired (>55s) - the terminal dialog now'
 Write-Host '     owns the decision; answer it and redo step 2.'
