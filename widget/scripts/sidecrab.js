@@ -365,7 +365,10 @@ var DECIDE_DENY = 'deny';
    settings while a permission may already be waiting. Sent in the body, not a
    header, so the request stays the same application/json preflight crabd already
    answers. crabd normalises (case, hyphens) so this only trims. */
-function panelToken() { return strProp('panelToken', '').trim(); }
+/* NOT named panelToken: iCUE injects each property as a same-named GLOBAL, and a
+   function declaration colliding with it is a whole-script SyntaxError (0.27.0 shipped
+   blank for exactly this). The PROPERTY keeps the name; the reader does not. */
+function pairingCode() { return strProp('panelToken', '').trim(); }
 
 /* crabd >= 0.29.0 says so in the document (`approvals.tokenRequired`); an older
    crabd has no `approvals` block and never asks for one. */
@@ -4812,7 +4815,7 @@ function onSheetDecide(decision) {
 	var id = sheetSessionId;
 	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
 	   operator reads why instead of finding the card still armed after a close. */
-	if (tokenRequired() && !panelToken()) {
+	if (tokenRequired() && !pairingCode()) {
 		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in widget settings', 'err');
 		logLine('decide refused locally: no pairing code');
 		return;
@@ -4862,7 +4865,7 @@ function postAction(sessionId, action, text, decision, quiet, requestId) {
 		/* v0.27.0: the pairing code and the request id are what make a decide
 		   un-forgeable from a web page (crabd 0.29.0, SEC-a / WID-a). Sent whenever
 		   present; an older crabd ignores unknown keys. */
-		var tok = panelToken();
+		var tok = pairingCode();
 		if (tok) body.token = tok;
 		if (requestId) body.requestId = requestId;
 	}

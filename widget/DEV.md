@@ -167,6 +167,22 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.27.1 — 0.27.0 shipped BLANK on the Edge: a property and a function shared a name
+
+**Trap, with mechanism and symptom.** iCUE injects every `x-icue-property` into the page as
+a same-named GLOBAL, declared with `let`/`const` semantics. 0.27.0 added the property
+`panelToken` AND a reader `function panelToken()`. In a plain browser (no injection) the
+widget rendered perfectly — every check passed — but on the Edge the script hit
+`SyntaxError: Identifier 'panelToken' has already been declared` at parse time, so NOTHING
+ran: a blank panel with the static markup only, and crabd's originsSeen showed the widget's
+polling simply stop after the import. Reproduced off-glass by prepending
+`<script>let panelToken = "";</script>` to the page: the 0.27.0 script defines nothing, the
+renamed one renders six cards. **Rule: a property name is reserved in the script's global
+scope — never declare a function or top-level `var` with a property's name.** The reader is
+now `pairingCode()`; the property keeps `panelToken`. The mock/browser checks cannot catch
+this class of bug; only injection can, so the `?mock=` pages should grow a `&icue=1` switch
+that pre-declares every property with `let` (next wave).
+
 ## v0.27.0 — the pairing code: a decide only the widget can send (SEC-a / WID-a closed)
 
 crabd 0.29.0 refuses `decide` without the pairing code and the request's id. The widget's
