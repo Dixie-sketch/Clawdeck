@@ -2,128 +2,181 @@
 
 **An ambient Claude Code status panel for the Corsair Xeneon Edge.**
 
-A full-screen 2560×720 iCUE widget — plus an optional local companion service — that turns the
-desk display into a live view of every Claude Code session on your machine: rate-limit gauges,
-session cards, needs-your-attention alerts, token burn, a clock, and a crab whose mood *is* the
-status.
+SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on
+your PC. Session cards, rate-limit gauges with a reset countdown, today's token burn, a clock, a
+"needs your attention" alert, and a pixel crab whose mood *is* the status. When a session stops to
+ask you something, you find out from across the room instead of by cycling through terminal
+windows. Then you can answer it from the panel.
 
-If a session asks you a question, you find out from across the room instead of by cycling through
-terminal windows. Then you can answer it from the panel.
+![The panel](store/shots/01-panel.png)
 
-```
-Claude Code hooks ──POST──▶  crabd (127.0.0.1:2722)  ◀──poll── SideCrab widget (iCUE / Xeneon Edge)
-statusline + OTLP  ──POST──▶ one /v1/state JSON feed  ──write─▶ /v1/action · /v1/config
-~/.claude usage + JSONL ──▶  + blocking hook answers  ◀──poll── glow (RGB) · notifier (toasts)
-```
+---
+
+## What you need
+
+| | Required | Notes |
+|---|---|---|
+| **Operating system** | **Windows 10 or 11** | Windows only. The companion is a Windows service and the notifier uses Windows toasts. There is no macOS or Linux build. |
+| **Corsair iCUE** | **5.44 or newer** | SideCrab is an iCUE *widget*. Without iCUE there is nothing to install it into. Double-clicking the package to import it needs iCUE 5.46.67 or newer; on older iCUE you import from inside the app. |
+| **A display iCUE calls `dashboard_lcd`** | The **Xeneon Edge** (2560 × 720) | The panel is designed full-screen for the Edge. Smaller iCUE slots get a reduced layout. |
+| **Claude Code** | Installed and used on the **same PC** | The companion reads Claude Code's local session data. It cannot see sessions on other machines. |
+| **PowerShell 7** (`pwsh`) | For the companion installer | Not Windows PowerShell 5.1. |
+| **Python 3.13** | For the companion | A real install on `PATH`. The Microsoft Store "python" alias stub is rejected, because it cannot host a background service. |
+
+Everything runs on one PC and talks only over `127.0.0.1`. Nothing is sent anywhere.
 
 ---
 
 ## Two ways to run it
 
-**Widget only.** Install the widget, run nothing else. You get the crab, the clock, and whatever
-your iCUE sensor providers expose. It is a good-looking panel that needs no setup and no
-background process.
+**Widget only.** Install the widget and run nothing else. You get the crab, the clock, and the
+CPU and GPU temperatures your iCUE sensors expose. No setup, no background process. Claude Code
+data is simply absent, and the panel says so.
 
-**Widget + companion.** Run `crabd` on the machine where you use Claude Code and the panel comes
-alive: live session cards, limit gauges with a depletion forecast, burn history and an optional
-daily token budget, a daily recap with a drillable week strip, and alerts. Everything is
-localhost-only — the companion reads `~/.claude` strictly read-only, never writes to it, and never
-logs or transmits your OAuth token.
-
-The widget always degrades honestly. No companion, a stopped companion, or a feed older than 30
-seconds all produce a worried crab and a "data as of HH:MM" banner — never a green-looking panel
-built out of stale numbers.
+**Widget + companion (the point).** Run the small local service, `crabd`, on the PC where you use
+Claude Code. The panel comes alive: live session cards, limit gauges with a depletion forecast,
+burn history and an optional daily token budget, a daily recap with a drillable week strip, and
+alerts when a session is waiting on you.
 
 ---
 
-## What you can do from the glass
+## How it works
 
-The panel started glance-only and is now a control surface. It never accepts free text — the
-vocabulary is fixed, and everything goes to the companion on localhost.
+```
+Claude Code hooks ──POST──▶  crabd (127.0.0.1:2722)  ◀──poll── SideCrab widget (iCUE / Xeneon Edge)
+~/.claude usage + JSONL ──▶  one /v1/state JSON feed  ──write─▶ /v1/action · /v1/config
+                             + blocking hook answers  ◀──poll── notifier (Windows toasts)
+```
 
-- **Tap** a card for its detail sheet · **swipe** to acknowledge or dismiss · **long-press** to pin
-  a session to the top · **pull down** to refresh · **two-finger tap** the crab to acknowledge
-  everything at once.
-- **Send a canned continue prompt** ("Continue", "Run the tests", "Commit + push", plus your own)
-  to a session that has stopped. It is delivered the next time that session's Stop hook fires.
-- **Approve or deny a permission request** without turning around — off by default, and see the
-  caveat below before you turn it on.
-- **Change the settings**: quiet hours, toast thresholds, digest time, token budget, and the
-  approvals switch. (`continuePrompts` and `recapRepos` are hand-edited in the file — the panel
-  reads them but does not write them.)
-- **Drill into a day** by tapping it in the week strip.
+1. **Claude Code tells crabd what is happening.** The installer adds a few *hooks* to your
+   `~/.claude/settings.json`. Each one is a tiny localhost POST that fires when a session starts,
+   when you submit a prompt, when a session stops, and when it needs your attention. They time out
+   in two seconds and never block Claude Code if crabd is not running.
+2. **crabd keeps the picture.** It turns those events into per-session state (working, waiting,
+   finished, needs input), reads your rate limits from the same local credentials Claude Code
+   uses, and reads the session transcripts read-only for token burn and elapsed time. It serves all
+   of that as one JSON document on `http://127.0.0.1:2722/v1/state`.
+3. **The widget draws it.** Every three seconds the iCUE widget polls that URL and repaints. The
+   crab's posture is the summary: calm when all is well, alert when something waits on you, worried
+   when the feed is stale or gone.
+4. **Taps go back the same way.** Acknowledge, dismiss, pin, "Continue", and (if you turn it on)
+   approve or deny go to crabd on localhost. Nothing free-text is ever sent to a session.
 
-## Components
+**What the companion reads:** `~/.claude` (session transcripts, hook payloads, the local usage
+credential). **What it never does:** write to `~/.claude`, log or transmit your OAuth token, listen
+on a network interface, or send anything off the machine. The only outbound call is the usage-limit
+check to Anthropic's API with your own token, the same call Claude Code makes.
 
-| Path | What |
-|---|---|
-| `widget/` | The iCUE widget — HTML/CSS/JS, packaged to `.icuewidget` with Corsair's WidgetBuilder CLI |
-| `companion/` | **crabd** — the local service: hook receiver, session state machine, limits + burn reader, history, `/v1/state` |
-| `lighting/` | **sidecrab-glow** — optional: pulses Corsair RGB while a session is waiting on you (currently parked — see below) |
-| `notifier/` | Optional: native Windows toasts — waiting session, permission request, daily digest, budget crossed, companion gone quiet |
-| `hooks/` | The Claude Code hook fragment and the chained statusline command that feed crabd |
-| `setup/` | Install / update / uninstall / smoke-test / verification scripts |
-| `docs/` | [PRD](docs/PRD.md) — what and why · [STATE-CONTRACT](docs/STATE-CONTRACT.md) — the producer/consumer API · [BACKLOG](docs/BACKLOG.md) |
-
-`lighting/` and `notifier/` are independent read-only consumers of the same feed. Either can be
-absent; neither is required by anything else.
+**The panel is honest about not knowing.** No companion, a stopped companion, or a feed older than
+30 seconds all produce a worried crab and a "data as of HH:MM" banner. Unknown values render as an
+em-dash, never as zero. A green-looking panel always means the data is fresh.
 
 ---
 
 ## Install
 
-### 1. The widget
+### Step 1 — the widget (5 minutes)
 
-SideCrab is not in the iCUE widget store yet. Download the packaged `.icuewidget` from the
-[releases page](https://github.com/Dixie-sketch/Clawdeck/releases), or build it yourself:
+1. Download `SideCrab-<version>.icuewidget` from the
+   [releases page](https://github.com/Dixie-sketch/Clawdeck/releases/latest).
+2. Import it into iCUE: double-click the file (iCUE 5.46.67+), or in iCUE open the Xeneon Edge's
+   dashboard editor and import the widget from the file.
+3. Place it **full-screen** on the Xeneon Edge.
 
-```powershell
-icuewidget validate widget
-icuewidget package  widget
-```
+You now have the crab, the clock and your temperatures. If this is all you want, stop here.
 
-Then import the `.icuewidget` into iCUE and place it full-screen on the Xeneon Edge. Requires
-iCUE 5.44 or newer and a `dashboard_lcd` device; double-clicking the package to import needs iCUE
-5.46.67 or newer (older iCUE imports the file from within the app).
+### Step 2 — the companion (10 minutes)
 
-### 2. The companion (optional, but it's the point)
-
-Requirements:
-
-- Windows 10 or 11, with iCUE 5.44 or newer and a `dashboard_lcd` device (the Xeneon Edge)
-- PowerShell 7 (`pwsh`)
-- Python 3.13 on `PATH` as a real install. The Microsoft Store alias stub is rejected by the
-  installer, because it cannot host a background service.
-- `curl.exe` (ships with Windows since 10 1803) - the hook fragment uses it
+Open PowerShell 7 on the PC where you run Claude Code:
 
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
 cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1 -WithGlow -WithToast
+pwsh -File .\setup\Install-SideCrab.ps1 -WithToast
 ```
 
-That script:
+The installer:
 
-- registers logon Scheduled Tasks for crabd and any optional components you asked for,
-- merges the SideCrab hook entries into `~/.claude/settings.json` (backed up first, matched on the
-  crabd URL, so re-running never duplicates and other hooks are left alone),
-- registers the toast identity and the `sidecrab-ack:` protocol handler when the notifier is
-  installed — both `HKCU`, no elevation.
+- registers a logon Scheduled Task for `crabd` (and the notifier if you asked for it), and starts it,
+- backs up `~/.claude/settings.json`, then merges in the SideCrab hook entries. Re-running never
+  duplicates them and other hooks are left alone,
+- registers the toast identity and the `sidecrab-ack:` handler for the notifier, under `HKCU`,
+  no elevation needed,
+- asks whether to enable panel approvals. Say no until you have read the section below.
 
-`-WithGlow` / `-WithToast` are optional; with no switches, an optional component is installed when
-its script is present. Then check it:
+Then check it:
 
 ```powershell
 pwsh -File .\setup\Install-SideCrab.ps1 -Status   # read-only status of every piece
 pwsh -File .\setup\Test-SideCrab.ps1              # end-to-end smoke test, PASS/FAIL table
 ```
 
-`setup\Update-SideCrab.ps1` and `setup\Uninstall-SideCrab.ps1` do what they say; the uninstaller
-removes the tasks, the hook entries and both registry keys.
+Start a Claude Code session. Within a few seconds a card for it appears on the panel.
 
-### Configuration
+### Updating, uninstalling
 
-`~/.sidecrab/config.json` — all keys optional:
+```powershell
+git -C C:\Dev\sidecrab pull
+pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # restarts the tasks on the new code
+pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1   # removes tasks, hooks and both registry keys
+```
+
+The widget updates separately: import the new `.icuewidget` from the releases page. The two sides
+are built to tolerate a version gap, so updating one before the other is fine.
+
+---
+
+## Using it
+
+### At a glance
+
+- **The crab** is the summary. Calm = nothing needs you. Alert with a glow = a session is
+  waiting. Worried and grey = the data is stale or the companion is gone. It sweats when a limit
+  is nearly full, and it has a few tricks it does on its own.
+- **Session cards** show state, model, elapsed time, the repo it is working in, a hairline for how
+  full that session's context window is, and a "queued: …" line when you have sent it a next step.
+- **Limit gauges** show each rate-limit window, how full it is, when it resets, and a forecast of
+  when the recent burn rate would fill it.
+- **TODAY** shows token burn with a sparkline, the daily budget if you set one, and cost when
+  Claude Code's telemetry is flowing to the companion.
+- **The week strip** is the daily recap: sessions, commits in your configured repos, tokens.
+- **The hardware row** shows CPU and GPU temperatures with the name of the sensor each reading
+  comes from, plus this PC's CPU and memory use while the companion runs.
+
+### Touch
+
+| Gesture | Does |
+|---|---|
+| **Tap** a card | Opens its detail sheet: the question it is asking, subagents, the last event |
+| **Swipe** a card | Acknowledge or dismiss it |
+| **Long-press** a card | Pin it to the front (again to unpin) |
+| **Two-finger tap** anywhere | Acknowledge every waiting session at once |
+| **Tap the crab** | Same as two-finger tap |
+| **Pull down** from the top edge | Refresh now |
+| **Tap a gauge** | That window's detail: how full, when it resets, when it would fill |
+| **Tap a day** in the week strip | Drill into that day; page with prev/next |
+| **Tap the moon** beside the clock | Quiet for an hour · stay awake through tonight's window · back to schedule |
+| **Filter and density chips** (top right) | Show only waiting / working / finished; comfortable or compact cards |
+
+### Sending a session its next step
+
+On a stopped or finished session, tap the card and pick a **continue prompt**: "Continue", "Run the
+tests", "Commit + push", or any you add in the config file. It is delivered the next time that
+session's Stop hook fires. The vocabulary is fixed on purpose. There is no free-text input on the
+panel and no supported way to inject arbitrary text into a live session.
+
+### Approving a permission request from the panel
+
+When a session is waiting on a tool permission, the card shows the request with a countdown, and
+you can approve or deny it from the panel. **This ships off.** Read the next section before you
+turn it on.
+
+---
+
+## Configuration
+
+`~/.sidecrab/config.json`, all keys optional. Most of these are also editable from the panel's
+settings sheet.
 
 ```jsonc
 {
@@ -137,8 +190,8 @@ removes the tasks, the hook entries and both registry keys.
 }
 ```
 
-Most of these are editable from the widget itself; the file is there for the ones that are not,
-and for scripting.
+`continuePrompts` and `recapRepos` are hand-edited only. The panel reads them but does not write
+them.
 
 ---
 
@@ -158,97 +211,90 @@ guarantees are worth reading rather than assuming:
   Until this is closed, leave approvals off on a machine where you browse the web while a
   session sits on a pending permission. Tracked in [`docs/BACKLOG.md`](docs/BACKLOG.md) (SEC-a,
   WID-a) and disclosed in [`SECURITY.md`](SECURITY.md).
-- **Every failure is a pass-through.** Timeout, no tap, disabled, malformed, companion down — all
+- **Every failure is a pass-through.** Timeout, no tap, disabled, malformed, companion down: all
   return no decision, and the normal terminal dialog does its job. The worst case is the behaviour
   of a machine where SideCrab was never installed.
-- **The toast has no buttons.** When a request goes undecided, the notifier tells you — and says
-  "Decide on the panel." A notification action is one click from a lock screen, or from a toast the
-  shell replays hours later; that is fine for acknowledging a dot and not for allowing a command.
+- **The toast has no buttons.** When a request goes undecided, the notifier tells you and says
+  "Decide on the panel." A notification action is one click from a lock screen; that is fine for
+  acknowledging a dot and not for allowing a command.
 - **Verified live, operator present (2026-08-27)** via `setup\Verify-PanelApproval.ps1`: a panel
-  Approve ran the command with no keyboard, a panel Deny blocked it, and a full minute of
-  ignoring both surfaces ended in the 55-second pass-through with the terminal dialog fully in
-  charge — an ignored or dead panel can never block a session. Two behaviours worth knowing
-  before you rely on it: the terminal dialog is RACED, not suppressed (it renders immediately;
-  whichever surface answers first wins), and the two-button card carries a real mis-tap risk —
-  during the verification the operator tapped Approve intending Deny, which triggered a bench
-  investigation proving the buttons themselves are wired correctly. Test your own setup with the
-  same script before trusting it on a new machine.
+  Approve ran the command with no keyboard, a panel Deny blocked it, and a full minute of ignoring
+  both surfaces ended in the pass-through with the terminal dialog in charge. Two behaviours worth
+  knowing: the terminal dialog is **raced, not suppressed** (whichever surface answers first wins),
+  and the two-button card carries a real mis-tap risk. Run the same script on your own machine
+  before trusting it.
+
+---
+
+## Troubleshooting
+
+| You see | It means | Do |
+|---|---|---|
+| Worried grey crab, "data as of HH:MM" | The companion is stopped, or the feed is older than 30 s | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
+| Panel is fine but no session cards | Hooks are not firing | Check `~/.claude/settings.json` has the SideCrab entries; re-run the installer, which merges them idempotently |
+| Limit gauges show an em-dash and "/login" | Claude Code's local credential has expired | Run `claude` and sign in again; the gauges return on the next poll |
+| Temperatures frozen or wrong | The wrong iCUE sensor is selected | The row names the sensor it reads. Pick the right one in the widget settings |
+| "No usable python.exe found" | Only the Store alias stub is on `PATH` | Install Python 3.13 from python.org and tick "Add to PATH" |
+| A finished session still reads "working" | A session was killed by an app restart, so no end hook fired | It clears itself within 15 minutes; taps on it are refused rather than queued |
+| Something else | | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL table for every piece |
 
 ---
 
 ## Known caveats
 
 - **The glow is parked.** The Corsair SDK crashes in every non-interactive console context tested,
-  so the `SideCrab-glow` task ships disabled on purpose and the panel's fleet dot honestly shows it
-  stopped. The installer no longer re-enables it on a re-run. It needs a newer SDK, a visible
-  tray-mode process, or a Corsair fix.
-- **The statusline feed is a fallback, not a replacement.** Wired and working when invoked, but the
-  status line appears to render only in an interactive terminal session — on an app-hosted one it
-  never fires, and `limits.source` stays `"oauth"`. The OAuth path stays regardless.
-- **Cost figures need telemetry.** `burn.costUSD` is populated only when Claude Code's OTLP
-  telemetry is flowing to the companion. It is never derived from token counts — no number, no line.
-
----
+  so the `SideCrab-glow` task ships disabled on purpose, and the panel's fleet dot honestly shows
+  it stopped. The installer will not re-enable it on a re-run.
+- **The status-line feed is a fallback, not a replacement.** It fires only in an interactive
+  terminal session. The credential-based limits path works regardless.
+- **Cost figures need telemetry.** `costUSD` appears only when Claude Code's OTLP telemetry is
+  flowing to the companion. It is never estimated from token counts.
 
 ## Known issues
 
-The honest list lives in [`docs/BACKLOG.md`](docs/BACKLOG.md). The ones worth knowing before you
-install:
+The honest list lives in [`docs/BACKLOG.md`](docs/BACKLOG.md). Worth knowing before you install:
 
 - **SEC-a / WID-a** - the panel-approval residuals above. Approvals ship off.
-- **GHOST-a** - after a crabd restart, a session that was killed by an app restart (no `SessionEnd`
-  hook fires) can read `working` for up to 15 minutes before transcript aging retires it. Taps
-  on such a row are refused with 409 rather than queued into the void.
-- **Glow is parked** (see caveats) and the **status-line feed only fires in an interactive
-  terminal**.
-- About two dozen small, known, cosmetic or edge-case items under "Small, known, not yet fixed".
+- **GHOST-a** - after a crabd restart, a session that was killed by an app restart can read
+  `working` for up to 15 minutes before transcript aging retires it.
+- About two dozen small cosmetic or edge-case items under "Small, known, not yet fixed".
 
-## Security
+## Security and privacy
 
-Localhost-only by design; the companion reads `~/.claude` read-only and transmits nothing.
+Localhost-only by design. The companion reads `~/.claude` read-only, never writes there, and
+transmits nothing. There is no telemetry, no crash reporting, no update check.
 [`SECURITY.md`](SECURITY.md) has the threat model, the disclosed residuals, and how to report a
 vulnerability.
 
 ---
 
-## Design rules
+## For developers
 
-Two things drive most of the decisions in this repo, and both are worth knowing before you send a
-patch:
+| Path | What |
+|---|---|
+| `widget/` | The iCUE widget: HTML/CSS/JS, packaged to `.icuewidget` with Corsair's WidgetBuilder CLI (`icuewidget validate widget` · `icuewidget package widget`). Dev notes in `widget/DEV.md` |
+| `companion/` | **crabd**: hook receiver, session state machine, limits + burn reader, history, `/v1/state` |
+| `notifier/` | Native Windows toasts: waiting session, permission request, daily digest, budget crossed, companion gone quiet |
+| `lighting/` | **sidecrab-glow**: pulses Corsair RGB while a session waits (parked, see above) |
+| `hooks/` | The Claude Code hook fragment and the status-line command that feed crabd |
+| `setup/` | Install / update / uninstall / smoke-test / verification scripts |
+| `docs/` | [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings |
 
-**Honest failure.** Unknown is `null`, or `available: false`, or an em-dash — never `0`, never a
-stale value silently re-served. A panel that looks healthy must mean the data is fresh; when the
-companion goes quiet while you were working, the notifier says so, because a dead panel and a calm
-one look identical from across the room. Quiet hours suppress alerts rather than queueing them, so
-nothing bursts at 07:00 on a perfectly ordinary morning.
+Design rules that drive most decisions: **honest failure** (unknown is `null` or an em-dash,
+never `0`, never a stale value re-served), **every alert must survive a healthy night** (each
+threshold is replayed against real data, each gate mutation-proven), **contract first** (`schema`
+marks the last breaking shape; additive fields are detected by presence), and **a fixed
+vocabulary, never free text**.
 
-**Every alert has to survive a healthy night.** A control that pages when nothing is wrong trains
-you to ignore the one that matters — so each threshold here is answered by a replay against real
-data, and every gate is mutation-proven by breaking it and watching the suite fail.
-
-**Contract first.** The widget and the companion ship separately and are never guaranteed to be the
-same version, so [`docs/STATE-CONTRACT.md`](docs/STATE-CONTRACT.md) is the source of truth for both.
-`schema` marks the last *breaking* shape; additive fields are detected by presence, never by
-version number. A change lands in the contract first, then in both sides.
-
-**A fixed vocabulary, never free text.** The panel can acknowledge, dismiss, pin, send one of a
-configured set of prompts, and approve or deny. Injecting arbitrary text into a live session has no
-supported mechanism — the spike found none that is safe — so `POST /v1/action` answers `501` for
-`reply` and will keep doing so until one exists. See the [PRD](docs/PRD.md) roadmap.
-
----
-
-## Tests
+Tests, all headless:
 
 ```powershell
 python -m unittest discover -s companion\tests -t companion\tests
 python -m unittest discover -s notifier\tests  -t notifier\tests
 python -m unittest discover lighting\tests
 pwsh -File .\setup\tests\RunTests.ps1
+node widget\tests\test_ordering.js
 ```
-
-All headless: the Corsair SDK sits behind an adapter, toast emission sits behind an adapter, and no
-test posts to a live crabd or depends on the wall clock.
 
 ---
 
