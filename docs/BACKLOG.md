@@ -21,6 +21,13 @@
 - ~~**WID-a — decide payload has no per-request id.**~~ **CLOSED in the same release.**
   `pendingPermission.requestId` (16 hex, per register) must be echoed; mismatch is 409, checked
   under the broker lock so a replace between read and write cannot be approved with the old id.
+- **ORIGIN-b — the widget's origin was finally MEASURED as `file://`, not `null`** (originsSeen,
+  2026-09-02, after the 0.27.0 import: `origin: file://`, browser UA AppleWebKit/537.36). A web
+  page cannot forge `Origin: file://` (the browser serialises opaque origins as `null`), so a
+  belt-and-braces allowlist — accept `decide` only from `file://` or absent — is now possible on
+  top of the pairing code. Not done in 0.29.0: the code is the fix, and an allowlist on a value
+  measured once, on one iCUE build, needs a second machine's reading before it can refuse
+  anything. Next wave, with `originsSeen` from a second install.
 - **A-04 fuller fix (deferred, safe bound shipped).** GitLookup is now bounded to a 1s worker
   budget per unreachable cwd. A fully-async resolver the builder never waits on would remove even
   that per-miss cost but reworks ~8 GitLookup tests — not worth the blast radius yet.
