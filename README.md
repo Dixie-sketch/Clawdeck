@@ -7,6 +7,9 @@
 
 **An ambient Claude Code status panel for the Corsair Xeneon Edge.**
 
+> **New here?** Read [**Getting started**](docs/GETTING-STARTED.md): a 20-minute walkthrough from
+> nothing installed to a working panel, with what you should see at each step.
+
 SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on
 your PC. Session cards, rate-limit gauges with a reset countdown, today's token burn, a clock, a
 "needs your attention" alert, and a pixel crab whose mood *is* the status. When a session stops to
@@ -298,7 +301,7 @@ the four rules every change is held to.
 | `lighting/` | **sidecrab-glow**: pulses Corsair RGB while a session waits (parked, see above) |
 | `hooks/` | The Claude Code hook fragment and the status-line command that feed crabd |
 | `setup/` | Install / update / uninstall / smoke-test / verification scripts |
-| `docs/` | [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings |
+| `docs/` | [Getting started](docs/GETTING-STARTED.md) · [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings |
 
 Design rules that drive most decisions: **honest failure** (unknown is `null` or an em-dash,
 never `0`, never a stale value re-served), **every alert must survive a healthy night** (each
