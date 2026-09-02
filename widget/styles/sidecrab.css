@@ -15,13 +15,17 @@
 	--fs-gauge-name: calc(var(--layout-unit) * 2.4);
 	--fs-meta: calc(var(--layout-unit) * 2.1);
 	--fs-stat: calc(var(--layout-unit) * 3.2);
-	--fs-card-title: calc(var(--layout-unit) * 2.9);
-	--fs-card-meta: calc(var(--layout-unit) * 2.15);
+	/* v0.28.2: card type up ~17% at the operator's ask ("easier to read"). Measured
+	   before: title 20.9 px, meta 15.5 px at 2560x720, with the comfortable card
+	   carrying ~90 px of empty height. Compact density keeps its own smaller sizes
+	   (body.density-compact below) - it has no room to give. */
+	--fs-card-title: calc(var(--layout-unit) * 3.4);
+	--fs-card-meta: calc(var(--layout-unit) * 2.55);
 	--fs-banner: calc(var(--layout-unit) * 2.8);
 	/* The question is the whole point of a needs_input card, so it outranks
 	   lastEvent (--fs-card-meta) in the type scale rather than matching it. */
-	--fs-card-question: calc(var(--layout-unit) * 2.65);
-	--fs-sub-row: calc(var(--layout-unit) * 1.95);
+	--fs-card-question: calc(var(--layout-unit) * 2.95);
+	--fs-sub-row: calc(var(--layout-unit) * 2.2);
 	--fs-sensor: calc(var(--layout-unit) * 2.9);
 	--fs-sheet-meta: calc(var(--layout-unit) * 2.3);
 	--fs-sheet-title: calc(var(--layout-unit) * 3.4);
@@ -1713,9 +1717,19 @@ body.quiet .card.writing.w2 .dot { transform: none; }
 	font-size: var(--fs-card-title);
 	font-weight: 600;
 	line-height: 1.15;
-	white-space: nowrap;
+	/* v0.28.2: TWO lines in comfortable density, then an ellipsis. Five of six
+	   fixture titles were cut at one line; the card has the height. The clamp is
+	   pinned by max-height (the .card-question discipline: a clamp only ellipsises
+	   the line it is ALLOWED to finish) and the title is flex 0 0 auto, so nothing
+	   below can squeeze it mid-glyph. Compact stays one line - see below. */
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	max-height: calc(var(--fs-card-title) * 1.15 * 2 + 1px);
 	overflow: hidden;
 	text-overflow: ellipsis;
+	overflow-wrap: anywhere;
 }
 /* A DERIVED title (v0.11.0) — crabd's own cwd fallback (titleSource "cwd"), or
    the widget's repo-name fallback when a session carries no title at all. Muted
@@ -1747,28 +1761,51 @@ body.quiet .card.writing.w2 .dot { transform: none; }
 	flex: 0 1 auto;
 }
 .card-event {
+	/* v0.28.2: never squeezed below ONE whole line (it was squeezed to 0 px on
+	   ?mock=rework once the type grew - the card's last event vanished while the
+	   subagent rows stayed), and clamped at TWO with an ellipsis instead of the
+	   old 2.5-line cut. */
 	flex: 0 1 auto;
-	min-height: 0;
+	min-height: calc(var(--fs-card-meta) * 1.25 + 1px);
 	font-size: var(--fs-card-meta);
 	color: var(--muted);
 	line-height: 1.25;
-	max-height: calc(var(--fs-card-meta) * 2.5);
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	max-height: calc(var(--fs-card-meta) * 1.25 * 2 + 1px);
 	overflow: hidden;
 }
 /* The question the session is stuck on. -webkit-line-clamp is the only
    multi-line ellipsis QtWebEngine 6.9.3 has; max-height is the fallback cap so
    a build without it clips at the same four lines instead of blowing the cell. */
 .card-question {
-	flex: 0 1 auto;
+	/* v0.28.2: PINNED (flex 0 0 auto) at THREE lines. With the larger type and the
+	   two-line title, a 4-line clamp on a shrinkable box was squeezed to 2.8 line
+	   boxes on ?mock=attention - the mid-glyph cut with no ellipsis this comment
+	   block warns about below. Three whole lines the box is guaranteed to finish
+	   beat four it is not allowed to. The room comes from the subagent rows, which
+	   a needs_input card hides the way an approval card already does (rule 6). */
+	flex: 0 0 auto;
 	min-height: 0;
 	font-size: var(--fs-card-question);
 	line-height: 1.28;
 	color: var(--text-color);
 	display: -webkit-box;
 	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 4;
+	-webkit-line-clamp: 3;
 	overflow: hidden;
-	max-height: calc(var(--fs-card-question) * 1.28 * 4);
+	max-height: calc(var(--fs-card-question) * 1.28 * 3 + 1px);
+}
+/* v0.28.2: a question card spends its subagent rows on the question, exactly as
+   the approval card does (rule 6 below). The `N sub` badge still says they exist. */
+.card[data-state="needs_input"] .card-subs { display: none; }
+/* v0.28.2: on an approval card the TITLE gives up its second line instead - the
+   request is what the card is for, and at 2560x720 comfortable the two-line title
+   pushed the badge row 7 px past the cell. */
+.card.approval .card-title {
+	-webkit-line-clamp: 1;
+	max-height: calc(var(--fs-card-title) * 1.15 + 1px);
 }
 
 /* The approval body (v0.12.0), rendered in place of the question on a
@@ -1890,6 +1927,10 @@ body.quiet .card.writing.w2 .dot { transform: none; }
 	min-width: 0;
 	overflow: hidden;
 }
+/* v0.28.2: at most TWO subagent rows on a comfortable card. The third row is what
+   the larger type could not afford (rework's working card ran 19 px past the cell);
+   the `N sub` badge still carries the count and the sheet lists them whole. */
+.card-subs .sub-row:nth-child(n+3) { display: none; }
 .sub-row {
 	display: flex;
 	align-items: baseline;
@@ -1919,7 +1960,9 @@ body.quiet .card.writing.w2 .dot { transform: none; }
 .card-badges { display: flex; flex-wrap: wrap; gap: calc(var(--layout-unit) * 0.7); flex: 0 0 auto; }
 .badge {
 	font-family: var(--font-mono);
-	font-size: var(--fs-card-meta);
+	/* v0.28.2: pinned at the pre-bump chip size - a chip is not reading text, and
+	   four of them at the larger meta size wrapped to a second row. */
+	font-size: calc(var(--layout-unit) * 2.15);
 	line-height: 1;
 	padding: calc(var(--layout-unit) * 0.55) calc(var(--layout-unit) * 0.9);
 	border-radius: calc(var(--layout-unit) * 0.6);
@@ -2983,7 +3026,14 @@ body.density-compact .card {
 /* The type scale comes down as a SET, from the same tokens the comfortable card
    uses, so the card keeps its hierarchy at the smaller size instead of becoming
    four lines of the same weight. */
-body.density-compact .card-title { font-size: calc(var(--layout-unit) * 2.2); }
+body.density-compact .card-title {
+	font-size: calc(var(--layout-unit) * 2.2);
+	/* one line: a third grid row has no height for two */
+	display: block;
+	white-space: nowrap;
+	max-height: none;
+	-webkit-line-clamp: unset;
+}
 body.density-compact .card-repo,
 body.density-compact .card-event,
 body.density-compact .card-queued,

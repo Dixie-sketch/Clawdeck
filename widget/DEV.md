@@ -167,6 +167,36 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.28.2 — the cards get readable: +17% type, two-line titles, and what paid for it
+
+Operator's ask: "make the font slightly larger on the agent cards or easier to read".
+**Measured before, 2560x720 comfortable:** title 20.9 px, repo/state/event 15.5 px, five of
+six fixture titles ellipsised at one line, and ~90 px of empty card height. **After:** title
+24.5 px (`--fs-card-title` 2.9 → 3.4 units), meta 18.4 px (2.15 → 2.55), question 21.2 px
+(2.65 → 2.95), sub-row 2.2 (was 1.95); the title wraps to TWO lines (clamp 2, pinned by
+max-height, flex 0 0 auto so nothing squeezes it). Compact density keeps its own explicit
+sizes and one-line titles — a third grid row has no height to give.
+
+**What the room cost, found by scanning every card child against its cell on five fixtures
+× two densities (zero overflow at the end):**
+
+- `?mock=dense`: the approval card's badge row ran **7 px** past the cell → an approval card's
+  title is ONE line (the request is what the card is for).
+- `?mock=attention`: the question box was squeezed to **2.8 line boxes** of a 4-line clamp — the
+  D15 mid-glyph cut, no ellipsis → `.card-question` is PINNED at three whole lines, and a
+  `needs_input` card hides its subagent rows the way an approval card does (rule 6; the `N sub`
+  badge still says). Selector is `.card[data-state="needs_input"]` — cards carry the state as an
+  attribute, not a class (the first cut used a class and silently matched nothing).
+- `?mock=rework`: a working card with three subagent rows, a queued line and four badges ran
+  **19 px** past the cell — and its EVENT LINE had been squeezed to 0 px, the card's newest fact
+  gone while the subagent rows stayed. → `.card-event` has a one-line `min-height` and a 2-line
+  clamp with ellipsis (was a 2.5-line cut); at most TWO subagent rows show on a comfortable card;
+  badges keep the pre-bump chip size (2.15 units) — four of them had wrapped to a second row.
+
+Verified in headless Edge at 2560x720 with a FRESH profile per run: the `sc-shots` profile served
+the old stylesheet for two whole passes and the "after" shots were the "before" — cache-bust the
+profile (`--user-data-dir` per tag), not just the URL.
+
 ## v0.28.1 — the idle blink, every 8–10 s instead of every 1–3 min
 
 Operator's ask. `BLINK_MIN_MS`/`BLINK_MAX_MS` 60 000/180 000 → 8 000/10 000; nothing else
