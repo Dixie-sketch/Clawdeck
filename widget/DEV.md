@@ -119,7 +119,7 @@ buys nothing — so it is gone. Count the table.)
 | `&age=<minutes>` | back-date every needs_input `stateSince` so the 5 / 15 min escalation tiers can be shot without waiting them out |
 | `&spark=7d` | start the sparkline on the 7-day series instead of 24 h |
 | `&celebrate=1` | hold the **celebrating** mood (both arms up) so it can be photographed without waiting for a >30 min turn to land |
-| `&blink=<seconds>` | fix the idle-blink interval (normally a random 60–180 s) so the blink is observable |
+| `&blink=<seconds>` | fix the idle-blink interval (normally a random 8–10 s since v0.28.1; was 60–180 s) so the blink is observable |
 | `&burn=1` | auto-open the **burn-by-session** sheet on the first document that lands |
 | `&timeline=1` | auto-open the **Today timeline** sheet on the first document that lands |
 | `&day=YYYY-MM-DD` | open the timeline and then **drill that day**, so Back has somewhere to go and the flag photographs the real navigation rather than a view that can only be closed |
@@ -166,6 +166,15 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 **Since v0.14.0 the swipe dismiss is keyed the same way and inherits the same
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
+
+## v0.28.1 — the idle blink, every 8–10 s instead of every 1–3 min
+
+Operator's ask. `BLINK_MIN_MS`/`BLINK_MAX_MS` 60 000/180 000 → 8 000/10 000; nothing else
+moved. The gates that made the rare blink safe still hold at the new rate: calm moods only
+(`content`, `sweating`), never under quiet, never under reduced motion, and the 150 ms frame is
+unchanged. The original "an idle tic on a 24/7 panel is noise" reasoning was right about a tic
+and wrong about a blink — at one to three minutes the crab read as a still image, and a blink is
+the cheapest sign of life a panel has.
 
 ## v0.28.0 — the finish dance: shades on, four beats, when an agent lands
 

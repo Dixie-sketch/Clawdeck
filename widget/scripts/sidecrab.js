@@ -88,8 +88,13 @@ var SENSOR_LOG_MAX = 80;       /* the read-outcome ring buffer, window.__sidecra
 
 /* v0.4.0 */
 var BLINK_MS = 150;            /* one eye-frame; long enough to read, short enough not to be a nap */
-var BLINK_MIN_MS = 60000;      /* rare on purpose: an idle tic on a 24/7 panel is noise */
-var BLINK_MAX_MS = 180000;
+/* v0.28.1: 8-10 s, the operator's ask ("blink more often"). It was 60-180 s on the
+   theory that an idle tic on a 24/7 panel is noise; in practice a crab that blinks
+   every couple of minutes reads as a still image, and a blink is the cheapest
+   "alive" signal there is - one 150 ms eye-frame, calm moods only, never under
+   quiet or reduced motion (scheduleBlink / blinkOnce keep those gates). */
+var BLINK_MIN_MS = 8000;
+var BLINK_MAX_MS = 10000;
 var CELEBRATE_MS = 10000;
 var CELEBRATE_MIN_TURN_MS = 1800000;  /* a turn worth celebrating is >30 min of work */
 /* A textfield fires per keystroke and a slider per drag step; never POST per
