@@ -167,6 +167,33 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.28.0 — the finish dance: shades on, four beats, when an agent lands
+
+Asked for by the operator: "a little dance with his sunglasses on when an agent finishes
+working". It rides the SAME `working -> done` edge `detectCelebration` already walks, so it is
+one-shot per transition by construction, and it is bounded three ways so a busy fleet is not a
+crab that never stops:
+
+- **a real turn** — `DANCE_MIN_TURN_MS` (20 s). A three-second reply is not a job landing;
+  the half-hour celebration keeps its own, much higher, bar and the two compose (a long turn
+  gets the arms-up mood AND the dance);
+- **one per cooldown** — `DANCE_COOLDOWN_MS` (30 s), the juggle's idiom;
+- **never beside an alert** — `anyWaiting()` on the same document; a landing that arrives
+  next to an open question is a quiet landing. Alerts stay the only thing moving.
+
+The shades are the wardrobe's: `fireDance` sets `danceUntil` and `applyWardrobe` wears
+`sunglasses` while it holds, WITHOUT touching `accCurrent` or the hysteresis timer, so the
+fleet's own answer is back the instant the music stops (the trick's timeout calls `render`).
+`plain` wardrobe dances bare-shelled: the switch is about costumes, not motion. Skipped
+outright under reduced motion and quiet, like every trick, and the CSS carries the belt for
+both. Motion is `crabdance`, 390 ms × 4, whole-cell `steps(1, end)` — slide left, hop, slide
+right, hop.
+
+Verified off-glass with the trick guards exercised directly (reduced motion overridden in the
+page, since this dev browser has it ON): the edge dances and wears the shades; the shades are
+off again after `DANCE_MS`; a waiting session, a 5 s turn, the cooldown and quiet each refuse.
+`&crab=dance` holds it for photographs.
+
 ## v0.27.1 — 0.27.0 shipped BLANK on the Edge: a property and a function shared a name
 
 **Trap, with mechanism and symptom.** iCUE injects every `x-icue-property` into the page as

@@ -253,6 +253,13 @@ var JUGGLE_MS = 6000;          /* must equal the .ball animation's 750ms x 8 */
 var JUGGLE_COOLDOWN_MS = 600000;
 var SNAP_MS = 560;             /* clawsnap 260ms x 2, plus the frame it lands on */
 var BOUNCE_MS = 800;           /* crabhop 380ms x 2, likewise */
+/* The finish dance (v0.28.0): a session lands working -> done and the crab does a
+   four-beat shimmy in its sunglasses. Bounded three ways so a busy fleet is not a
+   crab that never stops dancing: the turn must have been real work (not a one-line
+   answer), one dance per cooldown, and never while anything is waiting on a human. */
+var DANCE_MS = 1560;           /* crabdance 390ms x 4 */
+var DANCE_MIN_TURN_MS = 20000; /* a 20 s turn is a job; a 3 s turn is a reply */
+var DANCE_COOLDOWN_MS = 30000;
 /* The accessory priority, highest first. One list, read in order — the ladder is
    data rather than a chain of ifs so the precedence is a thing you can read.
    THREE, not four (v0.18.0): the hard hat is retired. It fired at 3+ working,
@@ -567,6 +574,9 @@ var juggling = false;
 var juggleLastAt = 0;
 var snapping = false;
 var bouncing = false;
+var dancing = false;
+var danceLastAt = 0;
+var danceUntil = 0;            /* while set, the wardrobe wears the shades regardless of the fleet */
 var trickLoop = null;          /* dev-only: re-fires a forced trick so it can be shot */
 var forcedTrick = null;        /* dev-only &crab=juggle|bounce|snap */
 
@@ -1123,8 +1133,20 @@ function detectCelebration(doc) {
 		var t1 = Date.parse(s.stateSince);
 		if (!isFinite(t1)) t1 = now;
 		if (isFinite(t0) && t1 - t0 > CELEBRATE_MIN_TURN_MS) fireCelebrate();
+		/* The finish dance (v0.28.0) rides the same edge with a much lower bar: any
+		   real turn, not only a half-hour one. Waiting sessions are counted off the
+		   SAME document, so a landing that arrives beside an open question is a
+		   quiet landing - the alert stays the only thing moving. */
+		if (isFinite(t0) && t1 - t0 >= DANCE_MIN_TURN_MS && !anyWaiting(sessions)) fireDance(quiet);
 	}
 	prevSessionState = next;
+}
+
+function anyWaiting(sessions) {
+	for (var i = 0; i < sessions.length; i++) {
+		if (sessions[i] && sessions[i].state === 'needs_input') return true;
+	}
+	return false;
 }
 
 function fireCelebrate() {
@@ -1259,6 +1281,10 @@ function applyWardrobe(desired) {
 		accCurrent = desired;
 	}
 	var wear = accForced !== null ? accForced : accCurrent;
+	/* The finish dance wears the shades for its 1.5 s, unless the wardrobe is plain
+	   or a dev flag is holding a costume. It never touches accCurrent, so the
+	   hysteresis timer is undisturbed and the fleet's own answer returns unchanged. */
+	if (accForced === null && now < danceUntil && !crabPlain()) wear = 'sunglasses';
 	if (ui.crab.getAttribute('data-acc') !== wear) ui.crab.setAttribute('data-acc', wear);
 }
 
@@ -1284,6 +1310,31 @@ function fireBounce(quiet) {
 	bouncing = true;
 	ui.crab.classList.add('bounce');
 	setTimeout(function () { ui.crab.classList.remove('bounce'); bouncing = false; }, BOUNCE_MS);
+}
+
+/* The finish dance (v0.28.0). Latched like the others, cleared on a timer, skipped
+   under reduced motion and quiet. The shades come from `danceUntil`, which
+   applyWardrobe reads: the dance is the one moment the crab wears sunglasses
+   without the fleet having earned them, and it takes them off itself when the
+   music stops (the render at the end re-derives the wardrobe from the document).
+   `plain` wardrobe still dances - bare-shelled - because the switch is about
+   costumes, not about motion. */
+function fireDance(quiet, force) {
+	if (dancing || reducedMotion() || quiet) return;
+	var now = Date.now();
+	if (!force && danceLastAt && now - danceLastAt < DANCE_COOLDOWN_MS) return;
+	danceLastAt = now;
+	dancing = true;
+	/* +120 ms: setTimeout jitter must never take the shades off before the last beat. */
+	danceUntil = now + DANCE_MS + 120;
+	ui.crab.classList.add('dance');
+	applyWardrobe(accCurrent);
+	setTimeout(function () {
+		ui.crab.classList.remove('dance');
+		dancing = false;
+		danceUntil = 0;
+		render();
+	}, DANCE_MS);
 }
 
 /* The easter egg, and the only thing on this panel with a cooldown: five sessions
@@ -7903,7 +7954,7 @@ function init() {
 			var want = cr[1].toLowerCase();
 			if (ACCESSORIES.indexOf(want) !== -1) accForced = want;
 			else if (want === 'none' || want === 'plain') accForced = '';
-			else if (want === 'juggle' || want === 'bounce' || want === 'snap') forcedTrick = want;
+			else if (want === 'juggle' || want === 'bounce' || want === 'snap' || want === 'dance') forcedTrick = want;
 		}
 		/*   &swipe=<id|prefix|first>  freeze one dismissable card mid-swipe, at
 		     &swipeX=<px> (default 90, past the 60 px threshold so the armed state is
@@ -8137,9 +8188,10 @@ function startForcedTrick(name) {
 	function run() {
 		if (name === 'juggle') fireJuggle(false, true);
 		else if (name === 'bounce') fireBounce(false);
+		else if (name === 'dance') fireDance(false, true);
 		else fireSnap();
 	}
-	trickLoop = setInterval(run, name === 'juggle' ? JUGGLE_MS + 400 : 1400);
+	trickLoop = setInterval(run, name === 'juggle' ? JUGGLE_MS + 400 : name === 'dance' ? DANCE_MS + 600 : 1400);
 	run();
 }
 

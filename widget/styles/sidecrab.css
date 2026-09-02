@@ -611,12 +611,26 @@ body.quiet .crab[data-mood="waving"] .arm-right { transform: translateY(-4px); }
 	100% { transform: translateY(0); }
 }
 
+/* Finish dance (v0.28.0): a four-beat shimmy - slide a cell left, hop, slide a cell
+   right, hop - in the same whole-cell steps(1, end) grammar as the hop, so it reads
+   as pixel art moving and not as a tween. The shades are the wardrobe's business
+   (data-acc), not this rule's. */
+.crab.dance .rig { animation: crabdance 390ms steps(1, end) 4; }
+@keyframes crabdance {
+	0%   { transform: translate(-4px, 0); }
+	25%  { transform: translate(0, -4px); }
+	50%  { transform: translate(4px, 0); }
+	75%  { transform: translate(0, -4px); }
+	100% { transform: translate(-4px, 0); }
+}
+
 /* Quiet hours: the accessories are static art and stay (the nightcap is the
    POINT of quiet), but nothing may move. JS never fires a trick under quiet;
    this is the belt, and the juggle is hidden outright rather than frozen —
    three balls stopped mid-air read as a broken panel, not as a still one. */
 body.quiet .crab.snap .arm-right .claw,
-body.quiet .crab.bounce .rig { animation: none; }
+body.quiet .crab.bounce .rig,
+body.quiet .crab.dance .rig { animation: none; }
 body.quiet .crab.juggling .juggle { display: none; }
 
 .clock { flex: 0 0 auto; text-align: center; width: 100%; }
@@ -3554,6 +3568,7 @@ body.quiet .core-sessions { color: var(--muted); }
 	   dot, and the card's own age figure still says how fresh it is. */
 	.crab.snap .arm-right .claw,
 	.crab.bounce .rig,
+	.crab.dance .rig,
 	.flash.fire { animation: none; }
 	.crab.juggling .juggle { display: none; }
 	.card.writing.w2 .dot { transform: none; }

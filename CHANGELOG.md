@@ -8,7 +8,7 @@ detail of every additive field and is the source of truth; this file is the shor
 
 | Component | Version | Notes |
 |---|---|---|
-| widget (`widget/manifest.json`) | 0.27.1 | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
+| widget (`widget/manifest.json`) | 0.28.0 | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
 | crabd (`companion/crabd.py`) | 0.29.0 | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
 | notifier (`notifier/sidecrab_toast.py`) | 0.20.0 | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
 | lighting (`lighting/sidecrab_glow.py`) | parked | ships disabled: the Corsair SDK crashes in every non-interactive console context tested |
@@ -16,6 +16,9 @@ detail of every additive field and is the source of truth; this file is the shor
 
 ## Highlights by wave (newest first)
 
+- **0.28.0 widget (2026-09-02)** - the finish dance. When an agent finishes a real turn the crab
+  puts its sunglasses on and does a little dance. Bounded: 20 s minimum turn, 30 s cooldown,
+  never while a session is waiting on you, never under quiet hours or reduced motion.
 - **0.27.1 widget (2026-09-02)** - fixes 0.27.0, which imported but rendered a blank panel: iCUE
   injects properties as `let` globals and the new `panelToken` property collided with a
   same-named function. Import this one instead.
