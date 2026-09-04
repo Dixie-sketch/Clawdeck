@@ -21,7 +21,8 @@ MACOS_FRAGMENT = HOOKS_DIR / "settings-hooks-fragment-macos.json"
 #: crabd's loopback endpoint. Every hook URL in every fragment points here.
 HOOK_URL_PREFIX = "http://127.0.0.1:9999/v1/hook"
 
-#: crabd refuses any POST that does not carry this header (403 "panel header required").
+#: crabd 0.31.0 and later refuses any POST that does not carry this header (403 "panel
+#: header required"); an older crabd ignores it, so both fragments send it unconditionally.
 PANEL_HEADER = "X-SideCrab-Panel"
 
 #: Exactly the events SideCrab installs. crabd's state machine is defined over this set:
@@ -43,15 +44,20 @@ def _load(path: Path) -> dict:
 
 
 #: The ONLY licensed difference between the two fragments: which curl binary is named and
-#: how the shell quotes the header. Windows gets `curl.exe` and double quotes (cmd.exe has no
-#: single-quote literal); macOS gets the absolute `/usr/bin/curl`, because a hook inherits no
-#: login PATH, and single quotes. Everything else must match, byte for byte.
+#: how the shell quotes the header ARGUMENT. Windows gets `curl.exe` and double quotes
+#: (cmd.exe has no single-quote literal); macOS gets the absolute `/usr/bin/curl`, because a
+#: hook inherits no login PATH, and single quotes. Everything else must match, byte for byte.
 _CURL_BINARY = re.compile(r"^(?:curl\.exe|/usr/bin/curl)(?=\s)")
+
+#: Only a QUOTED -H argument is unquoted, and only its own quote character. Stripping every
+#: quote on the line instead would also flatten a difference in --data, in a URL, or in a
+#: shell-quoted path - drift the parity test exists to catch.
+_HEADER_ARG = re.compile(r"-H (\"|')(?P<value>[^\"']*)\1")
 
 
 def _normalise_command(command: str) -> str:
-    """A command string with the platform's curl binary and quoting flattened away."""
-    return _CURL_BINARY.sub("curl", command).replace('"', "").replace("'", "")
+    """A command string with the platform's curl binary and header quoting flattened away."""
+    return _HEADER_ARG.sub(lambda m: "-H " + m.group("value"), _CURL_BINARY.sub("curl", command))
 
 
 def _normalise(fragment: dict) -> dict:
@@ -71,15 +77,8 @@ def _handlers(fragment: dict):
 
 
 class FragmentInvariants(unittest.TestCase):
-    """Every claim here holds for BOTH fragments; the platform split is the curl call only.
-
-    Each test drives the loop ITSELF rather than pulling from a shared generator. A
-    generator that yields from inside `with self.subTest(...)` reports the first failure
-    without its fragment label and then, when unittest closes the abandoned generator,
-    raises GeneratorExit through the subTest as a phantom ERROR beside the real failure -
-    and the second fragment is never examined at all. Two fragments are only worth having
-    if a run says something about both of them, so the loop is written out each time.
-    """
+    """Every claim holds for BOTH fragments; each test drives its own subTest loop, because
+    yielding from inside one loses the fragment label and adds a phantom GeneratorExit."""
 
     FRAGMENTS = (("windows", WINDOWS_FRAGMENT), ("macos", MACOS_FRAGMENT))
 
@@ -93,11 +92,16 @@ class FragmentInvariants(unittest.TestCase):
             with self.subTest(fragment=name):
                 for event, handler in _handlers(_load(path)):
                     url = handler.get("url") or handler.get("command")
+                    # A handler with neither key is a malformed fragment, not a URL that
+                    # fails to match: say so, rather than letting assertIn raise TypeError
+                    # on None and report the shape problem as a stack trace.
+                    self.assertIsNotNone(url, f"{event} handler has neither url nor command")
                     self.assertIn(HOOK_URL_PREFIX, url, f"{event} does not reach {HOOK_URL_PREFIX}")
 
     def test_every_post_carries_the_panel_header(self):
-        # crabd answers a POST without X-SideCrab-Panel with 403. An http handler declares
-        # the header in its headers map; a command handler passes it on the curl line.
+        # crabd 0.31.0 and later answers a POST without X-SideCrab-Panel with 403. An http
+        # handler declares it in its headers map; a command handler passes it on the curl
+        # line. A handler carrying no command at all fails as a shape problem, not a KeyError.
         for name, path in self.FRAGMENTS:
             with self.subTest(fragment=name):
                 for event, handler in _handlers(_load(path)):
@@ -105,7 +109,9 @@ class FragmentInvariants(unittest.TestCase):
                         self.assertEqual(handler.get("headers", {}).get(PANEL_HEADER), "1",
                                          f"{event} http hook is missing the {PANEL_HEADER} header")
                     else:
-                        self.assertIn(f"{PANEL_HEADER}: 1", handler["command"],
+                        command = handler.get("command")
+                        self.assertIsNotNone(command, f"{event} command hook has no command")
+                        self.assertIn(f"{PANEL_HEADER}: 1", command,
                                       f"{event} command hook is missing the {PANEL_HEADER} header")
 
     def test_carries_exactly_the_seven_sidecrab_events(self):

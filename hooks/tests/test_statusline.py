@@ -81,8 +81,9 @@ class PostStatusline(unittest.TestCase):
         self.assertEqual(sl.STATUSLINE_ENDPOINT, "http://127.0.0.1:9999/v1/statusline")
 
     def test_carries_the_panel_header(self):
-        # crabd refuses a POST without X-SideCrab-Panel with 403; without it the status line
-        # would still render but crabd would lose limits and per-session context entirely.
+        # crabd 0.31.0 and later refuses a POST without X-SideCrab-Panel with 403; without it
+        # the status line would still render, but crabd would lose limits and per-session
+        # context entirely. The content type is pinned by the verbatim-POST test below.
         seen = {}
 
         class _Resp:
@@ -96,7 +97,6 @@ class PostStatusline(unittest.TestCase):
 
         sl.post_statusline(b"{}", opener=opener)
         self.assertEqual(seen.get("x-sidecrab-panel"), "1")
-        self.assertEqual(seen.get("content-type"), "application/json")
 
     def test_posts_the_document_verbatim(self):
         seen = {}

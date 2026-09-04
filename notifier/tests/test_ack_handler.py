@@ -308,9 +308,24 @@ class ContractTests(unittest.TestCase):
         self.assertIn("sidecrab_ack_handler.pyw", common)
 
     def test_the_endpoint_is_the_contract_action_endpoint(self) -> None:
+        """The handler's endpoint and the contract must name the SAME host and port.
+
+        The old form of this test asserted only that the contract mentions "/v1/action"
+        somewhere, which every port in history satisfies - so the handler could move and
+        the contract stay behind with nothing failing. Both halves are asserted now, and
+        the authority is the contract: this test is read-only on it.
+        """
         contract = (REPO_ROOT / "docs" / "STATE-CONTRACT.md").read_text(encoding="utf-8")
         self.assertIn("/v1/action", contract)
         self.assertEqual(handler.ACTION_ENDPOINT, "http://127.0.0.1:9999/v1/action")
+        self.assertIn(
+            "127.0.0.1:9999",
+            contract,
+            "docs/STATE-CONTRACT.md still names the old port: the handler POSTs to "
+            "127.0.0.1:9999 and the contract has not been updated to match. This test is "
+            "read-only on the contract - the crabd lane owns that file and lands the "
+            "section; it stays red until it does.",
+        )
 
     def test_the_contract_declares_this_scheme_and_charset(self) -> None:
         contract = (REPO_ROOT / "docs" / "STATE-CONTRACT.md").read_text(encoding="utf-8")

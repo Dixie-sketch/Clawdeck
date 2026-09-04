@@ -61,8 +61,9 @@ _SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 ACTION_ENDPOINT = "http://127.0.0.1:9999/v1/action"
 POST_TIMEOUT_SEC = 5.0
 
-#: crabd refuses any POST that does not carry this header with 403 "panel header required".
-#: Any non-empty value passes; "1" is what every SideCrab client sends.
+#: crabd 0.31.0 and later refuses any POST that does not carry this header, with 403
+#: "panel header required". Any non-empty value passes; "1" is what every SideCrab client
+#: sends. An older crabd ignores it, so sending it always is safe in both directions.
 PANEL_HEADER = "X-SideCrab-Panel"
 
 LOG_PATH = Path.home() / ".sidecrab" / "logs" / "ack-handler.log"

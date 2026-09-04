@@ -168,7 +168,8 @@ def xml_attr_escape(value: Any) -> str:
 #: the same commit as any behaviour change; setup/Test-SideCrab.ps1 reads it off both sides.
 __version__ = "0.21.0"
 
-#: A GET, so crabd's X-SideCrab-Panel gate does not apply here - that one guards POSTs only.
+#: A GET, so the X-SideCrab-Panel gate crabd 0.31.0 added does not apply here: it guards
+#: POSTs only. The ack handler, which does POST, sends the header.
 DEFAULT_ENDPOINT = "http://127.0.0.1:9999/v1/state"
 DEFAULT_INTERVAL_SEC = 10.0
 DEFAULT_THRESHOLD_SEC = 120

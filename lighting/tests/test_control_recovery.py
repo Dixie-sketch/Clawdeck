@@ -530,7 +530,8 @@ class FeedEndpointTests(unittest.TestCase):
     would go dark without anyone noticing."""
 
     def test_the_default_url_is_crabds_state_feed(self):
-        # A GET: crabd's X-SideCrab-Panel gate guards POSTs only, and the glow never writes.
+        # A GET: the X-SideCrab-Panel gate crabd 0.31.0 added guards POSTs only, and the
+        # glow never writes.
         self.assertEqual(sidecrab_glow.DEFAULT_URL, "http://127.0.0.1:9999/v1/state")
 
 

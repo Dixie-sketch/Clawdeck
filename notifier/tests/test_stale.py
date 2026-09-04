@@ -102,9 +102,18 @@ class FeedHealthTests(unittest.TestCase):
             self.assertNotIn("127.0.0.1", detail)
             self.assertNotIn("9999", detail)
 
+
+class FeedEndpointTests(unittest.TestCase):
+    """Where the notifier looks, as opposed to what it makes of what it finds.
+
+    Its own class because it is a module constant, not a read_feed_health case: it needs
+    none of that class's fixtures and would be the only test there that never calls it.
+    """
+
     def test_the_default_endpoint_is_crabds_state_url(self) -> None:
-        """A GET, so no panel header - but the port moved and a stale default here is a
-        notifier that reports the companion down while it is answering next door."""
+        """A GET, so no panel header - the gate crabd 0.31.0 added guards POSTs only. But
+        the port moved, and a stale default here is a notifier that reports the companion
+        down while it is answering next door."""
         self.assertEqual(sidecrab_toast.DEFAULT_ENDPOINT, "http://127.0.0.1:9999/v1/state")
 
 
