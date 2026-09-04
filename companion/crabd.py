@@ -3,7 +3,7 @@
 
 Serves the /v1/state document defined in docs/STATE-CONTRACT.md (schema 5, the last
 breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
-127.0.0.1:2722 for the SideCrab widget, from eleven sources:
+127.0.0.1:9999 for the SideCrab panel, from eleven sources:
 
   1. Claude Code hooks POSTed to /v1/hook  -> session state machine, per-session events
   2. ~/.claude/projects/**/*.jsonl         -> titles, model, token burn, questions,
@@ -78,9 +78,15 @@ SCHEMA_BREAKING = 5
 VERSION = "0.30.0"
 
 HOST = "127.0.0.1"
-# 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
-# test instance can run against the real ~/.claude without racing the live service.
-PORT = int(os.environ.get("CRABD_PORT") or 2722)
+# The production port, and the one the service registration owns. It was 2722 (C-R-A-B on
+# a phone keypad) while the only client was a widget configured once at the iCUE console;
+# it is 9999 now that the panel is a page a person opens in a browser and therefore a
+# number a person types. Stated ONCE: PORT below reads this, and so does every test that
+# has to promise it is not binding production.
+DEFAULT_PORT = 9999
+# CRABD_PORT exists so a test instance can run against the real ~/.claude without racing
+# the live service.
+PORT = int(os.environ.get("CRABD_PORT") or DEFAULT_PORT)
 
 SIDECRAB_DIR = Path.home() / ".sidecrab"
 USER_CONFIG_FILE = SIDECRAB_DIR / "config.json"
@@ -3948,7 +3954,7 @@ class StatusLineReader:
 
 class OtlpReceiver:
     """POST /v1/metrics + POST /v1/logs - OTLP http/json from Claude Code's built-in
-    telemetry (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, endpoint 127.0.0.1:2722).
+    telemetry (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, endpoint 127.0.0.1:9999).
 
     Two facts are taken and the rest of a very large schema is walked past:
       - `claude_code.cost.usage` (USD) -> burn.costUSD for the LOCAL day, costSource

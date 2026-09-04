@@ -85,6 +85,11 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import crabd  # noqa: E402
 
 
 class Reply:
@@ -251,7 +256,10 @@ def start_test_server(server_factory, attempts: int = 4):
     for attempt in range(attempts):
         server = server_factory()
         port = server.server_address[1]
-        assert port != 2722, "test server must never bind the production port"
+        # The CONSTANT, never the literal: the production port moved once already, and a
+        # guard that names a number a suite ago stops guarding the day it moves again.
+        assert port != crabd.DEFAULT_PORT, \
+            "test server must never bind the production port"
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         client = KeepAliveClient(port)

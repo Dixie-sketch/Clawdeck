@@ -730,7 +730,7 @@ class ContextSourceWiringTests(BuilderHarness):
 # ==================================================== endpoints over a real socket
 
 class DataLaneEndpointTests(unittest.TestCase):
-    """/v1/statusline, /v1/metrics, /v1/logs on a real crabd server - never port 2722."""
+    """/v1/statusline, /v1/metrics, /v1/logs on a real crabd server - never DEFAULT_PORT."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -750,7 +750,7 @@ class DataLaneEndpointTests(unittest.TestCase):
         # Proven-reachable port + one reused connection - see _httpkeepalive.
         self.server, self.thread, self.port, self.client = start_test_server(
             lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
-        self.assertNotEqual(self.port, 2722)
+        self.assertNotEqual(self.port, crabd.DEFAULT_PORT)
         self.addCleanup(self._stop)
         self.addCleanup(self.client.close)
 

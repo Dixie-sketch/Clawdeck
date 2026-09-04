@@ -305,7 +305,7 @@ class ReadBodyCapTests(unittest.TestCase):
 class LiveFireServed(unittest.TestCase):
     """A crabd with every reader wired, on a test port, with one SERVED session.
 
-    Never 2722: that port is production and the Scheduled Task owns it.
+    Never DEFAULT_PORT: that port is production and the service registration owns it.
     """
 
     SID = "5c5c5c5c-0000-0000-0000-00000000000e"
@@ -337,7 +337,7 @@ class LiveFireServed(unittest.TestCase):
         # Proven-reachable port + one reused connection - see _httpkeepalive.
         self.server, self.thread, self.port, self.client = start_test_server(
             lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
-        self.assertNotEqual(self.port, 2722)
+        self.assertNotEqual(self.port, crabd.DEFAULT_PORT)
         self.addCleanup(self._stop)
         self.addCleanup(self.client.close)
         # One session on a served row - a hook alone is enough, the builder folds hook

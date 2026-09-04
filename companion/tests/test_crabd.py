@@ -3059,7 +3059,7 @@ class UserConfigTests(unittest.TestCase):
 # ------------------------------------------------------- schema 2: served over a socket
 
 class ServedOverASocket(TempProjects):
-    """A real crabd server on a test port - never 2722. No tests of its own; the
+    """A real crabd server on a test port - never DEFAULT_PORT. No tests of its own; the
     endpoint suites below inherit the fixture."""
 
     SID = "33333333-0000-0000-0000-000000000009"
@@ -3081,7 +3081,7 @@ class ServedOverASocket(TempProjects):
         crabd.Handler.builder = self.builder
         self.server, self.thread, self.port, self.client = start_test_server(
             lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
-        self.assertNotEqual(self.port, 2722)
+        self.assertNotEqual(self.port, crabd.DEFAULT_PORT)
         self.addCleanup(self.stop_server)
         self.addCleanup(self.client.close)
 
