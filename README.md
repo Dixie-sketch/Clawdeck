@@ -86,7 +86,7 @@ em-dash, never as zero. A green-looking panel always means the data is fresh.
 ### Step 1 — the widget (5 minutes)
 
 1. Download `SideCrab-<version>.icuewidget` from the
-   [releases page](https://github.com/Dixie-sketch/Clawdeck/releases/latest).
+   [releases page](https://github.com/Dixie-sketch/Clawdeck/releases).
 2. Import it into iCUE: double-click the file (iCUE 5.46.67+), or in iCUE open the Xeneon Edge's
    dashboard editor and import the widget from the file.
 3. Place it **full-screen** on the Xeneon Edge.

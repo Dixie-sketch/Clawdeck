@@ -44,8 +44,9 @@ is a Windows service; there is no other build.
 
 ## 2. Install the widget (5 minutes)
 
-1. Go to the [releases page](https://github.com/Dixie-sketch/Clawdeck/releases/latest) and
-   download `SideCrab-<version>.icuewidget`.
+1. Go to the [releases page](https://github.com/Dixie-sketch/Clawdeck/releases) and
+   download the newest `SideCrab-<version>.icuewidget` (companion-only releases, named
+   `crabd-…`, carry no widget file; pick the newest release that has one).
 2. Double-click the file. iCUE 5.46.67 or newer imports it directly. On an older iCUE, open the
    Xeneon Edge's dashboard editor in iCUE and use its import option to pick the file.
 3. In iCUE, put the widget on the Xeneon Edge and make it **full-screen**. It is designed for the
