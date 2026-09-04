@@ -81,8 +81,11 @@ STATE_REQUIRED_KEYS = ("schema", "generatedAt", "crabd", "limits", "burn", "sess
 #: fail exactly when the panel would show its stale banner, not a second later.
 STALE_SEC = 30
 
-#: What a served panel carries. A 200 alone proves only that SOMETHING is on the port.
-PANEL_TITLE = "<title>SideCrab"
+#: What a served panel carries. A 200 alone proves only that SOMETHING is on the port -
+#: the whole point of the foreign-answerer case. Matched inside the title tag rather than
+#: against its exact text: widget/index.html wraps the name in the iCUE tr() helper, so
+#: the served bytes are `<title>tr('SideCrab')</title>`.
+PANEL_TITLE_RE = re.compile(r"<title>[^<]*SideCrab", re.IGNORECASE)
 
 #: Below this, the doctor's own fake needs_input could mature past the notifier's
 #: threshold mid-run and raise a real toast about a session that does not exist.
@@ -935,11 +938,12 @@ def parse_agent_state(label: str, code: int, out: str, err: str) -> AgentState:
     if code != 0:
         return AgentState(label, loaded=False, pid=None, state="absent")
     state = "unknown"
-    match = re.search(r"^\s*state\s*=\s*(.+?)\s*$", out or "", re.MULTILINE)
+    # First-level only: launchctl nests sub-objects that carry their own `state = active`.
+    match = re.search(r"^[\t ]?state\s*=\s*(.+?)\s*$", out or "", re.MULTILINE)
     if match:
         state = match.group(1)
     pid = None
-    match = re.search(r"^\s*pid\s*=\s*(\d+)\s*$", out or "", re.MULTILINE)
+    match = re.search(r"^[\t ]?pid\s*=\s*(\d+)\s*$", out or "", re.MULTILINE)
     if match:
         pid = int(match.group(1))
     return AgentState(label, loaded=True, pid=pid, state=state)
@@ -1355,6 +1359,11 @@ def state_lag_seconds(generated_at, now) -> float | None:
     return (reference - parsed).total_seconds()
 
 
+def looks_like_the_panel(body) -> bool:
+    """Is what answered on / actually SideCrab's panel? Pure."""
+    return bool(PANEL_TITLE_RE.search(body or ""))
+
+
 def parse_widget_schema_max(repo_root) -> int | None:
     path = Path(repo_root) / "widget" / "scripts" / "sidecrab.js"
     try:
@@ -1513,11 +1522,12 @@ def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row
 
     # -- the panel itself
     status, body = env.http_get(f"{BASE_URL}/", headers=dict(PANEL_HEADER), timeout=5)
-    served_panel = status == 200 and PANEL_TITLE in (body or "")
+    served_panel = status == 200 and looks_like_the_panel(body)
     add(
         "panel",
         served_panel,
-        f"GET {BASE_URL}/ is {status}" + ("" if served_panel else f" and does not carry {PANEL_TITLE}"),
+        f"GET {BASE_URL}/ is {status}"
+        + ("" if served_panel else " and what answered is not the SideCrab panel"),
     )
 
     schema_max = parse_widget_schema_max(env.repo_root)

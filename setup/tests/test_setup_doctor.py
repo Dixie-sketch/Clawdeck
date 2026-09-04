@@ -10,7 +10,7 @@ import json
 import unittest
 from datetime import timedelta
 
-from _harness import RecordingHttp, RecordingRunner, TempHome, setup
+from _harness import REPO_ROOT, RecordingHttp, RecordingRunner, TempHome, setup
 
 
 class PairingCode(TempHome):
@@ -253,6 +253,36 @@ class FakeCrabd:
         return (204, "")
 
 
+class PanelIdentity(unittest.TestCase):
+    def test_the_shipping_panel_satisfies_the_row(self):
+        # crabd serves widget/index.html on /. Pinned against the real file so a retitle
+        # breaks a test here rather than the doctor on somebody's machine.
+        index = (REPO_ROOT / "widget" / "index.html").read_text(encoding="utf-8")
+        self.assertTrue(setup.looks_like_the_panel(index), index[:200])
+
+    def test_something_else_on_the_port_does_not(self):
+        for body in ("<html>nginx</html>", "", "<title>Grafana</title>", None):
+            with self.subTest(body=body):
+                self.assertFalse(setup.looks_like_the_panel(body))
+
+
+class AgentStateFirstLevelOnly(unittest.TestCase):
+    def test_a_nested_state_line_does_not_win(self):
+        # launchctl print nests sub-objects that carry their own `state = active`;
+        # only the first-level, single-tab line describes the agent.
+        out = (
+            "com.sidecrab.crabd = {\n"
+            "\tstate = not running\n"
+            "\tendpoints = {\n"
+            "\t\t\"x\" = {\n"
+            "\t\t\tstate = active\n"
+            "\t\t}\n"
+            "\t}\n"
+            "}\n"
+        )
+        self.assertEqual(setup.parse_agent_state("com.sidecrab.crabd", 0, out, "").state, "not running")
+
+
 class Doctor(TempHome):
     def setUp(self):
         super().setUp()
@@ -263,6 +293,7 @@ class Doctor(TempHome):
             "SUPPORTED_SCHEMAS = frozenset({1, 2, 3, 4, 5})\n", encoding="utf-8"
         )
         self.crabd = FakeCrabd(lambda: self.clock)
+        self.crabd.panel_body = (REPO_ROOT / "widget" / "index.html").read_text(encoding="utf-8")
         setup.main(["install", "--yes"], env=self.env())
         self.printed.clear()
 
