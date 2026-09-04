@@ -9,13 +9,20 @@ detail of every additive field and is the source of truth; this file is the shor
 | Component | Version | Notes |
 |---|---|---|
 | widget (`widget/manifest.json`) | 0.29.0 | **crabd moved to port 9999, and the panel can be served by crabd itself**: same-origin relative paths over http(s), the `crabd Port` property (default 9999) only when loaded from `file:` as iCUE does; every POST carries `X-SideCrab-Panel`. Plus 0.28.2: | card type +17% (title 24.5 px, meta 18.4 px at 2560x720), titles wrap to two lines; question pinned at three whole lines; at most two subagent rows; badges keep their chip size. Plus 0.28.1: | idle blink every 8–10 s (was 60–180 s). Plus 0.28.0: | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
-| crabd (`companion/crabd.py`) | 0.30.0 | **the gauges stop dying every morning**: an optional long-lived token (`claude setup-token`, stored DPAPI-protected by `Install-SideCrab.ps1 -LimitsToken`) is used whenever the CLI token has expired; `limits.tokenSource` says which answered. Plus 0.29.0: | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
+| crabd (`companion/crabd.py`) | 0.31.0 | **crabd moved to port 9999 and now serves the panel itself**: `GET /` is the panel, the Origin gate became an allowlist of this crabd's own origin (`null` and the non-web schemes preserved), every POST must carry `X-SideCrab-Panel`, and a held port is a loud stop with the `lsof` line to find the holder. Plus 0.30.0: | **the gauges stop dying every morning**: an optional long-lived token (`claude setup-token`, stored DPAPI-protected by `Install-SideCrab.ps1 -LimitsToken`) is used whenever the CLI token has expired; `limits.tokenSource` says which answered. Plus 0.29.0: | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
 | notifier (`notifier/sidecrab_toast.py`) | 0.21.0 | polls crabd on port 9999; the toast's Acknowledge button POSTs with `X-SideCrab-Panel`. Plus 0.20.0: | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
 | lighting (`lighting/sidecrab_glow.py`) | parked | ships disabled: the Corsair SDK crashes in every non-interactive console context tested |
 | schema (`/v1/state`) | 5 | marks the last breaking shape; additive fields are feature-detected by presence |
 
 ## Highlights by wave (newest first)
 
+- **0.31.0 crabd (2026-09-04)** - crabd listens on 9999 and serves the panel itself, so the
+  panel is a page you open in a browser rather than only a widget inside iCUE. Two gates come
+  with that: the Origin rule is now an allowlist of this crabd's own address (a page you merely
+  visit still cannot read the feed), and every POST must carry `X-SideCrab-Panel`, which is what
+  stops a forged-origin page writing to a session. A port already in use is a loud stop with the
+  `lsof` line to find what is holding it, never a quiet move to another port. **An iCUE widget
+  older than 0.29.0 can still read but can no longer tap** - update both sides.
 - **0.29.0 widget (2026-09-04)** - the panel follows crabd to port 9999, and can now be
   opened in a browser: when crabd serves it, every request is same-origin and relative, so
   nothing has to be configured. The `crabd Port` property stays for the iCUE case, where the

@@ -219,7 +219,12 @@ class KeepAliveClient:
         return self.request("GET", path, headers=headers, timeout=timeout)
 
     def post(self, path, body=b"", headers=None, timeout=None) -> Reply:
-        head = {"Content-Type": "application/json"}
+        # crabd.PANEL_HEADER is on every POST because it is on every REAL POST: the
+        # hooks, the status line command, the OTLP exporter, the notifier's ack handler
+        # and the panel all send it, and crabd 0.31.0 refuses a POST without it. A
+        # default here rather than at 97 call sites - and `request()` deliberately adds
+        # nothing, so the gate's own tests can omit the header and see the refusal.
+        head = {"Content-Type": "application/json", crabd.PANEL_HEADER: "1"}
         head.update(headers or {})
         return self.request("POST", path, body=body, headers=head, timeout=timeout)
 

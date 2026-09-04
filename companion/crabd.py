@@ -75,7 +75,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.30.0"
+VERSION = "0.31.0"
 
 HOST = "127.0.0.1"
 # The production port, and the one the service registration owns. It was 2722 (C-R-A-B on
@@ -770,6 +770,23 @@ SOCKET_TIMEOUT_SEC = 30.0
 # Shared rather than inlined twice so a cross-site GET and a cross-site POST cannot drift
 # into telling an attacker which of the two they hit.
 CROSS_SITE_REFUSED = b'{"error":"cross-site request refused"}'
+# v0.31.0. EVERY POST carries this header, with any non-empty value; a POST without it is
+# refused before it is routed. It is not authentication - the value is never read - it is
+# a NON-SIMPLE request header, and that is the whole mechanism: a CORS-simple POST needs
+# no permission from crabd, while one carrying a custom header must be preflighted, and
+# do_OPTIONS below hands the permission only to an origin the allowlist already trusts
+# (never to `null`). So the forged-`null` page keeps its reads and loses its writes.
+# A DISTINCT body from CROSS_SITE_REFUSED on purpose, the opposite way round from that
+# constant's sharing rule: the two refusals are told apart by an OPERATOR wiring a hook
+# up, and "cross-site request refused" for a curl on the command line sent people
+# looking at CORS for an hour.
+PANEL_HEADER = "X-SideCrab-Panel"
+PANEL_HEADER_REQUIRED = b'{"error":"panel header required"}'
+# The panel crabd serves on / (v0.31.0). A module GLOBAL read per request, like every
+# other path here, so a test can repoint it at a temp tree; CRABD_PANEL_DIR is for
+# running the daemon against a panel build that is not the one beside it.
+PANEL_DIR = Path(os.environ.get("CRABD_PANEL_DIR")
+                 or Path(__file__).resolve().parent.parent / "widget")
 # A session id long enough to be a memory-growth vector rather than an identifier. Real
 # ones are 36-char UUIDs; this is generous enough that no legitimate id is refused.
 SESSION_ID_MAX = 200
@@ -6143,28 +6160,45 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         # No preflight, on ANY path, is answered with ACAO:* any more (SEC-1 for the
         # mutating paths, SEC-4 for the reads): that header is what invites the
-        # cross-origin read. A real web page's preflight gets no ACAO at all, so its
-        # application/json request dies at the preflight; the widget's opaque origin is
-        # reflected so its own preflight still passes.
-        acao = self._preflight_acao(self.headers.get("Origin"))
+        # cross-origin read. A cross-site page's preflight gets no ACAO at all, so its
+        # application/json request dies at the preflight; the panel's own origin and the
+        # widget's opaque one are reflected so their preflights still pass.
+        origin = self.headers.get("Origin")
+        acao = self._preflight_acao(origin)
         self.send_response(204)
         if acao is not None:
             self.send_header("Access-Control-Allow-Origin", acao)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers",
+                             self._preflight_headers(origin))
             self.send_header("Vary", "Origin")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    @classmethod
-    def _preflight_acao(cls, origin) -> str | None:
+    def _preflight_acao(self, origin) -> str | None:
         """The Access-Control-Allow-Origin for a preflight, PATH-INDEPENDENT since
         v0.16.0: reads and writes are gated alike, so the answer depends only on the
-        Origin. A real web page is refused with no ACAO; the widget's opaque origin is
+        Origin. A cross-site page is refused with no ACAO; an allowed origin is
         reflected so its application/json preflight still succeeds - never "*"."""
-        if cls._is_web_origin(origin):
+        if self._is_cross_site(origin, self.server.server_port):
             return None
         return origin if origin else None
+
+    def _preflight_headers(self, origin) -> str:
+        """Which request headers this preflight may unlock. THE FORGED-NULL WRITE IS
+        CLOSED HERE and nowhere else.
+
+        `null` gets exactly Content-Type - the same list it got before 0.31.0. It keeps
+        its ACAO, so the iCUE build's cors-mode READS still work, but a page that forged
+        `Origin: null` (a sandboxed allow-scripts iframe on anything the operator visits)
+        comes back from its preflight without permission to send PANEL_HEADER, and its
+        POST therefore never leaves the browser. Every other allowed origin - the panel's
+        own, and the non-web schemes a locally-served page reports - is one a forged page
+        cannot claim, so it gets the header.
+        """
+        if isinstance(origin, str) and origin.strip().lower() == "null":
+            return "Content-Type"
+        return f"Content-Type, {PANEL_HEADER}"
 
     def _record_origin(self, origin) -> None:
         """Feed the diagnostic origin recorder (ORIGIN-REC), before the origin gate so
@@ -6187,12 +6221,13 @@ class Handler(BaseHTTPRequestHandler):
         # cwds, session titles, the full text of the question a session is waiting on and
         # pendingPermission; under the old ACAO:* any page the operator visited could
         # read the lot cross-origin. Same predicate as the mutating gate, same 403 body:
-        # a present http(s) Origin is a real visited page and is refused; absent, "null"
-        # and non-web origins (the QtWebEngine widget, curl, local tools) are allowed and
-        # get their own origin reflected back.
+        # a present http(s) Origin that is NOT this crabd's own is a visited page and is
+        # refused; the panel's own origin (v0.31.0), absent, "null" and non-web origins
+        # (the QtWebEngine widget, curl, local tools) are allowed and get their own
+        # origin reflected back.
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._is_cross_site(origin, self.server.server_port):
             self._acao = None
             self._send(403, CROSS_SITE_REFUSED)
             return
@@ -6302,6 +6337,13 @@ class Handler(BaseHTTPRequestHandler):
             "panelToken": (token.status(now) if token is not None
                            else {"present": False, "rejectedRecently": 0,
                                  "lockedUntil": None}),
+            # v0.31.0: what this crabd will accept from a browser, and where the panel it
+            # serves comes from. Diagnostic - "which origins does your crabd trust" and
+            # "which build is it serving" were both answerable only by reading the source.
+            # NOT the state contract, so no schema bump, and never in /v1/state.
+            "panel": {"origins": sorted(self._panel_origins(self.server.server_port)),
+                      "headerRequired": True,
+                      "dir": str(PANEL_DIR)},
         }
 
     def _do_history(self, query: str) -> None:
@@ -6451,45 +6493,23 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _is_web_origin(origin) -> bool:
-        """True when Origin marks a real http(s) browser page - the CSRF vector refused
-        on a mutating endpoint. False for absent, "null", and any non-web scheme.
+        """True when Origin marks a real http(s) browser page. False for absent, "null",
+        and any non-web scheme.
 
-        THE TRADE the gate rests on, and its assumption: an opaque "null" Origin is
-        ALLOWED. The widget runs from an iCUE-served file/qrc page inside QtWebEngine
-        (Chromium), and a cross-origin fetch from an opaque origin serializes its Origin
-        header to exactly "null" - it can carry no other value we could allowlist, and a
-        widget that cannot POST is a broken product. A sandboxed-iframe attacker can
-        also FORGE Origin:null, so this gate closes the visited-http(s)-page vector, not
-        the local-process or forged-null one.
+        The PURE half of the gate - it says what KIND of caller this is, not whether it
+        is allowed. `_is_cross_site` below is the gate; this is what it asks first.
 
-        SEC-a is CLOSED as of v0.29.0: `decide` additionally requires the panel pairing
-        code (PanelToken) and the request's `requestId`, neither of which a forged-null
-        page can obtain - so the paragraph below now describes the pre-0.29.0 exposure
-        and why this gate alone was never enough. It is kept because the reasoning about
-        `null` is still what stops someone "fixing" this gate by rejecting null.
-
-        THE EXACT RESIDUAL as it stood (SEC-a, 2026-08-28 audit -
-        docs/findings/QA-Audit-2026-08-28.md). When panelApprovals is enabled, a
-        forged/opaque null Origin - a sandboxed allow-scripts iframe on any page the
-        operator visits, or any local process - CAN reach `POST /v1/action decide` and
-        approve a REAL pending permission the operator never tapped. It first GETs
-        /v1/state (also null-allowed) to harvest the live sessionId and pending tool,
-        then decides on it. The queue-whitelist bound applies ONLY to `queue-continue`
-        (which restricts the queued prompt to a fixed vocabulary); `decide` is NOT
-        whitelisted, and the permission broker keys pending permissions by sessionId
-        alone - which the same null-readable /v1/state discloses - so there is NO second
-        barrier on the decide path. (This is escalation of an already-pending request,
-        not arbitrary command choice: the attacker can only approve what a Claude session
-        already proposed while a prompt is live.) The real mitigations are (a) an
-        allowlist of the widget's TRUE origin - which first needs measuring what
-        QtWebEngine actually sends (see the origin recorder / GET /v1/health.originsSeen),
-        or (b) a per-request nonce in pendingPermission that decide must echo. Until one
-        of those lands, the posture is panelApprovals-off (the ship default). DO NOT
-        blindly tighten this gate to reject null: the QtWebEngine widget legitimately
-        sends null, and a blind change breaks the product. See also
-        docs/findings/audit-security.md (SEC-1). If a future widget build is confirmed to
-        send a stable non-"null" origin, tighten this to an allowlist of that exact
-        value."""
+        THE TRADE this rests on, and its assumption: an opaque "null" Origin is not a web
+        origin. The iCUE build runs from a file/qrc page inside QtWebEngine (Chromium),
+        and a cross-origin fetch from an opaque origin serializes its Origin header to
+        exactly "null" - it can carry no other value we could allowlist, and a panel that
+        cannot POST is a broken product. A sandboxed-iframe attacker can also FORGE
+        Origin:null, so this predicate cannot separate the two, and no amount of
+        tightening here will. DO NOT "fix" it by rejecting null: the QtWebEngine build
+        legitimately sends it, and reads from it are still allowed for exactly that
+        reason. The forged-null WRITE is closed a layer up, by PANEL_HEADER and the
+        preflight rule in _preflight_headers.
+        """
         if not isinstance(origin, str):
             return False
         o = origin.strip().lower()
@@ -6497,11 +6517,44 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return o.startswith("http://") or o.startswith("https://")
 
+    @staticmethod
+    def _panel_origins(port: int) -> frozenset:
+        """The three spellings of "this crabd", lowercase - the allowlist.
+
+        This is the case the old _is_web_origin docstring anticipated in its last
+        sentence: a panel build confirmed to send a stable non-"null" origin, allowlisted
+        to that exact value. crabd serves the panel itself as of v0.31.0, so the panel's
+        origin IS an http one, and "refuse every http origin" would refuse the product.
+
+        Three, because a browser sends back whatever the operator typed and `localhost`
+        resolves to ::1 first on a dual-stack machine. The BOUND port, never the
+        configured one: a second instance on CRABD_PORT must allowlist itself, not the
+        production daemon it is running beside.
+        """
+        return frozenset((f"http://localhost:{port}",
+                          f"http://127.0.0.1:{port}",
+                          f"http://[::1]:{port}"))
+
+    @classmethod
+    def _is_cross_site(cls, origin, port: int) -> bool:
+        """The gate: a web page that is NOT this crabd's own panel. Refused 403.
+
+        EXACT match against the allowlist, on the whole serialised origin. Not a prefix
+        (`http://localhost:9999.evil.example` starts with the right string), not a host
+        test that ignores the port (any dev server, notebook or other local tool the
+        operator has open on 127.0.0.1 is a different origin), and not a scheme-blind one
+        (nothing serves this panel over TLS, so an `https://localhost:9999` claiming to
+        be it is a page that is not).
+        """
+        if not cls._is_web_origin(origin):
+            return False
+        return origin.strip().lower() not in cls._panel_origins(port)
+
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._is_cross_site(origin, self.server.server_port):
             # Drain the body first so keep-alive framing survives, then refuse. Drained
             # on EVERY path, not just the mutating ones: a refused POST to an unknown
             # path still arrived with a body, and leaving it in the stream desynchronises
@@ -6510,11 +6563,22 @@ class Handler(BaseHTTPRequestHandler):
             self._read_body()
             self._send(403, CROSS_SITE_REFUSED)
             return
-        # Reflect a PRESENT allowed origin (the widget's "null") so its cors-mode fetch
-        # can read the status - the widget rolls back its optimistic tap on an unreadable
-        # reply. Never the wildcard (SEC-1/SEC-4). An absent Origin is a non-browser
-        # client that needs no ACAO at all.
+        # Reflect a PRESENT allowed origin (the panel's own, the widget's "null") so its
+        # cors-mode fetch can read the status - the panel rolls back its optimistic tap
+        # on an unreadable reply. Never the wildcard (SEC-1/SEC-4). An absent Origin is a
+        # non-browser client that needs no ACAO at all.
         self._acao = origin if origin else None
+        # The header gate (v0.31.0), AFTER the origin gate and before any routing, so it
+        # covers every path including the unknown ones. Order is deliberate: a cross-site
+        # page is told it is cross-site - which it already knew - and never learns there
+        # is a header to look for. Same drain-then-refuse as above, and _acao is left as
+        # the origin gate computed it, because a same-origin panel has to be able to READ
+        # this 403 (an unreadable reply is a CORS error, not a status, and the panel
+        # cannot tell the operator what happened).
+        if not (self.headers.get(PANEL_HEADER) or "").strip():
+            self._read_body()
+            self._send(403, PANEL_HEADER_REQUIRED)
+            return
         if path == "/v1/hook":
             # Answer first, parse after: a hook must never hold Claude Code open.
             raw = self._read_body()

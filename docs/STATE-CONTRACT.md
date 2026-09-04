@@ -14,6 +14,161 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.31.0 (2026-09-04 — TRANSPORT: the panel is served by crabd on 9999; the origin allowlist; the panel header; schema stays 5)
+
+crabd `VERSION` → `0.31.0`. **Nothing in the DOCUMENT changed.** No field was added, moved,
+renamed or removed on `/v1/state`, `/v1/action` or `/v1/config`, so `schema` stays **5** and
+every feature is still found by field presence. What changed is where crabd listens, who it
+will talk to, and what a POST has to carry.
+
+### 1. The port is 9999
+
+`DEFAULT_PORT = 9999`. It was 2722 (C-R-A-B on a phone keypad), which was a fine choice while
+the only client was a widget configured once at the iCUE console; the panel is now a page a
+person opens in a browser, so the port is a number a person types. `CRABD_PORT` still
+overrides it for a second instance running beside the live one.
+
+The bind address is unchanged and is **not** configurable: `127.0.0.1`, a module-level
+literal, with no environment variable and no config key that reaches it. There is deliberately
+no `CRABD_HOST`. Loopback binding is the whole of crabd's access-control story on the read
+paths, and a source-text test refuses `0.0.0.0` and any environment read of the host.
+
+**A collision is a loud stop, never a move to another port.** crabd makes exactly one bind
+attempt on exactly the port it was told to use; if that fails it prints to stderr and exits 1:
+
+```
+crabd: cannot listen on 127.0.0.1:9999 - another process is already holding it
+(OSError). Find out which: lsof -nP -iTCP:9999 -sTCP:LISTEN - then stop it, or set
+CRABD_PORT to run crabd on a different port (the panel and the hooks have to be pointed
+at the same number).
+```
+
+The refused alternative, recorded so it is not re-tried: "busy? bind the next port". That
+produces this daemon's worst failure — crabd up on 10000 while every hook, the status line
+command and the panel are still addressing 9999, so the feed is empty and nothing says why.
+
+`SO_REUSEADDR` is now a per-platform answer (`False` on Windows, `True` on macOS and Linux)
+rather than a constant. The option means two different things: on Windows it admits a SECOND
+listener on a port already being listened on — two crabds answering half the requests each —
+and on BSD/Linux it does not, where all it buys is a restart inside the TIME_WAIT window of
+the last connection. A collision is loud on all three either way.
+
+### 2. TRANSPORT: the Origin gate is an ALLOWLIST
+
+Supersedes the v0.16.0 table above (§1 of that section). The rule is still identical for
+`GET`, `POST` and `OPTIONS` on every path, and `Access-Control-Allow-Origin: *` is still
+illegal everywhere. What changed is that crabd now serves the panel itself, so the panel HAS
+a real `http://` origin, and "refuse every http origin" would refuse the product. This is
+exactly the case v0.16.0's closing sentence anticipated: a panel confirmed to send a stable
+non-`null` origin, allowlisted to that exact value.
+
+`<port>` below is the port crabd is actually BOUND to, not the configured default — a second
+instance on `CRABD_PORT` allowlists itself, never the production daemon beside it.
+
+| Request `Origin` | Answer |
+|---|---|
+| absent (curl, the hooks, the status line command, the notifier) | handled; **no** ACAO header (a non-browser client needs none) |
+| `http://localhost:<port>` | handled; ACAO echoes **exactly that origin** + `Vary: Origin` |
+| `http://127.0.0.1:<port>` | same |
+| `http://[::1]:<port>` | same (what `localhost` resolves to first on a dual-stack machine) |
+| `HTTP://LOCALHOST:<port>` | same — the comparison is case-insensitive (scheme and host both are) |
+| `http://localhost:<other port>` | **403** `{"error":"cross-site request refused"}`, no ACAO |
+| `https://localhost:<port>` | **403** — nothing serves this panel over TLS |
+| `http://localhost:<port>/` | **403** — a trailing slash is not a valid Origin serialisation, and a prefix match is how an allowlist gets walked past |
+| `http://evil.example` (any other web origin) | **403**, no ACAO |
+| `null` (the iCUE build's opaque QtWebEngine origin) | **preserved**: handled; ACAO `null` + `Vary: Origin` |
+| `file://`, `qrc://icue/widget` | **preserved**: handled; the origin is reflected |
+
+The match is EXACT, against the whole serialised origin. Not a prefix
+(`http://localhost:9999.evil.example` starts with the right string), not a host test that
+ignores the port (every dev server, notebook and other local UI the operator has open on
+127.0.0.1 is a different origin), and not scheme-blind.
+
+`null` stays allowed because the iCUE build has no other origin it could send — an opaque
+origin serialises to exactly `null` — and a panel that cannot read is a broken product. It is
+also forgeable by a sandboxed iframe, which is what §3 is for.
+
+### 3. TRANSPORT: every POST carries `X-SideCrab-Panel`
+
+**`PANEL_HEADER = "X-SideCrab-Panel"`**, any non-empty value. A POST without it is answered
+`403 {"error":"panel header required"}` — a DISTINCT body from the cross-site refusal, so an
+operator wiring up a hook can tell the two apart.
+
+- Applies to **every** POST path: `/v1/hook`, `/v1/hook/stop`, `/v1/hook/permission`,
+  `/v1/statusline`, `/v1/metrics`, `/v1/logs`, `/v1/action`, `/v1/config`, `/v1/panel-log`,
+  and every unknown path. `GET` and `OPTIONS` never require it.
+- **Order: the origin gate answers first.** A cross-site page is told it is cross-site, which
+  it already knew, and never learns there is a header to look for.
+- The body is drained before the 403, so keep-alive framing survives.
+- The 403 carries whatever ACAO the origin gate computed, so a same-origin panel can READ its
+  own refusal (an unreadable reply is a CORS error, not a status).
+- `/v1/hook/permission` is refused **immediately**, in front of the routing, never after its
+  55 s hold.
+- The value is never interpreted. It is not authentication.
+
+**What it actually buys.** A custom request header makes the POST non-simple, so a browser
+must preflight it — and the preflight is where the gate is enforced:
+
+| Preflight `Origin` | `Access-Control-Allow-Headers` |
+|---|---|
+| a panel origin from the table above | `Content-Type, X-SideCrab-Panel` |
+| `file://`, `qrc://…` (non-web scheme) | `Content-Type, X-SideCrab-Panel` |
+| `null` | `Content-Type` — **exactly as before 0.31.0** |
+| any other web origin | no ACAO at all, so no preflight answer to use |
+
+So a page that forges `Origin: null` keeps its READS (unchanged, and still a disclosed
+residual) and loses its WRITES: its preflight comes back without permission to send the
+header, and the POST never leaves the browser. That is the closure of the forged-null write
+vector `SECURITY.md` carried as a residual.
+
+### 4. crabd serves the panel
+
+`GET /` and `/index.html` serve the panel's `index.html`; a path whose first segment is
+`styles`, `scripts`, `resources` or `mock` serves that file. **Nothing else under the panel
+root is served** — `/manifest.json`, `/translation.json`, `/DEV.md` and `/tests/…` are `404
+{"error":"not found"}`, and an unknown `/v1/…` stays the JSON 404 it has always been. The
+directory is `CRABD_PANEL_DIR`, defaulting to the `widget/` tree beside `crabd.py`.
+
+Path safety, applied after ONE percent-decode: a path is refused (404, never an exception and
+never a read) when it contains `..` as a segment, a backslash, a NUL, an empty segment, a
+segment starting with `.`, or a `%` that survived decoding; the resolved candidate must have
+the resolved panel directory as a parent, which also refuses a symlink inside the tree that
+points outside it. A directory path and a missing file are both 404. A query string never
+reaches the path (`/index.html?mock=normal` serves `index.html`).
+
+Content type by suffix — `.html` `text/html; charset=utf-8`, `.css` `text/css; charset=utf-8`,
+`.js` `text/javascript; charset=utf-8`, `.json` `application/json`, `.svg` `image/svg+xml`,
+`.png` `image/png`, `.ico` `image/x-icon`, `.woff2` `font/woff2`, `.txt`
+`text/plain; charset=utf-8`, anything else `application/octet-stream`. Every static response
+carries `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` — ONE caching rule for
+the whole daemon, because the panel now ships with crabd and a stale script surviving an
+update is the bug that rule avoids.
+
+The origin gate applies to static reads exactly as to the API: a foreign-origin `fetch` of
+`/scripts/sidecrab.js` is 403, while a plain navigation (which sends no `Origin`) is served.
+A static read never touches the builder's lock, so it cannot be blocked by a wedged state
+build and cannot block a hook.
+
+### 5. `/v1/health` gains `panel`
+
+```jsonc
+"panel": { "origins": ["http://127.0.0.1:9999", "http://[::1]:9999", "http://localhost:9999"],
+           "headerRequired": true, "dir": "/Users/you/SideCrab/widget" }
+```
+
+Diagnostic, **not the state contract** — health has never been part of it, so no schema bump,
+and the block is never in `/v1/state`. It exists because "which origins does your crabd trust"
+and "which panel build is it serving" were answerable only by reading the source.
+
+### Compatibility, stated honestly
+
+An installed iCUE widget older than 0.29.0 **cannot POST to this crabd**: it sends no
+`X-SideCrab-Panel`, so every write is refused 403. Its READS are unaffected — `null` is still
+allowed and reflected — so it keeps rendering the panel, and only its taps stop working. That
+is the same shape as the 0.29.0 `decide` change and it is safe for the same reason: the writes
+that stop, stop by being refused, and every one of them has a terminal-side fallback. (It is
+also polling 2722, so in practice it shows the standalone state until it is re-imported.)
+
 ## v0.30.0 (2026-09-04 — ADDITIVE: `limits.tokenSource`; the long-lived limits token; schema stays 5)
 
 crabd `VERSION` → `0.30.0`. One additive member, one new optional file, no wire change on any
