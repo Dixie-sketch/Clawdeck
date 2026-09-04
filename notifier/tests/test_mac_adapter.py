@@ -20,8 +20,10 @@ Every test here is pure and runs on any OS: the subprocess is an injected runner
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
@@ -418,6 +420,106 @@ class PickAdapterTests(unittest.TestCase):
         # --dry-run must not even construct the real adapter: on a box with no osascript the
         # constructor is harmless, but the flag's promise is that nothing platform-specific runs.
         return RecordingToastAdapter()
+
+
+T0 = datetime(2026, 9, 4, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def iso(when: datetime) -> str:
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class DaemonThroughTheMacAdapterTests(unittest.TestCase):
+    """`Notifier._emit`'s failure and re-arm contract is adapter-agnostic — test_emit_matrix.py
+    proves it with stand-in adapters. This proves the real macOS adapter satisfies it, which is
+    the half a stub cannot: a `show` that raised, or that returned True on a failed osascript,
+    would consume a live question forever."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config = root / "config.json"
+        config.write_text(json.dumps({"toast": {"enabled": True}}), encoding="utf-8")
+
+        real_fetch = sidecrab_toast.fetch_state
+        self.addCleanup(lambda: setattr(sidecrab_toast, "fetch_state", real_fetch))
+
+        self.runner = RecordingRunner()
+        self.notifier = sidecrab_toast.Notifier(
+            adapter=MacNotificationAdapter(runner=self.runner),
+            config_reader=sidecrab_toast.ConfigReader(config),
+            digest_ledger=sidecrab_toast.DigestLedger(root / "toast-state.json"),
+            budget_ledger=sidecrab_toast.BudgetLedger(root / "toast-state.json"),
+            snooze_ledger=sidecrab_toast.SnoozeLedger(root / "toast-state.json"),
+        )
+
+    def serve(self, *sessions: dict) -> None:
+        self.sessions = list(sessions)
+
+    def poll(self, seconds: int) -> list:
+        """One poll, with the feed stamped AT the poll instant — otherwise the stale-feed
+        decider joins in five minutes after T0 and every count in here is off by one."""
+        now = T0 + timedelta(seconds=seconds)
+        state = {
+            "schema": 5,
+            "generatedAt": iso(now),
+            "sessions": self.sessions,
+            "quiet": {"active": False, "start": "22:00", "end": "07:00"},
+        }
+        sidecrab_toast.fetch_state = lambda *a, **k: state
+        return self.notifier.poll_once(now=now)
+
+    def waiting(self, sid: str, title: str) -> dict:
+        return {"id": sid, "title": title, "state": "needs_input", "stateSince": iso(T0),
+                "question": f"question from {sid}"}
+
+    def titles_posted(self) -> list[str]:
+        return [argv[9] for argv, _timeout in self.runner.calls]
+
+    def test_one_osascript_call_per_owed_notification(self) -> None:
+        self.serve(self.waiting("s1", "lane one"), self.waiting("s2", "lane two"),
+                   self.waiting("s3", "lane three"))
+        fired = self.poll(300)
+        self.assertEqual(len(fired), 3)
+        self.assertEqual(
+            self.titles_posted(),
+            ["Claude is waiting — lane one", "Claude is waiting — lane two",
+             "Claude is waiting — lane three"],
+        )
+
+    def test_a_shown_notification_is_not_repeated_on_the_next_poll(self) -> None:
+        self.serve(self.waiting("s1", "lane one"))
+        self.poll(300)
+        self.poll(310)
+        self.assertEqual(len(self.runner.calls), 1, "one notification per waiting spell")
+
+    def test_a_non_zero_osascript_re_arms_the_waiting_question(self) -> None:
+        """The F1 contract, through this adapter: a notification that did not land must not
+        consume the spell, or the operator is never told about a question that is still live."""
+        self.runner.returncode = 1
+        self.serve(self.waiting("s1", "lane one"))
+        self.assertEqual(self.poll(300), [])
+        self.assertEqual(self.poll(310), [])
+        self.assertEqual(len(self.runner.calls), 2, "retried, not consumed")
+
+        self.runner.returncode = 0
+        fired = self.poll(320)
+        self.assertEqual([r.session_id for r in fired], ["s1"], "it lands once osascript can")
+
+    def test_a_missing_osascript_is_survivable_and_still_re_arms(self) -> None:
+        """The other failure shape at the same seam: no binary at all."""
+        adapter = MacNotificationAdapter(
+            runner=RaisingRunner(FileNotFoundError(2, "No such file or directory"))
+        )
+        self.notifier.adapter = adapter
+        self.serve(self.waiting("s1", "lane one"))
+        with self.assertLogs("sidecrab.notifier", level="ERROR"):
+            self.assertEqual(self.poll(300), [])
+
+        self.notifier.adapter = MacNotificationAdapter(runner=self.runner)
+        fired = self.poll(310)
+        self.assertEqual([r.session_id for r in fired], ["s1"])
 
 
 class ModuleImportsAnywhereTests(unittest.TestCase):
