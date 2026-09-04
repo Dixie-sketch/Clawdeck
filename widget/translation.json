@@ -16,7 +16,7 @@
 			"Budget Per Day": "Budget Per Day",
 			"Approvals": "Approvals",
 			"Approval Pairing Code": "Approval Pairing Code",
-			"Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with setup/install.sh --pairing-code. Leave it empty unless panel approvals are turned on.": "Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with setup/install.sh --pairing-code. Leave it empty unless panel approvals are turned on.",
+			"Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with Install-SideCrab.ps1 -PairingCode. Leave it empty unless panel approvals are turned on.": "Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with Install-SideCrab.ps1 -PairingCode. Leave it empty unless panel approvals are turned on.",
 			"Hardware Sensors": "Hardware Sensors",
 			"CPU Temperature Sensor": "CPU Temperature Sensor",
 			"GPU Temperature Sensor": "GPU Temperature Sensor",

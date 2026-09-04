@@ -3784,7 +3784,28 @@ function syncOverflowSheet() {
    the iCUE webview forwards — a question a browser's pointer stream does not
    raise. Absent, not disabled: a control that cannot do anything is worse than
    no control. */
-var SETTINGS_HIDDEN = { cpuTempSensor: 1, gpuTempSensor: 1, touchDiag: 1 };
+var SETTINGS_HIDDEN = { cpuTempSensor: 1, gpuTempSensor: 1, touchDiag: 1, crabdPort: 1 };
+
+/* crabdPort is in that list for a DIFFERENT reason than the other three, and it
+   is worth naming: it is not unbacked, it is INERT. baseUrl() reads
+   location.protocol first and returns the empty string on a served origin, so
+   the property cannot move where the panel polls — and a control that visibly
+   does nothing is worse than no control. It stays declared for the iCUE case,
+   where the panel is loaded from disk and has to name crabd outright. */
+
+/* THE PAIRING INSTRUCTION IS PER-HOST, AND THIS IS THE PANEL'S ONE COPY. The
+   Approvals group's `info` in index.html names the PowerShell command, because
+   the iCUE console renders that string and it is the only surface iCUE has —
+   and the machine reading it there is the Windows one. A browser reader is
+   running a shell script instead, so the sheet says that, and buildSettings
+   SKIPS that group's info rather than printing the other platform's command
+   beside this one. The prose the info carries is repeated here for the same
+   reason: one copy per surface, not one copy shared badly by two. */
+function pairingHelp() {
+	return 'Approve and Deny are refused until this matches the code the companion minted. ' +
+		'Print it with setup/install.sh --pairing-code. ' +
+		'Leave it empty unless panel approvals are turned on.';
+}
 
 /* tr('...') is substituted by iCUE at import time and by nothing at all in a
    browser, so every label and every group string has to come out of its wrapper
@@ -3919,14 +3940,43 @@ function settingsRow(meta) {
 		row.appendChild(show);
 		var help = document.createElement('div');
 		help.className = 'set-help';
-		help.textContent = 'Print it with setup/install.sh --pairing-code';
+		help.textContent = pairingHelp();
 		row.appendChild(help);
+	}
+	/* A time field that crabd would refuse says so HERE rather than going quiet
+	   (review). desiredQuietConfig returns null for a value normHm rejects, which
+	   is correct on the wire — half a typed time is not a window — and completely
+	   invisible on the glass: the operator watched a value they had typed simply
+	   never take effect. */
+	if (SETTINGS_TIME[meta.name]) {
+		var bad = document.createElement('div');
+		/* NOT also .set-help: that class is the pairing row's prose and a
+		   querySelector for it must not find an empty refusal line first. */
+		bad.className = 'set-invalid';
+		bad.setAttribute('data-invalid-for', meta.name);
+		row.appendChild(bad);
 	}
 	return row;
 }
 
+/* The properties normHm validates. A map rather than a test on the label,
+   because the label is prose and this is a contract. */
+var SETTINGS_TIME = { quietStart: 1, quietEnd: 1 };
+
+/* Shown only while the value is one crabd would refuse; cleared the moment it is
+   not. The row keeps the element either way, so nothing reflows under a finger
+   that is still typing. */
+function markSettingsTime(meta, value) {
+	if (!SETTINGS_TIME[meta.name] || !ui.sheetSettings) return;
+	var el = ui.sheetSettings.querySelector('[data-invalid-for="' + meta.name + '"]');
+	if (!el) return;
+	var bad = normHm(value) === null;
+	setText(el, bad ? 'needs HH:MM, 00:00 to 23:59 — not sent until it is' : '');
+	el.classList.toggle('shown', bad);
+}
+
 function settingsValueText(meta) {
-	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop=' + meta.name + ']') : null;
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop="' + meta.name + '"]') : null;
 	var n = el ? Number(el.value) : Number(getIcueProperty(meta.name));
 	if (!isFinite(n)) n = Number(meta.dflt);
 	return n + (meta.unit ? ' ' + meta.unit : '');
@@ -3945,8 +3995,13 @@ function buildSettings() {
 		var group = groups[g] || {};
 		var names = Array.isArray(group.properties) ? group.properties : [];
 		var rows = [];
+		var ownsPairing = false;
 		for (var i = 0; i < names.length; i++) {
-			if (SETTINGS_HIDDEN[names[i]]) continue;
+			/* hasOwnProperty, not a bare index: a property named `constructor` or
+			   `toString` would inherit a truthy value off Object.prototype and vanish
+			   from the sheet with nothing said. */
+			if (Object.prototype.hasOwnProperty.call(SETTINGS_HIDDEN, names[i])) continue;
+			if (names[i] === 'panelToken') ownsPairing = true;
 			if (metas[names[i]]) rows.push(metas[names[i]]);
 		}
 		/* A group whose every property belongs to iCUE renders NOTHING — not an
@@ -3960,6 +4015,11 @@ function buildSettings() {
 		sec.appendChild(title);
 		for (var r = 0; r < rows.length; r++) sec.appendChild(settingsRow(rows[r]));
 		var info = untr(group.info || '');
+		/* The pairing group's info is written for the iCUE console — it is the only
+		   surface iCUE has, and it names the Windows command. The row's own help
+		   line carries this host's version, so rendering the info here as well
+		   would print an instruction for the other platform beside the right one. */
+		if (ownsPairing) info = '';
 		if (info) {
 			var note = document.createElement('div');
 			note.className = 'set-group-info';
@@ -3981,11 +4041,13 @@ function onSettingsChange(ev) {
 	if (!name) return;
 	var meta = settingsMetas()[name];
 	if (!meta) return;
-	writePanelProperty(name, readSettingsControl(el, meta));
+	var value = readSettingsControl(el, meta);
+	writePanelProperty(name, value);
 	if (meta.type === 'slider') {
-		var out = ui.sheetSettings.querySelector('[data-value-for=' + name + ']');
+		var out = ui.sheetSettings.querySelector('[data-value-for="' + name + '"]');
 		if (out) setText(out, settingsValueText(meta));
 	}
+	markSettingsTime(meta, value);
 }
 
 function readSettingsControl(el, meta) {
@@ -3994,7 +4056,12 @@ function readSettingsControl(el, meta) {
 	if (meta.type === 'slider') {
 		var n = Number(el.value);
 		if (!isFinite(n)) n = Number(meta.dflt);
-		var lo = Number(meta.min), hi = Number(meta.max);
+		/* NEVER Number(null), which is 0 (review). A slider meta with no declared
+		   min would otherwise clamp every value of that control to zero and send it
+		   — the contract-legal-null trap this whole file tests type for, one layer
+		   down and on the way OUT rather than in. */
+		var lo = meta.min === null || meta.min === undefined ? NaN : Number(meta.min);
+		var hi = meta.max === null || meta.max === undefined ? NaN : Number(meta.max);
 		/* Clamped here as well as in each desired*Config(), because a value outside
 		   the meta's range is a body crabd answers 400 to — and a 400 on the toast
 		   key is indistinguishable from the older-crabd 400 the sync path reads. */
@@ -4006,7 +4073,7 @@ function readSettingsControl(el, meta) {
 }
 
 function toggleTokenReveal() {
-	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop=panelToken]') : null;
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop="panelToken"]') : null;
 	var btn = ui.sheetSettings ? ui.sheetSettings.querySelector('#settingsTokenShow') : null;
 	if (!el || !btn) return;
 	var shown = el.getAttribute('type') === 'text';

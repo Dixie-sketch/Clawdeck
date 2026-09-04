@@ -2426,6 +2426,19 @@ body.panel-settings .head-chip-gear {
 	-webkit-appearance: none;
 	appearance: none;
 }
+/* The refusal line under a time field. Present in the markup and hidden until it
+   has something to say, so a value being typed does not reflow the sheet under
+   the finger typing it. Amber, not red: nothing is broken and nothing was lost —
+   the value simply is not on the wire yet. */
+.set-invalid {
+	display: none;
+	flex: 1 1 100%;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--amber);
+}
+.set-invalid.shown { display: block; }
+
 /* Full width under its row, because it is a sentence and the row is a control. */
 .set-help {
 	flex: 1 1 100%;

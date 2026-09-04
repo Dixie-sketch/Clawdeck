@@ -352,7 +352,7 @@ function settingsPanel(opts) {
 }
 
 function control(ctx, name) {
-  return ctx.ui.sheetSettings ? ctx.ui.sheetSettings.querySelector('[data-prop=' + name + ']') : null;
+  return ctx.ui.sheetSettings ? ctx.ui.sheetSettings.querySelector('[data-prop="' + name + '"]') : null;
 }
 
 function setControl(ctx, name, value) {
@@ -367,7 +367,14 @@ function setControl(ctx, name, value) {
 /* The three that have no meaning outside iCUE: two sensor combo boxes with no
    bridge to populate them, and a touch recorder built to find out what the iCUE
    webview forwards. */
-var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag'];
+var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag', 'crabdPort'];
+
+/* crabdPort joins them for a different reason than the other three (review): it
+   is not unbacked, it is INERT. baseUrl() reads location.protocol first and
+   returns '' on a served origin, so the property cannot move where the panel
+   polls — and a control that visibly does nothing is worse than no control. It
+   stays declared for the iCUE case, where the panel is loaded from disk and has
+   to name crabd outright. */
 
 (function () {
   var ctx = settingsPanel();
@@ -442,6 +449,44 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag'];
   eq(ctx.crabPlain(), true, 'the crabStyle enum feeds the reader that already accepted the words');
 })();
 
+/* A SLIDER META WITH NO RANGE MUST NOT CLAMP TO ZERO (review). Number(null) is
+   0, so a missing data-min would have pinned every value of that control to 0
+   and sent it to crabd — the contract-legal-null trap, one layer down. */
+(function () {
+  var ctx = settingsPanel();
+  ctx.openSettingsSheet();
+  var meta = { name: 'x', type: 'slider', dflt: 42, min: null, max: null, step: null };
+  var el = { value: '900', checked: false, getAttribute: function () { return null; } };
+  eq(ctx.readSettingsControl(el, meta), 900, 'an absent min/max leaves the value alone');
+  eq(ctx.readSettingsControl({ value: 'nonsense', getAttribute: function () { return null; } }, meta), 42,
+    'and an unreadable one falls back to the declared default, not to 0');
+  var bounded = { name: 'y', type: 'slider', dflt: 20, min: '5', max: '300', step: '5' };
+  eq(ctx.readSettingsControl({ value: '9000', getAttribute: function () { return null; } }, bounded), 300,
+    'a declared range still clamps');
+  eq(ctx.readSettingsControl({ value: '1', getAttribute: function () { return null; } }, bounded), 5,
+    'at both ends');
+})();
+
+/* A HALF-TYPED QUIET HOUR IS NOT SILENTLY DROPPED (review). desiredQuietConfig
+   returns null for a time normHm rejects, which means "do not send" — correct
+   on the wire and invisible on the glass, so the operator watched a value they
+   had typed simply never take effect. */
+(function () {
+  var ctx = settingsPanel();
+  ctx.openSettingsSheet();
+  var row = control(ctx, 'quietStart').parentNode;
+  setControl(ctx, 'quietEnabled', true);
+  eq(row.querySelectorAll('.set-invalid.shown').length, 0, 'a valid time says nothing');
+  setControl(ctx, 'quietStart', '25:00');
+  eq(row.querySelectorAll('.set-invalid.shown').length, 1, 'an impossible hour is marked on the row');
+  ok(/HH:MM/.test(row.textContent), 'and the line says what the field wants  (' + row.textContent + ')');
+  eq(ctx.desiredQuietConfig(), null, 'nothing is sent while it is wrong');
+  setControl(ctx, 'quietStart', '9:05');
+  eq(row.querySelectorAll('.set-invalid.shown').length, 0, 'a value normHm can pad clears it again');
+  eq(ctx.desiredQuietConfig(), { quietHours: { start: '09:05', end: '07:00' } },
+    'and the padded value is what goes on the wire');
+})();
+
 /* THE WRITE-ONLY-WHEN-MOVED RULE (v0.16.0) survives the new control. crabd
    PRESERVES toast.approvalThresholdSec when a write omits it, so a sheet that
    sent its default on open would delete a hand-edited config.json value. */
@@ -472,6 +517,21 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag'];
   eq(ctx.pairingCode(), 'ABCD-1234', 'the code is in force for the next Approve');
   var show = ctx.ui.sheetSettings.querySelector('#settingsTokenShow');
   ok(!!show, 'there is a show toggle');
+  /* ONE COPY PER SURFACE (review). index.html's group info is written for the
+     iCUE console and names the PowerShell command; the panel's sheet says the
+     shell one, in pairingHelp(), and SKIPS that group's info rather than
+     printing an instruction for the other platform beside its own. */
+  var helpText = ctx.ui.sheetSettings.querySelector('.set-help').textContent;
+  ok(/setup\/install\.sh --pairing-code/.test(helpText), 'the sheet names the shell command');
+  ok(ctx.ui.sheetSettings.textContent.indexOf('Install-SideCrab.ps1') === -1,
+    'and never the PowerShell one beside it');
+  var infos = ctx.ui.sheetSettings.querySelectorAll('.set-group-info');
+  var infoText = [];
+  for (var k = 0; k < infos.length; k++) infoText.push(infos[k].textContent);
+  ok(!infoText.some(function (t) { return /pairing/i.test(t); }),
+    'the Approvals group renders its instruction on the row, not twice');
+  ok(/refused until this matches/.test(helpText),
+    'and the row carries the prose the group info would have  (' + helpText + ')');
   show.click();
   eq(el.getAttribute('type'), 'text', 'which reveals it');
   show.click();
@@ -1169,9 +1229,14 @@ function cardOfState(ctx, state) {
   var title = /<title>([^<]*)<\/title>/.exec(html);
   eq(title && title[1], 'SideCrab', 'the tab title is a literal, not a tr() macro');
   ok(/name="x-icue-property"[^>]*data-label="tr\('/.test(html), 'tr() stays on the property labels');
-  ok(html.indexOf('Install-SideCrab.ps1 -PairingCode') === -1,
-    'index.html no longer sends the operator to a PowerShell script');
-  ok(html.indexOf('setup/install.sh --pairing-code') !== -1, 'it names the way the code is printed now');
+  /* INVERTED (review): index.html is iCUE's surface. The console renders the
+     group `info` and nothing else of ours, and the machine reading it is the
+     Windows one — so the PowerShell command belongs there and the panel's own
+     sheet, which iCUE never opens, carries the shell one. */
+  ok(html.indexOf('Install-SideCrab.ps1 -PairingCode') !== -1,
+    'the group info names the command the host that renders it actually has');
+  ok(html.indexOf('setup/install.sh --pairing-code') === -1,
+    'and index.html does not also carry the other platform\'s command');
 
   var manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
   ok(manifest.description.indexOf('â') === -1 && manifest.description.indexOf('â€”') === -1,
