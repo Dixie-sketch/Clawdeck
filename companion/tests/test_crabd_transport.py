@@ -246,15 +246,59 @@ class PortCollisionTests(unittest.TestCase):
 
     def test_the_message_names_the_port_and_how_to_find_what_holds_it(self):
         """Every part of it earns its place: the port, so the operator knows which
-        number is contended; `lsof`, so they can name the process instead of guessing
-        it is another crabd; CRABD_PORT, so there is a way forward that is not
-        killing something."""
+        number is contended; THIS PLATFORM's command for naming the holder, so they can
+        name the process instead of guessing it is another crabd; CRABD_PORT, so there
+        is a way forward that is not killing something."""
         port = self.held_port()
         _, message = crabd._bind_server("127.0.0.1", port)
         self.assertIn(str(port), message)
-        self.assertIn("lsof", message)
-        self.assertIn(f"-iTCP:{port}", message)
+        self.assertIn(crabd.PLATFORM.port_holder_hint(port), message)
         self.assertIn("CRABD_PORT", message)
+
+    def test_the_command_it_suggests_is_the_one_this_platform_has(self):
+        """The old message hard-coded `lsof`, which does not exist on Windows - so the
+        one message whose whole job is to say what to do next said it to half the
+        operators. Patched rather than injected because the message is composed for the
+        HOST crabd is running on, and that is the fact under test."""
+        port = self.held_port()
+        for platform, expected in ((crabd.WindowsPlatform(), "Get-NetTCPConnection"),
+                                   (crabd.DarwinPlatform(), "lsof"),
+                                   (crabd.NullPlatform(), "lsof")):
+            with self.subTest(platform=platform.name):
+                original = crabd.PLATFORM
+                crabd.PLATFORM = platform
+                self.addCleanup(lambda p=original: setattr(crabd, "PLATFORM", p))
+                _, message = crabd._bind_server("127.0.0.1", port)
+                crabd.PLATFORM = original
+                self.assertIn(expected, message, platform.name)
+                self.assertIn(platform.port_holder_hint(port), message, platform.name)
+
+    def test_the_message_carries_what_the_operating_system_said(self):
+        """The exception TEXT, not its class name. "OSError" tells the operator
+        nothing; "[Errno 48] Address already in use" is the sentence they can search
+        for, and it is the one that distinguishes a busy port from a permission
+        refusal on a privileged one."""
+        port = self.held_port()
+        _, message = crabd._bind_server("127.0.0.1", port)
+        self.assertIn("Address already in use", message)
+        self.assertNotIn("(OSError)", message)
+
+    def test_the_message_does_not_claim_a_cause_it_did_not_verify(self):
+        """Quoting the OS made the old wording false. `{exc}` can be "Permission
+        denied" - a privileged port, nothing holding it at all - as easily as "Address
+        already in use", and the message asserted "another process is already holding
+        it" in both cases. That sends an operator looking for a process that is not
+        there. The command is now offered CONDITIONALLY."""
+        def refusing(address, handler):
+            raise PermissionError(13, "Permission denied")
+
+        original = crabd.CrabdServer
+        crabd.CrabdServer = refusing
+        self.addCleanup(lambda: setattr(crabd, "CrabdServer", original))
+        _, message = crabd._bind_server("127.0.0.1", 80)
+        self.assertIn("Permission denied", message)
+        self.assertNotIn("already holding it", message)
+        self.assertIn(crabd.PLATFORM.port_holder_hint(80), message)
 
     def test_a_free_port_returns_a_server_and_no_message(self):
         port = self.free_port()

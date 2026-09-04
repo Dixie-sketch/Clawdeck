@@ -3065,6 +3065,13 @@ class WindowsPlatform:
         return False
 
     @staticmethod
+    def port_holder_hint(port: int) -> str:
+        """The command that names what is holding `port`. PowerShell, because `lsof`
+        does not exist here - and this string's whole job is to be runnable."""
+        return (f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+                f"| Select-Object OwningProcess")
+
+    @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
         return FLEET_TASKS
 
@@ -3150,6 +3157,10 @@ class DarwinPlatform:
         return True
 
     @staticmethod
+    def port_holder_hint(port: int) -> str:
+        return f"lsof -nP -iTCP:{port} -sTCP:LISTEN"
+
+    @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
         # PROVISIONAL. Stage 3 (fleet state on launchd) is what installs the agents and
         # pins these labels against a measured `launchctl print`; until then nothing
@@ -3194,6 +3205,12 @@ class NullPlatform:
         second listener either, and a CI run that restarts crabd back to back is the
         exact TIME_WAIT case."""
         return True
+
+    @staticmethod
+    def port_holder_hint(port: int) -> str:
+        """The POSIX answer rather than an empty one: Linux is what lands here, and
+        `lsof` is the command there too."""
+        return f"lsof -nP -iTCP:{port} -sTCP:LISTEN"
 
     @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
@@ -7483,17 +7500,20 @@ def _bind_server(host: str, port: int) -> tuple[CrabdServer | None, str | None]:
 
     The message names the port, and says how to FIND the holder rather than guessing at
     it. 2722 was ours alone and "another crabd is running" was a fair guess; 9999 is a
-    popular number and the holder is usually something else entirely.
+    popular number and the holder is usually something else entirely. The command it
+    suggests comes from the PLATFORM (`lsof` is not on a Windows box), and it quotes
+    what the operating system actually said - "[Errno 48] Address already in use" is a
+    sentence the operator can search for and it separates a busy port from a permission
+    refusal on a privileged one, where the class name "OSError" separates nothing.
     """
     try:
         return CrabdServer((host, port), Handler), None
     except OSError as exc:
         return None, (
-            f"crabd: cannot listen on {host}:{port} - another process is already "
-            f"holding it ({type(exc).__name__}). Find out which: "
-            f"lsof -nP -iTCP:{port} -sTCP:LISTEN - then stop it, or set CRABD_PORT to "
-            f"run crabd on a different port (the panel and the hooks have to be "
-            f"pointed at the same number).")
+            f"crabd: cannot listen on {host}:{port} - {exc}. If another process is "
+            f"holding the port, this names it: {PLATFORM.port_holder_hint(port)} - "
+            f"then stop it, or set CRABD_PORT to run crabd on a different port (the "
+            f"panel and the hooks have to be pointed at the same number).")
 
 
 def main() -> int:

@@ -97,7 +97,7 @@ class PlatformSurfaceTests(unittest.TestCase):
 
     SURFACE = {"cpu_times", "memory", "fleet_targets", "service_query",
                "service_status", "read_limits_token", "cli_credentials",
-               "server_reuse_address"}
+               "server_reuse_address", "port_holder_hint"}
     PLATFORMS = (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform)
 
     @staticmethod
@@ -150,6 +150,36 @@ class SocketReusePlatformTests(unittest.TestCase):
         self.assertIs(crabd.WindowsPlatform().server_reuse_address(), False)
         self.assertIs(crabd.DarwinPlatform().server_reuse_address(), True)
         self.assertIs(crabd.NullPlatform().server_reuse_address(), True)
+
+
+class PortHolderHintTests(unittest.TestCase):
+    """"Find out what is holding the port" is a different command on every OS.
+
+    The old collision message hard-coded `lsof`, which is not on a Windows box at all -
+    so the one message whose entire job is to tell the operator what to do next told
+    half of them to run something they do not have.
+    """
+
+    def test_windows_names_a_powershell_command(self):
+        hint = crabd.WindowsPlatform().port_holder_hint(9999)
+        self.assertIn("Get-NetTCPConnection", hint)
+        self.assertIn("-LocalPort 9999", hint)
+        self.assertIn("-State Listen", hint)
+        self.assertIn("OwningProcess", hint)
+        self.assertNotIn("lsof", hint)
+
+    def test_darwin_and_null_name_lsof(self):
+        """Null gets the POSIX answer rather than an empty one: Linux is the platform
+        that lands here, and `lsof` is the command there too."""
+        for platform in (crabd.DarwinPlatform(), crabd.NullPlatform()):
+            with self.subTest(platform=platform.name):
+                hint = platform.port_holder_hint(9999)
+                self.assertEqual(hint, "lsof -nP -iTCP:9999 -sTCP:LISTEN")
+
+    def test_the_port_is_interpolated_not_assumed(self):
+        for platform in PlatformSurfaceTests.PLATFORMS:
+            with self.subTest(platform=platform.__name__):
+                self.assertIn("2722", platform.port_holder_hint(2722))
 
 
 class CliCredentialsAreOneReaderTests(unittest.TestCase):

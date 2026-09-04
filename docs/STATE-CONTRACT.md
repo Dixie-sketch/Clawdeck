@@ -37,11 +37,17 @@ paths, and a source-text test refuses `0.0.0.0` and any environment read of the 
 attempt on exactly the port it was told to use; if that fails it prints to stderr and exits 1:
 
 ```
-crabd: cannot listen on 127.0.0.1:9999 - another process is already holding it
-(OSError). Find out which: lsof -nP -iTCP:9999 -sTCP:LISTEN - then stop it, or set
-CRABD_PORT to run crabd on a different port (the panel and the hooks have to be pointed
-at the same number).
+crabd: cannot listen on 127.0.0.1:9999 - [Errno 48] Address already in use. If another
+process is holding the port, this names it: lsof -nP -iTCP:9999 -sTCP:LISTEN - then stop
+it, or set CRABD_PORT to run crabd on a different port (the panel and the hooks have to
+be pointed at the same number).
 ```
+
+What the operating system said is quoted verbatim, because `[Errno 48] Address already in
+use` and `[Errno 13] Permission denied` are different problems and the class name
+`OSError` separates neither. The command is the PLATFORM's: `lsof -nP -iTCP:<port>
+-sTCP:LISTEN` on macOS and Linux, `Get-NetTCPConnection -LocalPort <port> -State Listen |
+Select-Object OwningProcess` on Windows, where `lsof` does not exist.
 
 The refused alternative, recorded so it is not re-tried: "busy? bind the next port". That
 produces this daemon's worst failure — crabd up on 10000 while every hook, the status line
