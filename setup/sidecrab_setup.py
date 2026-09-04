@@ -628,6 +628,9 @@ class Environment:
     #: None means "use the lazy crabd import"; the suite injects a recorder instead so
     #: no test ever writes to the developer's Keychain.
     store_token: callable | None = None
+    #: "Does this crabd carry a Keychain store at all?" - asked BEFORE the token is
+    #: handed over, so an older crabd is reported rather than discovered by an exception.
+    store_capable: callable | None = None
 
     @classmethod
     def default(cls, repo_root=None) -> "Environment":
@@ -1315,16 +1318,38 @@ def validate_limits_token(token) -> str:
     return value
 
 
-def default_store_token(env: Environment, token: str) -> bool:
-    """Hand the token to crabd's own store. Imported lazily: this is the only path that
-    needs companion/, and a setup run that never stores a token must not pay for it."""
+def _crabd_platform(env: Environment):
+    """crabd's platform object, imported lazily - this is the only path that needs
+    companion/, and a setup run that never touches a token must not pay for it."""
     companion = str(Path(env.repo_root) / "companion")
     if companion not in sys.path:
         sys.path.insert(0, companion)
     import crabd  # noqa: PLC0415 - lazy on purpose
 
-    platform = getattr(crabd, "PLATFORM")
-    return bool(platform.store_limits_token(token))
+    return getattr(crabd, "PLATFORM", None)
+
+
+def default_store_capable(env: Environment) -> bool:
+    """Does this crabd carry a Keychain store? ASKED, never discovered by exception.
+
+    Catching AttributeError out of a working store() would report "your crabd is too
+    old" for a bug deep inside the store - possibly after it had already written.
+    """
+    try:
+        return getattr(_crabd_platform(env), "store_limits_token", None) is not None
+    except Exception:
+        return False
+
+
+def default_store_token(env: Environment, token: str) -> bool:
+    return bool(_crabd_platform(env).store_limits_token(token))
+
+
+#: What a status or doctor row says when crabd has no Keychain store yet. Not "none
+#: stored": that sends the operator to run --limits-token, which cannot work.
+LIMITS_STORE_UNSUPPORTED = (
+    "not supported by this crabd (it carries no PLATFORM.store_limits_token)"
+)
 
 
 # ------------------------------------------------------------------ commands
@@ -1341,6 +1366,14 @@ def keychain_has_limits_token(env: Environment) -> bool:
         timeout=10,
     )
     return code == 0
+
+
+def limits_token_row(env: Environment) -> str:
+    """What status and doctor say about the long-lived token. Never its value."""
+    capable = env.store_capable or (lambda: default_store_capable(env))
+    if not capable():
+        return LIMITS_STORE_UNSUPPORTED
+    return "long-lived token stored" if keychain_has_limits_token(env) else "none stored"
 
 
 def read_settings_quietly(env: Environment):
@@ -1454,10 +1487,7 @@ def command_status(env: Environment, args) -> int:
         + ("present (print it with install.sh --pairing-code)" if env.token_path.exists()
            else "absent - crabd mints it on first start")
     )
-    env.emit(
-        "  limits:      "
-        + ("long-lived token stored" if keychain_has_limits_token(env) else "none stored")
-    )
+    env.emit(f"  limits:      {limits_token_row(env)}")
     env.emit(f"  panel:       {PANEL_URL}")
     return 0
 
@@ -1592,7 +1622,14 @@ def toast_threshold_sec(env: Environment) -> int:
 
 
 def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row]:
-    """Every row, in the documented order. Read-only but for one self-cleaning cycle."""
+    """Every row, in the documented order.
+
+    NOT read-only. It posts a real SessionStart / Notification / SessionEnd cycle for
+    `smoke-test` to prove the write path end to end. The cycle clears its own row -
+    SessionEnd goes from a finally - but crabd PERSISTS every hook event, so a run
+    leaves three rows in ~/.sidecrab/history.jsonl that show up in that day's history.
+    `status` is the read-only command.
+    """
     rows: list[Row] = []
 
     def add(check, ok, detail="", skip=False):
@@ -1796,7 +1833,7 @@ def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row
 
     # Reported, never judged: the gauges reading the CLI token is the ordinary state.
     limits = (state or {}).get("limits") if isinstance(state, dict) else None
-    stored = "long-lived token stored" if keychain_has_limits_token(env) else "none stored"
+    stored = limits_token_row(env)
     if isinstance(limits, dict) and limits.get("available"):
         add("limits token", True, f"gauges live via {limits.get('tokenSource', 'cli')}; {stored}")
     else:
@@ -1859,14 +1896,26 @@ def command_limits_token(env: Environment, args) -> int:
     The value is read from stdin (or the terminal), never from argv, and never printed
     back - not on success, not in an error, not in `status`.
     """
+    capable = env.store_capable or (lambda: default_store_capable(env))
+    if not capable():
+        # Asked before the token is read out of the store's reach, and before it is
+        # handed anywhere: an older crabd is a state to report, not an exception to
+        # catch out of a call that may already have written something.
+        raise SetupError(
+            "this crabd cannot store a long-lived token yet: it carries no "
+            "PLATFORM.store_limits_token. Update crabd to a build that does; nothing "
+            "was stored."
+        )
     token = validate_limits_token(env.read_secret("Paste the token (claude setup-token): "))
     store = env.store_token or (lambda value: default_store_token(env, value))
     try:
         stored = store(token)
-    except (AttributeError, ImportError) as exc:
+    except Exception as exc:
+        # The TYPE only. A store that puts the token into its own exception message
+        # would otherwise print the secret to the terminal on the way out.
         raise SetupError(
-            f"this crabd cannot store a long-lived token yet ({exc}). "
-            "Update crabd to a build that carries PLATFORM.store_limits_token."
+            f"crabd's token store failed ({type(exc).__name__}). Nothing is confirmed "
+            "stored; see crabd's log."
         ) from exc
     if not stored:
         raise SetupError("crabd refused to store the token - see its log.")

@@ -52,7 +52,9 @@ class LimitsToken(TempHome):
             stored.append(token)
             return True
 
-        env = self.env(read_secret=lambda prompt: secret, store_token=store or default_store, **kwargs)
+        if store is None and "store_capable" not in kwargs:
+            store = default_store
+        env = self.env(read_secret=lambda prompt: secret, store_token=store, **kwargs)
         return setup.main(["limits-token"], env=env), stored
 
     def test_a_good_token_reaches_the_store_and_never_the_output(self):
@@ -78,13 +80,31 @@ class LimitsToken(TempHome):
                 self.assertIn(expected, self.output)
 
     def test_an_older_crabd_without_the_store_fails_honestly(self):
-        def missing(token):
-            raise AttributeError("PLATFORM has no attribute 'store_limits_token'")
-
-        code, _ = self.run_with(self.TOKEN, store=missing)
+        code, stored = self.run_with(self.TOKEN, store=None, store_capable=lambda: False)
         self.assertEqual(code, 1)
+        self.assertEqual(stored, [])
         self.assertIn("store_limits_token", self.output)
         self.assertIn("crabd", self.output)
+
+    def test_the_capability_is_asked_before_the_token_is_handed_over(self):
+        # Not by catching AttributeError out of a working call: a store that raises
+        # AttributeError from somewhere INSIDE itself would be reported as "your crabd
+        # is too old", and the token may already have been written by then.
+        def exploding_store(token):
+            raise AttributeError("something deep inside the keychain wrapper")
+
+        code, _ = self.run_with(self.TOKEN, store=exploding_store, store_capable=lambda: True)
+        self.assertEqual(code, 1)
+        self.assertNotIn("Update crabd", self.output)
+
+    def test_a_store_that_puts_the_token_in_its_exception_does_not_print_it(self):
+        def leaky_store(token):
+            raise RuntimeError(f"keychain refused item with password {token}")
+
+        code, _ = self.run_with(self.TOKEN, store=leaky_store)
+        self.assertEqual(code, 1)
+        self.assertNotIn(self.TOKEN, self.output)
+        self.assertIn("RuntimeError", self.output)
 
     def test_the_token_is_read_from_stdin_and_never_from_argv(self):
         # The wrapper takes no token argument at all: there is nothing for `ps` to see.
@@ -180,8 +200,16 @@ class Status(TempHome):
 
     def test_an_absent_limits_token_is_a_state(self):
         runner = RecordingRunner({"find-generic-password": (44, "", "not found")})
-        self.status(run=runner)
+        self.status(run=runner, store_capable=lambda: True)
         self.assertIn("none stored", self.output)
+
+    def test_a_crabd_without_the_store_says_so_rather_than_none_stored(self):
+        # "none stored" would send the operator to run --limits-token, which cannot work
+        # yet. The row has to name the reason, not the symptom.
+        runner = RecordingRunner({"find-generic-password": (44, "", "not found")})
+        self.status(run=runner, store_capable=lambda: False)
+        self.assertIn("not supported by this crabd", self.output)
+        self.assertNotIn("none stored", self.output)
 
     def test_an_answer_with_no_running_agent_is_named_as_the_loudest_row(self):
         # Health alone cannot say WHO answered. A stray process holding 9999 answers

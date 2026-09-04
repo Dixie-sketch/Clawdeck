@@ -117,6 +117,9 @@ class TempHome(unittest.TestCase):
             sleep=lambda seconds: None,
             emit=self.printed.append,
             ask=None,
+            # The common case once crabd carries the Keychain store; the two rows that
+            # care about an older crabd pass False themselves.
+            store_capable=lambda: True,
         )
         kwargs.update(overrides)
         return setup.Environment(**kwargs)

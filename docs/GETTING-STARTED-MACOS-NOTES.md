@@ -38,6 +38,13 @@ Measured facts only; anything unmeasured says so and carries the command to meas
 `./setup/install.sh --doctor` afterwards walks the whole chain a session travels and exits
 non-zero if any row fails.
 
+**`--doctor` is not quite read-only.** It posts a real SessionStart / Notification /
+SessionEnd cycle for the session id `smoke-test` to prove the write path end to end. The
+cycle cleans up after itself — SessionEnd is sent from a `finally`, so even a crash mid-run
+clears the row — but crabd persists every hook event, so the run leaves three rows in
+`~/.sidecrab/history.jsonl` and they will appear in that day's history. `--status` writes
+nothing at all.
+
 ## `allowedHttpHookUrls` — list both host forms
 
 If you have set `allowedHttpHookUrls` anywhere in your Claude Code settings, it must admit
@@ -67,6 +74,12 @@ The long-lived token you store with `./setup/install.sh --limits-token` is a dif
 and does not prompt: items created through the `security` tool carry that tool in their own
 access list. The token is read from stdin, never from a command-line argument, so it never
 appears in `ps`.
+
+**`--limits-token` needs a crabd that carries the Keychain store** — `PLATFORM.store_limits_token`,
+which arrives with the next crabd phase of the port. Until then the command refuses, naming
+that attribute, and stores nothing; the `limits token` row in `--status` and `--doctor` says
+**"not supported by this crabd"** rather than "none stored", because "none stored" would send
+you to run a command that cannot yet work.
 
 ## App Nap and timer coalescing — UNMEASURED
 
