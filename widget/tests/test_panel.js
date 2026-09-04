@@ -757,6 +757,135 @@ function docAt(ms) {
   eq(ctx.pollFailed, true, 'it is a dead feed');
 })();
 
+/* ------------------------------------------------ every fixture renders (G) */
+
+/* THE SCREENSHOT HARNESS IS THE ONLY THING THAT EVER SAW THESE DOCUMENTS. Each
+   fixture exists to hold one shape the render path gets wrong when nobody is
+   looking — a null beside a number, a schema above the ceiling, a member absent
+   where a sibling has it — and until now the only thing that exercised them was
+   a person opening a browser. So every one is driven through the SHIPPING path
+   (?mock= sets the harness, acceptDoc rebases and renders) against the shipping
+   markup, and each is asserted on the one fact widget/DEV.md's table says it is
+   for. Structural, never pixels: the pixels are measured in a real browser and
+   recorded in DEV.md. */
+
+function fixturePanel(name) {
+  var doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-' + name + '.json'), 'utf8'));
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '?mock=' + name },
+    storage: fakeStorage('ok')
+  });
+  ctx.acceptDoc(doc);
+  return ctx;
+}
+
+function cardCount(ctx) { return ctx.ui.cards.querySelectorAll('.card').length; }
+
+(function () {
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '' },
+    storage: fakeStorage('ok')
+  });
+  var mocks = ctx.MOCKS;
+  eq(mocks.length, 13, 'thirteen fixtures, and every one of them is driven below');
+  mocks.forEach(function (name) {
+    var threw = null, ctx2 = null;
+    try { ctx2 = fixturePanel(name); } catch (e) { threw = e; }
+    ok(!threw, '?mock=' + name + ' renders without throwing  (' + (threw && threw.stack ? threw.stack.split('\n')[0] : '') + ')');
+    if (!ctx2) return;
+
+    if (name === 'future') {
+      /* THE BREAK REGRESSION. Otherwise a perfectly valid document; the only
+         thing wrong with it is a schema above the ceiling. */
+      eq(ctx2.pollFailed, true, 'future: a dead feed');
+      eq(cardCount(ctx2), 0, 'future: no session cards');
+      ok(ctx2.computeStatus() !== 'live', 'future: and never live');
+      /* MEASURED 2026-09-04, and it corrects the fixture table: on a COLD load
+         the crab is `asleep`, not `worried`. everHadData is still false, so the
+         status is `connecting` and the mood ladder's first rung takes it — which
+         is right (the panel has never seen anything) but is not what DEV.md's
+         row said. The worried crab is what a panel that HAD data does when a
+         schema-6 document arrives, and that is asserted below. */
+      eq(ctx2.ui.crab.getAttribute('data-mood'), 'asleep', 'future: cold, the crab is asleep');
+    } else if (name === 'dense') {
+      /* THE PRE-0.28.0 crabd FIXTURE: no contextWindowTokens anywhere, so the
+         [1m] marker is parsed out of the model id itself. */
+      var raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-dense.json'), 'utf8'));
+      var marked = raw.sessions.filter(function (s) { return /\[1m\]/.test(String(s.model || '')); });
+      ok(marked.length > 0, 'dense: it carries a [1m] row');
+      ok(!raw.sessions.some(function (s) {
+        return Object.prototype.hasOwnProperty.call(s, 'contextWindowTokens');
+      }), 'dense: and deliberately no contextWindowTokens at all');
+      eq(ctx2.ctxWindowTokens(marked[0]), 1000000, 'dense: the window falls back to the marker, byte-identically');
+    } else if (name === 'hot') {
+      /* THE ALL-NULL HOST FIXTURE: a companion that could not measure this
+         machine. Both segments absent, never 0%. */
+      eq(ctx2.ui.hostCpuVal.textContent, '', 'hot: no host CPU figure');
+      eq(ctx2.ui.hostMemVal.textContent, '', 'hot: no host memory figure');
+      ok(!ctx2.ui.sensors.classList.contains('shown'), 'hot: and the row is off the glass');
+      eq(ctx2.ui.pct5h.textContent, '97%', 'hot: the five-hour window is at the red step');
+    } else if (name === 'extras') {
+      eq(ctx2.document.body.classList.contains('limits-two-extras'), true,
+        'extras: the only fixture that reaches body.limits-two-extras');
+    } else if (name === 'rework') {
+      /* THE DEPLETION-FORECAST FIXTURE, all three branches in one document:
+         fiveHour exhausts before its reset (the line renders), weekly carries a
+         null exhaustAt (no line). */
+      ok(ctx2.ui.forecast5h.textContent !== '', 'rework: the five-hour forecast line renders');
+      eq(ctx2.ui.forecastWk.textContent, '', 'rework: a null exhaustAt renders no line');
+      eq(ctx2.ui.sheetWeek !== null, true, 'rework: the week strip region is there to fill');
+    } else if (name === 'quiet') {
+      eq(ctx2.document.body.classList.contains('quiet'), true, 'quiet: the panel is dim');
+      ok(ctx2.ui.quietNote.textContent !== '', 'quiet: and says why');
+    } else if (name === 'caveat') {
+      /* limits.note non-null WITH available:true — a caveat is not a failure, so
+         the gauges stay lit and the note is muted rather than amber. */
+      ok(ctx2.ui.limitsNote.classList.contains('shown'), 'caveat: the note renders');
+      ok(!ctx2.ui.limitsNote.classList.contains('warn'), 'caveat: muted, not amber');
+      eq(ctx2.ui.pct5h.textContent, '61%', 'caveat: and the gauges stay lit');
+    } else if (name === 'empty') {
+      eq(cardCount(ctx2), 0, 'empty: no cards');
+      eq(ctx2.ui.gridEmpty.textContent, 'No active Claude sessions', 'empty: and it says so');
+    } else if (name === 'stale') {
+      eq(ctx2.computeStatus(), 'stale', 'stale: renders ~3 min old, which is stale');
+    } else if (name === 'normal') {
+      /* THE NO-burn.daily CASE: the sparkline toggle must be inert and muted. */
+      ok(ctx2.ui.sparkMode.classList.contains('disabled'), 'normal: no burn.daily, so the 7d toggle is inert');
+      ok(cardCount(ctx2) > 0, 'normal: and the v1 document still renders cards');
+    } else if (name === 'attention') {
+      var withQ = ctx2.ui.cards.querySelectorAll('.card-question').length;
+      ok(withQ >= 1, 'attention: one needs_input card carries a question');
+      ok(cardCount(ctx2) > withQ, 'attention: and one does not (the v1 fallback)');
+    } else if (name === 'question') {
+      ok(ctx2.ui.cards.querySelectorAll('.sub-more').length >= 1,
+        'question: a card clamps its subagent rows with a "+N more"');
+    } else if (name === 'recap') {
+      ok(ctx2.ui.sessionCount.classList.contains('recap'), 'recap: the header carries the day summary');
+    }
+  });
+})();
+
+/* THE OTHER HALF OF THE BREAK REGRESSION: a LIVE panel handed a document above
+   the ceiling. This is the case DEV.md's row describes — the cards go, the crab
+   worries, and nothing from the last good document is re-served as fresh. */
+(function () {
+  var NOW = Date.parse('2026-09-04T12:00:00Z');
+  var ctx = clockPanel(NOW);
+  var good = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-rework.json'), 'utf8'));
+  good.generatedAt = new Date(NOW - 1000).toISOString();
+  ctx.acceptDoc(good);
+  var had = cardCount(ctx);
+  ok(had > 0, 'a live panel has cards');
+  var future = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-future.json'), 'utf8'));
+  future.generatedAt = new Date(NOW).toISOString();
+  ctx.acceptDoc(future);
+  eq(ctx.computeStatus(), 'stale', 'a schema above the ceiling arriving on a live panel is a dead feed');
+  eq(ctx.ui.crab.getAttribute('data-mood'), 'worried', 'and THAT is the worried crab the fixture is for');
+  eq(cardCount(ctx), had, 'the last good cards stay, dimmed, rather than being re-served as fresh');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {
