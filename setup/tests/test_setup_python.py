@@ -95,9 +95,19 @@ class TheTwoSearchesAgree(unittest.TestCase):
         self.assertEqual((int(major.group(1)), int(minor.group(1))), setup.PYTHON_MIN)
 
     def test_the_extra_directories_match(self):
-        match = re.search(r'SIDECRAB_PYTHON_DIRS=([^}"\n]*)\}', self.shell)
-        self.assertIsNotNone(match, self.shell[:400])
+        # Anchored at the parameter-default form, so a mention of the variable anywhere
+        # else in the file cannot satisfy this.
+        match = re.search(r': "\$\{SIDECRAB_PYTHON_DIRS=([^}"\n]*)\}"', self.shell)
+        self.assertIsNotNone(match, self.shell[:600])
         self.assertEqual(tuple(match.group(1).split(":")), setup.PYTHON_EXTRA_DIRS)
+
+    def test_the_override_rule_matches(self):
+        # One rule, two implementations: absolute stands, relative resolves against the
+        # working directory, a bare name goes through PATH, anything else is refused.
+        self.assertIn("sidecrab_py_absolute", self.shell)
+        for branch in ("/*)", "*/*)", "command -v"):
+            self.assertIn(branch, self.shell)
+        self.assertIn("did not resolve", self.shell)
 
 
 class ExtraDirectoriesOverride(unittest.TestCase):
@@ -156,6 +166,28 @@ class RelativeOverride(unittest.TestCase):
 
     def test_an_absolute_path_is_returned_unchanged(self):
         self.assertEqual(setup.absolute_override("/opt/py", [], lambda p: True), "/opt/py")
+
+    def test_an_absolute_path_that_is_not_there_is_refused_by_name(self):
+        # The shell refuses it. Python must too, or a typo'd SIDECRAB_PYTHON is dropped
+        # from the candidate list and the search quietly picks a DIFFERENT interpreter -
+        # the one thing an operator who named an interpreter did not ask for.
+        with self.assertRaises(setup.SetupError) as caught:
+            setup.absolute_override("/opt/gone/python3", [], lambda p: False)
+        self.assertIn("/opt/gone/python3", str(caught.exception))
+        self.assertIn("SIDECRAB_PYTHON", str(caught.exception))
+
+    def test_a_bad_override_never_falls_through_to_another_interpreter(self):
+        environment = setup.Environment(
+            home=Path("/nowhere"), repo_root=Path("/nowhere"), uid=0, user="t",
+            now=lambda: None, run=lambda *a, **k: (0, "", ""),
+            http_get=lambda *a, **k: (0, ""), http_post=lambda *a, **k: (0, ""),
+            python_probe=lambda path: (0, "3.13\n", ""),
+            python_override="/opt/gone/python3",
+            path_dirs=("/bin",),
+            is_file=lambda path: path == "/bin/python3",
+        )
+        with self.assertRaises(setup.SetupError):
+            environment.resolve_python()
 
     def test_a_name_that_is_nowhere_is_refused_by_name(self):
         with self.assertRaises(setup.SetupError) as caught:

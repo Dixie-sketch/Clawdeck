@@ -26,6 +26,10 @@ class ShellWrapper(TempHome):
         path.write_text(
             "#!/bin/sh\n"
             'if [ "$1" = "-c" ]; then printf \'%s\\n\'; exit 0; fi\n' % version
+            # $0 goes to its own file: it is the interpreter path the wrapper resolved,
+            # which is what the plist would carry, and it must not be indistinguishable
+            # from the arguments.
+            + 'printf "%%s\\n" "$0" >> "%s.argv0"\n' % log
             + 'printf "%%s\\n" "$@" >> "%s"\n' % log
             + "exit 0\n",
             encoding="utf-8",
@@ -93,6 +97,64 @@ class ShellWrapper(TempHome):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "status")
+
+    def test_a_relative_override_is_normalised_without_dot_dot(self):
+        # launchd stores whatever this resolves to, and a path carrying .. resolved
+        # against the wrong directory is an agent that never starts.
+        log = str(self.home.parent / "argv-dotdot.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        sibling = self.home.parent / "elsewhere"
+        sibling.mkdir(exist_ok=True)
+        env = {
+            "PATH": "/nonexistent",
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "../fakebin/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, cwd=str(sibling), capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "status")
+        # The point of the branch: the path it settled on carries no "..". pwd -P also
+        # resolves symlinks, which is why this compares against the real path - on macOS
+        # the temp directory lives under /var, itself a symlink to /private/var.
+        resolved = Path(log + ".argv0").read_text(encoding="utf-8").strip()
+        self.assertNotIn("..", resolved)
+        self.assertEqual(resolved, str((self.home.parent / "fakebin" / "python3").resolve()))
+
+    def test_a_relative_override_pointing_nowhere_is_refused(self):
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "./nowhere/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, cwd=str(self.home), capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not resolve", result.stderr)
+
+    def test_an_absolute_override_that_is_not_there_is_refused_not_replaced(self):
+        # The Python side does the same in absolute_override(): never fall through to
+        # a different interpreter than the one the operator named.
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "/opt/gone/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("/opt/gone/python3", result.stderr)
 
     def test_a_sidecrab_python_that_resolves_to_nothing_is_refused_by_name(self):
         bindir = self._fake_python("3.13")

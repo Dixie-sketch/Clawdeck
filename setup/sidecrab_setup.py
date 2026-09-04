@@ -180,12 +180,17 @@ def absolute_override(value, path_dirs, is_file, cwd=None) -> str | None:
     A name is looked up on PATH, a relative path is resolved against the working
     directory, and anything that resolves to nothing is refused BY NAME - the same rule
     sidecrab_python.sh applies with `command -v`.
+
+    An ABSOLUTE path that is not there is refused too, never merely skipped: dropping it
+    from the candidate list would let the search quietly settle on a DIFFERENT
+    interpreter, which is the one thing an operator who named one did not ask for.
     """
     if not value:
         return None
     if value.startswith("/"):
-        return value
-    if "/" in value:
+        if is_file(value):
+            return value
+    elif "/" in value:
         resolved = os.path.normpath(os.path.join(cwd or os.getcwd(), value))
         if is_file(resolved):
             return resolved

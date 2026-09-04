@@ -41,7 +41,15 @@ sidecrab_py_absolute() {
     # `./python3` must both end up absolute. Same rule as absolute_override().
     case "$1" in
         /*) printf '%s\n' "$1" ;;
-        */*) printf '%s\n' "$(pwd)/${1#./}" ;;
+        */*)
+            # cd + pwd -P, not $(pwd)/$1: it resolves .. and symlinks the way the
+            # kernel would, so ../bin/python3 becomes a path launchd can actually use.
+            # Only the directory is resolved - the basename may be a symlink we keep.
+            _d=${1%/*}
+            _f=${1##*/}
+            _d=$(CDPATH= cd -- "$_d" 2>/dev/null && pwd -P) || return 0
+            [ -n "$_d" ] && printf '%s\n' "${_d%/}/$_f"
+            ;;
         *) command -v -- "$1" 2>/dev/null | while IFS= read -r _p; do
                case "$_p" in /*) printf '%s\n' "$_p" ;; esac
            done ;;
