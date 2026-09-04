@@ -78,6 +78,10 @@ at baseline. Anything found later is added to the seam table below with its buck
   is app memory (internal minus purgeable) plus wired plus compressed, 66.0 GiB at the time of
   measurement, while `top` reports total minus free, 98.3 GiB. The contract promises the Activity
   Monitor figure, so that formula is the one served.
+  A live read through the finished reader on this Mac (2026-09-04) served memTotalGB 128.0,
+  memUsedGB 68.2, memPct 53.3 and, on the second sample, cpuPct 15.1, agreeing with `vm_stat`
+  and `sysctl` at the time; the fleet reader read `running` for a live agent, `stopped` for a
+  loaded idle one and `absent` for an unregistered label, and asked nothing about glow.
 - **launchctl output (Phase 3).** `launchctl print gui/<uid>/<label>` exits 0 for a loaded agent
   with tab-indented first-level lines (`state = running` plus `pid = N`, or `state = not running`);
   deeper sub-objects carry their own `state = active` lines, so only the first-level line counts.

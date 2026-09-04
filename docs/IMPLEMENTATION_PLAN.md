@@ -30,16 +30,15 @@ traversal, bind address, collision); `hooks/tests/test_hooks_fragment.py`;
 ctypes on macOS with the delta arithmetic and the three failure tiers unchanged.
 **Success Criteria**: the ported sampler tests pass against fixtures; the `nice` bucket
 decision is written and pinned; Windows reader intact.
-**Tests**: HostSampler tests against a fake tick reader, one live read-only bounds test on
-darwin.
-**Status**: In Progress
+**Tests**: `companion/tests/test_crabd_host_darwin.py` (28 tests; two live read-only checks on darwin).
+**Status**: Complete (2026-09-04; under review)
 
 ## Stage 3: fleet state on launchd
 **Goal**: `FleetReader` reads `launchctl` on macOS; `fleet.glow` decision documented.
 **Success Criteria**: running/stopped/absent/unknown from recorded output; missing binary,
 non-zero exit, timeout and garbage land on unknown; off the request path.
-**Tests**: fleet tests against pinned launchctl output.
-**Status**: Not Started
+**Tests**: `companion/tests/test_crabd_fleet_darwin.py` (23 tests against recorded launchctl output).
+**Status**: Complete (2026-09-04; under review)
 
 ## Stage 4: the limits token
 **Goal**: the long-lived token in the login Keychain via `/usr/bin/security` (stdin, never
@@ -47,7 +46,7 @@ argv); the CLI credential read from the Keychain when the file is absent.
 **Success Criteria**: precedence unchanged; token never in state, health, logs or argv;
 user-facing strings name the macOS command.
 **Tests**: Keychain round trip through a fake `security`, argv leak test, string tests.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 5: install, hooks and the service
 **Goal**: `setup/install.sh`, `update.sh`, `uninstall.sh`, `--status`, `doctor`; LaunchAgent
