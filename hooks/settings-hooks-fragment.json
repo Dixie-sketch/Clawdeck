@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST -H \"X-SideCrab-Panel: 1\" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
             "timeout": 3
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST -H \"X-SideCrab-Panel: 1\" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
             "timeout": 3
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST -H \"X-SideCrab-Panel: 1\" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
             "timeout": 3
           }
         ]
@@ -38,8 +38,11 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:2722/v1/hook/stop",
-            "timeout": 5
+            "url": "http://127.0.0.1:9999/v1/hook/stop",
+            "timeout": 5,
+            "headers": {
+              "X-SideCrab-Panel": "1"
+            }
           }
         ]
       }
@@ -49,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST -H \"X-SideCrab-Panel: 1\" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
             "timeout": 3
           }
         ]
@@ -60,8 +63,11 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:2722/v1/hook/permission",
-            "timeout": 60
+            "url": "http://127.0.0.1:9999/v1/hook/permission",
+            "timeout": 60,
+            "headers": {
+              "X-SideCrab-Panel": "1"
+            }
           }
         ]
       }
@@ -71,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST -H \"X-SideCrab-Panel: 1\" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
             "timeout": 3
           }
         ]
