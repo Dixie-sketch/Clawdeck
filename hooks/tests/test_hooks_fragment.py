@@ -71,55 +71,64 @@ def _handlers(fragment: dict):
 
 
 class FragmentInvariants(unittest.TestCase):
-    """Every claim here holds for BOTH fragments; the platform split is the curl call only."""
+    """Every claim here holds for BOTH fragments; the platform split is the curl call only.
 
-    FRAGMENTS = {"windows": WINDOWS_FRAGMENT, "macos": MACOS_FRAGMENT}
+    Each test drives the loop ITSELF rather than pulling from a shared generator. A
+    generator that yields from inside `with self.subTest(...)` reports the first failure
+    without its fragment label and then, when unittest closes the abandoned generator,
+    raises GeneratorExit through the subTest as a phantom ERROR beside the real failure -
+    and the second fragment is never examined at all. Two fragments are only worth having
+    if a run says something about both of them, so the loop is written out each time.
+    """
 
-    def each(self):
-        for name, path in self.FRAGMENTS.items():
-            with self.subTest(fragment=name):
-                yield _load(path)
+    FRAGMENTS = (("windows", WINDOWS_FRAGMENT), ("macos", MACOS_FRAGMENT))
 
     def test_both_fragments_parse(self):
-        for fragment in self.each():
-            self.assertIsInstance(fragment["hooks"], dict)
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                self.assertIsInstance(_load(path)["hooks"], dict)
 
     def test_every_url_points_at_crabd_on_9999(self):
-        for fragment in self.each():
-            for event, handler in _handlers(fragment):
-                url = handler.get("url") or handler.get("command")
-                self.assertIn(HOOK_URL_PREFIX, url, f"{event} does not reach {HOOK_URL_PREFIX}")
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                for event, handler in _handlers(_load(path)):
+                    url = handler.get("url") or handler.get("command")
+                    self.assertIn(HOOK_URL_PREFIX, url, f"{event} does not reach {HOOK_URL_PREFIX}")
 
     def test_every_post_carries_the_panel_header(self):
         # crabd answers a POST without X-SideCrab-Panel with 403. An http handler declares
         # the header in its headers map; a command handler passes it on the curl line.
-        for fragment in self.each():
-            for event, handler in _handlers(fragment):
-                if handler["type"] == "http":
-                    self.assertEqual(handler.get("headers", {}).get(PANEL_HEADER), "1",
-                                     f"{event} http hook is missing the {PANEL_HEADER} header")
-                else:
-                    self.assertIn(f"{PANEL_HEADER}: 1", handler["command"],
-                                  f"{event} command hook is missing the {PANEL_HEADER} header")
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                for event, handler in _handlers(_load(path)):
+                    if handler["type"] == "http":
+                        self.assertEqual(handler.get("headers", {}).get(PANEL_HEADER), "1",
+                                         f"{event} http hook is missing the {PANEL_HEADER} header")
+                    else:
+                        self.assertIn(f"{PANEL_HEADER}: 1", handler["command"],
+                                      f"{event} command hook is missing the {PANEL_HEADER} header")
 
     def test_carries_exactly_the_seven_sidecrab_events(self):
-        for fragment in self.each():
-            self.assertEqual(set(fragment["hooks"]), EVENTS)
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                self.assertEqual(set(_load(path)["hooks"]), EVENTS)
 
     def test_http_timeouts_bracket_crabds_own_waits(self):
         # PermissionRequest sits past crabd's 55 s long poll; Stop bounds crabd's ~2 s answer.
-        for fragment in self.each():
-            timeouts = {event: handler["timeout"]
-                        for event, handler in _handlers(fragment)
-                        if handler["type"] == "http"}
-            self.assertEqual(timeouts, {"Stop": 5, "PermissionRequest": 60})
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                timeouts = {event: handler["timeout"]
+                            for event, handler in _handlers(_load(path))
+                            if handler["type"] == "http"}
+                self.assertEqual(timeouts, {"Stop": 5, "PermissionRequest": 60})
 
     def test_session_start_is_a_command_hook(self):
         # Claude Code skips http hooks for SessionStart; an http entry there is silently dead.
-        for fragment in self.each():
-            for event, handler in _handlers(fragment):
-                if event == "SessionStart":
-                    self.assertEqual(handler["type"], "command")
+        for name, path in self.FRAGMENTS:
+            with self.subTest(fragment=name):
+                for event, handler in _handlers(_load(path)):
+                    if event == "SessionStart":
+                        self.assertEqual(handler["type"], "command")
 
     def test_the_two_fragments_differ_only_in_the_curl_invocation(self):
         # Two fragments are two chances to fix a bug once. Flatten the one licensed
