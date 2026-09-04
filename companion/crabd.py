@@ -221,6 +221,20 @@ FLEET_STATUS_MAP = {"running": "running", "ready": "stopped",
 # specified task name ... does not exist'); anything else that fails is `unknown`,
 # because a task that exists and cannot be read is NOT the same claim as an absent one.
 FLEET_ABSENT_MARKERS = ("cannot find", "does not exist")
+# Measured 2026-09-04 on macOS 26.6 (uid 502). `launchctl print gui/<uid>/<label>` exits 0
+# for a loaded agent and prints a block whose FIRST-LEVEL lines carry ONE tab: a running
+# agent has '\tstate = running' and a '\tpid = ' line, a loaded idle one '\tstate = not
+# running', '\truns = 0' and no pid at all. Sub-objects are indented deeper and carry their
+# own '\t\tstate = active' lines, which is why the parse reads the first-level line only.
+# `waiting` and `spawn scheduled` are the other words launchd uses for not executing.
+# An unrecognised word is `unknown`, never `stopped` - same rule as the Windows map.
+LAUNCHD_STATUS_MAP = {"running": "running", "not running": "stopped",
+                      "waiting": "stopped", "spawn scheduled": "stopped"}
+# Same measurement, unregistered label: exit 113, stdout empty, stderr 'Bad request.\n
+# Could not find service "com.sidecrab.nonexistent" in domain for user gui: 502'. Any
+# OTHER non-zero exit is `unknown` - a label that exists and cannot be read is not the
+# same claim as an absent one.
+LAUNCHD_ABSENT_MARKERS = ("could not find service",)
 
 # --- v0.22.0 `host`: the machine's own CPU and memory, beside the iCUE temperatures.
 # Sampled on the BUILDER's existing pass (REFRESH_INTERVAL_SEC, 2 s) rather than a
@@ -3484,7 +3498,34 @@ class DarwinPlatform:
 
     @staticmethod
     def service_status(code, out, err) -> str:
-        return "unknown"
+        """`launchctl print`'s answer as one of the contract's four words.
+
+        Anything the vocabulary does not cover is `unknown`, never `stopped`: an answer
+        crabd cannot read is a gap in what it knows, and the fourth word exists so it
+        can say so instead of guessing the reassuring one.
+        """
+        if code != 0:
+            blob = f"{out or ''}\n{err or ''}".lower()
+            return ("absent" if any(m in blob for m in LAUNCHD_ABSENT_MARKERS)
+                    else "unknown")
+        return LAUNCHD_STATUS_MAP.get(DarwinPlatform._state_field(out), "unknown")
+
+    @staticmethod
+    def _state_field(out) -> str:
+        """The FIRST-LEVEL `state = ...` word, or "".
+
+        launchd indents the service's own properties with ONE tab and nests sub-objects
+        deeper, and those sub-objects carry their own `state = active` lines - measured,
+        two of them under a running agent. A parser taking the first `state =` anywhere,
+        or the last, would report a stopped agent as running on the strength of one.
+        """
+        for line in (out or "").splitlines():
+            if not line.startswith("\t") or line.startswith("\t\t"):
+                continue
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "state":
+                return value.strip().lower()
+        return ""
 
     @staticmethod
     def read_limits_token(path) -> str | None:
