@@ -255,6 +255,15 @@ the URL the page thinks it is talking to, not from the socket, so a rebound page
 not talking to who you think you are", which is why it is answered before anything about
 CORS.
 
+**What this also refuses, by design: a port forward or a reverse proxy.** `ssh -L
+8080:localhost:9999` (or an nginx in front of crabd) makes the browser send `Host:
+localhost:8080` — the port it typed, not the port crabd is bound to — and that is **403**.
+It is the same shape as a rebind and crabd cannot tell the two apart: the header is the
+whole of the evidence, and a gate that accepted a mismatched port would accept the attack
+it exists for. The panel is a loopback page opened on the machine crabd runs on; reaching
+it from elsewhere is out of scope, and forwarding `9999:localhost:9999` (the same number on
+both ends) is the arrangement that does work.
+
 ### 3. TRANSPORT: the Origin gate is an ALLOWLIST
 
 Supersedes the v0.16.0 table above (§1 of that section). The rule is still identical for
@@ -278,7 +287,7 @@ instance on `CRABD_PORT` allowlists itself, never the production daemon beside i
 | `https://localhost:<port>` | **403** — nothing serves this panel over TLS |
 | `http://localhost:<port>/` | **403** — a trailing slash is not a valid Origin serialisation, and a prefix match is how an allowlist gets walked past |
 | `http://evil.example` (any other web origin) | **403**, no ACAO |
-| `null` (the iCUE build's opaque QtWebEngine origin) | **preserved**: handled; ACAO `null` + `Vary: Origin` |
+| `null` (an opaque origin; the iCUE build was measured sending `file://`, see Compatibility) | **preserved**: handled; ACAO `null` + `Vary: Origin` |
 | `file://`, `qrc://icue/widget` | **preserved**: handled; the origin is reflected |
 
 The match is EXACT, against the whole serialised origin. Not a prefix
@@ -286,9 +295,9 @@ The match is EXACT, against the whole serialised origin. Not a prefix
 ignores the port (every dev server, notebook and other local UI the operator has open on
 127.0.0.1 is a different origin), and not scheme-blind.
 
-`null` stays allowed because the iCUE build has no other origin it could send — an opaque
-origin serialises to exactly `null` — and a panel that cannot read is a broken product. It is
-also forgeable by a sandboxed iframe, which is what §3 is for.
+`null` stays allowed because a QtWebEngine build that does collapse to an opaque origin has no
+other value it could send — and a panel that cannot read is a broken product. It is also
+forgeable by a sandboxed iframe, which is what §4 is for.
 
 ### 4. TRANSPORT: every POST carries `X-SideCrab-Panel`
 
