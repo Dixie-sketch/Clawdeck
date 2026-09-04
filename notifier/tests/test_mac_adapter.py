@@ -19,8 +19,10 @@ Every test here is pure and runs on any OS: the subprocess is an injected runner
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 NOTIFIER_DIR = Path(__file__).resolve().parents[1]
@@ -31,8 +33,10 @@ from sidecrab_toast import (  # noqa: E402
     MAC_SCRIPT_DISPLAY_LINE,
     MAC_SCRIPT_END_RUN,
     MAC_SCRIPT_ON_RUN,
+    TITLE_TRIM,
     MacNotificationAdapter,
     ToastRequest,
+    build_request,
 )
 
 
@@ -98,6 +102,86 @@ class ArgvShapeTests(unittest.TestCase):
         runner = RecordingRunner()
         MacNotificationAdapter(timeout=3.5, runner=runner).show(request())
         self.assertEqual(runner.calls[-1][1], 3.5)
+
+
+#: Every metacharacter that means something to AppleScript, to `sh`, or to both. A question,
+#: a session title and a tool summary are all arbitrary operator/model text, so each of these
+#: WILL arrive one day.
+HOSTILE = "\" ' \\ $(touch /tmp/x) `id` & ; rm -rf"
+
+#: The same, with a newline — separated out because `trim()` collapses whitespace, so the
+#: composed-request path can only be asserted on the single-line form.
+HOSTILE_MULTILINE = HOSTILE + "\nand a second line"
+
+
+class InjectionTests(unittest.TestCase):
+    """THE test. Everything else in this file is scaffolding for it.
+
+    A notification body is a question the model wrote and a session title is a directory name;
+    neither is trustworthy, and both used to cross an interpreter boundary on Windows only
+    because base64 stood in the way. Here nothing is escaped, because nothing is interpolated:
+    the hostile string is one argv element and the script that reads it is a constant.
+    """
+
+    def argv_for(self, request: ToastRequest) -> list[str]:
+        runner = RecordingRunner()
+        MacNotificationAdapter(runner=runner).show(request)
+        return runner.argv
+
+    def test_a_hostile_title_and_body_arrive_verbatim_as_one_element_each(self) -> None:
+        argv = self.argv_for(
+            ToastRequest("s1", "2026-09-04T09:00:00Z", HOSTILE_MULTILINE, HOSTILE_MULTILINE)
+        )
+        self.assertEqual(argv[8], HOSTILE_MULTILINE, "body")
+        self.assertEqual(argv[9], HOSTILE_MULTILINE, "title")
+        self.assertEqual(argv.count(HOSTILE_MULTILINE), 2, "split into pieces, or joined")
+
+    def test_a_hostile_session_label_survives_the_composed_request(self) -> None:
+        """Through the real `build_request`, because that is where a session title becomes a
+        notification title: the label is inside the title, not a field of its own."""
+        self.assertLessEqual(len(HOSTILE), TITLE_TRIM, "the probe must not be trimmed away")
+        argv = self.argv_for(
+            build_request(
+                {"id": "s1", "title": HOSTILE, "question": HOSTILE}, "2026-09-04T09:00:00Z"
+            )
+        )
+        self.assertEqual(argv[8], HOSTILE, "body")
+        self.assertEqual(argv[9], f"Claude is waiting — {HOSTILE}", "title")
+
+    def test_the_script_is_byte_identical_to_a_plain_request_s(self) -> None:
+        """The mutation gate. Interpolating any of this text into the display line changes
+        these three strings, and this is the assertion that notices."""
+        plain = self.argv_for(request())[:8]
+        hostile = self.argv_for(
+            ToastRequest("s1", "t", HOSTILE_MULTILINE, HOSTILE_MULTILINE)
+        )[:8]
+        self.assertEqual(plain, hostile)
+        self.assertEqual(
+            plain[1:8],
+            ["-e", MAC_SCRIPT_ON_RUN, "-e", MAC_SCRIPT_DISPLAY_LINE, "-e", MAC_SCRIPT_END_RUN, "--"],
+        )
+
+    def test_the_subprocess_is_handed_a_list_and_never_a_shell(self) -> None:
+        """The other half of the argument. A constant script is worthless if the argv is
+        joined into one string for `sh -c`, which is what `shell=True` would mean."""
+        captured: list[tuple[tuple, dict]] = []
+
+        def fake_run(*args, **kwargs):
+            captured.append((args, kwargs))
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        with unittest.mock.patch("subprocess.run", fake_run):
+            # No runner injected: this exercises the shipping default path.
+            ok = MacNotificationAdapter().show(
+                ToastRequest("s1", "t", HOSTILE_MULTILINE, HOSTILE_MULTILINE)
+            )
+
+        self.assertTrue(ok)
+        (args, kwargs) = captured[0]
+        self.assertIsInstance(args[0], list, "the command must be a list, never a string")
+        self.assertNotIn("shell", kwargs, "shell= must not be set at all")
+        self.assertIn(HOSTILE_MULTILINE, args[0], "and the text is still one element")
+        self.assertEqual(args[0][0], MAC_OSASCRIPT)
 
 
 if __name__ == "__main__":
