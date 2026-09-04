@@ -16,7 +16,14 @@ from pathlib import Path
 from _harness import SETUP_DIR, TempHome
 
 
+@unittest.skipUnless(os.path.exists("/bin/sh"), "needs a POSIX sh")
 class ShellWrapper(TempHome):
+    """Guarded as a class: every case below runs /bin/sh itself.
+
+    The module tests run anywhere; these need a POSIX shell, so on a host without one
+    they skip rather than fail and hide the suite's real state.
+    """
+
     def _fake_python(self, version: str, argv_log=None) -> str:
         """A stand-in interpreter: answers the version probe, records what it is asked to run."""
         bindir = self.home.parent / "fakebin"

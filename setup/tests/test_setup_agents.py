@@ -191,6 +191,32 @@ class InstallRefusesAForeignHolder(TempHome):
         self.assertIn("777", self.output)
         self.assertIn("node", self.output)
 
+    def test_nothing_at_all_is_written_when_the_port_is_held(self):
+        # The refusal is the FIRST thing install does. Merging hooks and taking the
+        # status-line slot for an install that then refuses leaves the operator half
+        # configured, with a crabd that was never loaded.
+        path = self.home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"model": "opus"}', encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+
+        runner = RecordingRunner({"print gui": ABSENT, "lsof": (0, self.LSOF, "")})
+        self.runner = runner
+        self.assertEqual(setup.main(["install", "--yes"], env=self.env()), 1)
+
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(list(path.parent.glob("*.sidecrab-bak-*")), [])
+        self.assertFalse((self.home / ".sidecrab").exists())
+
+    def test_the_refusal_says_started_for_an_install_and_restarted_for_an_update(self):
+        for command, verb in (("install", "started"), ("update", "restarted")):
+            with self.subTest(command=command):
+                self.printed.clear()
+                self.runner = RecordingRunner({"print gui": ABSENT, "lsof": (0, self.LSOF, "")})
+                args = [command, "--yes"] if command == "install" else [command]
+                self.assertEqual(setup.main(args, env=self.env()), 1)
+                self.assertIn(f"NOT {verb}", self.output)
+
     def test_our_own_running_agent_holding_the_port_is_not_a_refusal(self):
         lsof = "COMMAND  PID USER\nPython  4242 me   6u  IPv4 TCP 127.0.0.1:9999 (LISTEN)\n"
         runner = RecordingRunner(

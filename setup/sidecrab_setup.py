@@ -1244,10 +1244,6 @@ def selected_agents(args) -> list[AgentSpec]:
 
 
 def install_agents(env: Environment, python: str, args) -> None:
-    # Same refusal as update's, and for a worse reason: a first install bootstraps a
-    # KeepAlive agent, so crabd loses the bind race, exits, is restarted, and exits
-    # again - forever, in the log, serving nothing.
-    refuse_if_foreign_holder(env, agent_spec("crabd"))
     ensure_logs_dir(env)
     disabled = disabled_labels(env)
     for spec in selected_agents(args):
@@ -1290,7 +1286,7 @@ def wait_for_version(env: Environment, expected: str | None, polls: int = HEALTH
     return False, seen
 
 
-def refuse_if_foreign_holder(env: Environment, spec: AgentSpec) -> None:
+def refuse_if_foreign_holder(env: Environment, spec: AgentSpec, verb: str = "restarted") -> None:
     """Never start over a process we do not own. Raises rather than starting blind.
 
     Starting blind is what produced a dark panel on Windows: the restart "succeeded",
@@ -1306,7 +1302,7 @@ def refuse_if_foreign_holder(env: Environment, spec: AgentSpec) -> None:
     if ours.pid is not None and all(h.pid == ours.pid for h in holders):
         return
     raise SetupError(
-        f"{spec.label} was NOT restarted: port {spec.port} is held by "
+        f"{spec.label} was NOT {verb}: port {spec.port} is held by "
         f"{format_port_holders(holders, spec.port)}, which is not this agent. Starting now "
         "would lose the bind race - crabd refuses to share the port, so the new process "
         "would exit and serve nothing. Stop that process (kill <pid>) and re-run."
@@ -1502,6 +1498,11 @@ def command_status(env: Environment, args) -> int:
     if settings is None:
         env.emit(f"  hooks:       {env.settings_path} is unreadable")
     else:
+        for event, kind in malformed_hook_events(settings):
+            env.emit(
+                f"  hooks:       {event} is not a list of matcher groups (it holds "
+                f"{kind}) - SideCrab's entry for that event is not merged"
+            )
         present = sum(count for _event, count in hook_events(settings))
         try:
             # A checkout missing its fragment is a row, not the end of a read-only run:
@@ -1950,7 +1951,7 @@ def command_limits_token(env: Environment, args) -> int:
         raise SetupError(
             f"crabd's token store failed ({type(exc).__name__}). Nothing is confirmed "
             "stored; see crabd's log."
-        ) from exc
+        ) from None  # NOT `from exc`: __cause__ would keep a message carrying the token
     if not stored:
         raise SetupError("crabd refused to store the token - see its log.")
     env.emit("  limits token: stored. Restart crabd to pick it up.")
@@ -2080,6 +2081,12 @@ def command_uninstall(env: Environment, args) -> int:
 
 
 def command_install(env: Environment, args) -> int:
+    # FIRST, before a single file is read or written: an install that merges hooks and
+    # takes the status-line slot and THEN refuses leaves the operator half configured,
+    # with a crabd that was never loaded. Worse than update's case, too - the plist
+    # carries KeepAlive, so a crabd that loses the bind race is restarted forever.
+    refuse_if_foreign_holder(env, agent_spec("crabd"), verb="started")
+
     python = env.resolve_python()
     env.emit("SideCrab install (macOS)")
     env.emit(f"  repo:       {env.repo_root}")

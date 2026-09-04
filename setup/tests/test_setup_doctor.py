@@ -106,6 +106,18 @@ class LimitsToken(TempHome):
         self.assertNotIn(self.TOKEN, self.output)
         self.assertIn("RuntimeError", self.output)
 
+    def test_the_leaky_exception_is_not_kept_as_the_cause(self):
+        # `from exc` would chain it: any handler that walks __cause__, or a traceback
+        # printed by a future caller, would put the token back on screen.
+        def leaky_store(token):
+            raise RuntimeError(f"keychain refused item with password {token}")
+
+        env = self.env(read_secret=lambda prompt: self.TOKEN, store_token=leaky_store)
+        with self.assertRaises(setup.SetupError) as caught:
+            setup.command_limits_token(env, None)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertNotIn(self.TOKEN, repr(caught.exception))
+
     def test_the_token_is_read_from_stdin_and_never_from_argv(self):
         # The wrapper takes no token argument at all: there is nothing for `ps` to see.
         parser = setup.build_parser()
@@ -154,6 +166,15 @@ class Status(TempHome):
                     "Stop": [{"hooks": [{"url": "c"}]}]}
         self.assertEqual(setup.fragment_entry_count(fragment), 3)
         self.assertEqual(setup.fragment_entry_count(setup.read_hook_fragment(self.repo)), 7)
+
+    def test_a_malformed_hook_event_is_named_the_way_install_names_it(self):
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".claude" / "settings.json").write_text(
+            json.dumps({"hooks": {"SessionStart": "nope"}}), encoding="utf-8"
+        )
+        self.status()
+        self.assertIn("SessionStart", self.output)
+        self.assertIn("not a list", self.output)
 
     def test_a_missing_fragment_is_a_row_not_the_end_of_the_run(self):
         (self.repo / "hooks" / "settings-hooks-fragment-macos.json").unlink()
@@ -537,7 +558,7 @@ class Doctor(TempHome):
         ours = json.loads(settings.read_text("utf-8"))["statusLine"]["command"]
         rows = [
             ({"type": "command", "command": "starship"}, "not SideCrab"),
-            (dict(ours=None) and {"type": "command", "command": ours}, "NO chain file"),
+            ({"type": "command", "command": ours}, "NO chain file"),
             (
                 # The subtle one: a command left behind by ANOTHER checkout matches the
                 # script NAME, so "ours" passes - but every refresh runs a file this

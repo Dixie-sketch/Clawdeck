@@ -415,14 +415,17 @@ class InstallWritesSettings(TempHome):
         self.assertEqual(self.backups(path), [])
         self.assertFalse((self.home / ".sidecrab").exists())
         self.assertFalse((self.home / "Library" / "LaunchAgents").exists())
-        self.assertEqual(self.runner.calls, [])
+        # Not one launchctl call. The only subprocess allowed before the abort is the
+        # read-only lsof port probe, which starts and writes nothing.
+        self.assertEqual([c for c in self.runner.calls if c[0] == "launchctl"], [])
+        self.assertEqual([c[0] for c in self.runner.calls], ["lsof"])
 
     def test_a_settings_file_that_is_not_an_object_aborts_too(self):
         path = self.home / ".claude" / "settings.json"
         path.parent.mkdir(parents=True)
         path.write_text("[1, 2, 3]", encoding="utf-8")
         self.assertEqual(self.install(), 1)
-        self.assertEqual(self.runner.calls, [])
+        self.assertEqual([c for c in self.runner.calls if c[0] == "launchctl"], [])
 
 
 class PanelApprovals(TempHome):
