@@ -1216,6 +1216,10 @@ def selected_agents(args) -> list[AgentSpec]:
 
 
 def install_agents(env: Environment, python: str, args) -> None:
+    # Same refusal as update's, and for a worse reason: a first install bootstraps a
+    # KeepAlive agent, so crabd loses the bind race, exits, is restarted, and exits
+    # again - forever, in the log, serving nothing.
+    refuse_if_foreign_holder(env, agent_spec("crabd"))
     ensure_logs_dir(env)
     disabled = disabled_labels(env)
     for spec in selected_agents(args):

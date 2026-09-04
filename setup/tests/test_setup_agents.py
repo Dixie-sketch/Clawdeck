@@ -171,6 +171,45 @@ class EnableDecision(unittest.TestCase):
                 self.assertEqual(decision.changed, start)
 
 
+class InstallRefusesAForeignHolder(TempHome):
+    """A first install onto a machine where something else already holds 9999.
+
+    KeepAlive is what makes this worse than update's case: crabd loses the bind race,
+    exits, launchd restarts it, and it exits again - forever, in the log, serving nothing.
+    """
+
+    LSOF = "COMMAND  PID USER\nnode  777 someone   6u  IPv4 TCP 127.0.0.1:9999 (LISTEN)\n"
+
+    def test_the_install_stops_before_bootstrapping_and_names_the_holder(self):
+        runner = RecordingRunner({"print gui": ABSENT, "lsof": (0, self.LSOF, "")})
+        self.runner = runner
+        code = setup.main(["install", "--yes"], env=self.env())
+
+        self.assertEqual(code, 1)
+        self.assertEqual(runner.argv_for("bootstrap"), [])
+        self.assertFalse((self.home / "Library" / "LaunchAgents").exists())
+        self.assertIn("777", self.output)
+        self.assertIn("node", self.output)
+
+    def test_our_own_running_agent_holding_the_port_is_not_a_refusal(self):
+        lsof = "COMMAND  PID USER\nPython  4242 me   6u  IPv4 TCP 127.0.0.1:9999 (LISTEN)\n"
+        runner = RecordingRunner(
+            {
+                "print gui": (0, "com.sidecrab.crabd = {\n\tstate = running\n\tpid = 4242\n}\n", ""),
+                "lsof": (0, lsof, ""),
+            }
+        )
+        self.runner = runner
+        self.assertEqual(setup.main(["install", "--yes"], env=self.env()), 0)
+        self.assertEqual(len(runner.argv_for("bootstrap")), 1)
+
+    def test_a_free_port_installs_normally(self):
+        runner = RecordingRunner({"print gui": ABSENT})
+        self.runner = runner
+        self.assertEqual(setup.main(["install", "--yes"], env=self.env()), 0)
+        self.assertEqual(len(runner.argv_for("bootstrap")), 1)
+
+
 class UnloadAgents(TempHome):
     def plist(self, label="com.sidecrab.crabd"):
         return self.home / "Library" / "LaunchAgents" / f"{label}.plist"
