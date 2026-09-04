@@ -102,6 +102,18 @@ class OnePlatformDecisionTests(unittest.TestCase):
     LINES = SOURCE.splitlines()
 
     @classmethod
+    def owners_of(cls, needle: str) -> list[str]:
+        """Who owns each line of CODE containing `needle`, in file order.
+
+        Comment lines are skipped: this file's whole subject is where the platform
+        decision lives, so the prose that explains the rule names the same literals the
+        rule forbids. A test that cannot tell an explanation from a branch punishes
+        writing the explanation down.
+        """
+        return [cls.owner(i) for i, line in enumerate(cls.LINES)
+                if needle in line and not line.strip().startswith("#")]
+
+    @classmethod
     def owner(cls, index: int) -> str:
         """The top-level `class X` / `def x` a line sits INSIDE. A line at column 0 is
         inside nothing, which is what makes the module-level selector distinguishable
@@ -114,16 +126,14 @@ class OnePlatformDecisionTests(unittest.TestCase):
                 return above.split("(")[0].split(":")[0].split()[1]
         return "<module>"
 
-    def test_sys_platform_is_read_exactly_once(self):
-        """One line, and it is the selector call. Named in full rather than counted:
-        the claim is WHICH line, not how many."""
-        self.assertEqual([line.strip() for line in self.LINES if "sys.platform" in line],
-                         ["PLATFORM = select_platform(sys.platform)"])
+    def test_sys_platform_is_read_exactly_once_and_at_module_level(self):
+        """One reading, owned by nothing - the selector call. Counted by owner rather
+        than matched against the line's text, so wrapping the call does not break it."""
+        self.assertEqual(self.owners_of("sys.platform"), ["<module>"])
 
     def test_windll_appears_only_in_the_windows_platform_and_the_dpapi_helper(self):
-        owners = {self.owner(i) for i, line in enumerate(self.LINES)
-                  if "windll" in line}
-        self.assertLessEqual(owners, {"WindowsPlatform", "_dpapi_unprotect"})
+        self.assertLessEqual(set(self.owners_of("windll")),
+                             {"WindowsPlatform", "_dpapi_unprotect"})
 
     def test_os_name_is_never_a_platform_test(self):
         self.assertNotIn("os.name", self.SOURCE)

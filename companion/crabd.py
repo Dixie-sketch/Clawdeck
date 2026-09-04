@@ -3146,9 +3146,15 @@ def select_platform(sys_platform: str):
 
 #: THE ONLY READ OF THE HOST'S PLATFORM STRING IN THIS MODULE, and a source-text test
 #: asserts that it stays the only one. Every OS-specific reader defaults to this object;
-#: a second platform test anywhere downstream is a second answer that can disagree with
-#: this one - and it would be correct on the host it was written on, which is why no
-#: behavioural test can catch it.
+#: a second `sys.platform` test anywhere downstream is a second answer that can disagree
+#: with this one - and it would be correct on the host it was written on, which is why
+#: no behavioural test can catch it.
+#:
+#: ONE EXCEPTION, deliberate: `_dpapi_unprotect` guards on `hasattr(ctypes, "windll")`.
+#: It is a Windows helper, not a reader - it has no cross-platform behaviour to select,
+#: and its guard is the same "this syscall is not here" error path the WindowsPlatform
+#: counters take. The source-text test names it alongside WindowsPlatform for that
+#: reason; nothing else may reach for the Win32 DLLs.
 PLATFORM = select_platform(sys.platform)
 
 
