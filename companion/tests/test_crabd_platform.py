@@ -364,6 +364,30 @@ class FleetPlatformTests(unittest.TestCase):
         self.assertEqual(crabd.FleetReader.unknown(crabd.WindowsPlatform()),
                          {"glow": "unknown", "toast": "unknown"})
 
+    def test_the_no_service_sentinel_is_answered_on_purpose_by_all_three(self):
+        """FLEET_NO_SERVICE is a QUESTION PUT TO THE PLATFORM, not a value with one
+        meaning: "you named a component you have no service for - what is that?" Each
+        answers in its own terms, and each answer is now an explicit branch rather than
+        whatever its ordinary parse happens to make of a None code.
+
+        Windows and Darwin say `absent`: there is no service, so there is nothing to be
+        running or stopped, and that is a fact about the machine.
+
+        Null says `unknown`, and that is not an oversight. NullPlatform is the platform
+        with NO SERVICE MANAGER - Linux CI - so it has no way to observe anything at all;
+        "there is no notifier here" is a claim it cannot make. "I could not find out" is
+        the true one, and it is the same word this platform gives every other question.
+
+        Before this, Windows fell through its `code != 0` branch and scanned an empty
+        blob for a not-found marker: `unknown` by accident, and `absent` by accident on
+        the day some stderr carried one of those words.
+        """
+        for cls, expected in ((crabd.WindowsPlatform, "absent"),
+                              (crabd.DarwinPlatform, "absent"),
+                              (crabd.NullPlatform, "unknown")):
+            with self.subTest(platform=cls.__name__):
+                self.assertEqual(cls().service_status(*crabd.FLEET_NO_SERVICE), expected)
+
     def test_the_status_parse_belongs_to_the_platform_not_the_reader(self):
         """The SAME csv row: Windows reads Running out of it, Darwin has no parser yet
         and says so. A reader that owned the parse would claim a launchd service was

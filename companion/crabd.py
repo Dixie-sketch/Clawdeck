@@ -3163,6 +3163,12 @@ class WindowsPlatform:
 
     @staticmethod
     def service_status(code, out, err) -> str:
+        if code is None:
+            # The no-such-component sentinel, answered EXPLICITLY. Without this branch it
+            # fell into the `code != 0` path below and scanned an empty blob for a
+            # not-found marker - `unknown` by accident, and `absent` by accident on the
+            # day some stderr happened to carry one of those words.
+            return "absent"
         if code != 0:
             blob = f"{out or ''}\n{err or ''}".lower()
             return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
@@ -3690,6 +3696,15 @@ class NullPlatform:
 
     @staticmethod
     def service_status(code, out, err) -> str:
+        """`unknown`, including for the FLEET_NO_SERVICE sentinel - and that difference
+        from the other two is the point, not an oversight.
+
+        Windows and macOS answer the sentinel `absent`: they HAVE a service manager, so
+        "there is no service for this component" is a fact they can state. This platform
+        has none at all, so it cannot observe anything and cannot make that claim; "I
+        could not find out" is the only true word it has, and it is the one it gives to
+        every question.
+        """
         return "unknown"
 
     @staticmethod
