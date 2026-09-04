@@ -4371,14 +4371,6 @@ class RecapReader:
 
 # -------------------------------------------------------------------------- fleet
 
-def fleet_unknown(platform=None) -> dict:
-    """The `fleet` block for a crabd that has learned nothing yet: every component the
-    platform names, all `unknown`. The keys come from the platform because the SERVICE
-    NAMES do - a builder with no reader attached must still serve the same key set the
-    reader would."""
-    return {name: "unknown" for name, _target in (platform or PLATFORM).fleet_targets()}
-
-
 class FleetReader:
     """`fleet` - SideCrab observing its own Scheduled Tasks (glow, toast).
 
@@ -4407,11 +4399,17 @@ class FleetReader:
         self._runner = runner
         self._platform = platform or PLATFORM
         self._lock = threading.Lock()
-        self._result = self.unknown()
+        self._result = self.unknown(self._platform)
         self._due = 0.0
 
-    def unknown(self) -> dict:
-        return fleet_unknown(self._platform)
+    @staticmethod
+    def unknown(platform=None) -> dict:
+        """Every component the platform names, all `unknown`. STATIC because
+        StateBuilder calls it on the class for a builder with no reader attached, and
+        build() must never raise. The keys come from the platform because the SERVICE
+        NAMES do - the no-reader answer must carry the same key set a reader would."""
+        return {name: "unknown"
+                for name, _target in (platform or PLATFORM).fleet_targets()}
 
     def get(self) -> dict:
         with self._lock:
@@ -5608,7 +5606,7 @@ class StateBuilder:
             "recap": self.recap.get() if self.recap else None,
             # No reader attached (unit tests) is exactly the "cannot read it" case, and
             # it is served as unknown - never as a pair of green dots.
-            "fleet": self.fleet.get() if self.fleet else fleet_unknown(),
+            "fleet": self.fleet.get() if self.fleet else FleetReader.unknown(),
         }
         # v0.22.0 `host`, and it is sampled HERE - on the builder's own 2 s pass - which
         # is what gives the CPU delta its window. PRESENCE is the feature detection

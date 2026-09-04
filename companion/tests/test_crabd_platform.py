@@ -222,6 +222,17 @@ class FleetPlatformTests(unittest.TestCase):
                 fleet.poll(0.0)
                 self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
 
+    def test_unknown_answers_without_an_instance(self):
+        """StateBuilder calls `FleetReader.unknown()` on the CLASS, for a builder with
+        no reader attached. An instance method there would be a TypeError on every
+        build - and `build()` is the one path that must never raise."""
+        self.assertEqual(crabd.FleetReader.unknown(),
+                         {"glow": "unknown", "toast": "unknown"})
+
+    def test_unknown_takes_the_keys_from_the_platform_it_is_given(self):
+        self.assertEqual(crabd.FleetReader.unknown(crabd.WindowsPlatform()),
+                         {"glow": "unknown", "toast": "unknown"})
+
     def test_the_status_parse_belongs_to_the_platform_not_the_reader(self):
         """The SAME csv row: Windows reads Running out of it, Darwin has no parser yet
         and says so. A reader that owned the parse would claim a launchd service was
