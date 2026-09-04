@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -196,6 +197,80 @@ class DarwinCounterWrapTests(unittest.TestCase):
         for earlier, later in zip(readings, readings[1:]):
             self.assertEqual([b - a for a, b in zip(earlier, later)],
                              [30_000_000, 40_000_000, 10_000_000])
+
+
+class DarwinCpuTwoThreadsTests(unittest.TestCase):
+    """cpu_times is called from TWO THREADS, and it is not a pure function.
+
+    The overlap is real and HostSampler's own docstring names it: at cold start
+    `_do_state` builds on the REQUEST thread while `_refresh_loop` is building its first
+    snapshot. HostSampler's lock guards `_prev` only - it calls the reader OUTSIDE that
+    lock - so two calls into cpu_times can interleave, and cpu_times keeps state: the
+    fetch and the unwrap are two steps over `_cpu_last` / `_cpu_laps`.
+
+    THE INTERLEAVING, and why it is silent. Thread A fetches the OLDER ticks; thread B
+    fetches the NEWER ones and unwraps first, which moves the baseline forward; A then
+    unwraps its older reading against B's newer baseline. Every bucket reads smaller, and
+    the unwrap cannot tell a wrap from any other backwards jump - by design, see its
+    docstring - so it adds a lap to each, and the sampler is handed a delta about 2^32
+    ticks wide. A-07 (a backwards delta) and A-08 (idle past the total) do not catch it:
+    every number stays positive and idle stays well under the total, so what reaches the
+    panel is a percentage nothing on the machine produced.
+    """
+
+    RAW = [(1_000, 1_000, 5_000, 0), (1_100, 1_100, 5_300, 0)]
+    OLD_OUT = (500_000_000, 600_000_000, 100_000_000)
+    NEW_OUT = (530_000_000, 640_000_000, 110_000_000)
+
+    def test_an_older_reading_unwrapped_after_a_newer_one_invents_laps(self):
+        """The mechanism, shown directly and without threads: this is what the two steps
+        do when they run in the wrong order, and it is exactly right when the two
+        readings really did arrive in that order (a wrap). The lock is what stops the
+        order being an accident of scheduling."""
+        platform = crabd.DarwinPlatform(load_info=lambda: None, clk_tck=100)
+        platform._unwrap(list(self.RAW[1]))              # the newer reading lands first
+        out = platform._unwrap(list(self.RAW[0]))        # ...and the older one follows
+        # nice did not move, so it did not read backwards; the other three did.
+        self.assertEqual(platform._cpu_laps, [1, 1, 1, 0])
+        self.assertEqual(out[0], 1_000 + crabd.HOST_CPU_COUNTER_MODULUS)
+
+    def test_a_reading_is_never_unwrapped_against_a_baseline_newer_than_itself(self):
+        """Two threads, forced into that order: A is held INSIDE the reader holding the
+        older ticks, B arrives with the newer ones. Serialised across both steps, A's
+        reading is unwrapped against nothing (it is the first) and B's against A's - the
+        order they were taken in - so no lap is invented and the gauge reads what the
+        machine did."""
+        first_in = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)             # never leave a thread parked
+        counter = iter(range(len(self.RAW)))
+
+        def load_info():
+            index = next(counter)
+            if index == 0:
+                first_in.set()
+                release.wait(5)
+            return self.RAW[index]
+
+        platform = crabd.DarwinPlatform(load_info=load_info, clk_tck=100)
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(platform.cpu_times()))
+                   for _ in range(2)]
+        threads[0].start()
+        self.assertTrue(first_in.wait(5), "the first reader should have been entered")
+        threads[1].start()
+        threads[1].join(timeout=0.2)             # serialised, it is still waiting here
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "a sampling thread did not finish")
+
+        self.assertEqual(platform._cpu_laps, [0, 0, 0, 0])
+        self.assertEqual(results, [self.OLD_OUT, self.NEW_OUT])
+        # ...and the served number, which is the half a person would see.
+        sampler = sampler_over(scripted(results))
+        self.assertIsNone(sampler.sample()["cpuPct"])
+        self.assertEqual(sampler.sample()["cpuPct"], 40.0)
 
 
 class LogOnceReset(unittest.TestCase):

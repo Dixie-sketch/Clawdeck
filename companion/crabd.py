@@ -3334,7 +3334,20 @@ class DarwinPlatform:
         self._sysctl = sysctl or _darwin_sysctl
         self._clk_tck = clk_tck
         # The 32-bit unwrap, per bucket: the last RAW value seen, and how many whole
-        # 2^32 laps have been added to it. Both are only ever touched by cpu_times.
+        # 2^32 laps have been added to it.
+        #
+        # UNDER A LOCK THAT SPANS THE FETCH AS WELL AS THE UNWRAP, because cpu_times runs
+        # on two threads: at cold start `_do_state` builds on the REQUEST thread while
+        # `_refresh_loop` builds its own first snapshot, and HostSampler calls its reader
+        # OUTSIDE the lock that guards its `_prev`. Unserialised, thread A can fetch the
+        # older ticks, thread B fetch newer ones and unwrap first - moving the baseline
+        # forward - and A then unwrap ITS reading against a baseline newer than itself.
+        # Every bucket reads smaller, the unwrap cannot tell that from a wrap (by design,
+        # see _unwrap), and four laps are added to a perfectly ordinary reading. Nothing
+        # downstream catches it: the deltas stay positive and idle stays under the total,
+        # so A-07 and A-08 both pass and the panel is served a percentage the machine
+        # never produced.
+        self._cpu_lock = threading.Lock()
         self._cpu_last: list[int] | None = None
         self._cpu_laps = [0] * HOST_CPU_STATES
 
@@ -3357,31 +3370,42 @@ class DarwinPlatform:
         scale = self._tick_scale()
         if scale is None:
             return None
-        try:
-            raw = self._load_info()
-        except Exception as exc:
-            _log_once(HOST_CPU_LOG_KEY,
-                      f"crabd: host_statistics raised {type(exc).__name__}; "
-                      f"serving no host CPU")
+        ticks = self._read_ticks()
+        if ticks is None:
             return None
-        if raw is None:
-            _log_once(HOST_CPU_LOG_KEY,
-                      "crabd: host_statistics returned failure; serving no host CPU")
-            return None
-        try:
-            ticks = [int(v) for v in raw]
-        except (TypeError, ValueError):
-            _log_once(HOST_CPU_LOG_KEY,
-                      "crabd: host_statistics gave a reading that is not four numbers; "
-                      "serving no host CPU")
-            return None
-        if len(ticks) != HOST_CPU_STATES:
-            _log_once(HOST_CPU_LOG_KEY,
-                      "crabd: host_statistics gave a reading that is not four numbers; "
-                      "serving no host CPU")
-            return None
-        user, system, idle, nice = self._unwrap(ticks)
+        user, system, idle, nice = ticks
         return (idle * scale, (system + idle) * scale, (user + nice) * scale)
+
+    def _read_ticks(self) -> list[int] | None:
+        """The four counters, unwrapped, or None - with the FETCH AND THE UNWRAP UNDER
+        ONE LOCK. Two callers overlap at cold start (see the __init__ comment), and a
+        reading unwrapped against a baseline newer than itself invents four laps that
+        nothing downstream can tell from a real wrap."""
+        with self._cpu_lock:
+            try:
+                raw = self._load_info()
+            except Exception as exc:
+                _log_once(HOST_CPU_LOG_KEY,
+                          f"crabd: host_statistics raised {type(exc).__name__}; "
+                          f"serving no host CPU")
+                return None
+            if raw is None:
+                _log_once(HOST_CPU_LOG_KEY,
+                          "crabd: host_statistics returned failure; serving no host CPU")
+                return None
+            try:
+                ticks = [int(v) for v in raw]
+            except (TypeError, ValueError):
+                _log_once(HOST_CPU_LOG_KEY,
+                          "crabd: host_statistics gave a reading that is not four "
+                          "numbers; serving no host CPU")
+                return None
+            if len(ticks) != HOST_CPU_STATES:
+                _log_once(HOST_CPU_LOG_KEY,
+                          "crabd: host_statistics gave a reading that is not four "
+                          "numbers; serving no host CPU")
+                return None
+            return self._unwrap(ticks)
 
     def _unwrap(self, ticks: list[int]) -> list[int]:
         """The four 32-bit counters as 64-bit monotonic ones.
