@@ -81,15 +81,19 @@ class VersionFlagTests(unittest.TestCase):
         self.assertIn("sidecrab_toast.py", out)
 
     def test_it_starts_no_daemon_and_shows_no_toast(self) -> None:
-        shown: list = []
-        real = sidecrab_toast.PowerShellToastAdapter.show
-        sidecrab_toast.PowerShellToastAdapter.show = lambda self, request: shown.append(request) or True
+        """Asserted at the construction site rather than at one adapter class: --version
+        answers before any platform code runs, on every platform."""
+        built: list = []
+        adapter = sidecrab_toast.RecordingToastAdapter()
+        real = sidecrab_toast.pick_adapter
+        sidecrab_toast.pick_adapter = lambda *a, **k: built.append(a) or adapter
         try:
             with redirect_stdout(io.StringIO()):
                 main(["--version"])
         finally:
-            sidecrab_toast.PowerShellToastAdapter.show = real
-        self.assertEqual(shown, [])
+            sidecrab_toast.pick_adapter = real
+        self.assertEqual(built, [], "no adapter is even constructed")
+        self.assertEqual(adapter.shown, [])
 
 
 class StateSectionTests(unittest.TestCase):
@@ -232,17 +236,21 @@ class StartupLogTests(unittest.TestCase):
         setup_logging is stubbed out rather than allowed to run — the real one opens the
         operator's own ~/.sidecrab/logs/notifier.log through a rotating handler, and a test that
         appends to the file a live daemon holds open is a test with a side effect on production.
+
+        pick_adapter is stubbed for the same reason, and it is the platform-independent way to
+        do it: stubbing one adapter CLASS only silences the platform the suite happens to run
+        on, and on macOS that left --test-toast posting a real notification from a unit test.
         """
         real_setup = sidecrab_toast.setup_logging
-        real_show = sidecrab_toast.PowerShellToastAdapter.show
+        real_pick = sidecrab_toast.pick_adapter
         sidecrab_toast.setup_logging = lambda *a, **k: None
-        sidecrab_toast.PowerShellToastAdapter.show = lambda self, request: True
+        sidecrab_toast.pick_adapter = lambda *a, **k: sidecrab_toast.RecordingToastAdapter()
         try:
             with self.assertLogs(sidecrab_toast.log, level="INFO") as captured:
                 main(["--test-toast"])
         finally:
             sidecrab_toast.setup_logging = real_setup
-            sidecrab_toast.PowerShellToastAdapter.show = real_show
+            sidecrab_toast.pick_adapter = real_pick
 
         self.assertTrue(
             [m for m in captured.output if __version__ in m and "sidecrab_toast.py" in m],

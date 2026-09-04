@@ -1,13 +1,15 @@
-"""SideCrab notifier — a native Windows toast when a Claude session has been waiting too long.
+"""SideCrab notifier — a native desktop alert when a Claude session has been waiting too long.
 
 Standalone read-only consumer of the crabd feed (``/v1/state``, see docs/STATE-CONTRACT.md).
 It polls, decides, and fires at most ONE toast per waiting spell. It never writes config,
 never talks to crabd's POST endpoints, and never raises out of the poll loop.
 
 Layering: everything above ``PowerShellToastAdapter`` is pure and headless-testable
-(``ToastDecider`` does the deciding, the adapter does the only I/O that touches Windows).
+(``ToastDecider`` does the deciding, the adapters do the only platform I/O there is).
 
-TOAST MECHANISM — measured on Windows 11, 2026-08-26:
+TOAST MECHANISM — two routes ship, and pick_adapter() chooses one from sys.platform.
+
+Windows route — measured on Windows 11, 2026-08-26:
 
   Route A (chosen): subprocess to Windows PowerShell 5.1, WinRT projection.
       `[Windows.UI.Notifications.ToastNotificationManager, ..., ContentType=WindowsRuntime]`
@@ -47,6 +49,35 @@ TOAST MECHANISM — measured on Windows 11, 2026-08-26:
   A POSITIVE answer is cached for the process lifetime; a negative one is re-probed on a
   cooldown, so a notifier that was running when the installer registered the key picks it up
   on its own (see AUMID_REPROBE_SEC).
+
+macOS route — /usr/bin/osascript, measured on macOS 26.6, 2026-09-04:
+
+  A `display notification` posted by a THREE-CONSTANT AppleScript, with the text riding in
+  argv. The measurement that licenses building it that way — argv arrives verbatim, so nothing
+  is interpolated and nothing needs escaping — is written once, at MAC_SCRIPT_DISPLAY_LINE.
+
+  Nothing here reads a registry, an AUMID or an icon: there is no identity to register.
+
+  THE SOUND NAME IS NOT A FILE. `sound name "default"` names nothing under
+  /System/Library/Sounds, whose 14 entries are Basso…Tink (measured). AppleScript accepts any
+  name — an invented `"no-such-sound"` compiles too — and macOS falls back to the user's alert
+  sound rather than erroring, which is why the clause survives here: it asks for the default
+  and cannot fail. What was NOT verified from this session: that a sound was audible.
+
+  THREE THINGS THIS ROUTE CANNOT DO, all permanent properties of it rather than things to fix:
+
+    NO BUTTONS: `display notification` has no action affordance at all. The Acknowledge and
+      Snooze buttons, ACK_SCHEME/SNOOZE_SCHEME and both .pyw handlers are the Windows route's,
+      and stay Windows-only — the operator acknowledges on the panel.
+
+    NO REPLACEMENT: it cannot set a replacement identifier, so a second outage notice STACKS
+      beneath the first instead of replacing it. STALE_ID's fixed tag and the digest/budget id
+      prefixes still keep the deciders' ledgers honest; what they no longer buy on this
+      platform is the Action Center slot behaviour they were named for.
+
+    NO IDENTITY: notifications posted through osascript appear under Script Editor's, so the
+      macOS per-app notification switch is Script Editor's and MAC_SUBTITLE ("SideCrab") is the
+      only thing on screen naming the product.
 
 DIGEST (v0.8.0): a second, unrelated toast — one "yesterday" summary per calendar day at a
   configured local time, off the same 10 s poll loop (no extra thread). Its per-day ledger is
@@ -136,6 +167,18 @@ def xml_escape(value: Any) -> str:
     return _sax_escape(_XML_ILLEGAL.sub("", str(value)))
 
 
+def strip_control(value: Any) -> str:
+    """The control-byte strip on its own, for a payload that is NOT XML.
+
+    Same character class as xml_escape's, deliberately: one rule for both adapters means one
+    rule to remember. The macOS route has no markup to break, and a different reason to strip
+    — a NUL in an argv element makes subprocess raise ValueError (measured), which is not one
+    of the failures the adapter converts to False, so the daemon would see a raise where the
+    contract promises a bool. Tab, newline and carriage return are content and are kept.
+    """
+    return _XML_ILLEGAL.sub("", str(value))
+
+
 #: Quote escapes saxutils.escape() does NOT apply by default. Numeric refs, not &apos;/&quot;
 #: names, because &apos; is the one XML predefined entity HTML parsers do not know and the
 #: payload crosses a WinRT boundary — a numeric ref is understood by every conformant reader.
@@ -166,7 +209,7 @@ def xml_attr_escape(value: Any) -> str:
 #: printed by --version, and written into STATE_PATH, so "what is on disk" and "what the
 #: Scheduled Task is actually executing" stop being the same unanswerable question. Bump it in
 #: the same commit as any behaviour change; setup/Test-SideCrab.ps1 reads it off both sides.
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 #: A GET, so the X-SideCrab-Panel gate crabd 0.31.0 added does not apply here: it guards
 #: POSTs only. The ack handler, which does POST, sends the header.
@@ -1635,7 +1678,7 @@ def toast_kind(request: ToastRequest) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Toast emission — the only Windows-touching code, behind an adapter
+# Toast emission — the only platform-touching code, behind an adapter (one per platform)
 # --------------------------------------------------------------------------------------
 
 
@@ -1957,6 +2000,225 @@ class PowerShellToastAdapter:
             log.error("toast failed rc=%s: %s", proc.returncode, (proc.stderr or "").strip()[:400])
             return False
         return True
+
+
+# -- macOS: the same seam, a different interpreter ---------------------------------------
+
+#: Absolute path by design, the same way POWERSHELL_EXE is pinned: osascript ships with macOS,
+#: and when this runs from a LaunchAgent its PATH is not the operator's login-shell PATH. A bare
+#: "osascript" would be resolved against a PATH this process does not control.
+MAC_OSASCRIPT = "/usr/bin/osascript"
+
+#: The AppleScript, as three CONSTANT strings handed to osascript with -e. The notification
+#: text NEVER appears here: it rides in argv, past the separator, and the script reads it back
+#: with `item N of argv`.
+#:
+#: THE MEASUREMENT THE WHOLE ROUTE RESTS ON, macOS 26.6, 2026-09-04: `osascript -e 'on run
+#: argv' ... -- <arg>` passes every argument through byte for byte — a probe carrying a double
+#: quote, a backslash, a newline, `$(touch ...)`, backticks, `&` and `; rm -rf /` came back
+#: identical, exit 0, with nothing substituted or executed. That is the same property
+#: PowerShell's base64 payload buys on the Windows side, obtained by not building a script out
+#: of user text at all. The line itself compiles (osacompile, exit 0, pinned by
+#: test_mac_adapter.AppleScriptGrammarTests) and has posted live (--test-toast, exit 0).
+#:
+#: TRAP: interpolating the title or the body into this line is a one-character-looking change
+#: that reintroduces AppleScript injection — a `"` in a question would close the string
+#: literal. notifier/tests/test_mac_adapter.py asserts these three strings are byte-identical
+#: whatever the request says.
+MAC_SCRIPT_ON_RUN = "on run argv"
+MAC_SCRIPT_DISPLAY_LINE = (
+    "display notification (item 1 of argv) with title (item 2 of argv)"
+    ' subtitle (item 3 of argv) sound name "default"'
+)
+MAC_SCRIPT_END_RUN = "end run"
+
+#: The subtitle every notification carries. It is the macOS seat of the Windows payload's
+#: `<text placement='attribution'>SideCrab</text>`, and it earns its place here: a
+#: notification posted through osascript is attributed to Script Editor, so this line is the
+#: only thing on screen that says which product raised it.
+MAC_SUBTITLE = "SideCrab"
+
+#: The composed-title budget. NOT TITLE_TRIM: that one caps the session LABEL, and a
+#: notification title is a composed line ("Claude is waiting — <label>", "Finished after
+#: 12h 34m — <label>"), so capping the composed line at 48 would eat the label the
+#: notification exists to name. Twice the label budget clears the longest prefix this file
+#: builds and still bounds the argument.
+MAC_TITLE_TRIM = TITLE_TRIM * 2
+
+
+def _mac_argument(value: Any, limit: int) -> str:
+    """One osascript argument: control bytes stripped, and capped at an existing budget.
+
+    Under budget the text is passed through unchanged. That is a property of THIS boundary and
+    not a claim about production: every shipping request has already been through trim(), which
+    collapses whitespace, so no decider can hand a tab or a newline down here. The cut, when
+    one is needed, is trim()'s, so an argument no decider trimmed reads exactly like one it did.
+    """
+    text = strip_control(value)
+    return text if len(text) <= limit else trim(text, limit)
+
+
+def notification_text(request: ToastRequest) -> tuple[str, str, str]:
+    """Pure: one request → the three positional arguments, in argv order (body, title, subtitle).
+
+    Body first because `display notification` takes the body as its direct object. The session
+    label is already inside `request.title` (build_request composes "Claude is waiting — …"),
+    and the approval hint is already at the end of `request.body` (APPROVAL_BODY_TRIM reserves
+    it out of the budget), so neither is moved here.
+    """
+    return (
+        _mac_argument(request.body, BODY_TRIM),
+        _mac_argument(request.title, MAC_TITLE_TRIM),
+        _mac_argument(MAC_SUBTITLE, MAC_TITLE_TRIM),
+    )
+
+
+def run_osascript(argv: list[str], timeout: float) -> tuple[int, str, str]:
+    """The default runner: a LIST argv, never `shell=True`. Impure, and the only I/O below."""
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+class MacNotificationAdapter:
+    """Posts a macOS notification through osascript. Same one-method contract as the Windows
+    adapter, and the same promise: `show` returns a bool and never raises.
+
+    `runner` is the test seam — `(argv, timeout) -> (returncode, stdout, stderr)`.
+    """
+
+    def __init__(
+        self,
+        osascript: str = MAC_OSASCRIPT,
+        #: Under DEFAULT_INTERVAL_SEC (10 s) on purpose: show() runs ON the poll thread, so
+        #: this timeout is the poll loop's worst case. The first-run permission dialog is
+        #: exactly the wedge that would otherwise hold up the poll that notices the NEXT
+        #: waiting question. Half the interval leaves the cadence the loop's own.
+        timeout: float = 5.0,
+        runner: Any = None,
+    ) -> None:
+        self.osascript = osascript
+        self.timeout = timeout
+        self.runner = runner or run_osascript
+        #: One outage, one ERROR. See _log_failure.
+        self._failure_logged = False
+
+    def _log_failure(self, message: str, *args: Any) -> None:
+        """The first failure at ERROR, every repeat at DEBUG until one lands.
+
+        Same latch idiom as PowerShellToastAdapter's borrow line, and a sharper reason for it:
+        a first-run permission denial with a question already waiting fails on EVERY 10 s
+        poll. Unlatched that is 8,640 lines a day into a 512 KB rotating log, and the line it
+        rotates away is the FIRST one — the one that says what went wrong. A notification that
+        lands re-arms it, so a second, later outage is news again.
+        """
+        if self._failure_logged:
+            log.debug(message, *args)
+            return
+        self._failure_logged = True
+        log.error(message, *args)
+
+    def build_argv(self, request: ToastRequest) -> list[str]:
+        """Pure: the whole command line. Three -e script constants, `--`, three arguments."""
+        body, title, subtitle = notification_text(request)
+        return [
+            self.osascript,
+            "-e",
+            MAC_SCRIPT_ON_RUN,
+            "-e",
+            MAC_SCRIPT_DISPLAY_LINE,
+            "-e",
+            MAC_SCRIPT_END_RUN,
+            # Everything after this is data. osascript stops reading options here, so a body
+            # that starts with "-e" is text and not a fourth script line.
+            "--",
+            body,
+            title,
+            subtitle,
+        ]
+
+    def show(self, request: ToastRequest) -> bool:
+        try:
+            returncode, _stdout, stderr = self.runner(self.build_argv(request), self.timeout)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            # SubprocessError covers TimeoutExpired, which is the one most expected here:
+            # osascript can sit behind the operator's one-time permission dialog.
+            #
+            # ValueError is NOT paranoia: subprocess refuses an argument it cannot encode, and
+            # both refusals are ValueError subclasses raised while converting the argv (before
+            # any process starts). A NUL is stripped upstream; a LONE SURROGATE is not — a
+            # JSON "\ud800" escape decodes to one, it is legal in a Python str, and crabd
+            # serves whatever the transcript held. Without this clause that request reaches
+            # the daemon as a raise where the contract promises a bool.
+            self._log_failure("notification subprocess failed: %s", exc)
+            return False
+
+        if returncode != 0:
+            # The code and osascript's own complaint, and NOT the notification text: this log
+            # is a file on disk that outlives the notification, and the question the operator
+            # asked belongs on his screen rather than in it.
+            #
+            # 120 characters: osascript's own errors are ONE line of 55-77 characters (57-79
+            # bytes), measured here across five — a syntax error (-2740), two runtime errors and
+            # an unknown application (-1728), a coercion failure (-1700) — each ending in the OSA
+            # error number that identifies it. The length tracks what the message names, so 120
+            # keeps a whole one with room to spare and still bounds a runaway. (The Windows
+            # adapter cuts at 400 because PowerShell exception text is multi-line.)
+            self._log_failure(
+                "notification failed rc=%s: %s", returncode, (stderr or "").strip()[:120]
+            )
+            return False
+
+        # A landed notification re-arms the ERROR line: the latch describes one outage, and
+        # the next one is news again.
+        self._failure_logged = False
+        return True
+
+
+class UnsupportedPlatformAdapter:
+    """The honest answer on a platform with no notification route.
+
+    Handing a Linux operator the Windows adapter would fail too, but it would fail by logging
+    `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` at him — a path describing
+    a machine he does not have, which reads as a broken install rather than an unsupported
+    platform. This says the true thing, names his platform, and returns the False the daemon
+    already knows how to handle.
+
+    The request is not even read: there is no route to build a payload for, so the
+    notification text never leaves the process.
+    """
+
+    def __init__(self, sys_platform: str) -> None:
+        self.sys_platform = sys_platform
+        #: One line, then silence — the same latch, and the same reason, as
+        #: MacNotificationAdapter._log_failure. This one can never clear: nothing about a
+        #: missing platform route changes while the process runs.
+        self._logged = False
+
+    def show(self, request: ToastRequest) -> bool:
+        del request
+        if self._logged:
+            log.debug("no notification route on %s", self.sys_platform)
+            return False
+        self._logged = True
+        log.error("no notification route on %s", self.sys_platform)
+        return False
+
+
+def pick_adapter(sys_platform: str, icon_path: Path | None) -> ToastAdapter:
+    """Pure: the platform string → the adapter that can post on it.
+
+    Takes the platform as an ARGUMENT rather than reading sys.platform, so the decision is
+    testable from either OS. `main` passes sys.platform, and every --test-* flag below it then
+    fires through the right adapter for free.
+
+    Three answers, not two: a platform with no route says so in its own terms rather than
+    borrowing a Windows failure — see UnsupportedPlatformAdapter.
+    """
+    if sys_platform == "darwin":
+        return MacNotificationAdapter()
+    if sys_platform.startswith("win"):
+        return PowerShellToastAdapter(icon_path=icon_path)
+    return UnsupportedPlatformAdapter(sys_platform)
 
 
 # --------------------------------------------------------------------------------------
@@ -2393,7 +2655,9 @@ def main(argv: list[str] | None = None) -> int:
     # about nothing. This line is the one that makes a stale Scheduled Task visible in the log.
     log.info("sidecrab notifier v%s from %s", __version__, Path(__file__).resolve())
 
-    real = PowerShellToastAdapter(icon_path=default_icon())
+    # THE one construction site. Every --test-* branch below reads `adapter`, so the platform
+    # is decided once, here, and never again further down.
+    real = pick_adapter(sys.platform, default_icon())
     adapter: ToastAdapter = RecordingToastAdapter() if args.dry_run else real
 
     if args.test_toast:
