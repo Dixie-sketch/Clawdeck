@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -7720,17 +7721,78 @@ class ContinueEndpointTests(V12ServedTests):
 
 def _shipped_claude_binary():
     """The shipped CLI, or None. `CRABD_CLAUDE_BINARY` overrides for a differently
-    installed host; the default is this machine's WinGet-managed Node install."""
+    installed host.
+
+    Two defaults, because the CLI installs two different ways. Windows: the WinGet-
+    managed Node install, named in full. Elsewhere: whatever `claude` PATH points at,
+    RESOLVED - the launcher is normally a symlink into a versioned directory
+    (~/.local/bin/claude -> ~/.local/share/claude/versions/<v>), and the pin streams the
+    file itself.
+    """
     override = os.environ.get("CRABD_CLAUDE_BINARY")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" /
-            "Packages" /
-            "OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe" /
-            "node-v24.16.0-win-x64" / "node_modules" / "@anthropic-ai" /
-            "claude-code" / "bin" / "claude.exe")
+    if sys.platform == "win32":
+        path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" /
+                "Packages" /
+                "OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe" /
+                "node-v24.16.0-win-x64" / "node_modules" / "@anthropic-ai" /
+                "claude-code" / "bin" / "claude.exe")
+        return path if path.is_file() else None
+    found = shutil.which("claude")
+    if not found:
+        return None
+    path = Path(found).resolve()
     return path if path.is_file() else None
+
+
+@unittest.skipIf(sys.platform == "win32",
+                 "the WinGet path is the Windows branch and is asserted by using it")
+class ShippedClaudeBinaryPathLookupTests(unittest.TestCase):
+    """Where the shape pin below LOOKS for the CLI when the host is not Windows.
+
+    Off Windows there is no WinGet layout to name, so PATH is the answer - and the
+    launcher on PATH is normally a symlink into a versioned directory, which is why the
+    lookup resolves before checking. Without this the pin would skip on every non-Windows
+    host, and a shape pin that never runs is a shape pin that proves nothing.
+    """
+
+    def setUp(self):
+        override = os.environ.pop("CRABD_CLAUDE_BINARY", None)
+        if override is not None:
+            self.addCleanup(os.environ.__setitem__, "CRABD_CLAUDE_BINARY", override)
+        original = shutil.which
+        self.addCleanup(lambda: setattr(shutil, "which", original))
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_a_symlinked_launcher_on_path_resolves_to_the_real_file(self):
+        real = self.root / "versions" / "2.1.260"
+        real.parent.mkdir()
+        real.write_bytes(b"\x7fELF")
+        link = self.root / "claude"
+        link.symlink_to(real)
+        shutil.which = lambda name: str(link) if name == "claude" else None
+        found = _shipped_claude_binary()
+        # real.resolve() rather than real: macOS's own temp root is a symlink
+        # (/var/folders -> /private/var/folders), so the expectation has to be resolved
+        # too or this asserts the platform's quirk instead of the lookup's behaviour.
+        self.assertEqual(found, real.resolve())
+        self.assertNotEqual(found, link)          # the symlink itself is not the answer
+
+    def test_no_claude_on_path_is_none_rather_than_a_crash(self):
+        """The CI case. None means SKIP downstream, which is the honest answer where
+        there is nothing to measure."""
+        shutil.which = lambda name: None
+        self.assertIsNone(_shipped_claude_binary())
+
+    def test_a_path_entry_that_is_not_a_file_is_none(self):
+        directory = self.root / "claude"
+        directory.mkdir()
+        shutil.which = lambda name: str(directory)
+        self.assertIsNone(_shipped_claude_binary())
 
 
 class StopContinueShapeBinaryPinTests(unittest.TestCase):
