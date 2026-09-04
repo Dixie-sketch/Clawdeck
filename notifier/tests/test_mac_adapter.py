@@ -411,15 +411,18 @@ class PickAdapterTests(unittest.TestCase):
         self.assertEqual([call[0] for call in seen], [sys.platform])
         self.assertEqual(code, 0)
 
-    def test_dry_run_still_records_instead_of_showing(self) -> None:
+    def test_dry_run_shows_nothing_through_the_real_adapter(self) -> None:
+        """--dry-run is the flag an operator points at a live crabd. The platform adapter is
+        still CONSTRUCTED (it always was), but nothing may reach its show(): the stand-in
+        raises, so a --dry-run that posted would fail here rather than on someone's screen."""
+        booby_trapped = MacNotificationAdapter(
+            runner=RaisingRunner(AssertionError("--dry-run reached the real adapter"))
+        )
         with unittest.mock.patch.object(sidecrab_toast, "setup_logging", lambda *a, **k: None), \
-             unittest.mock.patch.object(sidecrab_toast, "pick_adapter", self.fail_if_called):
+             unittest.mock.patch.object(
+                 sidecrab_toast, "pick_adapter", lambda *a, **k: booby_trapped
+             ):
             self.assertEqual(sidecrab_toast.main(["--dry-run", "--test-toast"]), 0)
-
-    def fail_if_called(self, *args, **kwargs):
-        # --dry-run must not even construct the real adapter: on a box with no osascript the
-        # constructor is harmless, but the flag's promise is that nothing platform-specific runs.
-        return RecordingToastAdapter()
 
 
 T0 = datetime(2026, 9, 4, 9, 0, 0, tzinfo=timezone.utc)
