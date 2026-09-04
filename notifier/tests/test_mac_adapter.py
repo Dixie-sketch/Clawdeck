@@ -36,6 +36,7 @@ import sidecrab_toast  # noqa: E402
 from sidecrab_toast import (  # noqa: E402
     APPROVAL_HINT,
     BODY_TRIM,
+    DEFAULT_INTERVAL_SEC,
     MAC_OSASCRIPT,
     MAC_SCRIPT_DISPLAY_LINE,
     MAC_SCRIPT_END_RUN,
@@ -127,6 +128,13 @@ class ArgvShapeTests(unittest.TestCase):
         runner = RecordingRunner()
         MacNotificationAdapter(timeout=3.5, runner=runner).show(request())
         self.assertEqual(runner.calls[-1][1], 3.5)
+
+    def test_the_default_timeout_is_under_the_poll_interval(self) -> None:
+        """`show` runs ON the poll thread, so its timeout is the poll loop's worst case. A
+        default at or above the interval lets one wedged osascript — the first-run permission
+        dialog is exactly that — hold up the next poll, which is the poll that would notice
+        the next waiting question."""
+        self.assertLess(MacNotificationAdapter().timeout, DEFAULT_INTERVAL_SEC)
 
 
 #: Every metacharacter that means something to AppleScript, to `sh`, or to both. A question,

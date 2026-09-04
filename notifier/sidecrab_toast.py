@@ -2082,7 +2082,11 @@ class MacNotificationAdapter:
     def __init__(
         self,
         osascript: str = MAC_OSASCRIPT,
-        timeout: float = 10.0,
+        #: Under DEFAULT_INTERVAL_SEC (10 s) on purpose: show() runs ON the poll thread, so
+        #: this timeout is the poll loop's worst case. The first-run permission dialog is
+        #: exactly the wedge that would otherwise hold up the poll that notices the NEXT
+        #: waiting question. Half the interval leaves the cadence the loop's own.
+        timeout: float = 5.0,
         runner: Any = None,
     ) -> None:
         self.osascript = osascript
