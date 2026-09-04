@@ -13,6 +13,7 @@ non-trivial, so a paraphrase would test a different string than the one launchd 
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -213,6 +214,111 @@ class LaunchctlRunnerFailureTests(unittest.TestCase):
 
     def test_a_refused_spawn_is_unknown(self):
         self.assertEqual(self.status(PermissionError(13, "denied")), "unknown")
+
+
+class LaunchctlQueryTests(unittest.TestCase):
+    """What crabd actually runs, and the one component it does not run anything for."""
+
+    @unittest.skipIf(sys.platform == "win32", "os.getuid is POSIX")
+    def test_the_command_is_launchctl_print_in_this_users_gui_domain(self):
+        """Pinned by argv rather than by outcome. `gui/<uid>` is the per-user domain the
+        SideCrab agents are loaded into; `system/` would be the wrong domain and
+        `launchctl list` a different, older answer shape."""
+        seen = {}
+
+        class Recorder:
+            returncode = 0
+            stdout = RUNNING_BLOCK.encode()
+            stderr = b""
+
+        def fake_run(argv, **kwargs):
+            seen["argv"], seen["kwargs"] = argv, kwargs
+            return Recorder()
+
+        original = crabd.subprocess.run
+        self.addCleanup(lambda: setattr(crabd.subprocess, "run", original))
+        crabd.subprocess.run = fake_run
+        result = crabd.DarwinPlatform().service_query("com.sidecrab.toast", 10)
+        self.assertEqual(
+            seen["argv"],
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/com.sidecrab.toast"])
+        self.assertEqual(seen["kwargs"]["timeout"], 10)
+        self.assertIs(seen["kwargs"]["check"], False)
+        self.assertIs(seen["kwargs"]["capture_output"], True)
+        self.assertEqual(result, (0, RUNNING_BLOCK, ""))
+
+    def test_a_component_with_no_service_is_answered_without_spawning_anything(self):
+        """The sentinel pair. An empty target means this platform has no service for
+        that component at all - `launchctl print gui/502/` is a different question with
+        a different answer, so nothing is spawned and the platform is handed a shape it
+        recognises."""
+        self.assertEqual(crabd.DarwinPlatform().service_query("", 10),
+                         crabd.FLEET_NO_SERVICE)
+        self.assertEqual(crabd.FLEET_NO_SERVICE, (None, "", ""))
+        self.assertEqual(crabd.DarwinPlatform().service_status(*crabd.FLEET_NO_SERVICE),
+                         "absent")
+
+    @unittest.skipUnless(sys.platform == "darwin", "a real launchctl")
+    def test_a_label_that_is_not_loaded_really_does_read_as_absent(self):
+        """The live half: a real `launchctl print` for a label nothing has ever
+        registered. This is the one test that would catch macOS changing the wording
+        the absent marker matches on."""
+        platform = crabd.DarwinPlatform()
+        code, out, err = platform.service_query(
+            "com.sidecrab.nonexistent.fleet.test", crabd.FLEET_TIMEOUT_SEC)
+        self.assertNotEqual(code, 0)
+        self.assertIn("Could not find service", err)
+        self.assertEqual(platform.service_status(code, out, err), "absent")
+
+
+class DarwinFleetTargetsTests(unittest.TestCase):
+    """`fleet.glow` is served as `absent` on macOS, and that is not a workaround.
+
+    There is no lighting component on a Mac - the Corsair SDK is Windows-only - so there
+    is nothing to observe and `absent` is the literally true word for it. The KEY stays
+    so the document's shape is identical on both platforms: a widget feature-detecting
+    `fleet` renders a hollow absent dot rather than a missing row, and its rendering of
+    `absent` is unchanged.
+    """
+
+    def test_glow_has_no_launchd_label_and_toast_does(self):
+        self.assertEqual(crabd.DarwinPlatform().fleet_targets(),
+                         (("glow", ""), ("toast", "com.sidecrab.toast")))
+
+    def test_the_served_keys_are_the_same_two_on_every_platform(self):
+        for platform in (crabd.WindowsPlatform(), crabd.DarwinPlatform(),
+                         crabd.NullPlatform()):
+            with self.subTest(platform=platform.name):
+                self.assertEqual([name for name, _ in platform.fleet_targets()],
+                                 ["glow", "toast"])
+
+    def test_glow_is_absent_and_nothing_was_ever_asked_about_it(self):
+        runner = FakeLaunchctl({"com.sidecrab.toast": (0, RUNNING_BLOCK, "")})
+        fleet = crabd.FleetReader(runner=runner, platform=crabd.DarwinPlatform())
+        fleet.poll(0.0)
+        self.assertEqual(fleet.get(), {"glow": "absent", "toast": "running"})
+        # Not "the fake happened to answer absent": it was never called at all.
+        self.assertEqual([target for target, _timeout in runner.calls],
+                         ["com.sidecrab.toast"])
+
+    def test_the_toast_agents_own_state_is_what_is_served(self):
+        for block, expected in ((RUNNING_BLOCK, "running"),
+                                (NOT_RUNNING_BLOCK, "stopped"),
+                                (None, "absent")):
+            with self.subTest(expected=expected):
+                answer = (113, "", ABSENT_STDERR) if block is None else (0, block, "")
+                fleet = crabd.FleetReader(
+                    runner=FakeLaunchctl({"com.sidecrab.toast": answer}),
+                    platform=crabd.DarwinPlatform())
+                fleet.poll(0.0)
+                self.assertEqual(fleet.get(), {"glow": "absent", "toast": expected})
+
+    def test_a_builder_with_no_reader_still_names_both_components_unknown(self):
+        """`FleetReader.unknown()` takes its keys from the platform, and a builder with
+        no reader attached must carry the same key set a reader would - with `unknown`,
+        not `absent`: not having asked yet is not the same as having found nothing."""
+        self.assertEqual(crabd.FleetReader.unknown(crabd.DarwinPlatform()),
+                         {"glow": "unknown", "toast": "unknown"})
 
 
 if __name__ == "__main__":

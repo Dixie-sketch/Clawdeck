@@ -235,6 +235,12 @@ LAUNCHD_STATUS_MAP = {"running": "running", "not running": "stopped",
 # OTHER non-zero exit is `unknown` - a label that exists and cannot be read is not the
 # same claim as an absent one.
 LAUNCHD_ABSENT_MARKERS = ("could not find service",)
+# The (code, out, err) a platform returns for a component it has NO service for at all -
+# macOS glow, since there is no lighting component here. A code of None is not an exit
+# status any process can produce, which is what makes it unmistakable; the platform's
+# service_status turns it into a word, so "this component does not exist here" stays a
+# platform answer rather than becoming a rule inside FleetReader.
+FLEET_NO_SERVICE = (None, "", "")
 
 # --- v0.22.0 `host`: the machine's own CPU and memory, beside the iCUE temperatures.
 # Sampled on the BUILDER's existing pass (REFRESH_INTERVAL_SEC, 2 s) rather than a
@@ -3486,15 +3492,32 @@ class DarwinPlatform:
 
     @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
-        # PROVISIONAL. Stage 3 (fleet state on launchd) is what installs the agents and
-        # pins these labels against a measured `launchctl print`; until then nothing
-        # reads them, because service_query below refuses before they are used. The
-        # SERVED keys - glow, toast - are contract and do not move with them.
-        return (("glow", "com.sidecrab.glow"), ("toast", "com.sidecrab.toast"))
+        # glow has NO launchd label, and that is not an omission: there is no lighting
+        # component on macOS at all (the Corsair SDK is Windows-only), so there is
+        # nothing to observe and `absent` is the literally true answer. The KEY stays,
+        # so the served document's shape is identical on both platforms and a panel that
+        # feature-detects `fleet` draws a hollow absent dot rather than a missing row.
+        return (("glow", ""), ("toast", "com.sidecrab.toast"))
 
     @staticmethod
     def service_query(target: str, timeout: float):
-        raise OSError("launchctl reader not wired")
+        """`launchctl print gui/<uid>/<label>` -> (exit code, stdout, stderr).
+
+        The per-user `gui/<uid>` domain is where the SideCrab agents are loaded; the
+        older `launchctl list` answers a different shape and `system/` is a different
+        domain. An EMPTY target - a component this platform has no service for - returns
+        the FLEET_NO_SERVICE sentinel WITHOUT SPAWNING ANYTHING, because
+        `launchctl print gui/<uid>/` is a different question with a different answer.
+        service_status turns that sentinel into `absent`; the two halves are one pair.
+        """
+        if not target:
+            return FLEET_NO_SERVICE
+        proc = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{target}"],
+            capture_output=True, timeout=timeout, check=False)
+        return (proc.returncode,
+                proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
 
     @staticmethod
     def service_status(code, out, err) -> str:
@@ -3504,6 +3527,10 @@ class DarwinPlatform:
         crabd cannot read is a gap in what it knows, and the fourth word exists so it
         can say so instead of guessing the reassuring one.
         """
+        if code is None:
+            # The no-such-component sentinel, not a failed query. `absent` is the honest
+            # word: there is no service here to be running or stopped.
+            return "absent"
         if code != 0:
             blob = f"{out or ''}\n{err or ''}".lower()
             return ("absent" if any(m in blob for m in LAUNCHD_ABSENT_MARKERS)
@@ -4887,6 +4914,15 @@ class FleetReader:
                 for name, target in self._platform.fleet_targets()}
 
     def status(self, target: str) -> str:
+        if not target:
+            # A component this platform names but has NO service for. There is nothing
+            # to spawn and nothing to ask, so the platform is handed the same sentinel
+            # its own service_query returns for an empty target and answers in its own
+            # terms. Short-circuited HERE rather than left to the platform so that an
+            # INJECTED runner is not called either: a test's fake would otherwise record
+            # a query for a service that does not exist, and a real injected runner
+            # would spawn one.
+            return self._platform.service_status(*FLEET_NO_SERVICE)
         runner = self._runner or self._platform.service_query
         try:
             code, out, err = runner(target, FLEET_TIMEOUT_SEC)

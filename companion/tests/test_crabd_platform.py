@@ -343,13 +343,15 @@ RUNNING_CSV = (0, '"\\SideCrab-glow","N/A","Running"\r\n', "")
 class FleetPlatformTests(unittest.TestCase):
     def test_a_platform_with_no_service_manager_reports_both_components_unknown(self):
         """`unknown`, not `stopped`, and both contract keys present. "the notifier is
-        not running" and "I could not find out" are different claims."""
-        for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
-            with self.subTest(platform=platform.name):
-                fleet = crabd.FleetReader(platform=platform)
-                self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
-                fleet.poll(0.0)
-                self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
+        not running" and "I could not find out" are different claims.
+
+        NullPlatform only: since v0.33.0 Darwin HAS a service manager (launchd) and
+        answers about it - what a Mac serves is pinned in test_crabd_fleet_darwin.py.
+        """
+        fleet = crabd.FleetReader(platform=crabd.NullPlatform())
+        self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
+        fleet.poll(0.0)
+        self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
 
     def test_unknown_answers_without_an_instance(self):
         """StateBuilder calls `FleetReader.unknown()` on the CLASS, for a builder with
