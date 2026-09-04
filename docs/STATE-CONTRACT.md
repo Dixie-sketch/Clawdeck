@@ -52,7 +52,11 @@ with one TAB and nests sub-objects deeper, and those sub-objects carry their own
 `state = active` lines — two of them under the running agent measured here. A parser taking the
 first `state =` anywhere, or the last, would report a stopped agent as running on the strength
 of a sub-object. A running agent also has a `pid = ` line and an idle one does not, but the
-pid is *not* what this reads: `state` is the field launchd documents as the service's own.
+pid is *not* what this reads: `state` is the field the measured block puts at first level,
+and a loaded idle agent has no pid at all — so a pid-based parser would have to read its
+absence as `stopped` and could not tell that apart from a block it failed to parse. Nothing
+here rests on documentation: `launchctl print`'s output format is not documented, which is
+why every row of the table above is a recorded block rather than a citation.
 
 An unrecognised word is `unknown`, never `stopped`, and only the not-found wording earns
 `absent`. A label that exists and cannot be read is not the same claim as one that is not
