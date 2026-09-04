@@ -114,4 +114,19 @@ function loadWidget(opts) {
   return ctx;
 }
 
-module.exports = { loadWidget: loadWidget, DEFAULT_LOCATION: DEFAULT_LOCATION, SRC: SRC };
+/* PIN THE CLOCK. The panel calls Date.now() directly, and the vm's Date lives on
+   that context's own global — a host-side `ctx.Date` reads the sandbox OBJECT,
+   which never had one — so the override has to be installed from inside. After
+   this, moving the clock is `ctx.__now = <ms>`; setting it back to null hands the
+   real clock back.
+   Explicit clocks, never a patched global that outlives the test: the same rule
+   the companion suites keep with their `now=` arguments. */
+function setNow(ctx, ms) {
+  ctx.__now = ms;
+  vm.runInContext(
+    'if (!Date.__realNow) Date.__realNow = Date.now;' +
+    'Date.now = function () { return typeof __now === "number" ? __now : Date.__realNow(); };',
+    ctx);
+}
+
+module.exports = { loadWidget: loadWidget, setNow: setNow, DEFAULT_LOCATION: DEFAULT_LOCATION, SRC: SRC };

@@ -692,6 +692,71 @@ var DEV_FLAG_RESTING = {
   eq(posts.length, 0, 'the mock action stub answers in-page: no POST reaches the wire');
 })();
 
+/* --------------------------------------------------- the stale rule (F) */
+
+/* UNCHANGED BY THE PORT, AND THAT IS THE POINT. The contract's staleness limit
+   is 30 s on generatedAt, a failed poll is stale on its own, and a document that
+   has never arrived is `connecting` and never `live`. Silence rendering as
+   all-green is the one failure this panel exists to not have, so the rule is
+   pinned against a stubbed clock rather than against a wall clock that would
+   make the 29/31 pair a race. */
+
+function clockPanel(nowMs) {
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '' },
+    storage: fakeStorage('ok')
+  });
+  harness.setNow(ctx, nowMs);
+  return ctx;
+}
+
+function docAt(ms) {
+  return { schema: 1, generatedAt: new Date(ms).toISOString(), sessions: [], limits: { available: false } };
+}
+
+(function () {
+  var NOW = Date.parse('2026-09-04T12:00:00Z');
+  var ctx = clockPanel(NOW);
+  eq(ctx.computeStatus(), 'connecting', 'a document that never arrived is connecting, never live');
+  ok(ctx.document.body.classList.contains('connecting'), 'and the body says so');
+  ok(!ctx.document.body.classList.contains('stale'), 'connecting is not stale either');
+
+  ctx.acceptDoc(docAt(NOW - 29000));
+  eq(ctx.computeStatus(), 'live', '29 s old is live');
+  ok(!ctx.document.body.classList.contains('stale'), 'and the body is not stale');
+
+  ctx.acceptDoc(docAt(NOW - 31000));
+  eq(ctx.computeStatus(), 'stale', '31 s old is stale');
+  ctx.render();
+  ok(ctx.document.body.classList.contains('stale'), 'the body carries .stale');
+  ok(/^crabd not responding . data as of \d{1,2}:\d{2}/.test(ctx.ui.bannerText.textContent),
+    'the banner says how old the reading is  (' + ctx.ui.bannerText.textContent + ')');
+  eq(ctx.ui.crab.getAttribute('data-mood'), 'worried', 'and the crab is worried');
+})();
+
+/* A FAILED POLL IS STALE ON ITS OWN, without waiting out the 30 s: the reading
+   on the glass is the last one that landed and nothing has confirmed it since. */
+(function () {
+  var NOW = Date.parse('2026-09-04T12:00:00Z');
+  var ctx = clockPanel(NOW);
+  ctx.acceptDoc(docAt(NOW - 1000));
+  eq(ctx.computeStatus(), 'live', 'a fresh document is live');
+  ctx.pollFailed = true;
+  eq(ctx.computeStatus(), 'stale', 'one failed poll is stale, however fresh the last document was');
+  ctx.render();
+  eq(ctx.ui.crab.getAttribute('data-mood'), 'worried', 'the crab is worried on a failed poll too');
+})();
+
+/* A document above the ceiling is a real break, not fresh data (?mock=future). */
+(function () {
+  var NOW = Date.parse('2026-09-04T12:00:00Z');
+  var ctx = clockPanel(NOW);
+  ctx.acceptDoc({ schema: 6, generatedAt: new Date(NOW).toISOString(), sessions: [] });
+  eq(ctx.computeStatus(), 'connecting', 'a schema above the ceiling never becomes live');
+  eq(ctx.pollFailed, true, 'it is a dead feed');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {
