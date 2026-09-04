@@ -258,11 +258,11 @@ Describe 'SideCrab setup' {
     Context 'hook detection' {
 
         BeforeAll {
-            $script:Marker = '127.0.0.1:2722/v1/hook'
+            $script:Marker = '127.0.0.1:9999/v1/hook'
             $script:OurHook = @{
                 matcher = '*'
                 hooks   = @(@{ type = 'command'
-                               command = "curl.exe -s -m 2 -X POST --data-binary @- http://$($script:Marker) || exit 0" })
+                               command = "curl.exe -s -m 2 -X POST -H `"X-SideCrab-Panel: 1`" --data-binary @- http://$($script:Marker) || exit 0" })
             }
             $script:ForeignHook = @{
                 matcher = '*'
@@ -958,7 +958,7 @@ Describe 'SideCrab setup' {
     Context 'hook fragment shape (v0.12.0)' {
 
         BeforeAll {
-            $script:Marker2  = '127.0.0.1:2722/v1/hook'
+            $script:Marker2  = '127.0.0.1:9999/v1/hook'
             $script:FragPath = Join-Path $script:RepoRoot 'hooks\settings-hooks-fragment.json'
             $temp = Join-Path ([IO.Path]::GetTempPath()) ("sidecrab-frag-shape-{0}.json" -f [guid]::NewGuid())
             Copy-Item -LiteralPath $script:FragPath -Destination $temp -Force
@@ -974,14 +974,14 @@ Describe 'SideCrab setup' {
                 $h = $script:FragHooks[$e][0]['hooks'][0]
                 $h['type']    | Should -Be 'command'
                 $h['command'] | Should -Match 'curl\.exe'
-                $h['command'] | Should -Match '127\.0\.0\.1:2722/v1/hook'
+                $h['command'] | Should -Match '127\.0\.0\.1:9999/v1/hook'
             }
         }
 
         It 'wires Stop as a type-http hook at /v1/hook/stop' {
             $h = $script:FragHooks['Stop'][0]['hooks'][0]
             $h['type'] | Should -Be 'http'
-            $h['url']  | Should -Be 'http://127.0.0.1:2722/v1/hook/stop'
+            $h['url']  | Should -Be 'http://127.0.0.1:9999/v1/hook/stop'
             # A short timeout: crabd answers within ~2 s (docs\STATE-CONTRACT.md v0.12.0 item 3).
             ([int] $h['timeout'] -le 10) | Should -BeTrue
         }
@@ -989,7 +989,7 @@ Describe 'SideCrab setup' {
         It 'wires PermissionRequest as a type-http hook at /v1/hook/permission' {
             $h = $script:FragHooks['PermissionRequest'][0]['hooks'][0]
             $h['type'] | Should -Be 'http'
-            $h['url']  | Should -Be 'http://127.0.0.1:2722/v1/hook/permission'
+            $h['url']  | Should -Be 'http://127.0.0.1:9999/v1/hook/permission'
             # Past crabd's 55 s long-poll (docs\STATE-CONTRACT.md v0.12.0 item 4).
             ([int] $h['timeout'] -ge 55) | Should -BeTrue
         }
@@ -1460,7 +1460,7 @@ Describe 'SideCrab setup' {
                 'Get-SideCrabResidueSpec'
             )
 
-            $script:OurStop = @{ hooks = @(@{ type = 'http'; url = 'http://127.0.0.1:2722/v1/hook/stop' }) }
+            $script:OurStop = @{ hooks = @(@{ type = 'http'; url = 'http://127.0.0.1:9999/v1/hook/stop'; headers = @{ 'X-SideCrab-Panel' = '1' } }) }
             $script:TheirStop = @{ hooks = @(@{ type = 'command'; command = 'echo other' }) }
             $script:OurSl   = @{ type = 'command'; command = '"py.exe" "C:\Dev\sidecrab\hooks\sidecrab_statusline.py"' }
 
@@ -1698,14 +1698,14 @@ Describe 'SideCrab setup' {
         }
 
         It 'treats an UNSET allow-list as allow-everything and an EMPTY one as allow-nothing' {
-            Test-SideCrabHookUrlAllowed -Url 'http://127.0.0.1:2722/v1/hook/permission' -Patterns $null | Should -BeTrue
-            Test-SideCrabHookUrlAllowed -Url 'http://127.0.0.1:2722/v1/hook/permission' -Patterns @()   | Should -BeFalse
+            Test-SideCrabHookUrlAllowed -Url 'http://127.0.0.1:9999/v1/hook/permission' -Patterns $null | Should -BeTrue
+            Test-SideCrabHookUrlAllowed -Url 'http://127.0.0.1:9999/v1/hook/permission' -Patterns @()   | Should -BeFalse
         }
 
         It 'matches the allow-list by wildcard, the way the CLI does' {
-            $u = 'http://127.0.0.1:2722/v1/hook/permission'
-            Test-SideCrabHookUrlAllowed -Url $u -Patterns @('http://127.0.0.1:2722/*') | Should -BeTrue
-            Test-SideCrabHookUrlAllowed -Url $u -Patterns @('http://localhost:2722/*')  | Should -BeFalse
+            $u = 'http://127.0.0.1:9999/v1/hook/permission'
+            Test-SideCrabHookUrlAllowed -Url $u -Patterns @('http://127.0.0.1:9999/*') | Should -BeTrue
+            Test-SideCrabHookUrlAllowed -Url $u -Patterns @('http://localhost:9999/*')  | Should -BeFalse
         }
 
         It 'pulls the script path out of a quoted command string' {
@@ -1920,7 +1920,7 @@ Describe 'SideCrab setup' {
                                               -Raw -Encoding utf8
 
             # A probe that answers from a list instead of from a socket: no request is made, no
-            # port is touched, and the operator's live crabd on 2722 is never contacted.
+            # port is touched, and the operator's live crabd on 9999 is never contacted.
             function script:New-Probe {
                 param([object[]] $Answer)
                 $calls = [pscustomobject]@{ Count = 0 }
@@ -2013,11 +2013,11 @@ Describe 'SideCrab setup' {
             script:Import-AstFunction -Path (Join-Path $script:SetupDir 'Uninstall-SideCrab.ps1') `
                                       -Name @('Remove-HookEntries')
             # Remove-HookEntries reads the script-level marker of the file it came from.
-            $global:HookUrlMarker = '127.0.0.1:2722/v1/hook'
+            $global:HookUrlMarker = '127.0.0.1:9999/v1/hook'
             $script:UninstallText6 = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Uninstall-SideCrab.ps1') `
                                                  -Raw -Encoding utf8
 
-            function script:OurHook   { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0' } }
+            function script:OurHook   { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST -H "X-SideCrab-Panel: 1" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0' } }
             function script:TheirHook { @{ type = 'command'; command = 'echo mine, hand-merged' } }
             function script:OursOnly  { @{ matcher = '*'; hooks = @(script:OurHook) } }
             function script:TheirsOnly{ @{ matcher = '*'; hooks = @(script:TheirHook) } }
@@ -2145,11 +2145,11 @@ Describe 'SideCrab setup' {
             script:Import-AstFunction -Path (Join-Path $script:SetupDir 'Repair-SideCrab.ps1') `
                                       -Name @('Get-HookWiringPath')
             # Both bodies read the script-level marker of the file they came from.
-            $global:HookUrlMarker = '127.0.0.1:2722/v1/hook'
+            $global:HookUrlMarker = '127.0.0.1:9999/v1/hook'
             $script:InstallText7  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw -Encoding utf8
             $script:RepairText7   = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Repair-SideCrab.ps1')  -Raw -Encoding utf8
 
-            function script:OurHook7   { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0'; timeout = 3 } }
+            function script:OurHook7   { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST -H "X-SideCrab-Panel: 1" --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0'; timeout = 3 } }
             function script:TheirHook7 { @{ type = 'command'; command = 'echo mine, hand-merged' } }
             function script:Fragment7  { @{ SessionStart = @(@{ hooks = @(script:OurHook7) }) } }
         }
@@ -2215,7 +2215,7 @@ Describe 'SideCrab setup' {
         }
 
         It 'but a genuinely stray SideCrab entry IS still flagged, shared matcher or not' {
-            $stray = @{ type = 'command'; command = 'pwsh -File "C:\Other\sidecrab\hooks\Send-Hook.ps1" -Url http://127.0.0.1:2722/v1/hook' }
+            $stray = @{ type = 'command'; command = 'pwsh -File "C:\Other\sidecrab\hooks\Send-Hook.ps1" -Url http://127.0.0.1:9999/v1/hook' }
             foreach ($matcher in @(@{ matcher = '*'; hooks = @($stray) },
                                    @{ matcher = '*'; hooks = @($stray, (script:TheirHook7)) })) {
                 $paths = @(Get-HookWiringPath -Settings @{ hooks = @{ Stop = @($matcher) } } -Marker $global:HookUrlMarker)
@@ -2242,7 +2242,7 @@ Describe 'SideCrab setup' {
         # process, exited 1, and the task sat in Ready with LastTaskResult=1 - panel dark ~6
         # minutes. Nothing below opens a socket or touches the scheduler: the port poll, the
         # task-state read and the process lookup are all injected, so the operator's live
-        # crabd on 2722 is never contacted and no task is ever stopped or started.
+        # crabd on 9999 is never contacted and no task is ever stopped or started.
 
         BeforeAll {
             script:Import-AstFunction -Path $script:Common -Name @(
@@ -2257,7 +2257,7 @@ Describe 'SideCrab setup' {
             $script:RepairText8 = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Repair-SideCrab.ps1')  -Raw -Encoding utf8
 
             $script:Holder8 = [pscustomobject]@{
-                Port = 2722; ProcessId = 4242; ProcessName = 'pythonw'; Path = 'C:\Py\pythonw.exe'
+                Port = 9999; ProcessId = 4242; ProcessName = 'pythonw'; Path = 'C:\Py\pythonw.exe'
             }
 
             # A port poll that answers from a LIST instead of from the kernel. Each element is
@@ -2309,42 +2309,42 @@ Describe 'SideCrab setup' {
         }
 
         It 'the catalogue says WHICH component owns a port, so no caller has to guess' {
-            (script:One $script:Spec 'crabd').Port | Should -Be 2722
+            (script:One $script:Spec 'crabd').Port | Should -Be 9999
             (script:One $script:Spec 'glow').Port  | Should -Be 0
             (script:One $script:Spec 'toast').Port | Should -Be 0
         }
 
         It 'a plan row carries the port through the selection step' {
             # A plan that dropped Port would send the installer/updater back to guessing.
-            (script:One (script:Plan -Present @{ crabd = $true }) 'crabd').Port | Should -Be 2722
+            (script:One (script:Plan -Present @{ crabd = $true }) 'crabd').Port | Should -Be 9999
         }
 
         It 'names the PID and process holding the port - health cannot tell WHO answered' {
-            $rows = @(Get-SideCrabPortHolder -Port 2722 `
+            $rows = @(Get-SideCrabPortHolder -Port 9999 `
                         -Probe         { param($p) @([pscustomobject]@{ OwningProcess = 4242 }) } `
                         -ProcessLookup { param($id) [pscustomobject]@{ ProcessName = 'pythonw'; Path = 'C:\Py\pythonw.exe' } })
             $rows.Count            | Should -Be 1
             $rows[0].ProcessId     | Should -Be 4242
             $rows[0].ProcessName   | Should -Be 'pythonw'
-            (Format-SideCrabPortHolder -Holder $rows -Port 2722) | Should -Match 'PID 4242 \(pythonw'
+            (Format-SideCrabPortHolder -Holder $rows -Port 9999) | Should -Match 'PID 4242 \(pythonw'
         }
 
         It 'a free port is an EMPTY set, not a one-element one' {
             # @(one empty array) counts as 1, which would read as "something is holding it"
             # and hang every restart on this workstation for the full timeout.
-            @(Get-SideCrabPortHolder -Port 2722 -Probe { param($p) @() }).Count | Should -Be 0
-            (Format-SideCrabPortHolder -Holder @() -Port 2722) | Should -Match 'no listener found'
+            @(Get-SideCrabPortHolder -Port 9999 -Probe { param($p) @() }).Count | Should -Be 0
+            (Format-SideCrabPortHolder -Holder @() -Port 9999) | Should -Match 'no listener found'
         }
 
         It 'a probe that throws reports "free", loudly documented, rather than crashing a restart' {
             # NetTCPIP absent or locked down: fails OPEN on purpose - the alternative is a host
             # where no SideCrab restart can ever run. Pinned so the choice stays deliberate.
-            @(Get-SideCrabPortHolder -Port 2722 -Probe { param($p) throw 'no NetTCPIP here' }).Count | Should -Be 0
+            @(Get-SideCrabPortHolder -Port 9999 -Probe { param($p) throw 'no NetTCPIP here' }).Count | Should -Be 0
         }
 
         It 'an already-free port is not waited on at all' {
             $p = script:New-HolderProbe -Answer @($null)
-            $r = Wait-SideCrabPortRelease -Port 2722 -HolderProbe $p.Block -Wait $script:NoWait8
+            $r = Wait-SideCrabPortRelease -Port 9999 -HolderProbe $p.Block -Wait $script:NoWait8
             $r.Released    | Should -BeTrue
             $r.Attempts    | Should -Be 1
             $r.WaitedSec   | Should -Be 0
@@ -2353,7 +2353,7 @@ Describe 'SideCrab setup' {
 
         It 'held-then-released: it waits, sees the port free, and says how long it took' {
             $p = script:New-HolderProbe -Answer @($script:Holder8, $script:Holder8, $null)
-            $r = Wait-SideCrabPortRelease -Port 2722 -PollIntervalSec 0.5 `
+            $r = Wait-SideCrabPortRelease -Port 9999 -PollIntervalSec 0.5 `
                                           -HolderProbe $p.Block -Wait $script:NoWait8
             $r.Released    | Should -BeTrue
             $r.Attempts    | Should -Be 3
@@ -2364,7 +2364,7 @@ Describe 'SideCrab setup' {
 
         It 'never released: it gives up inside the budget and names the PID still holding it' {
             $p = script:New-HolderProbe -Answer @($script:Holder8)
-            $r = Wait-SideCrabPortRelease -Port 2722 -TimeoutSec 10 -PollIntervalSec 0.5 `
+            $r = Wait-SideCrabPortRelease -Port 9999 -TimeoutSec 10 -PollIntervalSec 0.5 `
                                           -HolderProbe $p.Block -Wait $script:NoWait8
             $r.Released         | Should -BeFalse
             $r.Attempts         | Should -Be 20        # ceil(10 / 0.5) - a BUDGET, not a spin
@@ -2388,7 +2388,7 @@ Describe 'SideCrab setup' {
         It 'the clean restart stops, waits for the task to go, waits for the port, then starts' {
             $s = script:New-FakeScheduler -State @('Running', 'Ready')
             $p = script:New-HolderProbe -Answer @($script:Holder8, $null)
-            $r = Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 2722 `
+            $r = Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 9999 `
                                       -StopTask $s.Stop -StartTask $s.Start -StateProbe $s.State `
                                       -HolderProbe $p.Block -Wait $script:NoWait8
             $r.Started      | Should -BeTrue
@@ -2406,7 +2406,7 @@ Describe 'SideCrab setup' {
             $p = script:New-HolderProbe -Answer @($script:Holder8)
             $message = ''
             try {
-                Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 2722 -PortWaitSec 2 -PollIntervalSec 1 `
+                Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 9999 -PortWaitSec 2 -PollIntervalSec 1 `
                                      -StopTask $s.Stop -StartTask $s.Start -StateProbe $s.State `
                                      -HolderProbe $p.Block -Wait $script:NoWait8 | Out-Null
             } catch { $message = "$($_.Exception.Message)" }
@@ -2433,7 +2433,7 @@ Describe 'SideCrab setup' {
         It 'a task that will not leave Running still stops at its budget rather than hanging' {
             $s = script:New-FakeScheduler -State @('Running')
             $p = script:New-HolderProbe -Answer @($null)
-            $r = Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 2722 -StopWaitSec 2 -PollIntervalSec 1 `
+            $r = Restart-SideCrabTask -TaskName 'SideCrab-crabd' -Port 9999 -StopWaitSec 2 -PollIntervalSec 1 `
                                       -StopTask $s.Stop -StartTask $s.Start -StateProbe $s.State `
                                       -HolderProbe $p.Block -Wait $script:NoWait8
             $r.LeftRunning | Should -BeFalse
@@ -2442,7 +2442,7 @@ Describe 'SideCrab setup' {
         }
 
         It 'answering AND Running is the only "ok"' {
-            $v = Get-SideCrabServiceVerdict -HealthOk $true -TaskState 'Running' -Port 2722
+            $v = Get-SideCrabServiceVerdict -HealthOk $true -TaskState 'Running' -Port 9999
             $v.Verdict | Should -Be 'ok'
             $v.Ok      | Should -BeTrue
         }
@@ -2451,7 +2451,7 @@ Describe 'SideCrab setup' {
             # Measured 2026-08-27: a stray process answered /v1/health convincingly while
             # SideCrab-crabd was dead in Ready. Health alone called that green.
             $v = Get-SideCrabServiceVerdict -HealthOk $true -TaskState 'Ready' -LastTaskResult 1 `
-                                            -Holder @($script:Holder8) -Port 2722
+                                            -Holder @($script:Holder8) -Port 9999
             $v.Verdict | Should -Be 'foreign-answerer'
             $v.Ok      | Should -BeFalse
             $v.Reason  | Should -Match 'PID 4242'
@@ -2459,17 +2459,17 @@ Describe 'SideCrab setup' {
         }
 
         It 'Running with no answer stays the ordinary retry case, not a foreign process' {
-            $v = Get-SideCrabServiceVerdict -HealthOk $false -TaskState 'Running' -Port 2722
+            $v = Get-SideCrabServiceVerdict -HealthOk $false -TaskState 'Running' -Port 9999
             $v.Verdict | Should -Be 'not-answering'
             $v.Ok      | Should -BeFalse
             $v.Reason  | Should -Not -Match 'foreign'
         }
 
         It 'neither answering nor Running is "down", and it reports the last task result' {
-            $v = Get-SideCrabServiceVerdict -HealthOk $false -TaskState 'Ready' -LastTaskResult 1 -Port 2722
+            $v = Get-SideCrabServiceVerdict -HealthOk $false -TaskState 'Ready' -LastTaskResult 1 -Port 9999
             $v.Verdict | Should -Be 'down'
             $v.Reason  | Should -Match '0x00000001'
-            $unreg = Get-SideCrabServiceVerdict -HealthOk $false -TaskState '' -Port 2722
+            $unreg = Get-SideCrabServiceVerdict -HealthOk $false -TaskState '' -Port 9999
             $unreg.Reason | Should -Match 'not registered'
         }
 
@@ -2752,7 +2752,7 @@ Describe 'SideCrab setup' {
             # One fixed port in the catalogue: a second install could never have run beside the
             # first no matter what its task was called.
             @($script:Spec | Where-Object { [int] $_.Port -gt 0 }).Count | Should -Be 1
-            (script:One $script:Spec 'crabd').Port | Should -Be 2722
+            (script:One $script:Spec 'crabd').Port | Should -Be 9999
         }
 
         # ---- CD-19: a stopped helper task is a FAIL, not a green row ----------------------
@@ -2793,7 +2793,7 @@ Describe 'SideCrab setup' {
         }
 
         It 'the doctor never starts crabd with a bare Start-ScheduledTask' {
-            # THE BACKLOG CARRY-OVER: with a foreign process on 2722 that reproduces the
+            # THE BACKLOG CARRY-OVER: with a foreign process on 9999 that reproduces the
             # 2026-08-27 incident - the new instance loses the bind, exits 1, task back to Ready.
             $fixActions = @([regex]::Matches($script:RepairText9, '-FixAction[^\r\n]*'))
             @($fixActions | Where-Object { $_.Value -match 'Start-ScheduledTask' }).Count | Should -Be 0

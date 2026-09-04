@@ -31,7 +31,7 @@ function Get-SideCrabComponentSpec {
             # ASK rather than assume (0 = owns no port). crabd sets allow_reuse_address = False
             # on purpose, so a restart that does not wait for this port to be released loses
             # the bind race: see Wait-SideCrabPortRelease.
-            Port        = 2722
+            Port        = 9999
             # EVERY file whose mtime makes the running process stale, not just the entry point.
             # The doctor's freshness check reads the NEWEST of these: a component whose entry
             # point is a three-line launcher (glow) would otherwise report "current" after a
@@ -324,7 +324,7 @@ function Get-SideCrabHookEvent {
        Matched on the crabd URL substring - the same marker the merge/remove use. #>
     param(
         $Settings,
-        [string] $Marker = '127.0.0.1:2722/v1/hook'
+        [string] $Marker = '127.0.0.1:9999/v1/hook'
     )
 
     if ($null -eq $Settings -or $Settings -isnot [System.Collections.IDictionary]) { return @() }
@@ -746,12 +746,12 @@ function Get-SideCrabPortHolder {
        a restart.
 
        WHY THIS EXISTS (measured 2026-08-27): health-by-HTTP cannot tell WHO answered. After a
-       failed restart a stray non-task process held 2722 and answered /v1/health convincingly
+       failed restart a stray non-task process held 9999 and answered /v1/health convincingly
        while SideCrab-crabd itself was dead. The PID is the only thing that separates "our
        daemon" from "something else wearing its clothes".
 
        -Probe and -ProcessLookup are injected by the suite, so a test never opens a socket and
-       the operator's live crabd on 2722 is never contacted. #>
+       the operator's live crabd on 9999 is never contacted. #>
     param(
         [Parameter(Mandatory)][int] $Port,
         [scriptblock] $Probe,
@@ -808,7 +808,7 @@ function Wait-SideCrabPortRelease {
        and started it again immediately. The old process had left Running but had not yet closed
        its listening socket; crabd sets allow_reuse_address = False deliberately (companion\
        crabd.py - two instances answering half the requests each is worse than a loud refusal),
-       so the NEW instance lost the bind race, printed "port 2722 is already in use" and exited
+       so the NEW instance lost the bind race, printed "port 9999 is already in use" and exited
        1. The task parked in Ready with LastTaskResult=1 and the operator's panel was dark for
        ~6 minutes with nothing saying why.
 
@@ -1204,7 +1204,7 @@ function Get-SideCrabHealth {
     <# GET /v1/health. Returns a verdict object rather than throwing - a stopped
        crabd is the normal case this is asked about. #>
     param(
-        [string] $Uri = 'http://127.0.0.1:2722/v1/health',
+        [string] $Uri = 'http://127.0.0.1:9999/v1/health',
         [int]    $TimeoutSec = 3
     )
 
@@ -1279,7 +1279,7 @@ function Get-SideCrabServiceVerdict {
        matters, never by health alone. Pure.
 
        WHY BOTH (measured 2026-08-27): health-by-HTTP cannot tell WHO is answering. After a
-       failed restart a stray non-task process held 2722 and answered /v1/health convincingly
+       failed restart a stray non-task process held 9999 and answered /v1/health convincingly
        while SideCrab-crabd sat in Ready with LastTaskResult=1 - so the single check the updater
        made reported success over a task that was not running, and the panel stayed dark. An
        answer with no Running task is not "fine": it is the loudest row on the list, because it
@@ -1457,7 +1457,7 @@ function Test-SideCrabHookMatcherIsOurs {
        install/uninstall/restore/doctor to entry-level Split-SideCrabHookMatcher - matcher-level
        "is ours" over-claims on a shared matcher, so do NOT reintroduce it on an ownership
        decision path. Kept for scripts/tests that only need "does SideCrab touch this matcher". #>
-    param($Matcher, [string] $Marker = '127.0.0.1:2722/v1/hook')
+    param($Matcher, [string] $Marker = '127.0.0.1:9999/v1/hook')
 
     if ($Matcher -isnot [System.Collections.IDictionary]) { return $false }
     if (-not $Matcher.Contains('hooks')) { return $false }
@@ -1483,7 +1483,7 @@ function Split-SideCrabHookMatcher {
        canonical-JSON comparison of an untouched matcher is unchanged by this split. Only a
        genuinely shared matcher is rebuilt, and then every other key it carries (the matcher
        pattern, and anything a future CLI adds) is copied onto both halves. #>
-    param($Matcher, [string] $Marker = '127.0.0.1:2722/v1/hook')
+    param($Matcher, [string] $Marker = '127.0.0.1:9999/v1/hook')
 
     # Not a matcher we understand, or one with no hooks list: not ours, and passed through
     # untouched rather than dropped.
@@ -1538,7 +1538,7 @@ function Split-SideCrabSettings {
        This split is what makes a restore safe to reason about: rolling settings.json back to
        a backup replaces the WHOLE file, so any foreign key that changed since the backup was
        taken is an operator edit the restore would silently discard. #>
-    param($Settings, [string] $Marker = '127.0.0.1:2722/v1/hook')
+    param($Settings, [string] $Marker = '127.0.0.1:9999/v1/hook')
 
     $ours    = [ordered]@{ hooks = [ordered]@{}; statusLine = $null }
     $foreign = [ordered]@{}
@@ -1588,7 +1588,7 @@ function Compare-SideCrabSettingsPair {
        ForeignDiff is the one that gates: those keys are the operator's, and a whole-file
        restore overwrites them. SideCrabDiff is informational - putting our own wiring back is
        the POINT of a restore, not a hazard. #>
-    param($Backup, $Current, [string] $Marker = '127.0.0.1:2722/v1/hook')
+    param($Backup, $Current, [string] $Marker = '127.0.0.1:9999/v1/hook')
 
     $b = Split-SideCrabSettings -Settings $Backup  -Marker $Marker
     $c = Split-SideCrabSettings -Settings $Current -Marker $Marker

@@ -28,7 +28,7 @@
 [CmdletBinding()]
 param(
     [string] $RepoRoot     = (Split-Path -Parent $PSScriptRoot),
-    [string] $BaseUri      = 'http://127.0.0.1:2722',
+    [string] $BaseUri      = 'http://127.0.0.1:9999',
     [string] $ConfigPath   = (Join-Path $HOME '.sidecrab\config.json'),
     [string] $SettingsPath = (Join-Path $HOME '.claude\settings.json'),
     [string] $ChainPath    = (Join-Path $HOME '.sidecrab\statusline-chain.json'),
