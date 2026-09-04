@@ -3826,17 +3826,19 @@ var SETTINGS_HIDDEN = { cpuTempSensor: 1, gpuTempSensor: 1, touchDiag: 1, crabdP
    does nothing is worse than no control. It stays declared for the iCUE case,
    where the panel is loaded from disk and has to name crabd outright. */
 
-/* THE PAIRING INSTRUCTION IS PER-HOST, AND THIS IS THE PANEL'S ONE COPY. The
-   Approvals group's `info` in index.html names the PowerShell command, because
-   the iCUE console renders that string and it is the only surface iCUE has —
-   and the machine reading it there is the Windows one. A browser reader is
-   running a shell script instead, so the sheet says that, and buildSettings
-   SKIPS that group's info rather than printing the other platform's command
-   beside this one. The prose the info carries is repeated here for the same
-   reason: one copy per surface, not one copy shared badly by two. */
+/* THE PAIRING INSTRUCTION, AND THIS IS THE PANEL'S ONE COPY OF IT.
+
+   The split is by SURFACE, not by platform. The Approvals group's `info` in
+   index.html is the iCUE console's, and the console only ever renders on
+   Windows, so it names the PowerShell command alone. This sheet is the browser
+   panel's, and crabd serves the browser panel on Windows as readily as on a Mac
+   — so it names BOTH commands in one sentence. Naming only the shell script
+   here was the earlier mistake: it would have sent every Windows reader of this
+   sheet to a file they do not have.
+   buildSettings SKIPS that group's info so the two never print side by side. */
 function pairingHelp() {
 	return 'Approve and Deny are refused until this matches the code the companion minted. ' +
-		'Print it with setup/install.sh --pairing-code. ' +
+		'Print it with Install-SideCrab.ps1 -PairingCode, or setup/install.sh --pairing-code on macOS. ' +
 		'Leave it empty unless panel approvals are turned on.';
 }
 
@@ -4062,6 +4064,16 @@ function buildSettings() {
 			sec.appendChild(note);
 		}
 		region.appendChild(sec);
+	}
+	/* THE REFUSAL LINES ARE SWEPT ON OPEN, not only on change. A value crabd
+	   refuses can already be in the store — typed in an earlier session, or hand
+	   edited — and marking it only when the control MOVES would open the sheet on
+	   an ordinary-looking field whose value has never been sent and never will be.
+	   Last, so every row exists to be marked. */
+	for (var name in SETTINGS_TIME) {
+		if (!Object.prototype.hasOwnProperty.call(SETTINGS_TIME, name)) continue;
+		var timeMeta = metas[name];
+		if (timeMeta) markSettingsTime(timeMeta, strProp(name, String(timeMeta.dflt)));
 	}
 }
 

@@ -11,14 +11,22 @@
 
 	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'9999'" />
 	<!-- The approval PAIRING CODE (v0.27.0, closes SEC-a). crabd mints it once into
-	     ~/.sidecrab/panel-token and requires it on every Approve/Deny. Print it by
-	     running `setup/install.sh` with its pairing-code flag - written without its
-	     leading dashes HERE, and only here, because this file is parsed as strict
-	     XML and a double hyphen inside a comment is an illegal token. The Approvals
-	     group's info string below carries the command whole; that is a JSON text
-	     node, where the dashes are legal, and it is what the settings sheet renders.
-	     A textfield because that is a property type the import validator has
-	     accepted; the value is compared case- and hyphen-insensitively.
+	     ~/.sidecrab/panel-token and requires it on every Approve/Deny. A textfield
+	     because that is a property type the import validator has accepted; the value
+	     is compared case- and hyphen-insensitively.
+
+	     HOW TO PRINT IT IS SAID TWICE, ONCE PER SURFACE, and they say different
+	     things on purpose. The Approvals group's `info` below is the iCUE console's
+	     only surface and the console renders only on Windows, so it names the
+	     PowerShell command alone. The browser panel builds its own line in
+	     pairingHelp() (scripts/sidecrab.js) naming BOTH commands, because crabd
+	     serves that panel on Windows as readily as on a Mac; buildSettings SKIPS
+	     this group's info so the two never print side by side. Change one and check
+	     the other - the settings-sheet tests pin both.
+	     Neither command is spelled with its leading dashes in THIS comment: the file
+	     is parsed as strict XML, where a double hyphen inside a comment is an
+	     illegal token. Both live in string literals, where the dashes are legal.
+
 	     WHERE IT IS KEPT DEPENDS ON THE HOST, and so does how strong that is. Inside
 	     iCUE it is a widget property, which is the one place a web page the operator
 	     visits cannot read. Served in a browser it is localStorage on the panel's own

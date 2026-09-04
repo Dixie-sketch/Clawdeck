@@ -535,6 +535,25 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag', 'c
     'and the padded value is what goes on the wire');
 })();
 
+/* AND IT HAS TO BE TRUE ON OPEN, not only on change (review). A value crabd
+   refuses can already be in the store — typed in an earlier session, or written
+   by a hand edit — and a sheet that only marked it when the control moved would
+   open showing a perfectly ordinary-looking field whose value has never been
+   sent and never will be. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ quietEnabled: true, quietStart: 'half past nine' }) });
+  var ctx = settingsPanel({ storage: st });
+  ctx.openSettingsSheet();
+  var row = control(ctx, 'quietStart').parentNode;
+  eq(control(ctx, 'quietStart').value, 'half past nine', 'the stored value is shown as it is');
+  eq(row.querySelectorAll('.set-invalid.shown').length, 1, 'and its refusal line is up the moment the sheet opens');
+  eq(ctx.desiredQuietConfig(), null, 'which is the truth: nothing is being sent');
+  /* The valid one beside it says nothing, so the mark is about the value and not
+     about the sheet having opened. */
+  var ok2 = control(ctx, 'quietEnd').parentNode;
+  eq(ok2.querySelectorAll('.set-invalid.shown').length, 0, 'a valid field opens unmarked');
+})();
+
 /* THE WRITE-ONLY-WHEN-MOVED RULE (v0.16.0) survives the new control. crabd
    PRESERVES toast.approvalThresholdSec when a write omits it, so a sheet that
    sent its default on open would delete a hand-edited config.json value. */
@@ -570,9 +589,14 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag', 'c
      shell one, in pairingHelp(), and SKIPS that group's info rather than
      printing an instruction for the other platform beside its own. */
   var helpText = ctx.ui.sheetSettings.querySelector('.set-help').textContent;
-  ok(/setup\/install\.sh --pairing-code/.test(helpText), 'the sheet names the shell command');
-  ok(ctx.ui.sheetSettings.textContent.indexOf('Install-SideCrab.ps1') === -1,
-    'and never the PowerShell one beside it');
+  /* BOTH COMMANDS, IN ONE SENTENCE (review). The browser panel is reachable on
+     Windows too — crabd serves it there as readily as on a Mac — so a sheet that
+     named only the shell script would send half its readers to a file they do
+     not have. The iCUE group info still names the PowerShell command alone,
+     because the console only ever renders on Windows. */
+  ok(/Install-SideCrab\.ps1 -PairingCode/.test(helpText), 'the sheet names the PowerShell command');
+  ok(/setup\/install\.sh --pairing-code/.test(helpText), 'and the shell one');
+  ok(/on macOS/.test(helpText), 'saying which is which  (' + helpText + ')');
   var infos = ctx.ui.sheetSettings.querySelectorAll('.set-group-info');
   var infoText = [];
   for (var k = 0; k < infos.length; k++) infoText.push(infos[k].textContent);
@@ -728,7 +752,11 @@ function hostPanel(host, opts) {
   eq(ctx.ui.sheetHost.querySelectorAll('.hs-temps').length, 1,
     'a bound bridge that has produced nothing still says so');
   var line = ctx.ui.sheetHost.querySelector('.hs-temps');
-  eq(line.textContent, 'no hardware sensor reading', 'and says exactly that');
+  /* Guarded before it is read (review): a regression here would otherwise throw a
+     TypeError on the next line and stop the whole run, so the one thing that went
+     wrong would be reported as every remaining check never happening. */
+  ok(!!line, 'the temperatures line is in the sheet to be read');
+  eq(line && line.textContent, 'no hardware sensor reading', 'and says exactly that');
 })();
 
 /* Every sensor dev flag stays gated on ?mock=, so nothing on a served origin can
