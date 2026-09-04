@@ -770,9 +770,10 @@ handlers and stay Windows-only; nothing on macOS registers or invokes them.
 | The identity is **Script Editor**'s | Notifications posted through `osascript` are attributed to Script Editor, so macOS's per-app notification switch is Script Editor's, not SideCrab's. The subtitle is always `SideCrab`, which is the only thing on screen naming the product. There is no AUMID to register and no registry to read: that whole block is Windows-only. |
 
 The first notification may raise a one-time macOS permission prompt for Script Editor. Until
-it is allowed, `osascript` can exit non-zero or sit until the adapter's 10 s timeout; both are
-logged (`notification failed rc=…`) and both return `False`, which re-arms a waiting question
-for the next poll rather than consuming it.
+it is allowed, `osascript` can exit non-zero or sit until the adapter's 5 s timeout; both
+return `False`, which re-arms a waiting question for the next poll rather than consuming it,
+and both are logged (`notification failed rc=…`) — the **first** at ERROR, the repeats at DEBUG
+until one lands, so a denial that fails every 10 s poll does not bury the line that explains it.
 
 There is no Linux route. `pick_adapter` hands any platform that is neither Darwin nor Windows
 an `UnsupportedPlatformAdapter`, whose `show()` logs `no notification route on <platform>`
@@ -833,8 +834,7 @@ python3 notifier/sidecrab_toast.py --version
 `--test-toast` is the one to run first on a Mac: the first notification a process posts can
 raise a one-time permission prompt for Script Editor, and it is better to meet that at a
 prompt than to wonder why a waiting question was silent. Nothing here starts the daemon at
-logon — `setup/install.sh --with-toast` registers the LaunchAgent that does, and it lands with
-the macOS setup lane, not with this component.
+logon — `setup/install.sh --with-toast` registers the toast LaunchAgent that does.
 
 Flags: `--endpoint`, `--interval`, `--config`, `--state`, `--once`, `--dry-run`,
 `--test-toast`, `--test-digest`, `--test-budget`, `--test-approval`, `--test-stale`,

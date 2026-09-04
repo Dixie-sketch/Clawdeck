@@ -2004,8 +2004,8 @@ class PowerShellToastAdapter:
 
 # -- macOS: the same seam, a different interpreter ---------------------------------------
 
-#: Absolute path by design, the same way POWERSHELL_EXE is pinned: this runs from a LaunchAgent,
-#: whose PATH is not the operator's login-shell PATH, and osascript ships with macOS. A bare
+#: Absolute path by design, the same way POWERSHELL_EXE is pinned: osascript ships with macOS,
+#: and when this runs from a LaunchAgent its PATH is not the operator's login-shell PATH. A bare
 #: "osascript" would be resolved against a PATH this process does not control.
 MAC_OSASCRIPT = "/usr/bin/osascript"
 
@@ -2157,10 +2157,11 @@ class MacNotificationAdapter:
             # is a file on disk that outlives the notification, and the question the operator
             # asked belongs on his screen rather than in it.
             #
-            # 120 characters: osascript's own errors are ONE line of 65-72 characters, measured
-            # here across a syntax error (-2740), a runtime error and an unknown application
-            # (both -1728), each ending in the OSA error number that identifies it. 120 keeps a
-            # whole message with room to spare and still bounds a runaway one. (The Windows
+            # 120 characters: osascript's own errors are ONE line of 55-77 characters (57-79
+            # bytes), measured here across five — a syntax error (-2740), two runtime errors and
+            # an unknown application (-1728), a coercion failure (-1700) — each ending in the OSA
+            # error number that identifies it. The length tracks what the message names, so 120
+            # keeps a whole one with room to spare and still bounds a runaway. (The Windows
             # adapter cuts at 400 because PowerShell exception text is multi-line.)
             self._log_failure(
                 "notification failed rc=%s: %s", returncode, (stderr or "").strip()[:120]
