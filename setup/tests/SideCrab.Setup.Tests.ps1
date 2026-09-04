@@ -367,6 +367,18 @@ Describe 'SideCrab setup' {
             ($text -match 'Write-Warning')   | Should -BeTrue
         }
 
+        It 'every diagnostic that POSTs to crabd sends the panel header' {
+            # crabd 0.31.0 and later answers a POST without X-SideCrab-Panel with 403. These
+            # three POST on their own account, and each reads a non-answer as evidence about
+            # crabd rather than about itself: without the header the smoke test reports the
+            # hook ingest broken and both permission probes report the route unreachable, on
+            # a perfectly healthy host. Source text, because the POST cannot be run here.
+            foreach ($f in 'Test-SideCrab.ps1', 'Repair-SideCrab.ps1', 'Verify-PanelApproval.ps1') {
+                $text = Get-Content -LiteralPath (Join-Path $script:SetupDir $f) -Raw -Encoding utf8
+                ($text -match [regex]::Escape('X-SideCrab-Panel')) | Should -BeTrue
+            }
+        }
+
         It 'the hooks README still documents the curl traps' {
             $readme = Join-Path $script:RepoRoot 'hooks\README.md'
             $text = Get-Content -LiteralPath $readme -Raw -Encoding utf8
