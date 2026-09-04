@@ -21,6 +21,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -223,7 +224,12 @@ class LaunchctlQueryTests(unittest.TestCase):
     def test_the_command_is_launchctl_print_in_this_users_gui_domain(self):
         """Pinned by argv rather than by outcome. `gui/<uid>` is the per-user domain the
         SideCrab agents are loaded into; `system/` would be the wrong domain and
-        `launchctl list` a different, older answer shape."""
+        `launchctl list` a different, older answer shape.
+
+        `crabd.subprocess` IS the stdlib module, so a plain attribute swap here patches
+        `subprocess.run` for the whole process until the cleanup runs. mock.patch scopes
+        it to the `with` and restores it even if an assertion raises inside.
+        """
         seen = {}
 
         class Recorder:
@@ -235,10 +241,8 @@ class LaunchctlQueryTests(unittest.TestCase):
             seen["argv"], seen["kwargs"] = argv, kwargs
             return Recorder()
 
-        original = crabd.subprocess.run
-        self.addCleanup(lambda: setattr(crabd.subprocess, "run", original))
-        crabd.subprocess.run = fake_run
-        result = crabd.DarwinPlatform().service_query("com.sidecrab.toast", 10)
+        with mock.patch("crabd.subprocess.run", new=fake_run):
+            result = crabd.DarwinPlatform().service_query("com.sidecrab.toast", 10)
         self.assertEqual(
             seen["argv"],
             ["/bin/launchctl", "print", f"gui/{os.getuid()}/com.sidecrab.toast"])
@@ -350,9 +354,14 @@ class DarwinFleetOffTheRequestPathTests(TempProjects):
     SUBPROCESS. A build that shelled it would put a spawn in the request path and stall
     `generatedAt` - and a wedged launchctl would stall it for the timeout, every pass."""
 
-    def test_a_launchctl_that_never_answers_cannot_stall_the_state_document(self):
+    def blocking_fleet(self):
+        """(the reader, the targets it was asked about, the gate holding its runner).
+
+        The runner parks until the gate is set, which is a launchctl that has not
+        answered yet - the state a real one is in for up to FLEET_TIMEOUT_SEC.
+        """
         gate = threading.Event()
-        self.addCleanup(gate.set)          # never leave the poll thread parked
+        self.addCleanup(gate.set)          # never leave a poll thread parked
         calls = []
 
         def blocking(target, timeout):
@@ -360,17 +369,25 @@ class DarwinFleetOffTheRequestPathTests(TempProjects):
             gate.wait(10)
             return (0, RUNNING_BLOCK, "")
 
-        fleet = crabd.FleetReader(runner=blocking, platform=crabd.DarwinPlatform())
-        builder = self.builder_with(fleet)
+        return (crabd.FleetReader(runner=blocking, platform=crabd.DarwinPlatform()),
+                calls, gate)
 
-        started = time.monotonic()
+    def test_a_build_spawns_nothing_however_long_the_query_would_take(self):
+        """The claim is not "a build is fast", it is "a build does not ask": the empty
+        call list is the whole proof, and it holds however slow the query would have
+        been. `fleet` is read from cache, so three builds against a launchctl that never
+        answers produce three documents and no queries at all."""
+        fleet, calls, _gate = self.blocking_fleet()
+        builder = self.builder_with(fleet)
         for _ in range(3):
             state = builder.build()
-        self.assertLess(time.monotonic() - started, 2.0)
-        self.assertEqual(calls, [])                       # nothing was spawned at all
+        self.assertEqual(calls, [])
         self.assertEqual(state["fleet"], {"glow": "unknown", "toast": "unknown"})
 
-        # ...and the fleet thread's own poll is what fills it in.
+    def test_the_fleets_own_poll_is_what_fills_it_in(self):
+        """The other half: the reading exists, it is just not the builder's to take."""
+        fleet, calls, gate = self.blocking_fleet()
+        builder = self.builder_with(fleet)
         poller = threading.Thread(target=fleet.poll, args=(time.time(),), daemon=True)
         poller.start()
         gate.set()
