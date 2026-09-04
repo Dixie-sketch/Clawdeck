@@ -7270,6 +7270,30 @@ def _expiry_loop(builder: StateBuilder, stop: threading.Event) -> None:
         stop.wait(EXPIRY_POLL_SEC)
 
 
+def _bind_server(host: str, port: int) -> tuple[CrabdServer | None, str | None]:
+    """Bind, or say why not. -> (server, None) or (None, message). Never both.
+
+    ONE ATTEMPT, on exactly the port it was given. The tempting shape - "busy? try the
+    next one" - produces the worst failure this daemon has: crabd reports itself up on
+    10000 while every hook, the status line command and the panel are still addressing
+    9999, so the feed is empty and nothing anywhere says why. A daemon that cannot have
+    the port it was told to have has failed, and says so.
+
+    The message names the port, and says how to FIND the holder rather than guessing at
+    it. 2722 was ours alone and "another crabd is running" was a fair guess; 9999 is a
+    popular number and the holder is usually something else entirely.
+    """
+    try:
+        return CrabdServer((host, port), Handler), None
+    except OSError as exc:
+        return None, (
+            f"crabd: cannot listen on {host}:{port} - another process is already "
+            f"holding it ({type(exc).__name__}). Find out which: "
+            f"lsof -nP -iTCP:{port} -sTCP:LISTEN - then stop it, or set CRABD_PORT to "
+            f"run crabd on a different port (the panel and the hooks have to be "
+            f"pointed at the same number).")
+
+
 def main() -> int:
     started = time.time()
     recap = RecapReader()
@@ -7306,12 +7330,10 @@ def main() -> int:
     threading.Thread(target=_fleet_loop, args=(fleet, stop), daemon=True).start()
     threading.Thread(target=_expiry_loop, args=(builder, stop), daemon=True).start()
 
-    try:
-        server = CrabdServer((HOST, PORT), Handler)
-    except OSError:
+    server, failure = _bind_server(HOST, PORT)
+    if server is None:
         stop.set()
-        print(f"crabd: port {PORT} is already in use - another crabd is running "
-              f"(set CRABD_PORT to run a second instance)", file=sys.stderr, flush=True)
+        print(failure, file=sys.stderr, flush=True)
         return 1
     print(f"crabd {VERSION} listening on http://{HOST}:{PORT}", flush=True)
     try:

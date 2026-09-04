@@ -9,6 +9,8 @@ LOUDLY rather than drifting to another port, and socket reuse is a per-platform 
 rather than a constant.
 """
 
+import contextlib
+import io
 import os
 import re
 import socket
@@ -37,16 +39,28 @@ def setUpModule():
     _MODULE_TMP = tempfile.TemporaryDirectory()
     root = Path(_MODULE_TMP.name)
     setUpModule.originals = (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-                             crabd.HISTORY_FILE, crabd.PANEL_TOKEN_FILE)
+                             crabd.HISTORY_FILE, crabd.PANEL_TOKEN_FILE,
+                             crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+                             crabd.PROJECTS_DIR)
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.PANEL_TOKEN_FILE = root / "panel-token"
+    crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
+    crabd.LIMITS_TOKEN_FILE = root / "no-such-limits-token.dpapi"
+    # main() builds a real TranscriptStore over this. Repointed at an empty tree so the
+    # one test that runs main() cannot walk the operator's transcripts.
+    crabd.PROJECTS_DIR = root / "projects"
+    crabd.PROJECTS_DIR.mkdir()
 
 
 def tearDownModule():
     (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE, crabd.HISTORY_FILE,
-     crabd.PANEL_TOKEN_FILE) = setUpModule.originals
+     crabd.PANEL_TOKEN_FILE, crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+     crabd.PROJECTS_DIR) = setUpModule.originals
+    # main() leaves a builder on the Handler CLASS, and a builder outliving this module
+    # points at a TemporaryDirectory that is about to be deleted.
+    crabd.Handler.builder = None
     _MODULE_TMP.cleanup()
 
 
@@ -191,6 +205,93 @@ class LoopbackOnlyTests(unittest.TestCase):
         self.assertTrue(naming_host)
         for line in naming_host:
             self.assertIn("PORT", line, line)
+
+
+# ------------------------------------------------------------- A4: the collision
+
+class PortCollisionTests(unittest.TestCase):
+    """A port already held is a LOUD stop, and never a quiet move to another one.
+
+    The failure this shape refuses: crabd finds 9999 busy, binds 10000 instead, and
+    reports success. Every hook, the status line command and the panel are still
+    addressing 9999 - so the daemon is up, the feed is empty, and nothing anywhere says
+    why. The old message named the port and guessed the holder was another crabd; on a
+    machine where 9999 is a popular number that guess is usually wrong, so the message
+    now says how to find out.
+    """
+
+    def held_port(self) -> int:
+        """A port with a real listener on it, released at teardown."""
+        holder = socket.socket()
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        self.addCleanup(holder.close)
+        return holder.getsockname()[1]
+
+    @staticmethod
+    def free_port() -> int:
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
+    def test_a_held_port_answers_with_no_server_and_a_message(self):
+        server, message = crabd._bind_server("127.0.0.1", self.held_port())
+        self.assertIsNone(server)
+        self.assertIsInstance(message, str)
+
+    def test_the_message_names_the_port_and_how_to_find_what_holds_it(self):
+        """Every part of it earns its place: the port, so the operator knows which
+        number is contended; `lsof`, so they can name the process instead of guessing
+        it is another crabd; CRABD_PORT, so there is a way forward that is not
+        killing something."""
+        port = self.held_port()
+        _, message = crabd._bind_server("127.0.0.1", port)
+        self.assertIn(str(port), message)
+        self.assertIn("lsof", message)
+        self.assertIn(f"-iTCP:{port}", message)
+        self.assertIn("CRABD_PORT", message)
+
+    def test_a_free_port_returns_a_server_and_no_message(self):
+        port = self.free_port()
+        server, message = crabd._bind_server("127.0.0.1", port)
+        self.assertIsNone(message)
+        self.assertIsInstance(server, crabd.CrabdServer)
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.server_address[1], port)
+
+    def test_the_bind_is_attempted_once_on_exactly_the_port_it_was_given(self):
+        """The proof there is no fallback: a counted factory, on a port that FAILS.
+        A retry loop would show up here as a second attempt, and a drift to another
+        port as a different number in the tuple."""
+        attempts = []
+
+        def counting(address, handler):
+            attempts.append(address)
+            raise OSError(48, "Address already in use")
+
+        original = crabd.CrabdServer
+        crabd.CrabdServer = counting
+        self.addCleanup(lambda: setattr(crabd, "CrabdServer", original))
+        server, message = crabd._bind_server("127.0.0.1", 9999)
+        self.assertIsNone(server)
+        self.assertIsNotNone(message)
+        self.assertEqual(attempts, [("127.0.0.1", 9999)])
+
+    def test_main_prints_the_message_to_stderr_and_returns_one(self):
+        """The operator-visible half. A message composed and then swallowed is the
+        silent failure this whole shape exists to remove."""
+        original = crabd._bind_server
+        crabd._bind_server = lambda host, port: (None, "crabd: 9999 is held by pid 4")
+        self.addCleanup(lambda: setattr(crabd, "_bind_server", original))
+        self.addCleanup(lambda: setattr(crabd.Handler, "builder", None))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = crabd.main()
+        self.assertEqual(code, 1)
+        self.assertIn("crabd: 9999 is held by pid 4", err.getvalue())
 
 
 if __name__ == "__main__":
