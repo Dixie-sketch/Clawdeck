@@ -38,6 +38,9 @@ jobs:
       - name: Widget ordering
         run: node widget/tests/test_ordering.js
 
+      - name: Widget transport
+        run: node widget/tests/test_panel.js
+
       - name: Widget index.html is strict XML (iCUE requirement the CLI validator misses)
         run: python -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
 
