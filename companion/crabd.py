@@ -6292,9 +6292,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, CROSS_SITE_REFUSED)
             return
         self._acao = origin if origin else None
-        split = urllib.parse.urlsplit(self.path)
-        path = split.path.rstrip("/") or "/"
         try:
+            # INSIDE the try. `GET http://[::1/ HTTP/1.1` is a legal request LINE -
+            # absolute-form is what a proxy sends, and BaseHTTPRequestHandler accepts it -
+            # carrying an authority urlsplit refuses with ValueError("Invalid IPv6 URL").
+            # Split outside the try, that walked out of the handler into socketserver's
+            # handle_error and printed a traceback for a request a scanner sends by
+            # accident.
+            split = urllib.parse.urlsplit(self.path)
+            path = split.path.rstrip("/") or "/"
             if path == "/v1/health":
                 self._send(200, dump_state(self._health()))
             elif path == "/v1/state":
@@ -6310,6 +6316,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, NOT_FOUND)
             else:
                 self._do_panel_file(path)
+        except ValueError:
+            # A request target crabd cannot parse names nothing crabd serves. 404 is the
+            # honest answer and it is the same one every other unroutable path gets.
+            self._send(404, NOT_FOUND)
         except OSError as exc:      # noqa: BLE001 - narrowed on purpose, see below
             # The reader hung up before crabd finished answering. ORDINARY on this host
             # (loopback drops SYN-ACKs) and doubly so on a feed the widget polls every

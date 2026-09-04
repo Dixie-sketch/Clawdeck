@@ -779,6 +779,44 @@ class PanelPathSafetyTests(PanelTree):
         self.assertEqual(self.client.get("/styles/alias.css").status, 200)
 
 
+class MalformedRequestTargetTests(PanelServed):
+    """A request line crabd cannot parse is a 404, never a traceback.
+
+    `GET http://[::1/ HTTP/1.1` is a legal request LINE - absolute-form is what a proxy
+    sends and BaseHTTPRequestHandler accepts it - carrying an authority urlsplit refuses
+    ("Invalid IPv6 URL"). The split ran outside do_GET's try, so the ValueError walked
+    out of the handler into socketserver's handle_error and printed a traceback for a
+    request a scanner sends by accident.
+
+    ASSERTED ON A BARE CONNECTION, because http.client will not compose this for us.
+    """
+
+    def raw_get(self, target: str) -> bytes:
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        self.addCleanup(conn.close)
+        conn.sendall(f"GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                     f"Connection: close\r\n\r\n".encode())
+        answer = b""
+        while True:
+            block = conn.recv(4096)
+            if not block:
+                break
+            answer += block
+        return answer
+
+    def test_an_unparseable_request_target_is_answered_404(self):
+        answer = self.raw_get("http://[::1/")
+        self.assertIn(b"404", answer.split(b"\r\n")[0])
+        self.assertIn(b'{"error":"not found"}', answer)
+
+    def test_the_daemon_is_untouched_by_it(self):
+        """The half that matters: the connection it arrived on is finished with, and
+        everything else is still being served."""
+        self.raw_get("http://[::1/")
+        self.assertEqual(self.client.get("/v1/health").status, 200)
+        self.assertEqual(self.client.get("/v1/state").status, 200)
+
+
 class PanelContentTypeTests(PanelTree):
     """The suffix decides, and an unknown one is a download rather than a guess."""
 
