@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import ctypes.util
 import hmac
 import json
 import math
@@ -239,6 +240,21 @@ HOST_MEM_LOG_KEY = "host-mem"
 # builds on the request thread while _refresh_loop takes its first snapshot (overlapping,
 # sub-quantum windows). = 100 ms of aggregate core-time.
 CPU_MIN_TOTAL_TICKS = 1_000_000
+
+# --- v0.32.0 `host` on macOS. HostSampler's unit is the Win32 FILETIME's 100 ns tick;
+# mach counts CLK_TCK ticks, so DarwinPlatform scales by this over CLK_TCK. Kept as a
+# named number because the DIVISIBILITY of it by CLK_TCK is a guard: a CLK_TCK that does
+# not divide it evenly would silently lose ticks in the integer division.
+HOST_100NS_PER_SEC = 10_000_000
+HOST_CPU_STATES = 4          # CPU_STATE_USER, _SYSTEM, _IDLE, _NICE - the reply's count
+HOST_CPU_LOAD_INFO = 3       # host_statistics flavour
+HOST_VM_INFO64 = 4           # host_statistics64 flavour
+# The mach CPU tick counters are natural_t - THIRTY-TWO BITS - and cumulative since boot.
+# Measured on an M-series 16-core Mac: ~1600 ticks/s summed across cores at CLK_TCK 100,
+# so a bucket crosses 2^32 in about 31 days of uptime. Unwrapped in DarwinPlatform, once,
+# so nothing downstream ever sees the backwards jump that would otherwise arrive once per
+# bucket per month.
+HOST_CPU_COUNTER_MODULUS = 1 << 32
 
 RECAP_REFRESH_SEC = 300      # contract: the recap is cached ~5 min
 RECAP_POLL_SEC = 5.0
@@ -3003,6 +3019,14 @@ class HookTracker:
 # public method sets, signatures and binding. Adding a method to one alone ships an
 # AttributeError to every other OS, in a daemon whose one promise is to keep serving.
 #
+# `cpu_times` and `memory` are INSTANCE methods on all three (everything else is static)
+# because the macOS CPU reader keeps state: the mach tick counters are 32-bit and wrap,
+# and unwrapping them needs the last raw reading per bucket. The other two classes carry
+# no state and would be happy as staticmethods - they are instance methods anyway so the
+# binding stays identical across the three, which is the seam's whole promise and is
+# pinned by a test. PLATFORM is a module singleton, so the accumulators live as long as
+# the process; a reader that built a fresh DarwinPlatform per sample would lose them.
+#
 # A platform with no service manager RAISES out of service_query rather than returning
 # None: the caller unpacks the result, so a None would be a TypeError past FleetReader's
 # catch list - a crash where an `unknown` belongs.
@@ -3027,8 +3051,7 @@ class WindowsPlatform:
 
     name = "windows"
 
-    @staticmethod
-    def cpu_times() -> tuple[int, int, int] | None:
+    def cpu_times(self) -> tuple[int, int, int] | None:
         """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
         Cumulative counters, raw; every rule for turning them into a percentage - the
         kernel-includes-idle trap among them - is HostSampler's.
@@ -3052,8 +3075,7 @@ class WindowsPlatform:
             return None
         return (_filetime(idle), _filetime(kernel), _filetime(user))
 
-    @staticmethod
-    def memory() -> tuple[int, int] | None:
+    def memory(self) -> tuple[int, int] | None:
         """GlobalMemoryStatusEx -> (total physical bytes, available bytes), or None."""
         status = _MEMORYSTATUSEX()
         status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
@@ -3145,19 +3167,160 @@ class WindowsPlatform:
         return _read_cli_credentials()
 
 
+_DARWIN_LIBC = None
+
+
+def _darwin_libc():
+    """libSystem, resolved once. `find_library` is a dyld search, not free, and this is
+    on a 2 s cadence. Off macOS the load or the lookup fails and the callers below turn
+    that into the same None a failed syscall gives."""
+    global _DARWIN_LIBC
+    if _DARWIN_LIBC is None:
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib",
+                           use_errno=True)
+        # mach_port_t is a uint32; ctypes' default c_int restype would sign-extend a
+        # port with the high bit set into a negative number and every call would fail.
+        libc.mach_host_self.restype = ctypes.c_uint32
+        _DARWIN_LIBC = libc
+    return _DARWIN_LIBC
+
+
+def _darwin_cpu_load_info() -> tuple[int, int, int, int] | None:
+    """`host_statistics(HOST_CPU_LOAD_INFO)` -> (user, system, idle, nice) raw ticks.
+
+    MEASURED 2026-09-04 (macOS 26.6, 16 cores): kr 0, count 4, four natural_t counters
+    cumulative since boot and SUMMED ACROSS CORES, in 1/CLK_TCK s. One second of wall
+    clock moved them by [213, 103, 1280, 0] - about 16 cores x 100 Hz.
+
+    The array order is the CPU_STATE_* indices, which is NOT the order the caller wants:
+    user, system, idle, nice. Handed on raw; the folding is cpu_times'.
+    """
+    libc = _darwin_libc()
+    info = (ctypes.c_uint32 * HOST_CPU_STATES)()
+    count = ctypes.c_uint32(HOST_CPU_STATES)
+    kr = libc.host_statistics(libc.mach_host_self(), HOST_CPU_LOAD_INFO,
+                              ctypes.byref(info), ctypes.byref(count))
+    if kr != 0 or count.value != HOST_CPU_STATES:
+        return None
+    return (int(info[0]), int(info[1]), int(info[2]), int(info[3]))
+
+
 class DarwinPlatform:
-    """macOS. The CLI credential file is the one reader that is already portable; the
-    host counters and launchd are later phases, and until then they answer the honest
-    "I cannot read this" that the contract's null / unknown columns are for."""
+    """macOS: mach host statistics, launchd, and no long-lived token store.
+
+    The two host readers go through injectable seams (`load_info`, `vm_stats`, `sysctl`,
+    `clk_tck`) rather than patched ctypes, for the same reason HostSampler takes
+    callables: the arithmetic is the part with the traps in it, and it is unreachable if
+    a test has to own a real kernel to get to it. Production passes nothing and the
+    module-level `_darwin_*` helpers answer.
+    """
 
     name = "darwin"
 
-    @staticmethod
-    def cpu_times() -> tuple[int, int, int] | None:
-        return None
+    def __init__(self, load_info=None, vm_stats=None, sysctl=None,
+                 clk_tck=None) -> None:
+        self._load_info = load_info or _darwin_cpu_load_info
+        self._clk_tck = clk_tck
+        # The 32-bit unwrap, per bucket: the last RAW value seen, and how many whole
+        # 2^32 laps have been added to it. Both are only ever touched by cpu_times.
+        self._cpu_last: list[int] | None = None
+        self._cpu_laps = [0] * HOST_CPU_STATES
 
-    @staticmethod
-    def memory() -> tuple[int, int] | None:
+    def cpu_times(self) -> tuple[int, int, int] | None:
+        """(idle, kernel, user) in 100 ns units, HostSampler's convention, or None.
+
+        TWO DECISIONS LIVE HERE, and both are silent if got wrong:
+
+        IDLE IS FOLDED INTO KERNEL. HostSampler was written against GetSystemTimes,
+        where kernel time INCLUDES idle time, and its busy fraction is
+        ((kernel + user) - idle) / (kernel + user). mach reports the two separately, so
+        handing `system` on as `kernel` would make idle larger than the total on any
+        machine that is mostly idle - which is A-08, and the sampler answers null.
+        Forever, on a healthy machine: a dead gauge, not a wrong one.
+
+        NICE IS BUSY TIME. `nice` counts user-priority-lowered processes running, so it
+        belongs with `user`; dropping it under-reports a machine doing background work
+        at nice priority (a box running a nice'd build reads idle while it is not).
+        """
+        scale = self._tick_scale()
+        if scale is None:
+            return None
+        try:
+            raw = self._load_info()
+        except Exception as exc:
+            _log_once(HOST_CPU_LOG_KEY,
+                      f"crabd: host_statistics raised {type(exc).__name__}; "
+                      f"serving no host CPU")
+            return None
+        if raw is None:
+            _log_once(HOST_CPU_LOG_KEY,
+                      "crabd: host_statistics returned failure; serving no host CPU")
+            return None
+        try:
+            ticks = [int(v) for v in raw]
+        except (TypeError, ValueError):
+            _log_once(HOST_CPU_LOG_KEY,
+                      "crabd: host_statistics gave a reading that is not four numbers; "
+                      "serving no host CPU")
+            return None
+        if len(ticks) != HOST_CPU_STATES:
+            _log_once(HOST_CPU_LOG_KEY,
+                      "crabd: host_statistics gave a reading that is not four numbers; "
+                      "serving no host CPU")
+            return None
+        user, system, idle, nice = self._unwrap(ticks)
+        return (idle * scale, (system + idle) * scale, (user + nice) * scale)
+
+    def _unwrap(self, ticks: list[int]) -> list[int]:
+        """The four 32-bit counters as 64-bit monotonic ones.
+
+        A bucket that reads SMALLER than last time has wrapped 2^32 (about 31 days of
+        uptime per bucket at the measured ~1600 ticks/s), so a lap is added and the
+        sampler never sees the backwards jump it would otherwise re-baseline on once a
+        month per bucket. Each bucket carries its own lap count, so two wrapping in the
+        same reading are independent.
+
+        A genuine backwards jump of any OTHER kind - a rigged reader, a counter reset -
+        is INDISTINGUISHABLE from a wrap here and is treated as one. That is the honest
+        trade: the resulting delta is at worst one over-large window served as a
+        percentage, and HostSampler still refuses it if idle then exceeds the total,
+        while the alternative (treating every wrap as suspicious) is a null gauge on
+        every long-uptime machine.
+        """
+        last, self._cpu_last = self._cpu_last, list(ticks)
+        out = []
+        for i, value in enumerate(ticks):
+            if last is not None and value < last[i]:
+                self._cpu_laps[i] += 1
+            out.append(value + self._cpu_laps[i] * HOST_CPU_COUNTER_MODULUS)
+        return out
+
+    def _tick_scale(self) -> int | None:
+        """100 ns units per CLK_TCK tick, or None.
+
+        CLK_TCK is 100 on every macOS measured, and the scale is then 100_000. It is
+        checked rather than assumed because the division is INTEGER: a CLK_TCK that does
+        not divide 10_000_000 evenly would quietly drop part of every tick, and one that
+        is zero or negative would divide by zero or invert the counters.
+        """
+        clk = self._clk_tck
+        if clk is None:
+            try:
+                clk = os.sysconf("SC_CLK_TCK")
+            except (AttributeError, OSError, ValueError) as exc:
+                _log_once(HOST_CPU_LOG_KEY,
+                          f"crabd: SC_CLK_TCK unreadable ({type(exc).__name__}); "
+                          f"serving no host CPU")
+                return None
+        if (isinstance(clk, bool) or not isinstance(clk, int) or clk <= 0
+                or HOST_100NS_PER_SEC % clk):
+            _log_once(HOST_CPU_LOG_KEY,
+                      f"crabd: SC_CLK_TCK is {clk!r}, which cannot scale the CPU "
+                      f"counters; serving no host CPU")
+            return None
+        return HOST_100NS_PER_SEC // clk
+
+    def memory(self) -> tuple[int, int] | None:
         return None
 
     @staticmethod
@@ -3206,12 +3369,10 @@ class NullPlatform:
 
     name = "none"
 
-    @staticmethod
-    def cpu_times() -> tuple[int, int, int] | None:
+    def cpu_times(self) -> tuple[int, int, int] | None:
         return None
 
-    @staticmethod
-    def memory() -> tuple[int, int] | None:
+    def memory(self) -> tuple[int, int] | None:
         return None
 
     @staticmethod

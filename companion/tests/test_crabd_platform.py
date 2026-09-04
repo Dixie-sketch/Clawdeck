@@ -123,7 +123,12 @@ class PlatformSurfaceTests(unittest.TestCase):
     def test_every_method_is_bound_the_same_way_on_all_three(self):
         """staticmethod on two and classmethod on the third is the same call today and
         stops being one the moment anything subclasses or rebinds. The promise is that
-        the three are INTERCHANGEABLE, not that they merely answer alike right now."""
+        the three are INTERCHANGEABLE, not that they merely answer alike right now.
+
+        Today the split is: `cpu_times` and `memory` are plain instance methods on all
+        three, everything else is static. Only DarwinPlatform needs the instance (the
+        32-bit mach counters are unwrapped against state it keeps); the other two carry
+        none and are instance methods anyway, so that this test keeps passing."""
         for name in sorted(self.SURFACE):
             with self.subTest(method=name):
                 kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
@@ -263,9 +268,16 @@ class HostSamplerPlatformTests(unittest.TestCase):
     """
 
     def test_a_platform_with_no_counters_serves_no_block_at_all(self):
-        for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
-            with self.subTest(platform=platform.name):
-                self.assertIsNone(crabd.HostSampler(platform=platform).sample())
+        self.assertIsNone(crabd.HostSampler(platform=crabd.NullPlatform()).sample())
+
+    @unittest.skipIf(sys.platform == "darwin",
+                     "the mach counters answer for real on macOS - see "
+                     "test_crabd_host_darwin.py")
+    def test_darwin_selected_off_a_mac_also_serves_no_block(self):
+        """The counters DarwinPlatform reaches for (mach host_statistics, sysctlbyname)
+        are not on the host running this, so the reader takes its failure path and the
+        answer is the same absence NullPlatform gives - never a fabricated zero."""
+        self.assertIsNone(crabd.HostSampler(platform=crabd.DarwinPlatform()).sample())
 
     def test_an_injected_reader_outranks_the_platform(self):
         """Injection is the primary seam and the platform is only the DEFAULT. A
@@ -510,8 +522,9 @@ class DefaultBuilderOnThisHostTests(unittest.TestCase):
         self.assertEqual(self.builder.build()["fleet"],
                          {"glow": "unknown", "toast": "unknown"})
 
-    @unittest.skipUnless(sys.platform != "win32",
-                         "the Win32 counters really do answer on Windows")
+    @unittest.skipIf(sys.platform in ("win32", "darwin"),
+                     "the Win32 and the mach counters really do answer on those two - "
+                     "what a Mac serves is pinned in test_crabd_host_darwin.py")
     def test_a_host_with_no_counters_still_serves_no_host_key(self):
         state = self.builder.build()
         self.assertNotIn("host", state)
