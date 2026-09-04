@@ -3751,6 +3751,279 @@ function syncOverflowSheet() {
 	}
 }
 
+/* ------------------------------------------- the settings sheet (v0.30.0) */
+
+/* WHAT THIS REPLACES. Inside iCUE the console renders a settings sheet from the
+   <meta name="x-icue-property"> tags and the <script id="x-icue-groups"> block
+   in index.html. Served in a browser nothing does, so the panel renders its own
+   — FROM THE SAME DECLARATIONS, parsed at runtime. That is the whole design:
+   the titles, the ordering, the help prose, every type, range, step and default
+   are already written and reviewed in one place, and a second copy of them here
+   would be a copy that can disagree with the one iCUE reads.
+
+   The three properties below are not rendered outside iCUE because there is
+   nothing behind them: the two sensor combo boxes need a Sensors plugin that
+   does not exist in a browser, and the touch recorder was built to find out what
+   the iCUE webview forwards — a question a browser's pointer stream does not
+   raise. Absent, not disabled: a control that cannot do anything is worse than
+   no control. */
+var SETTINGS_HIDDEN = { cpuTempSensor: 1, gpuTempSensor: 1, touchDiag: 1 };
+
+/* tr('...') is substituted by iCUE at import time and by nothing at all in a
+   browser, so every label and every group string has to come out of its wrapper
+   here. It stays a wrapper in the markup because the iCUE import still reads
+   these tags. */
+function untr(s) {
+	var v = String(s === null || s === undefined ? '' : s);
+	var m = /^\s*tr\('([\s\S]*)'\)\s*$/.exec(v);
+	return m ? m[1] : v;
+}
+
+function settingsGroups() {
+	var el = document.getElementById('x-icue-groups');
+	if (!el) return [];
+	var list = null;
+	try { list = JSON.parse(el.textContent); } catch (e) { logLine('settings: the x-icue-groups block did not parse'); }
+	return Array.isArray(list) ? list : [];
+}
+
+function settingsMetas() {
+	var out = {};
+	var metas = document.querySelectorAll('meta[name="x-icue-property"]');
+	for (var i = 0; i < metas.length; i++) {
+		var m = metas[i];
+		var name = m.getAttribute('content');
+		if (!name) continue;
+		out[name] = {
+			name: name,
+			label: untr(m.getAttribute('data-label')) || name,
+			type: m.getAttribute('data-type') || 'textfield',
+			dflt: metaDefault(m.getAttribute('data-default')),
+			min: m.getAttribute('data-min'),
+			max: m.getAttribute('data-max'),
+			step: m.getAttribute('data-step'),
+			unit: untr(m.getAttribute('data-unit-label'))
+		};
+	}
+	return out;
+}
+
+/* index.html writes a default the way the iCUE console reads it: a QUOTED string,
+   or a bare number, or a bare true/false. The quotes are the type marker, which
+   is why '9999' is a port string and 9999 would have been a number. */
+function metaDefault(raw) {
+	var s = String(raw === null || raw === undefined ? '' : raw).trim();
+	var q = /^'([\s\S]*)'$/.exec(s);
+	if (q) return q[1];
+	if (s === 'true') return true;
+	if (s === 'false') return false;
+	if (s !== '' && isFinite(Number(s))) return Number(s);
+	return s;
+}
+
+/* Every control opens on what the panel would READ for that property — the same
+   readers the render path uses, so the sheet cannot show one value while the
+   panel behaves as another. Unset falls through to the meta's own default,
+   exactly as it does everywhere else. */
+function settingsControl(meta) {
+	var el;
+	if (meta.name === 'crabStyle') {
+		/* The one property iCUE could only take as a switch: switch, slider,
+		   textfield, color and sensors-combobox are the types its import validator
+		   accepts, and crabPlain() has accepted the WORDS since v0.11.0 precisely so
+		   a real enum control needed no code when one became possible. */
+		el = document.createElement('select');
+		el.appendChild(settingsOption('auto', 'Auto'));
+		el.appendChild(settingsOption('plain', 'Plain'));
+		el.value = crabPlain() ? 'plain' : 'auto';
+	} else if (meta.type === 'switch') {
+		el = document.createElement('input');
+		el.setAttribute('type', 'checkbox');
+		el.checked = boolProp(meta.name, meta.dflt === true);
+	} else if (meta.type === 'slider') {
+		var n = Number(getIcueProperty(meta.name));
+		if (!isFinite(n)) n = Number(meta.dflt);
+		el = document.createElement('input');
+		el.setAttribute('type', 'range');
+		if (meta.min !== null) el.setAttribute('min', meta.min);
+		if (meta.max !== null) el.setAttribute('max', meta.max);
+		if (meta.step !== null) el.setAttribute('step', meta.step);
+		el.value = String(n);
+	} else if (meta.type === 'color') {
+		el = document.createElement('input');
+		el.setAttribute('type', 'color');
+		el.value = strProp(meta.name, String(meta.dflt));
+	} else {
+		el = document.createElement('input');
+		/* The pairing code is a secret typed into a panel anyone can walk past, so
+		   it is masked with a deliberate reveal rather than shown. */
+		el.setAttribute('type', meta.name === 'panelToken' ? 'password' : 'text');
+		el.value = strProp(meta.name, String(meta.dflt));
+	}
+	el.setAttribute('data-prop', meta.name);
+	el.setAttribute('id', 'set-' + meta.name);
+	el.className = 'set-control';
+	return el;
+}
+
+function settingsOption(value, label) {
+	var o = document.createElement('option');
+	o.setAttribute('value', value);
+	o.value = value;
+	o.textContent = label;
+	return o;
+}
+
+function settingsRow(meta) {
+	var row = document.createElement('div');
+	row.className = 'set-row set-' + meta.type;
+	var label = document.createElement('label');
+	label.className = 'set-label';
+	label.setAttribute('for', 'set-' + meta.name);
+	label.textContent = meta.label;
+	row.appendChild(label);
+	row.appendChild(settingsControl(meta));
+	/* The unit label rides beside a slider the way the iCUE console renders it,
+	   and the current value with it: a range input shows neither on its own, and a
+	   threshold nobody can read is a threshold nobody sets. */
+	if (meta.type === 'slider') {
+		var val = document.createElement('span');
+		val.className = 'set-value';
+		val.setAttribute('data-value-for', meta.name);
+		val.textContent = settingsValueText(meta);
+		row.appendChild(val);
+	}
+	if (meta.name === 'panelToken') {
+		var show = document.createElement('button');
+		show.setAttribute('type', 'button');
+		show.setAttribute('id', 'settingsTokenShow');
+		show.className = 'set-reveal';
+		show.textContent = 'Show';
+		row.appendChild(show);
+		var help = document.createElement('div');
+		help.className = 'set-help';
+		help.textContent = 'Print it with setup/install.sh --pairing-code';
+		row.appendChild(help);
+	}
+	return row;
+}
+
+function settingsValueText(meta) {
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop=' + meta.name + ']') : null;
+	var n = el ? Number(el.value) : Number(getIcueProperty(meta.name));
+	if (!isFinite(n)) n = Number(meta.dflt);
+	return n + (meta.unit ? ' ' + meta.unit : '');
+}
+
+/* Built ONCE, when the sheet opens. Not on the poll: these are the operator's own
+   controls and a 3 s rebuild would throw away a half-typed pairing code and
+   fight a finger on a slider. */
+function buildSettings() {
+	var region = ui.sheetSettings;
+	if (!region) return;
+	region.textContent = '';
+	var metas = settingsMetas();
+	var groups = settingsGroups();
+	for (var g = 0; g < groups.length; g++) {
+		var group = groups[g] || {};
+		var names = Array.isArray(group.properties) ? group.properties : [];
+		var rows = [];
+		for (var i = 0; i < names.length; i++) {
+			if (SETTINGS_HIDDEN[names[i]]) continue;
+			if (metas[names[i]]) rows.push(metas[names[i]]);
+		}
+		/* A group whose every property belongs to iCUE renders NOTHING — not an
+		   empty heading, which would read as a feature that failed to load. */
+		if (!rows.length) continue;
+		var sec = document.createElement('div');
+		sec.className = 'set-group';
+		var title = document.createElement('div');
+		title.className = 'set-group-title';
+		title.textContent = untr(group.title);
+		sec.appendChild(title);
+		for (var r = 0; r < rows.length; r++) sec.appendChild(settingsRow(rows[r]));
+		var info = untr(group.info || '');
+		if (info) {
+			var note = document.createElement('div');
+			note.className = 'set-group-info';
+			note.textContent = info;
+			sec.appendChild(note);
+		}
+		region.appendChild(sec);
+	}
+}
+
+/* CHANGE, not input. A range fires input per pixel and a colour picker per drag
+   frame; change fires when the control is released, which is the edge a setting
+   actually moved on. The debounce below it (CFG_DEBOUNCE_MS) is the second
+   brake, not the first. */
+function onSettingsChange(ev) {
+	var el = ev && ev.target;
+	if (!el || !el.getAttribute) return;
+	var name = el.getAttribute('data-prop');
+	if (!name) return;
+	var meta = settingsMetas()[name];
+	if (!meta) return;
+	writePanelProperty(name, readSettingsControl(el, meta));
+	if (meta.type === 'slider') {
+		var out = ui.sheetSettings.querySelector('[data-value-for=' + name + ']');
+		if (out) setText(out, settingsValueText(meta));
+	}
+}
+
+function readSettingsControl(el, meta) {
+	if (meta.name === 'crabStyle') return el.value === 'plain' ? 'plain' : 'auto';
+	if (meta.type === 'switch') return !!el.checked;
+	if (meta.type === 'slider') {
+		var n = Number(el.value);
+		if (!isFinite(n)) n = Number(meta.dflt);
+		var lo = Number(meta.min), hi = Number(meta.max);
+		/* Clamped here as well as in each desired*Config(), because a value outside
+		   the meta's range is a body crabd answers 400 to — and a 400 on the toast
+		   key is indistinguishable from the older-crabd 400 the sync path reads. */
+		if (isFinite(lo)) n = Math.max(lo, n);
+		if (isFinite(hi)) n = Math.min(hi, n);
+		return n;
+	}
+	return String(el.value);
+}
+
+function toggleTokenReveal() {
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop=panelToken]') : null;
+	var btn = ui.sheetSettings ? ui.sheetSettings.querySelector('#settingsTokenShow') : null;
+	if (!el || !btn) return;
+	var shown = el.getAttribute('type') === 'text';
+	el.setAttribute('type', shown ? 'password' : 'text');
+	setText(btn, shown ? 'Show' : 'Hide');
+}
+
+/* The eighth mode of the one sheet. Inside iCUE it does not open at all: the
+   console owns the properties there, and a second surface writing a store iCUE
+   never reads would be a settings sheet that silently does nothing. */
+function openSettingsSheet() {
+	if (insideIcue()) return;
+	sheetSessionId = null;
+	sheetGen++;
+	sheetOpenState = null;
+	sheetMode = 'settings';
+	clearSheetTimer();
+	sheetBusy = false;
+	ui.sheet.classList.remove('busy');
+	setSheetStatus('', '');
+	buildSettings();
+	setText(ui.sheetTitle, 'Panel settings');
+	setText(ui.sheetRepo, 'kept in this browser, on this panel’s own address');
+	ui.sheet.setAttribute('data-mode', 'settings');
+	ui.sheet.setAttribute('data-detail-state', '');
+	ui.sheet.setAttribute('data-approval', '');
+	ui.sheet.setAttribute('data-continue', '');
+	setVar(ui.sheet, '--sheet-accent', 'var(--accent)');
+	ui.sheet.classList.add('open');
+	ui.sheet.setAttribute('aria-hidden', 'false');
+	syncSheet();
+	enterSheetFocus();
+}
+
 function closeSheet() {
 	sheetGen++;
 	clearSheetTimer();
@@ -3799,6 +4072,10 @@ function syncSheet() {
 	if (sheetMode === 'timeline') { syncTimelineSheet(); return; }
 	if (sheetMode === 'overflow') { syncOverflowSheet(); return; }
 	if (sheetMode === 'host') { syncHostSheet(); return; }
+	/* The settings sheet deliberately does NOT follow the feed: it is a view of
+	   the panel's own stored settings, not of a document, and nothing crabd can
+	   say should move a control under a fingertip. */
+	if (sheetMode === 'settings') return;
 	/* The day view renders from the ONE document its tap fetched. The poll still
 	   calls through here every 3 s, and it must not turn a read of a fixed past
 	   day into a GET every three seconds. */
@@ -5199,6 +5476,9 @@ function onGridHeadClick(ev) {
 	   fell through would open the ring-buffer timeline over the day view this one
 	   is about to fetch, and the loser would land last. */
 	if (el === ui.historyChip) { openTodayHistory(); return; }
+	/* v0.30.0. Same rule as the three above: a chip tap that fell through would
+	   open the timeline over the settings sheet this one is about to open. */
+	if (el === ui.settingsChip) { openSettingsSheet(); return; }
 	if (el) return;
 	openTimelineSheet();
 }
@@ -5651,6 +5931,13 @@ function onKeyDown(ev) {
 		return;
 	}
 	if (key === 'Tab' && open) { trapTab(ev); return; }
+	/* v0.30.0: the single-letter keys. Never while a sheet is open (they would
+	   fire behind it) and never while an input has focus (an "s" typed into the
+	   pairing code is a character, not a command) — the two conditions that make a
+	   bare letter safe as a shortcut at all. */
+	if (!open && !typingInAnInput() && key.length === 1) {
+		if (key === 's' || key === 'S') { openSettingsSheet(); ev.preventDefault(); return; }
+	}
 	if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') return;
 	var el = document.activeElement;
 	if (!el || el === document.body) return;
@@ -5665,6 +5952,17 @@ function onKeyDown(ev) {
 	/* Space scrolls the page by default, and the sheet's list regions scroll. */
 	ev.preventDefault();
 	el.click();
+}
+
+/* A text field, a slider or a select has the keystroke: the settings sheet is the
+   only place on this panel with any of them, and this is what keeps a letter key
+   from being a command while somebody is typing. contentEditable is checked too
+   — nothing here uses it, and the day it does this guard already covers it. */
+function typingInAnInput() {
+	var el = document.activeElement;
+	if (!el || !el.tagName) return false;
+	var tag = el.tagName;
+	return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
 }
 
 function focusablesIn(root) {
@@ -5757,6 +6055,12 @@ function onSheetClick(ev) {
 	   null to crabd (caught in the browser, 2026-08-26 — the malformed body was
 	   already on the wire). Any future button that borrows .sheet-btn without a
 	   data-sheet-action must be routed above this line too. */
+	/* The settings sheet's own controls, routed ABOVE every branch below for the
+	   reason Dismiss and Pin are: the reveal is a <button> and the generic
+	   .sheet-btn branch would POST an action of null to crabd. Everything else in
+	   that region is an input, which fires change and never lands here. */
+	if (t.closest && t.closest('#settingsTokenShow')) { toggleTokenReveal(); return; }
+	if (t.closest && t.closest('#sheetSettings')) return;
 	if (t.closest && t.closest('#sheetDismiss')) { onSheetDismiss(); return; }
 	/* Same rule as Dismiss, and the same reason: Pin wears .sheet-btn for its
 	   looks and carries no data-sheet-action, so the generic branch below would
@@ -8045,6 +8349,7 @@ function init() {
 		'coreLine', 'coreSessions', 'coreLimits',
 		'sheet', 'sheetBackdrop', 'sheetTitle', 'sheetRepo', 'sheetQuestion', 'sheetStatus',
 		'sheetMeta', 'sheetSubs', 'sheetEvents', 'sheetBurn', 'sheetTimeline', 'sheetWeek', 'sheetHost',
+		'sheetSettings', 'settingsChip',
 		'sheetPin', 'sheetBack', 'sheetDayFoot', 'sheetPrevDay', 'sheetNextDay',
 		'sheetApprovalDetail', 'sheetApprovalTool', 'sheetApprovalSummary', 'sheetApprovalLeft',
 		'sheetApprovalThreshold', 'sheetApprove', 'sheetDeny',
@@ -8287,8 +8592,19 @@ function init() {
 	applyDensity();
 	syncHeaderChips();
 
+	/* v0.30.0. The panel owns a settings surface only where nothing else does:
+	   inside iCUE the console is still the one place these are set, so the gear is
+	   off the glass there rather than opening a sheet that writes to a store iCUE
+	   never reads. A body class, not a JS branch at every use, because the
+	   stylesheet owns what is visible. */
+	document.body.classList.toggle('panel-settings', !insideIcue());
+
 	ui.cards.addEventListener('click', onCardsClick);
 	ui.sheet.addEventListener('click', onSheetClick);
+	/* On the REGION rather than the sheet: the settings controls are the only
+	   inputs on this panel, and a change listener on the whole sheet would be one
+	   more thing every future control has to be checked against. */
+	if (ui.sheetSettings) ui.sheetSettings.addEventListener('change', onSettingsChange);
 	ui.sparkWrap.addEventListener('click', onSparkClick);
 	ui.crabWrap.addEventListener('click', onCrabTap);
 	ui.limitsHead.addEventListener('click', openBurnSheet);

@@ -331,6 +331,188 @@ function panel(opts) {
     'the meta and :root both state the accent the JS fallback wins with');
 })();
 
+/* --------------------------------------------------- the settings sheet (B) */
+
+/* THE SPEC IS index.html, NOT A SECOND LIST. The <meta name="x-icue-property">
+   tags declare every setting with its type, range and default, and the
+   <script id="x-icue-groups"> block declares the titles, the ordering and the
+   help prose. Both were written and reviewed for the iCUE console; the browser
+   sheet reads the same declarations at runtime, so a property added to
+   index.html is in the sheet without a second edit — and this suite drives the
+   shipping markup, so it says the same thing. */
+
+function settingsPanel(opts) {
+  opts = opts || {};
+  return loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: opts.search || '' },
+    props: opts.props,
+    storage: Object.prototype.hasOwnProperty.call(opts, 'storage') ? opts.storage : fakeStorage('ok', opts.seed)
+  });
+}
+
+function control(ctx, name) {
+  return ctx.ui.sheetSettings ? ctx.ui.sheetSettings.querySelector('[data-prop=' + name + ']') : null;
+}
+
+function setControl(ctx, name, value) {
+  var el = control(ctx, name);
+  if (!el) return null;
+  if (el.getAttribute('type') === 'checkbox') el.checked = !!value;
+  else el.value = String(value);
+  el.dispatch('change', { target: el });
+  return el;
+}
+
+/* The three that have no meaning outside iCUE: two sensor combo boxes with no
+   bridge to populate them, and a touch recorder built to find out what the iCUE
+   webview forwards. */
+var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag'];
+
+(function () {
+  var ctx = settingsPanel();
+  ctx.openSettingsSheet();
+  var metas = ctx.document.querySelectorAll('meta[name=x-icue-property]');
+  ok(metas.length >= 18, 'index.html declares the properties this sheet renders  (' + metas.length + ')');
+  for (var i = 0; i < metas.length; i++) {
+    var name = metas[i].getAttribute('content');
+    var raw = metas[i].getAttribute('data-default');
+    var el = control(ctx, name);
+    if (SETTINGS_NOT_IN_BROWSER.indexOf(name) !== -1) {
+      ok(!el, name + ' is not rendered outside iCUE');
+      continue;
+    }
+    if (!el) { ok(false, name + ' has a control in the settings sheet'); continue; }
+    /* The declared default, as index.html writes it: quoted for a string,
+       bare for a number or a switch. */
+    var want = /^'(.*)'$/.test(raw) ? raw.slice(1, -1) : raw;
+    if (el.getAttribute('type') === 'checkbox') {
+      eq(el.checked, want === 'true', name + ' opens on its declared default');
+    } else if (name === 'crabStyle') {
+      eq(el.value, want === 'true' ? 'auto' : 'plain', 'crabStyle is a real enum control on its declared default');
+    } else {
+      eq(el.value, want, name + ' opens on its declared default');
+    }
+  }
+  /* The slider metas carry a range, and a control that ignored it would let a
+     value crabd rejects be typed in. */
+  var toast = control(ctx, 'toastThreshold');
+  eq([toast.getAttribute('type'), toast.getAttribute('min'), toast.getAttribute('max'), toast.getAttribute('step')],
+    ['range', '30', '600', '10'], 'a slider carries the meta\'s own min, max and step');
+  ok(/\bs\b/.test(ctx.ui.sheetSettings.textContent), 'and its unit label');
+})();
+
+/* The groups block is the spec for the ordering, and the two groups that are
+   empty outside iCUE must not render as empty headings. */
+(function () {
+  var ctx = settingsPanel();
+  ctx.openSettingsSheet();
+  var titles = [];
+  var heads = ctx.ui.sheetSettings.querySelectorAll('.set-group-title');
+  for (var i = 0; i < heads.length; i++) titles.push(heads[i].textContent);
+  eq(titles, ['SideCrab', 'Approvals', 'Widget Personalization'],
+    'the sheet renders the x-icue-groups block in its own order, minus the groups iCUE owns');
+  /* A property no group claims renders NOWHERE, in the console and in this
+     sheet alike — so the invariant is that every declared property has a home,
+     and it is asserted here rather than papered over with a fallback group. */
+  var claimed = {};
+  JSON.parse(ctx.document.getElementById('x-icue-groups').textContent).forEach(function (g) {
+    (g.properties || []).forEach(function (n) { claimed[n] = (claimed[n] || 0) + 1; });
+  });
+  var metas = ctx.document.querySelectorAll('meta[name=x-icue-property]');
+  for (var j = 0; j < metas.length; j++) {
+    var nm = metas[j].getAttribute('content');
+    eq(claimed[nm], 1, nm + ' is claimed by exactly one group');
+  }
+})();
+
+/* Every change writes through the adapter, and applyProperties() is what iCUE's
+   onDataUpdated used to call — so the colour actually lands on :root. */
+(function () {
+  var st = fakeStorage('ok');
+  var ctx = settingsPanel({ storage: st });
+  ctx.openSettingsSheet();
+  setControl(ctx, 'clock24', true);
+  eq(ctx.use24Clock(), true, 'a switch change writes the property');
+  eq(JSON.parse(st.data.sidecrab).clock24, true, 'and persists it');
+  setControl(ctx, 'accentColor', '#123456');
+  eq(ctx.document.documentElement.style.getPropertyValue('--accent'), '#123456',
+    'a change calls applyProperties, so the accent lands on :root');
+  setControl(ctx, 'crabStyle', 'plain');
+  eq(ctx.crabPlain(), true, 'the crabStyle enum feeds the reader that already accepted the words');
+})();
+
+/* THE WRITE-ONLY-WHEN-MOVED RULE (v0.16.0) survives the new control. crabd
+   PRESERVES toast.approvalThresholdSec when a write omits it, so a sheet that
+   sent its default on open would delete a hand-edited config.json value. */
+(function () {
+  var ctx = settingsPanel();
+  ctx.openSettingsSheet();
+  var body = ctx.desiredToastConfig();
+  ok(!Object.prototype.hasOwnProperty.call(body.toast, 'approvalThresholdSec'),
+    'a settings sheet that was only OPENED does not send the approval threshold');
+  setControl(ctx, 'approvalThreshold', 45);
+  eq(ctx.desiredToastConfig().toast.approvalThresholdSec, 45,
+    'once the control has been moved the key rides every toast write');
+})();
+
+/* The pairing code is a secret typed into a panel anyone can walk up to: masked,
+   with a deliberate reveal, and it may not touch any other key. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ clock24: true, futureThing: 1 }) });
+  var ctx = settingsPanel({ storage: st });
+  ctx.openSettingsSheet();
+  var el = control(ctx, 'panelToken');
+  eq(el.getAttribute('type'), 'password', 'the pairing code is masked');
+  setControl(ctx, 'panelToken', 'ABCD-1234');
+  var after = JSON.parse(st.data.sidecrab);
+  eq(after.panelToken, 'ABCD-1234', 'the pairing input writes panelToken');
+  eq(after.clock24, true, 'and touches no other key');
+  eq(after.futureThing, 1, 'including a key it has never heard of');
+  eq(ctx.pairingCode(), 'ABCD-1234', 'the code is in force for the next Approve');
+  var show = ctx.ui.sheetSettings.querySelector('#settingsTokenShow');
+  ok(!!show, 'there is a show toggle');
+  show.click();
+  eq(el.getAttribute('type'), 'text', 'which reveals it');
+  show.click();
+  eq(el.getAttribute('type'), 'password', 'and hides it again');
+  ok(/install\.sh --pairing-code/.test(ctx.ui.sheetSettings.textContent),
+    'the help text says how to print the code');
+})();
+
+/* Two ways in, both routed to the one opener. */
+(function () {
+  var ctx = settingsPanel();
+  ctx.ui.settingsChip.click();
+  eq(ctx.sheetMode, 'settings', 'the gear beside the filter chips opens the settings sheet');
+  ctx.closeSheet();
+  ctx.document.dispatch('keydown', { key: 's' });
+  eq(ctx.sheetMode, 'settings', 'and so does the s key');
+  /* A rebuild would throw away a half-typed value, so the proof that the key is
+     inert with the sheet open is a value the STORE has never seen surviving it. */
+  var token = control(ctx, 'panelToken');
+  token.value = 'HALF-TYPED';
+  ctx.document.dispatch('keydown', { key: 's' });
+  eq(control(ctx, 'panelToken').value, 'HALF-TYPED', 's while a sheet is open does not reopen or rebuild it');
+  ctx.closeSheet();
+  /* And a letter typed into a field is a character, not a command. */
+  ctx.document.activeElement = control(ctx, 'panelToken');
+  ctx.document.dispatch('keydown', { key: 's' });
+  eq(ctx.sheetMode, null, 's while an input has focus is a character, not a shortcut');
+  ctx.document.activeElement = ctx.document.body;
+})();
+
+/* The Windows toast surface is not what a macOS panel notifies through, and the
+   label was already the one place a narrowed mute goes wrong silently. */
+(function () {
+  var html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  var tr = fs.readFileSync(path.join(__dirname, '..', 'translation.json'), 'utf8');
+  ok(html.indexOf('Desktop Toast Alerts') === -1, 'index.html no longer says "Desktop Toast Alerts"');
+  ok(tr.indexOf('Desktop Toast Alerts') === -1, 'translation.json no longer says it either');
+  ok(html.indexOf('Desktop Notifications') !== -1, 'the master switch is "Desktop Notifications"');
+  ok(tr.indexOf('Desktop Notifications') !== -1, 'and the catalogue agrees');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {

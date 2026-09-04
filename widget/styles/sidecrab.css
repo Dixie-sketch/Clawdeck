@@ -2293,6 +2293,128 @@ body.pinflash-frozen .card-pin.pin-confirm-off {
 .sheet[data-mode="host"] .sheet-events { display: none; }
 .sheet[data-mode="host"] .sheet-panel { border-left-color: var(--accent); }
 
+/* ---------- sheet: panel settings (v0.30.0) ---------- */
+
+/* The eighth mode. A region of its own for the reason the host charts have one:
+   its content is a form, which is not the same kind of thing as a read-only list
+   of rows, and gating the burn region a fourth way would have been four
+   conditions on one selector.
+   INSIDE iCUE THIS SHEET DOES NOT EXIST. The console owns the properties there;
+   the gear that opens this is off the glass, set by the body class in init(). */
+.head-chip-gear { display: none; }
+body.panel-settings .head-chip-gear {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: calc(var(--layout-unit) * 2.8);
+	line-height: 1;
+}
+
+.sheet-settings { display: none; }
+.sheet[data-mode="settings"] .sheet-settings {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 2.2);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="settings"] .sheet-question,
+.sheet[data-mode="settings"] .sheet-burn,
+.sheet[data-mode="settings"] .sheet-host,
+.sheet[data-mode="settings"] .sheet-timeline,
+.sheet[data-mode="settings"] .sheet-week,
+.sheet[data-mode="settings"] .sheet-day-foot,
+.sheet[data-mode="settings"] .sheet-meta,
+.sheet[data-mode="settings"] .sheet-subs,
+.sheet[data-mode="settings"] .sheet-status,
+.sheet[data-mode="settings"] .sheet-actions,
+.sheet[data-mode="settings"] .sheet-detail-actions,
+.sheet[data-mode="settings"] .sheet-pin-actions,
+.sheet[data-mode="settings"] .sheet-events { display: none; }
+.sheet[data-mode="settings"] .sheet-panel { border-left-color: var(--accent); }
+
+.set-group { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 1.2); }
+.set-group-title {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.set-group-info {
+	font-size: var(--fs-sheet-meta);
+	line-height: 1.4;
+	color: var(--muted);
+}
+/* Label, control, and for a slider its reading — one row, and the fingertip floor
+   every other control on this panel wears. The label takes the slack so the
+   controls line up down the right-hand edge whatever the label says. */
+.set-row {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.6);
+	flex-wrap: wrap;
+	min-height: var(--touch-min);
+}
+.set-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--fs-sheet-meta);
+	color: var(--text-color);
+}
+.set-control {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	max-width: 100%;
+	padding: 0 calc(var(--layout-unit) * 1.2);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	color: var(--text-color);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	touch-action: manipulation;
+}
+.set-control[type="checkbox"] {
+	width: var(--touch-min);
+	min-width: var(--touch-min);
+	accent-color: var(--accent);
+}
+.set-control[type="range"] { width: calc(var(--layout-unit) * 26); accent-color: var(--accent); }
+.set-control[type="color"] { width: calc(var(--layout-unit) * 10); padding: calc(var(--layout-unit) * 0.4); }
+.set-value {
+	flex: 0 0 auto;
+	min-width: calc(var(--layout-unit) * 9);
+	text-align: right;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	font-size: var(--fs-sheet-meta);
+	color: var(--muted);
+}
+.set-reveal {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 1.6);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	color: var(--muted);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-appearance: none;
+	appearance: none;
+}
+/* Full width under its row, because it is a sentence and the row is a control. */
+.set-help {
+	flex: 1 1 100%;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+}
+
 .hs-chart { flex: 0 0 auto; display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.7); }
 .hs-head { display: flex; align-items: baseline; gap: calc(var(--layout-unit) * 1.4); min-width: 0; }
 .hs-name {
