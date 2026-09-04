@@ -145,5 +145,56 @@ class DarwinNiceIsBusyTests(unittest.TestCase):
         self.assertNotEqual(cpu, 40.0)
 
 
+class DarwinCounterWrapTests(unittest.TestCase):
+    """The mach tick counters are natural_t - 32 bits - and cumulative since boot.
+
+    MEASURED: about 1600 ticks a second summed across 16 cores at CLK_TCK 100, so a
+    bucket crosses 2^32 after roughly 31 days of uptime. Handed on raw, that is one
+    backwards jump per bucket per month, and HostSampler answers a backwards counter by
+    re-baselining and serving null - a gauge that blanks for a pass on a schedule nobody
+    would ever connect to uptime. Unwrapping here makes the wrap invisible upstream.
+    """
+
+    #: idle 4_294_967_000 -> 200 is a wrap: 296 ticks to the modulus plus 200 past it.
+    WRAPPED = [(1_000, 1_000, 4_294_967_000, 0), (1_100, 1_100, 200, 0)]
+
+    def test_a_wrapped_counter_reads_as_a_forward_delta(self):
+        platform = crabd.DarwinPlatform(load_info=scripted(self.WRAPPED), clk_tck=100)
+        first, second = platform.cpu_times(), platform.cpu_times()
+        self.assertEqual(second[0] - first[0], 496 * 100_000)     # idle, in 100 ns
+
+    def test_the_sampler_serves_a_number_across_a_wrap_instead_of_blanking(self):
+        # idle 496, kernel 100 + 496 = 596, user 100 -> total 696, busy 200.
+        sampler = sampler_over(
+            crabd.DarwinPlatform(load_info=scripted(self.WRAPPED),
+                                 clk_tck=100).cpu_times)
+        self.assertIsNone(sampler.sample()["cpuPct"])           # first sample
+        self.assertEqual(sampler.sample()["cpuPct"], 28.7)
+
+    def test_two_buckets_wrapping_in_the_same_reading_are_independent(self):
+        """One lap counter per bucket. A single shared one would credit the lap to
+        whichever bucket was checked first and leave the other still going backwards."""
+        raw = [(4_294_967_200, 1_000, 4_294_967_000, 0), (100, 1_100, 200, 0)]
+        platform = crabd.DarwinPlatform(load_info=scripted(raw), clk_tck=100)
+        first, second = platform.cpu_times(), platform.cpu_times()
+        self.assertEqual(second[0] - first[0], 496 * 100_000)   # idle wrapped
+        # user 4_294_967_200 -> 100 is 96 ticks to the modulus plus 100 past it; the
+        # kernel column carries the idle wrap and the system ticks together.
+        self.assertEqual(second[2] - first[2], 196 * 100_000)   # user wrapped too
+        self.assertEqual(second[1] - first[1], (100 + 496) * 100_000)
+
+    def test_an_unwrapped_bucket_is_untouched(self):
+        """The unwrap must be invisible when nothing wraps: a lap added to a counter
+        that only went forwards would be a 2^32-tick delta out of nowhere."""
+        raw = [(1_000, 1_000, 5_000, 0), (1_100, 1_100, 5_300, 0),
+               (1_200, 1_200, 5_600, 0)]
+        platform = crabd.DarwinPlatform(load_info=scripted(raw), clk_tck=100)
+        readings = [platform.cpu_times() for _ in range(3)]
+        self.assertEqual(readings[0], (500_000_000, 600_000_000, 100_000_000))
+        for earlier, later in zip(readings, readings[1:]):
+            self.assertEqual([b - a for a, b in zip(earlier, later)],
+                             [30_000_000, 40_000_000, 10_000_000])
+
+
 if __name__ == "__main__":
     unittest.main()
