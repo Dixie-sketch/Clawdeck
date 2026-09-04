@@ -3,9 +3,8 @@
 Two fragments, each the `hooks` object merged into `~/.claude/settings.json`:
 
 - **`settings-hooks-fragment.json`** — Windows, merged by `setup/Install-SideCrab.ps1`.
-- **`settings-hooks-fragment-macos.json`** — macOS. **Nothing installs it yet.** The
-  PowerShell installer does not read it and must not be pointed at it; the macOS installer
-  that applies it arrives in a later phase of the port. Until then it is merged by hand.
+- **`settings-hooks-fragment-macos.json`** — macOS, merged by `setup/install.sh`. The
+  PowerShell installer does not read it and must not be pointed at it.
 
 They carry two kinds of entry and are identical apart from the curl invocation —
 `hooks/tests/test_hooks_fragment.py` compares them with that one difference normalised
@@ -139,6 +138,43 @@ POSTs the official status-line stdin document to `/v1/statusline` (fire-and-forg
 **chains** to any status-line command the operator already had — the installer saves it to
 `~/.sidecrab/statusline-chain.json` and the uninstaller restores it. See the module
 docstring and `setup/Install-SideCrab.ps1`.
+
+## Installing the macOS fragment
+
+`setup/install.sh` merges it. The script is a thin `sh` wrapper: it finds a Python 3.13+
+(`$SIDECRAB_PYTHON`, then `python3.14`/`python3.13`/`python3` across `PATH`,
+`/opt/homebrew/bin` and `/usr/local/bin`, each probed for its version — Apple's
+`/usr/bin/python3` is a command-line-tools stub and is refused), then hands over to
+`setup/sidecrab_setup.py`.
+
+```
+./setup/install.sh [--with-toast] [--with-approvals|--no-approvals] [--force-enable] [--yes]
+./setup/install.sh --status | --doctor | --pairing-code | --limits-token
+./setup/update.sh
+./setup/uninstall.sh [--purge] [--yes]
+```
+
+What the merge does to `~/.claude/settings.json`, in order:
+
+1. **Backs the file up** to `<path>.sidecrab-bak-YYYYMMDD-HHMMSS` before the first write.
+2. **Merges the fragment at ENTRY level** on the `127.0.0.1:9999/v1/hook` marker. Our
+   entries are replaced by the fragment's current ones; a hook you hand-merged into one of
+   our matcher groups stays, and a matcher group of your own is untouched. Running it twice
+   produces byte-identical JSON and takes no second backup.
+3. **Takes the `statusLine` slot**, saving whatever was there to
+   `~/.sidecrab/statusline-chain.json` so `sidecrab_statusline.py` can chain to it and
+   `uninstall.sh` can put it back. Your `padding` is carried forward. It never re-saves when
+   the slot is already ours, which would chain to itself.
+4. **Adds both `allowedHttpHookUrls` patterns only if you already set that key.** If the key
+   is absent it is left absent — creating it would switch the allowlist on and block every
+   other http hook you have. `uninstall.sh` removes ours again, and removes the whole key
+   rather than leave it empty, because an empty list admits nothing.
+
+A `settings.json` that does not parse aborts the whole install, naming the file: nothing is
+written and no agent is loaded.
+
+`./setup/install.sh --doctor` proves the wiring end to end, including that the header gate is
+live: it POSTs to `/v1/hook` **without** `X-SideCrab-Panel` and expects the 403.
 
 ## The merge marker
 

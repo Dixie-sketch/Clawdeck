@@ -1,0 +1,223 @@
+"""The three sh entry points, executed for real against a controlled PATH.
+
+They run BEFORE any Python exists, so their interpreter search cannot be unit-tested
+through the module - it has to be the shell that runs. Every case here uses a fake
+python3 in a temp directory, a temp HOME, and no Homebrew prefixes.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+import unittest
+from pathlib import Path
+
+from _harness import SETUP_DIR, TempHome
+
+
+@unittest.skipUnless(os.path.exists("/bin/sh"), "needs a POSIX sh")
+class ShellWrapper(TempHome):
+    """Guarded as a class: every case below runs /bin/sh itself.
+
+    The module tests run anywhere; these need a POSIX shell, so on a host without one
+    they skip rather than fail and hide the suite's real state.
+    """
+
+    def _fake_python(self, version: str, argv_log=None) -> str:
+        """A stand-in interpreter: answers the version probe, records what it is asked to run."""
+        bindir = self.home.parent / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        path = bindir / "python3"
+        log = argv_log or "/dev/null"
+        path.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "-c" ]; then printf \'%s\\n\'; exit 0; fi\n' % version
+            # $0 goes to its own file: it is the interpreter path the wrapper resolved,
+            # which is what the plist would carry, and it must not be indistinguishable
+            # from the arguments.
+            + 'printf "%%s\\n" "$0" >> "%s.argv0"\n' % log
+            + 'printf "%%s\\n" "$@" >> "%s"\n' % log
+            + "exit 0\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return str(bindir)
+
+    def _run(self, script: str, *args, bindir: str):
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            # No Homebrew prefixes: this case is "the only python3 is the fake one".
+            "SIDECRAB_PYTHON_DIRS": "",
+        }
+        return subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / script), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_an_old_python_is_refused_and_the_message_names_the_fix(self):
+        bindir = self._fake_python("3.9")
+        result = self._run("install.sh", "--status", bindir=bindir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("brew install python@3.13", result.stdout + result.stderr)
+
+    def test_a_supported_python_runs_the_setup_module_with_the_mapped_command(self):
+        log = str(self.home.parent / "argv.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        result = self._run("install.sh", "--status", bindir=bindir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recorded = Path(log).read_text(encoding="utf-8").split()
+        self.assertEqual(recorded, [str(SETUP_DIR / "sidecrab_setup.py"), "status"])
+
+    def test_every_wrapper_maps_onto_its_own_command(self):
+        for script, expected in (
+            ("install.sh", "install"),
+            ("update.sh", "update"),
+            ("uninstall.sh", "uninstall"),
+        ):
+            with self.subTest(script=script):
+                log = str(self.home.parent / f"argv-{script}.log")
+                bindir = self._fake_python("3.14", argv_log=log)
+                result = self._run(script, bindir=bindir)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                recorded = Path(log).read_text(encoding="utf-8").split()
+                self.assertEqual(recorded[1], expected)
+
+    def test_a_bare_name_in_sidecrab_python_is_resolved_through_path(self):
+        # The Python side does the same in absolute_override(); the plist needs the
+        # absolute path either way.
+        log = str(self.home.parent / "argv-barename.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "status")
+
+    def test_a_relative_override_is_normalised_without_dot_dot(self):
+        # launchd stores whatever this resolves to, and a path carrying .. resolved
+        # against the wrong directory is an agent that never starts.
+        log = str(self.home.parent / "argv-dotdot.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        sibling = self.home.parent / "elsewhere"
+        sibling.mkdir(exist_ok=True)
+        env = {
+            "PATH": "/nonexistent",
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "../fakebin/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, cwd=str(sibling), capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "status")
+        # The point of the branch: the path it settled on carries no "..". pwd -P also
+        # resolves symlinks, which is why this compares against the real path - on macOS
+        # the temp directory lives under /var, itself a symlink to /private/var.
+        resolved = Path(log + ".argv0").read_text(encoding="utf-8").strip()
+        self.assertNotIn("..", resolved)
+        self.assertEqual(resolved, str((self.home.parent / "fakebin" / "python3").resolve()))
+
+    def test_a_relative_override_pointing_nowhere_is_refused(self):
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "./nowhere/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, cwd=str(self.home), capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not resolve", result.stderr)
+
+    def test_an_absolute_override_that_is_not_there_is_refused_not_replaced(self):
+        # The Python side does the same in absolute_override(): never fall through to
+        # a different interpreter than the one the operator named.
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "/opt/gone/python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("/opt/gone/python3", result.stderr)
+
+    def test_a_sidecrab_python_that_resolves_to_nothing_is_refused_by_name(self):
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "nosuchpython",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nosuchpython", result.stderr)
+        self.assertIn("did not resolve", result.stderr)
+
+    def test_an_empty_extra_dirs_value_means_none_on_the_shell_side_too(self):
+        # Proved by the fact that every other case in this file runs with
+        # SIDECRAB_PYTHON_DIRS="" and a PATH holding only the fake: a shell that fell
+        # back to the Homebrew defaults would find the real 3.14 and pass the 3.9 case.
+        bindir = self._fake_python("3.9")
+        result = self._run("install.sh", "--status", bindir=bindir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No usable Python", result.stdout + result.stderr)
+
+    def test_the_help_lists_the_four_mapped_flags(self):
+        # The four are handled in the shell, so argparse's own help cannot mention them:
+        # without this the only documentation of --status is the README.
+        log = str(self.home.parent / "argv-help.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        result = self._run("install.sh", "--help", bindir=bindir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for flag in ("--status", "--doctor", "--pairing-code", "--limits-token"):
+            self.assertIn(flag, result.stdout)
+        # ...and argparse's own install help still follows it.
+        self.assertEqual(
+            Path(log).read_text(encoding="utf-8").split(),
+            [str(SETUP_DIR / "sidecrab_setup.py"), "install", "--help"],
+        )
+
+    def test_sidecrab_python_overrides_the_search(self):
+        log = str(self.home.parent / "argv-override.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        env = {"PATH": "/nonexistent", "HOME": str(self.home), "SIDECRAB_PYTHON_DIRS": ""}
+        env["SIDECRAB_PYTHON"] = os.path.join(bindir, "python3")
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--doctor"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "doctor")
+
+
+if __name__ == "__main__":
+    unittest.main()

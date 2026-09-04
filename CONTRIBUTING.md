@@ -46,6 +46,13 @@ node widget\tests\test_panel.js
 pwsh -File .\setup\tests\RunTests.ps1
 ```
 
+The macOS installer's suite is Python: the module tests run anywhere; the wrapper tests need a
+POSIX `sh` and skip without one.
+
+```
+python -m unittest discover -s setup\tests -t setup\tests
+```
+
 CI runs the same on every push and pull request. A PR needs green CI.
 
 **Mutation-prove anything that protects the user.** If you add a gate, break it on purpose and

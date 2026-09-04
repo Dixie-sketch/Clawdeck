@@ -22,6 +22,15 @@ detail of every additive field and is the source of truth; this file is the shor
   notifications carry no buttons, so an alert is acknowledged on the panel, and they stack
   rather than replace, so a second outage notice sits under the first. They are also attributed
   to Script Editor, which is whose notification switch mutes them. Windows is untouched.
+- **setup (2026-09-04)** - macOS installer: `setup/install.sh`, `update.sh` and
+  `uninstall.sh` merge the hook fragment into `~/.claude/settings.json`, take (and give back)
+  the `statusLine` slot, write `~/.sidecrab/config.json` and load `com.sidecrab.crabd` and
+  `com.sidecrab.toast` as LaunchAgents. Every file is backed up before it is written and
+  replaced atomically; `allowedHttpHookUrls` is never created, only extended when you already
+  have one; an agent you disabled is refreshed but not started; a restart refuses to start
+  over a port held by something else and names the PID. `--status` and `--doctor` are
+  read-only, `--pairing-code` prints the code, `--limits-token` reads the token from stdin so
+  it never reaches `ps`.
 - **0.31.0 crabd (2026-09-04)** - crabd listens on 9999 and serves the panel itself, so the
   panel is a page you open in a browser rather than only a widget inside iCUE. Three gates come
   with that: a `Host` allowlist, so a site whose name re-resolves to 127.0.0.1 cannot pretend to
