@@ -321,5 +321,111 @@ class DarwinFleetTargetsTests(unittest.TestCase):
                          {"glow": "unknown", "toast": "unknown"})
 
 
+# ------------------------------------------------------- off the request path, served
+
+class StubLimits:
+    def get(self, now, force=False):
+        return {"available": False, "note": "stub", "fiveHour": None, "weekly": None,
+                "extra": [], "subscriptionType": None, "rateLimitTier": None}
+
+
+class TempProjects(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.projects = Path(self._tmp.name) / "projects"
+        self.projects.mkdir(parents=True)
+        original = crabd.USER_CONFIG_FILE
+        crabd.USER_CONFIG_FILE = Path(self._tmp.name) / "config.json"
+        self.addCleanup(lambda: setattr(crabd, "USER_CONFIG_FILE", original))
+
+    def builder_with(self, fleet):
+        return crabd.StateBuilder(
+            crabd.TranscriptStore(self.projects), crabd.HookTracker(), StubLimits(),
+            time.time(), None, None, fleet)
+
+
+class DarwinFleetOffTheRequestPathTests(TempProjects):
+    """`fleet` is computed on its own thread and READ from cache, and launchctl is a
+    SUBPROCESS. A build that shelled it would put a spawn in the request path and stall
+    `generatedAt` - and a wedged launchctl would stall it for the timeout, every pass."""
+
+    def test_a_launchctl_that_never_answers_cannot_stall_the_state_document(self):
+        gate = threading.Event()
+        self.addCleanup(gate.set)          # never leave the poll thread parked
+        calls = []
+
+        def blocking(target, timeout):
+            calls.append(target)
+            gate.wait(10)
+            return (0, RUNNING_BLOCK, "")
+
+        fleet = crabd.FleetReader(runner=blocking, platform=crabd.DarwinPlatform())
+        builder = self.builder_with(fleet)
+
+        started = time.monotonic()
+        for _ in range(3):
+            state = builder.build()
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(calls, [])                       # nothing was spawned at all
+        self.assertEqual(state["fleet"], {"glow": "unknown", "toast": "unknown"})
+
+        # ...and the fleet thread's own poll is what fills it in.
+        poller = threading.Thread(target=fleet.poll, args=(time.time(),), daemon=True)
+        poller.start()
+        gate.set()
+        poller.join(timeout=10)
+        self.assertFalse(poller.is_alive(), "the fleet poll should have finished")
+        self.assertEqual(calls, ["com.sidecrab.toast"])
+        self.assertEqual(builder.build()["fleet"],
+                         {"glow": "absent", "toast": "running"})
+
+    def test_a_wedged_launchctl_leaves_the_last_reading_standing(self):
+        """_fleet_loop swallows; this proves the poll is where the blast stops, so a
+        timed-out launchctl gives `unknown` for that component and nothing else."""
+        fleet = crabd.FleetReader(
+            runner=FakeLaunchctl({"com.sidecrab.toast":
+                                  subprocess.TimeoutExpired("launchctl", 10)}),
+            platform=crabd.DarwinPlatform())
+        fleet.poll(time.time())
+        self.assertEqual(fleet.get(), {"glow": "absent", "toast": "unknown"})
+
+
+class DarwinFleetServedOverASocket(TempProjects):
+    """`fleet` on the wire, from a real crabd on a test port. The runner is faked - this
+    is about what the DOCUMENT carries, not about this machine's own agents."""
+
+    def setUp(self):
+        super().setUp()
+        self.builder = self.builder_with(crabd.FleetReader(
+            runner=FakeLaunchctl({"com.sidecrab.toast": (0, NOT_RUNNING_BLOCK, "")}),
+            platform=crabd.DarwinPlatform()))
+        self.builder.fleet.poll(time.time())
+        with self.builder._lock:
+            self.builder._state = self.builder.build()
+        original = crabd.Handler.builder
+        self.addCleanup(lambda: setattr(crabd.Handler, "builder", original))
+        crabd.Handler.builder = self.builder
+        self.server, self.thread, self.port, self.client = start_test_server(
+            lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
+        self.addCleanup(self.client.close)
+        self.addCleanup(self.stop_server)
+
+    def stop_server(self):
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+
+    def test_the_served_document_carries_glow_absent_and_the_toast_agents_state(self):
+        state = self.client.get("/v1/state").json()
+        self.assertEqual(state["fleet"], {"glow": "absent", "toast": "stopped"})
+        self.assertEqual(sorted(state["fleet"]), ["glow", "toast"])
+        self.assertEqual(state["schema"], 5)      # nothing about the shape moved
+
+    def test_the_block_survives_the_json_round_trip_unchanged(self):
+        self.assertEqual(json.loads(crabd.dump_state(self.builder.build()))["fleet"],
+                         {"glow": "absent", "toast": "stopped"})
+
+
 if __name__ == "__main__":
     unittest.main()

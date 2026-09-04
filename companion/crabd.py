@@ -14,7 +14,8 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               toast, digest, the burn budget, panel
                                               approvals, the reply gate
   5. `git log` in today's session cwds     -> recap.commits, recap.week[].commits
-  6. `schtasks /query` on the SideCrab tasks -> fleet (glow / toast)
+  6. `schtasks /query` on Windows, `launchctl print gui/<uid>/<label>` on macOS
+                                           -> fleet (glow / toast)
   7. ~/.sidecrab/history.jsonl             -> replayed at startup so doneToday, the
                                               per-session events ring and recap.week
                                               survive a crabd restart
@@ -78,7 +79,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.32.0"
+VERSION = "0.33.0"
 
 HOST = "127.0.0.1"
 # The production port, and the one the service registration owns. It was 2722 (C-R-A-B on

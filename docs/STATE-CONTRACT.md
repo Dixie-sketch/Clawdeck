@@ -14,6 +14,69 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.33.0 (2026-09-04 — BEHAVIOUR on macOS: fleet reads launchd; glow is absent; schema stays 5)
+
+crabd `VERSION` → `0.33.0`. **No shape change.** `fleet` keeps exactly the two keys it has
+had since v0.5.0 (`glow`, `toast`), the same four-word vocabulary
+(`running` / `stopped` / `absent` / `unknown`), the same ~60 s cache and the same 10 s query
+timeout. `schema` stays **5**. What changed is that on **macOS** the two values are now real
+answers rather than a flat `unknown`. Windows is untouched.
+
+### 1. The query
+
+```
+/bin/launchctl print gui/<uid>/<label>
+```
+
+run with `capture_output`, `check=False` and the contract's 10 s timeout, on the fleet's own
+thread — never on the builder, because it is a subprocess and a build that spawned one would
+put it in the request path and stall `generatedAt`. `gui/<uid>` is the per-user domain the
+SideCrab agents are loaded into; `system/` is a different domain and `launchctl list` a
+different, older answer shape.
+
+### 2. The mapping
+
+MEASURED 2026-09-04, macOS 26.6, uid 502.
+
+| launchctl says | served |
+|---|---|
+| exit 0, first-level `state = running` | `running` |
+| exit 0, first-level `state = not running` / `waiting` / `spawn scheduled` | `stopped` |
+| exit 0, no first-level `state` line, or a word not in that list | `unknown` |
+| non-zero exit whose output contains `Could not find service` | `absent` |
+| any other non-zero exit | `unknown` |
+| the query timed out, could not be spawned, or was refused | `unknown` |
+
+**Only the first-level line counts.** `launchctl print` indents the service's own properties
+with one TAB and nests sub-objects deeper, and those sub-objects carry their own
+`state = active` lines — two of them under the running agent measured here. A parser taking the
+first `state =` anywhere, or the last, would report a stopped agent as running on the strength
+of a sub-object. A running agent also has a `pid = ` line and an idle one does not, but the
+pid is *not* what this reads: `state` is the field launchd documents as the service's own.
+
+An unrecognised word is `unknown`, never `stopped`, and only the not-found wording earns
+`absent`. A label that exists and cannot be read is not the same claim as one that is not
+there, and `unknown` is the word for the difference. This is the same rule the Windows
+`schtasks` map has always followed.
+
+### 3. `fleet.glow` is `absent` on macOS, and that is honest
+
+There is no lighting component on a Mac — the Corsair SDK is Windows-only — so glow has **no
+launchd label at all**. crabd does not run anything for it: an empty label short-circuits to
+the same `(None, "", "")` sentinel `launchctl print` would never produce, and the platform
+reads that as `absent`. Nothing is spawned, so a Mac's fleet cycle is one subprocess, not two.
+
+`absent` is the literally true word here: the query did not fail, the component is not there.
+The KEY stays so the document's shape is identical on both platforms — a panel that
+feature-detects `fleet` draws a hollow absent dot rather than a missing row — and **the
+panel's rendering of `absent` is unchanged**; no widget update is needed or implied.
+
+`unknown` still means "not asked yet": a builder with no fleet reader attached serves both
+components `unknown` on macOS exactly as it does on Windows, and only a completed poll turns
+glow into `absent`.
+
+---
+
 ## v0.32.0 (2026-09-04 — BEHAVIOUR on macOS: the host block is served; schema stays 5)
 
 crabd `VERSION` → `0.32.0`. **No shape change.** `host` keeps exactly the four fields it has
