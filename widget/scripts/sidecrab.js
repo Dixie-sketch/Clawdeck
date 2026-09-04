@@ -5008,10 +5008,12 @@ function postJson(path, payload) {
 	});
 
 	function send(ctype) {
-		/* PANEL_HEADER is on BOTH attempts, not just the JSON one. crabd answers a
-		   POST without it 403 "panel header required" — and the panel reads a 403 on
-		   decide as a wrong pairing code, so dropping it on the text/plain retry
-		   would surface as a lie about the operator's code rather than as an outage. */
+		/* The panel header is on BOTH attempts, not just the JSON one. crabd 0.31.0
+		   and later answers a POST without it 403 "panel header required" — and the
+		   panel reads a 403 on decide as a wrong pairing code, so dropping it on the
+		   text/plain retry would surface as a lie about the operator's code rather
+		   than as an outage. An older crabd ignores the header, so sending it always
+		   is safe in both directions. */
 		var opts = {
 			method: 'POST',
 			headers: { 'Content-Type': ctype, 'X-SideCrab-Panel': '1' },
