@@ -197,5 +197,116 @@ class FleetPlatformTests(unittest.TestCase):
             "unknown")
 
 
+# --------------------------------------------------------- the long-lived token store
+
+class LimitsTokenPlatformTests(unittest.TestCase):
+    """`~/.sidecrab/limits-token.dpapi` is a DPAPI blob, which is a Windows fact.
+
+    A platform with no token store answers None rather than handing the raw bytes on as
+    a bearer token - the file is ciphertext everywhere, and "I could not decrypt it" is
+    not "here it is".
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "limits-token.dpapi"
+        self.path.write_bytes(b"  gnol-10tao-tna-ks  ")   # reversed, with padding
+        original = crabd._dpapi_unprotect
+        self.addCleanup(lambda: setattr(crabd, "_dpapi_unprotect", original))
+
+    def test_a_platform_with_no_token_store_reads_nothing_from_a_file_that_has_bytes(self):
+        for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
+            with self.subTest(platform=platform.name):
+                self.assertIsNone(
+                    crabd.read_limits_token(self.path, platform=platform))
+
+    def test_windows_decrypts_and_strips_through_the_module_level_helper(self):
+        """The stub is installed on the MODULE after the platform class was defined, so
+        this also pins that `_dpapi_unprotect` is looked up at call time - bound at
+        import, every test of this path off Windows would be unreachable."""
+        crabd._dpapi_unprotect = lambda blob: blob[::-1]
+        self.assertEqual(
+            crabd.read_limits_token(self.path, platform=crabd.WindowsPlatform()),
+            "sk-ant-oat01-long")
+
+
+class LimitsReaderPlatformTests(unittest.TestCase):
+    """The same expired-CLI-token morning on two platforms.
+
+    Windows has a store to fall back to and lights the gauges off it; a platform with
+    none serves `available: false` and the note that says what to do. Neither fabricates
+    a reading, and the fallback token never reaches the served document.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.creds = root / "credentials.json"
+        self.token_file = root / "limits-token.dpapi"
+        self.cache = root / "cache.json"
+        original = (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+                    crabd.urllib.request.urlopen, crabd._dpapi_unprotect)
+
+        def restore():
+            (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+             crabd.urllib.request.urlopen, crabd._dpapi_unprotect) = original
+
+        self.addCleanup(restore)
+        crabd.CREDENTIALS_FILE = self.creds
+        crabd.LIMITS_TOKEN_FILE = self.token_file
+        crabd._dpapi_unprotect = lambda blob: blob[::-1]     # "decrypt" = reverse
+        self.seen = []
+        body = ('{"five_hour": {"utilization": 0.25, "resets_at": 1800000000},'
+                ' "seven_day": {"utilization": 0.5, "resets_at": 1800500000}}').encode()
+
+        class _Resp:
+            def __init__(self, payload): self._b = payload
+            def read(self): return self._b
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(request, timeout=None):
+            self.seen.append(request.get_header("Authorization"))
+            return _Resp(body)
+
+        crabd.urllib.request.urlopen = fake_urlopen
+        # Expired 1 s ago: the CLI token is unusable, which is the whole scenario.
+        import json as _json
+        self.creds.write_text(_json.dumps({"claudeAiOauth": {
+            "accessToken": "cli-token", "expiresAt": 1,
+            "subscriptionType": "max", "rateLimitTier": "t"}}), encoding="utf-8")
+        self.token_file.write_bytes(b"sk-ant-oat01-long"[::-1])
+
+    def reader(self, platform):
+        return crabd.LimitsReader(cache_file=self.cache, platform=platform)
+
+    def test_windows_falls_back_to_the_stored_token(self):
+        out = self.reader(crabd.WindowsPlatform()).get(1_800_000_000.0, force=True)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["tokenSource"], "sidecrab")
+        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-long"])
+        self.assertNotIn("sk-ant-oat01-long", crabd.dump_state(out).decode())
+
+    def test_a_platform_with_no_store_says_expired_instead_of_using_the_bytes(self):
+        out = self.reader(crabd.NullPlatform()).get(1_800_000_000.0, force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("expired", out["note"])
+        self.assertIsNone(out["fiveHour"])
+        self.assertEqual(self.seen, [])          # never reached the endpoint
+
+    def test_the_credential_document_is_read_through_the_platform(self):
+        """cli_credentials is the one reader that is already portable, so the missing
+        file note must be the same answer everywhere."""
+        self.creds.unlink()
+        for platform in (crabd.WindowsPlatform(), crabd.DarwinPlatform(),
+                         crabd.NullPlatform()):
+            with self.subTest(platform=platform.name):
+                out = self.reader(platform).get(1_800_000_000.0, force=True)
+                self.assertFalse(out["available"])
+                self.assertIn("no Claude credentials", out["note"])
+
+
 if __name__ == "__main__":
     unittest.main()

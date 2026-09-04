@@ -1325,7 +1325,11 @@ class LimitsTokenFallbackTests(unittest.TestCase):
     """v0.30.0: the long-lived token in ~/.sidecrab/limits-token.dpapi is used only when
     the CLI's own token is expired, and never leaks. urlopen is stubbed so no test talks
     to the usage endpoint; the DPAPI reader is stubbed except in the one Windows-only
-    round-trip test."""
+    round-trip test.
+
+    The reader names platform=WindowsPlatform() explicitly: the store is a DPAPI blob,
+    so its precedence rules are a Windows claim and must keep being proven on every
+    host rather than only on the one that would have selected that platform."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1356,7 +1360,8 @@ class LimitsTokenFallbackTests(unittest.TestCase):
         self.reject = False
         crabd.urllib.request.urlopen = fake_urlopen
         crabd._dpapi_unprotect = lambda blob: blob[::-1]     # "decrypt" = reverse
-        self.reader = crabd.LimitsReader(cache_file=root / "cache.json")
+        self.reader = crabd.LimitsReader(cache_file=root / "cache.json",
+                                         platform=crabd.WindowsPlatform())
 
     def tearDown(self):
         (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,

@@ -3179,21 +3179,11 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
         return None
 
 
-def read_limits_token(path: Path = None) -> str | None:
-    """The long-lived usage token, or None. Read fresh on every call so a token stored
-    while crabd runs is picked up on the next poll; the decrypted string is returned to
-    the caller and dropped - LimitsReader keeps the same no-log, no-store rule for it
-    that it keeps for the CLI token."""
-    path = path or LIMITS_TOKEN_FILE
-    try:
-        blob = path.read_bytes()
-    except OSError:
-        return None
-    raw = _dpapi_unprotect(blob)
-    if not raw:
-        return None
-    token = raw.decode("utf-8", errors="replace").strip()
-    return token or None
+def read_limits_token(path: Path = None, platform=None) -> str | None:
+    """The long-lived usage token, or None. The store is a DPAPI blob, so the reading is
+    the platform's; this stays a module function because it is the name LimitsReader and
+    the suites call."""
+    return (platform or PLATFORM).read_limits_token(path or LIMITS_TOKEN_FILE)
 
 
 class LimitsReader:
@@ -3205,11 +3195,14 @@ class LimitsReader:
     could echo a request.
     """
 
-    def __init__(self, cache_file: Path | None = None) -> None:
+    def __init__(self, cache_file: Path | None = None, platform=None) -> None:
         # Injectable for the same reason UserConfig takes a path: a test that builds a
         # real reader must not be one forgotten patch away from writing the operator's
         # live last-good store (it happened - see LIMITS_CACHE_MIN_EPOCH).
         self._cache_file = Path(cache_file) if cache_file else None
+        # Both credential sources are the platform's: the CLI document is portable, the
+        # long-lived store is a DPAPI blob and exists on Windows only.
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._cached: dict | None = None
         self._fetched_at = 0.0
@@ -3311,9 +3304,8 @@ class LimitsReader:
         }
 
     def _fetch(self) -> dict:
-        try:
-            raw = CREDENTIALS_FILE.read_text(encoding="utf-8")
-        except OSError:
+        raw = self._platform.cli_credentials()
+        if raw is None:
             return self._unavailable("no Claude credentials on this machine - run /login")
         try:
             oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
@@ -3331,7 +3323,7 @@ class LimitsReader:
         # setup token is the fallback for the hours (or days) the CLI file sits expired.
         token_source = "cli"
         if not cli_usable:
-            fallback = read_limits_token()
+            fallback = read_limits_token(platform=self._platform)
             if fallback:
                 token = fallback
                 token_source = "sidecrab"
