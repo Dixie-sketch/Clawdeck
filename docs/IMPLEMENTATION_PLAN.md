@@ -77,6 +77,9 @@ out of the emitter; no Approve/Deny action.
 ## Stage 8: documentation and release
 **Goal**: README, GETTING-STARTED, CHANGELOG, STATE-CONTRACT, SECURITY, CONTRIBUTING, CLAUDE.md
 rewritten for macOS; CI `macos-latest` job.
-**Success Criteria**: every decision this port made is recorded in the contract or notes.
-**Tests**: CI green on macOS.
+**Success Criteria**: every decision this port made is recorded in the contract or notes; the
+live install on this Mac (operator-approved 2026-09-04, on condition that everything it touches
+is backed up first: `~/.claude/settings.json`, `~/.sidecrab/`, `~/Library/LaunchAgents/`) leaves a
+running LaunchAgent and a panel at http://localhost:9999 in Safari and Chrome.
+**Tests**: CI green on macOS; the definition-of-done walkthrough recorded in PORT-NOTES.
 **Status**: Not Started

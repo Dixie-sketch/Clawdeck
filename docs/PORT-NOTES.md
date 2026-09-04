@@ -89,6 +89,11 @@ at baseline. Anything found later is added to the seam table below with its buck
   Items created through the tool carry the tool in their access list, so crabd's later reads through
   the same tool do not prompt; the CLI's own credential item was created by Claude Code and does
   prompt once (see above).
+- **macOS notifications through osascript (Phase 7).** One `--test-toast` run on this Mac
+  (2026-09-04) exited 0 in about 120 ms with empty stderr, and the operator confirmed a
+  notification appeared on screen; no permission prompt was reported. The notification carries
+  Script Editor's identity, no buttons and no replacement identifier; those are recorded as
+  residuals of this route, not defects.
 - **Existing hooks in the operator's `~/.claude/settings.json`**: one unrelated
   `UserPromptSubmit` command hook, no `statusLine`, no `allowedHttpHookUrls`. The installer
   must preserve that hook.
