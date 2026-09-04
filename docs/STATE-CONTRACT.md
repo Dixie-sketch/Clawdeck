@@ -142,6 +142,18 @@ operator wiring up a hook can tell the two apart.
   55 s hold.
 - The value is never interpreted. It is not authentication.
 
+**An OTLP exporter has to be told.** `/v1/metrics` and `/v1/logs` are on the list above, and
+nothing in SideCrab configures the exporter inside Claude Code — so a session exporting to
+crabd is refused `403` until the operator sets
+
+```
+OTEL_EXPORTER_OTLP_HEADERS=X-SideCrab-Panel=1
+```
+
+alongside `OTEL_EXPORTER_OTLP_ENDPOINT`. The failure is silent from crabd's side by design
+(telemetry never gets a 4xx that teaches its exporter to retry — see the OTLP contract below),
+so the symptom is `burn.costUSD` staying `null`. Nothing in this repo writes that variable yet.
+
 **What it actually buys.** A custom request header makes the POST non-simple, so a browser
 must preflight it — and the preflight is where the gate is enforced:
 

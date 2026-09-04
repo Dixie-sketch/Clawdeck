@@ -419,8 +419,14 @@ class PanelHeaderGateTests(PanelServed):
         self.assertTrue(self.acked())
 
     def test_every_post_path_requires_it_including_the_unknown_ones(self):
-        """Not just /v1/action. The hooks, the status line command and the OTLP exporter
-        all send it, so a path that did not require it would be the way back in."""
+        """Not just /v1/action. The hooks, the status line command, the notifier's ack
+        handler and the panel all send it, so a path that did not require it would be
+        the way back in.
+
+        /v1/metrics and /v1/logs are in this list too, and nothing in this repo
+        configures the OTLP exporter's headers - an exporter pointed at crabd is refused
+        until the operator sets OTEL_EXPORTER_OTLP_HEADERS. That is the contract's to
+        say (v0.31.0 §4), not this test's to soften."""
         for path in sorted(crabd.Handler.MUTATING_PATHS) + ["/v1/nope"]:
             with self.subTest(path=path):
                 started = time.time()
