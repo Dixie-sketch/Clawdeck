@@ -231,14 +231,6 @@ class PortCollisionTests(unittest.TestCase):
         self.addCleanup(holder.close)
         return holder.getsockname()[1]
 
-    @staticmethod
-    def free_port() -> int:
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        return port
-
     def test_a_held_port_answers_with_no_server_and_a_message(self):
         server, message = crabd._bind_server("127.0.0.1", self.held_port())
         self.assertIsNone(server)
@@ -301,12 +293,16 @@ class PortCollisionTests(unittest.TestCase):
         self.assertIn(crabd.PLATFORM.port_holder_hint(80), message)
 
     def test_a_free_port_returns_a_server_and_no_message(self):
-        port = self.free_port()
-        server, message = crabd._bind_server("127.0.0.1", port)
+        """Port 0 rather than "find a free port, close it, hope it is still free": that
+        dance has a real window in which something else takes the port, and the failure
+        would look like _bind_server being wrong. The kernel hands out a port that IS
+        free, atomically. Which port was asked for is a different claim, pinned by
+        test_the_bind_is_attempted_once_on_exactly_the_port_it_was_given."""
+        server, message = crabd._bind_server("127.0.0.1", 0)
         self.assertIsNone(message)
         self.assertIsInstance(server, crabd.CrabdServer)
         self.addCleanup(server.server_close)
-        self.assertEqual(server.server_address[1], port)
+        self.assertGreater(server.server_address[1], 0)
 
     def test_the_bind_is_attempted_once_on_exactly_the_port_it_was_given(self):
         """The proof there is no fallback: a counted factory, on a port that FAILS.
@@ -321,10 +317,10 @@ class PortCollisionTests(unittest.TestCase):
         original = crabd.CrabdServer
         crabd.CrabdServer = counting
         self.addCleanup(lambda: setattr(crabd, "CrabdServer", original))
-        server, message = crabd._bind_server("127.0.0.1", 9999)
+        server, message = crabd._bind_server("127.0.0.1", crabd.DEFAULT_PORT)
         self.assertIsNone(server)
         self.assertIsNotNone(message)
-        self.assertEqual(attempts, [("127.0.0.1", 9999)])
+        self.assertEqual(attempts, [("127.0.0.1", crabd.DEFAULT_PORT)])
 
     def test_main_says_when_there_is_no_panel_directory_to_serve(self):
         """Not fatal - crabd without a panel is still the feed the notifier, the glow
@@ -366,6 +362,9 @@ class SocketReuseTests(unittest.TestCase):
     loud on every one of them."""
 
     def test_the_server_asks_the_platform_rather_than_deciding_itself(self):
+        """Read ONCE, at import, onto the class attribute - so a test that swaps
+        crabd.PLATFORM has to set CrabdServer.allow_reuse_address too, or it is
+        measuring the platform it replaced."""
         self.assertIs(crabd.CrabdServer.allow_reuse_address,
                       crabd.PLATFORM.server_reuse_address())
 
@@ -389,7 +388,10 @@ class SocketReuseTests(unittest.TestCase):
         the operator reads a message about another process holding it."""
         server = crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler)
         port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # 0.05 for the same reason _httpkeepalive uses it: shutdown() waits out the
+        # current select(), and socketserver's default makes that half a second.
+        thread = threading.Thread(target=lambda: server.serve_forever(0.05),
+                                  daemon=True)
         thread.start()
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)

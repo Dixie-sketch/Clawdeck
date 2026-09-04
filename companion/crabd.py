@@ -6191,16 +6191,18 @@ class Handler(BaseHTTPRequestHandler):
     # unreadable reply) instead of open.
     _acao: str | None = None
 
-    def _send(self, code: int, body: bytes | None, ctype: str = "application/json",
-              nosniff: bool = False) -> None:
+    def _send(self, code: int, body: bytes | None,
+              ctype: str = "application/json") -> None:
         self.send_response(code)
         if body is None:
             self.send_header("Content-Length", "0")
         else:
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-        if nosniff:
-            self.send_header("X-Content-Type-Options", "nosniff")
+        # UNCONDITIONAL, like the Cache-Control below it. "believe the Content-Type I
+        # declared" has no reason to be a property of one branch, and a per-branch flag
+        # is one more thing a new route can forget.
+        self.send_header("X-Content-Type-Options", "nosniff")
         acao = self._acao
         if acao is not None:
             self.send_header("Access-Control-Allow-Origin", acao)
@@ -6531,8 +6533,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, body,
                    PANEL_CONTENT_TYPES.get(candidate.suffix.lower(),
-                                           PANEL_CONTENT_TYPE_DEFAULT),
-                   nosniff=True)
+                                           PANEL_CONTENT_TYPE_DEFAULT))
 
     def _panel_not_found(self) -> None:
         """404 for a panel request - and, ONCE, the reason when the reason is that there
@@ -7574,6 +7575,9 @@ class CrabdServer(ThreadingHTTPServer):
     # build QA), and on BSD/Linux it does not, so all it buys there is a restart inside
     # the TIME_WAIT window of the last connection. Each platform class says which it is;
     # a collision is loud on all three either way.
+    # Read ONCE, at import, onto the class attribute - socketserver reads it per bind
+    # but this expression is not re-evaluated. A test that swaps crabd.PLATFORM must set
+    # this attribute too, or it is measuring the platform it replaced.
     allow_reuse_address = PLATFORM.server_reuse_address()
     daemon_threads = True
     # socketserver's default accept backlog is FIVE. That was survivable while crabd

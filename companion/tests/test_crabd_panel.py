@@ -72,7 +72,7 @@ class StubLimits:
 ACAO = "Access-Control-Allow-Origin"
 ACAH = "Access-Control-Allow-Headers"
 JSON = "application/json"
-HEADER = crabd.PANEL_HEADER if hasattr(crabd, "PANEL_HEADER") else "X-SideCrab-Panel"
+HEADER = crabd.PANEL_HEADER
 
 
 class PanelServed(unittest.TestCase):
@@ -191,10 +191,19 @@ class OriginAllowlistTests(PanelServed):
     def test_the_panel_origin_is_matched_case_insensitively(self):
         """Browsers serialise an Origin lowercase, so this is belt and braces - but the
         comparison is over a scheme and a host, both of which are case-insensitive, and
-        a gate that says otherwise is a gate that fails on a technicality."""
-        get, post = self.both(f"HTTP://LOCALHOST:{self.port}")
+        a gate that says otherwise is a gate that fails on a technicality.
+
+        The ECHO is what was sent, not what was matched: the rule everywhere else in
+        this class is that ACAO reflects the request's own Origin verbatim, and a gate
+        that answered with a normalised string would be handing back an origin the
+        caller never claimed."""
+        origin = f"HTTP://LOCALHOST:{self.port}"
+        get, post = self.both(origin)
         self.assertEqual(get.status, 200)
         self.assertEqual(post.status, 204)
+        for reply in (get, post):
+            self.assertEqual(reply.headers.get(ACAO), origin)
+            self.assertEqual(reply.headers.get("Vary"), "Origin")
 
     def test_null_is_still_allowed_and_reflected(self):
         """The iCUE build's own origin. It is also forgeable, which is why the header
@@ -437,8 +446,10 @@ class PanelHeaderGateTests(PanelServed):
                 # /v1/hook/permission long-polls for up to 55 s once it is INSIDE the
                 # handler. The gate runs in front of the routing, so a refusal is
                 # immediate - a 403 that arrived after the hold would be a hook that
-                # blocked a live session for a minute.
-                self.assertLess(time.time() - started, 10, path)
+                # blocked a live session for a minute. 2 s, not 10: a loopback refusal
+                # is sub-millisecond, and a bound loose enough to pass a half-second
+                # stall is not measuring immediacy.
+                self.assertLess(time.time() - started, 2, path)
 
     def test_the_origin_gate_answers_first(self):
         """Order matters for what the refusal SAYS. A cross-site page learns that it is
@@ -533,7 +544,6 @@ class PanelPreflightTests(PanelServed):
         reply = self.options("null")
         self.assertEqual(reply.headers.get(ACAO), "null")
         self.assertEqual(reply.headers.get(ACAH), "Content-Type")
-        self.assertNotIn(HEADER, reply.headers.get(ACAH))
 
     def test_a_cross_site_preflight_gets_nothing_at_all(self):
         for origin in ("http://evil.example", f"http://localhost:{self.port + 1}"):
@@ -848,6 +858,17 @@ class PanelContentTypeTests(PanelTree):
                 reply = self.client.get("/" + rel)
                 self.assertEqual(reply.status, 200, rel)
                 self.assertEqual(reply.headers.get("Content-Type"), ctype, rel)
+
+    def test_the_api_carries_the_same_two_headers(self):
+        """nosniff is emitted UNCONDITIONALLY, like no-store beside it. A header whose
+        job is "believe the Content-Type I declared" has no reason to be a property of
+        one branch, and a per-branch flag is one more thing a new route can forget."""
+        for path in ("/v1/state", "/v1/health"):
+            with self.subTest(path=path):
+                reply = self.client.get(path)
+                self.assertEqual(reply.headers.get("Cache-Control"), "no-store", path)
+                self.assertEqual(reply.headers.get("X-Content-Type-Options"),
+                                 "nosniff", path)
 
     def test_every_static_reply_refuses_sniffing_and_caching(self):
         """no-store because the panel now ships WITH crabd: a script cached past an

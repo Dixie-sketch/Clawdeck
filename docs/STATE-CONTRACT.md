@@ -162,6 +162,7 @@ must preflight it — and the preflight is where the gate is enforced:
 | a panel origin from the table above | `Content-Type, X-SideCrab-Panel` |
 | `file://`, `qrc://…` (non-web scheme) | `Content-Type, X-SideCrab-Panel` |
 | `null` | `Content-Type` — **exactly as before 0.31.0** |
+| absent (a non-browser client; nothing preflights without one) | no ACAO at all, so no `Access-Control-Allow-Headers` either |
 | any other web origin | no ACAO at all, so no preflight answer to use |
 
 So a page that forges `Origin: null` keeps its READS (unchanged, and still a disclosed
@@ -187,10 +188,11 @@ reaches the path (`/index.html?mock=normal` serves `index.html`).
 Content type by suffix — `.html` `text/html; charset=utf-8`, `.css` `text/css; charset=utf-8`,
 `.js` `text/javascript; charset=utf-8`, `.json` `application/json`, `.svg` `image/svg+xml`,
 `.png` `image/png`, `.ico` `image/x-icon`, `.woff2` `font/woff2`, `.txt`
-`text/plain; charset=utf-8`, anything else `application/octet-stream`. Every static response
-carries `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` — ONE caching rule for
-the whole daemon, because the panel now ships with crabd and a stale script surviving an
-update is the bug that rule avoids.
+`text/plain; charset=utf-8`, anything else `application/octet-stream`. `X-Content-Type-Options: nosniff` and
+`Cache-Control: no-store` are on **every** response crabd sends, static or API — one rule each
+for the whole daemon rather than a per-branch flag a new route can forget. `no-store` matters
+here in particular: the panel now ships with crabd, and a stale script surviving an update is
+the bug it avoids.
 
 One static reply reads at most **64 MB** (`PANEL_MAX_BYTES`), checked by `stat` before
 the read; a larger file is `404` plus one log line. Not a limit the shipped panel comes

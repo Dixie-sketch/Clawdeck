@@ -268,7 +268,11 @@ def start_test_server(server_factory, attempts: int = 4):
         # guard that names a number a suite ago stops guarding the day it moves again.
         assert port != crabd.DEFAULT_PORT, \
             "test server must never bind the production port"
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # poll_interval 0.05, not socketserver's 0.5 default. serve_forever() sits in a
+        # select() with that timeout, and shutdown() has to wait for the current one to
+        # come round - so every fixture teardown in these suites paid up to half a second
+        # for nothing. The interval costs one wakeup per 50 ms on an idle test server.
+        thread = threading.Thread(target=lambda: server.serve_forever(0.05), daemon=True)
         thread.start()
         client = KeepAliveClient(port)
         try:
