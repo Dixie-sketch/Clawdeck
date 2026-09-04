@@ -112,6 +112,7 @@ function Send-SmokeHook {
     $body = $payload | ConvertTo-Json -Compress
     $resp = Invoke-WebRequest -Uri "$BaseUri/v1/hook" -Method Post -Body $body `
                               -ContentType 'application/json' -TimeoutSec 5 `
+                              -Headers @{ 'X-SideCrab-Panel' = '1' } `
                               -SkipHttpErrorCheck -ErrorAction Stop
     [int] $resp.StatusCode
 }

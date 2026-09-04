@@ -173,6 +173,7 @@ function Get-PermissionRouteState {
     try {
         $resp = Invoke-WebRequest -Uri "$BaseUri/v1/hook/permission" -Method Post -Body '{}' `
                                   -ContentType 'application/json' -TimeoutSec $TimeoutSec `
+                                  -Headers @{ 'X-SideCrab-Panel' = '1' } `
                                   -SkipHttpErrorCheck -ErrorAction Stop
         $status = [int] $resp.StatusCode
         [pscustomobject]@{ Reachable = $true; Status = $status; Is404 = ($status -eq 404) }
