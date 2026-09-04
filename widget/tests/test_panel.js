@@ -665,6 +665,24 @@ function hostPanel(host, opts) {
   ok(ctx.ui.sheetHost.querySelectorAll('.hs-chart').length === 2, 'the two host charts are still there');
 })();
 
+/* A BOUND BRIDGE THAT HAS SAID NOTHING KEEPS THE LINE (review). The latch alone
+   did the opposite of what its comment claimed inside iCUE: a machine whose
+   Sensors plugin is present and has never produced a reading is exactly the one
+   whose operator needs "no hardware sensor reading" — and the latch never resets,
+   so a bridge that went quiet after one good read kept promising temperatures it
+   no longer had. The gate is the BRIDGE, not the history. */
+(function () {
+  var ctx = hostPanel({ cpuPct: 10, memPct: 20, memUsedGB: null, memTotalGB: null });
+  /* Stand in for a bound plugin the way the panel's own dev flag does: what
+     decides the line is whether a bridge exists to be quiet. */
+  ctx.sensorsPlugin = function () { return {}; };
+  ctx.openHostSheet();
+  eq(ctx.ui.sheetHost.querySelectorAll('.hs-temps').length, 1,
+    'a bound bridge that has produced nothing still says so');
+  var line = ctx.ui.sheetHost.querySelector('.hs-temps');
+  eq(line.textContent, 'no hardware sensor reading', 'and says exactly that');
+})();
+
 /* Every sensor dev flag stays gated on ?mock=, so nothing on a served origin can
    manufacture a reading. */
 (function () {

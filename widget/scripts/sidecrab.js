@@ -7658,15 +7658,11 @@ function openHostSheet() {
 	enterSheetFocus();
 }
 
-/* Follows the feed like every other sheet: a companion that stops serving `host`
-   takes this view with it rather than leaving a ten-minute chart of a machine
-   nobody is measuring any more. */
 /* v0.30.0. The title used to name a Windows box outright. navigator.platform is
-   deprecated and is
-   still the only thing every engine this panel runs in answers, and a wrong
-   answer costs a noun rather than a behaviour — which is why it is read here and
-   nowhere that decides anything. Anything that is not a Mac is "this machine"
-   rather than a guess at what it is. */
+   deprecated and is still the only thing every engine this panel runs in
+   answers, and a wrong answer costs a NOUN rather than a behaviour — which is
+   why it is read here and nowhere that decides anything. Anything that is not a
+   Mac is "this machine" rather than a guess at what it is. */
 function thisMachine(lower) {
 	var p = '';
 	try { p = String((window.navigator && window.navigator.platform) || ''); } catch (e) { p = ''; }
@@ -7674,6 +7670,9 @@ function thisMachine(lower) {
 	return lower ? s.charAt(0).toLowerCase() + s.slice(1) : s;
 }
 
+/* Follows the feed like every other sheet: a companion that stops serving `host`
+   takes this view with it rather than leaving a ten-minute chart of a machine
+   nobody is measuring any more. */
 function syncHostSheet() {
 	if (!hostSheetAvailable()) { closeSheet(); return; }
 	setText(ui.sheetTitle, thisMachine());
@@ -7702,11 +7701,17 @@ function syncHostSheet() {
 	   (iCUE's bridge feeds them on its own clock, not the poll's) so there is no
 	   ten-minute history of them to draw, and drawing one from the ring's timestamps
 	   would be charting a series against somebody else's samples.
-	   v0.30.0: the whole block is OMITTED where no cell has ever rendered one. "no
-	   hardware sensor reading" is a true and useful sentence about a bridge that is
-	   there and quiet; on a platform with no bridge at all it reads as a fault, and
-	   there is nothing the operator could do about it. */
-	if (!sensorEverShown) return;
+	   v0.30.0: the whole block is OMITTED where there is no bridge AND none has ever
+	   answered. "no hardware sensor reading" is a true and useful sentence about a
+	   bridge that is there and quiet — which is a machine whose operator most needs
+	   it — and a fault report on a platform that has no bridge to be quiet.
+	   GATED ON THE BRIDGE FIRST, and the latch only as a fallback: an earlier
+	   version gated on the latch alone and got iCUE exactly backwards, dropping the
+	   line on the bound-but-silent machine it exists for. The latch stays for the
+	   other direction — a bridge that answered once and has since gone (a plugin
+	   torn down under a running panel) keeps the block rather than having the sheet
+	   quietly stop mentioning temperatures it was showing a moment ago. */
+	if (!sensorsPlugin() && !sensorEverShown) return;
 	var temps = [];
 	for (var i = 0; i < SENSOR_KEYS.length; i++) {
 		var t = sensorText(SENSOR_KEYS[i]);
