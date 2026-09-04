@@ -171,6 +171,24 @@ class EnableDecision(unittest.TestCase):
                 self.assertEqual(decision.changed, start)
 
 
+class UnloadAgents(TempHome):
+    def plist(self, label="com.sidecrab.crabd"):
+        return self.home / "Library" / "LaunchAgents" / f"{label}.plist"
+
+    def test_both_agents_are_booted_out_and_their_plists_removed(self):
+        setup.main(["install", "--yes", "--with-toast"], env=self.env())
+        self.runner = RecordingRunner()
+        self.assertEqual(setup.main(["uninstall", "--yes"], env=self.env()), 0)
+
+        self.assertFalse(self.plist().exists())
+        self.assertFalse(self.plist("com.sidecrab.toast").exists())
+        booted = [c[2] for c in self.runner.argv_for("bootout")]
+        self.assertEqual(booted, ["gui/501/com.sidecrab.crabd", "gui/501/com.sidecrab.toast"])
+
+    def test_an_agent_that_was_never_installed_is_not_an_error(self):
+        self.assertEqual(setup.main(["uninstall", "--yes"], env=self.env()), 0)
+
+
 class ServiceVerdict(unittest.TestCase):
     """Health alone cannot say WHO answered - the two readings together can."""
 

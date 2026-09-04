@@ -404,5 +404,101 @@ class PanelApprovals(TempHome):
         self.assertIs(self.config()["panelApprovals"]["enabled"], True)
 
 
+class Uninstall(TempHome):
+    """Take back what SideCrab wrote, and nothing else."""
+
+    def install(self, *args):
+        return setup.main(["install", "--yes", *args], env=self.env())
+
+    def uninstall(self, *args):
+        return setup.main(["uninstall", "--yes", *args], env=self.env())
+
+    def read_settings_doc(self):
+        return json.loads((self.home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+
+    def test_only_our_entries_go_and_a_hand_merged_hook_stays(self):
+        self.write_settings(
+            {
+                "model": "opus",
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "mine --please-keep"}]}
+                    ],
+                    "PreToolUse": [{"hooks": [{"type": "command", "command": "unrelated"}]}],
+                },
+            }
+        )
+        self.install()
+        self.assertEqual(self.uninstall(), 0)
+
+        doc = self.read_settings_doc()
+        self.assertEqual(doc["model"], "opus")
+        self.assertEqual(setup.hook_events(doc), [])
+        commands = [e["command"] for m in doc["hooks"]["SessionStart"] for e in m["hooks"]]
+        self.assertEqual(commands, ["mine --please-keep"])
+        self.assertEqual(doc["hooks"]["PreToolUse"], [{"hooks": [{"type": "command", "command": "unrelated"}]}])
+
+    def test_the_prior_status_line_comes_back_and_the_chain_file_goes(self):
+        self.write_settings({"statusLine": {"type": "command", "command": "starship", "padding": 2}})
+        self.install()
+        self.uninstall()
+
+        doc = self.read_settings_doc()
+        self.assertEqual(doc["statusLine"], {"type": "command", "command": "starship", "padding": 2})
+        self.assertFalse((self.home / ".sidecrab" / "statusline-chain.json").exists())
+
+    def test_an_empty_slot_goes_back_to_empty(self):
+        self.write_settings({"model": "opus"})
+        self.install()
+        self.uninstall()
+        self.assertNotIn("statusLine", self.read_settings_doc())
+
+    def test_a_status_line_installed_after_us_is_left_exactly_as_it_is(self):
+        self.write_settings({"statusLine": {"type": "command", "command": "starship"}})
+        self.install()
+        doc = self.read_settings_doc()
+        doc["statusLine"] = {"type": "command", "command": "powerline"}
+        (self.home / ".claude" / "settings.json").write_text(json.dumps(doc, indent=2), "utf-8")
+
+        self.uninstall()
+        self.assertEqual(self.read_settings_doc()["statusLine"]["command"], "powerline")
+        self.assertIn("not SideCrab", self.output)
+
+    def test_our_allow_list_patterns_go_when_the_operators_own_remain(self):
+        self.write_settings({"allowedHttpHookUrls": ["http://example/*"]})
+        self.install()
+        self.uninstall()
+        self.assertEqual(self.read_settings_doc()["allowedHttpHookUrls"], ["http://example/*"])
+
+    def test_an_allow_list_that_would_be_emptied_loses_the_key_instead(self):
+        self.write_settings({"allowedHttpHookUrls": list(setup.ALLOWED_HOOK_PATTERNS)})
+        self.uninstall()
+        self.assertNotIn("allowedHttpHookUrls", self.read_settings_doc())
+        self.assertIn("blocked", self.output.lower())
+
+    def test_settings_are_backed_up_before_the_removal(self):
+        path = self.write_settings({"model": "opus"})
+        self.install()
+        self.clock = self.clock.replace(hour=13)
+        self.uninstall()
+        self.assertIn("settings.json.sidecrab-bak-20260904-132233", self.backups(path))
+
+    def test_a_run_with_nothing_of_ours_to_remove_writes_nothing(self):
+        path = self.write_settings({"model": "opus"})
+        before = path.read_text(encoding="utf-8")
+        self.assertEqual(self.uninstall(), 0)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.backups(path), [])
+
+    def test_purge_removes_the_sidecrab_directory_and_a_plain_run_does_not(self):
+        self.install()
+        (self.home / ".sidecrab" / "panel-token").write_text("ABCDE23456", encoding="utf-8")
+        self.uninstall()
+        self.assertTrue((self.home / ".sidecrab" / "config.json").exists())
+
+        self.uninstall("--purge")
+        self.assertFalse((self.home / ".sidecrab").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

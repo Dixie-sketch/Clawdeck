@@ -22,6 +22,7 @@ import os
 import plistlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -1763,6 +1764,97 @@ def command_update(env: Environment, args) -> int:
     return 0
 
 
+def uninstall_settings(env: Environment, writer: Writer) -> None:
+    """Take our hooks, our status line and our allow-list patterns back out.
+
+    Ownership first, every time: an entry, a status line or a pattern that is not ours
+    is left exactly where it is, and the run says what it refused to touch.
+    """
+    before = read_json_object(env.settings_path, "settings.json")
+    settings, removed = remove_hook_entries(before)
+
+    saved_present = env.chain_path.exists()
+    saved = read_json_object(env.chain_path, "the chain file").get("statusLine") if saved_present else None
+    current = settings.get("statusLine")
+    current_command = str(current.get("command", "")) if isinstance(current, dict) else ""
+    decision = statusline_restore_decision(
+        current_command, statusline_is_ours(current_command), saved_present, saved
+    )
+    if decision.action == "restore":
+        settings["statusLine"] = saved
+    elif decision.action == "remove":
+        settings.pop("statusLine", None)
+    elif decision.action == "preserve-foreign":
+        # Loud: the operator is entitled to know an uninstall found something it refused
+        # to touch, and what it therefore did NOT put back.
+        env.emit(f"  statusline: KEPT - it is not SideCrab's, so it was left alone: {current_command}")
+        if isinstance(saved, dict):
+            env.emit(f"  statusline: the prior SideCrab saved and did NOT restore over it: {saved.get('command')}")
+
+    allowlist = allowed_hook_urls_removal_plan(settings)
+    settings = allowlist.settings
+
+    if settings != before:
+        backup = writer.write_json(env.settings_path, settings)
+        env.emit(f"  hooks:      {removed} entr(ies) removed from {env.settings_path}")
+        env.emit(f"  statusline: {decision.reason}")
+        if allowlist.action in ("removed", "key-removed"):
+            env.emit(f"  allowlist:  {allowlist.reason}")
+        if backup:
+            env.emit(f"  backup:     {backup}")
+    else:
+        env.emit(f"  settings:   nothing of SideCrab's in {env.settings_path}")
+
+    if saved_present and decision.action != "preserve-foreign":
+        # The chain file is WIRING, not a record: nothing reads it once the prior it
+        # carried is back in settings.json.
+        env.chain_path.unlink()
+        env.emit(f"  chain:      {env.chain_path} removed")
+
+
+def uninstall_config(env: Environment, writer: Writer) -> None:
+    config = read_json_object(env.config_path, "config.json")
+    if "panelApprovals" not in config:
+        return
+    out = copy.deepcopy(config)
+    del out["panelApprovals"]
+    writer.write_json(env.config_path, out)
+    env.emit("  approvals:  the panelApprovals key was removed from config.json")
+
+
+def unload_agents(env: Environment) -> None:
+    for spec in AGENTS:
+        plist_path = env.agents_dir / f"{spec.label}.plist"
+        # bootout unconditionally: a label can be loaded with the plist already gone, and
+        # its "not found" exit for one that is not is exactly what we want to ignore.
+        launchctl(env, "bootout", f"gui/{env.uid}/{spec.label}")
+        if plist_path.exists():
+            plist_path.unlink()
+            env.emit(f"  agent:      {spec.label} unloaded and its plist removed")
+
+
+def command_uninstall(env: Environment, args) -> int:
+    env.emit("SideCrab uninstall (macOS)")
+    writer = Writer(env.now)
+    uninstall_settings(env, writer)
+    uninstall_config(env, writer)
+    unload_agents(env)
+
+    if args.purge:
+        if env.sidecrab_dir.exists():
+            if not args.yes and env.ask is not None:
+                env.emit(f"  --purge deletes {env.sidecrab_dir} and everything in it:")
+                env.emit("    config.json, history.jsonl, the pairing code, the logs.")
+                if (env.ask("  Delete it? [y/N] ") or "").strip().lower() not in ("y", "yes"):
+                    env.emit("  purge:      declined - nothing under ~/.sidecrab was deleted")
+                    return 0
+            shutil.rmtree(env.sidecrab_dir)
+            env.emit(f"  purge:      {env.sidecrab_dir} deleted")
+    else:
+        env.emit(f"  kept:       {env.sidecrab_dir} (--purge deletes it)")
+    return 0
+
+
 def command_install(env: Environment, args) -> int:
     python = env.resolve_python()
     env.emit("SideCrab install (macOS)")
@@ -1786,6 +1878,7 @@ COMMANDS = {
     "limits-token": command_limits_token,
     "status": command_status,
     "doctor": command_doctor,
+    "uninstall": command_uninstall,
 }
 
 
@@ -1808,6 +1901,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="read-only: what is installed, wired and answering")
     sub.add_parser("doctor", help="a PASS/FAIL table over the whole chain a session travels")
     sub.add_parser("update", help="refresh the plists from this checkout and restart crabd")
+    uninstall = sub.add_parser("uninstall", help="remove the agents, the hooks and the status line")
+    uninstall.add_argument("--purge", action="store_true", help="also delete ~/.sidecrab")
+    uninstall.add_argument("--yes", action="store_true", help="never prompt")
+
     sub.add_parser("pairing-code", help="print the code crabd minted, and where to enter it")
     # No token argument: the value is read from stdin so it never lands in argv.
     sub.add_parser("limits-token", help="store a long-lived Claude token, read from stdin")
