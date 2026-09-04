@@ -1959,6 +1959,95 @@ class PowerShellToastAdapter:
         return True
 
 
+# -- macOS: the same seam, a different interpreter ---------------------------------------
+
+MAC_OSASCRIPT = "/usr/bin/osascript"
+
+#: The AppleScript, as three CONSTANT strings handed to osascript with -e. The notification
+#: text NEVER appears here: it rides in argv, past the separator, and the script reads it back
+#: with `item N of argv`.
+#:
+#: MEASURED on macOS 26.6: `osascript -e 'on run argv' ... -- <arg>` passes every argument
+#: through byte for byte — a probe carrying a double quote, a backslash, a newline,
+#: `$(touch ...)`, backticks, `&` and `; rm -rf /` came back identical, exit 0, with nothing
+#: substituted or executed. That is the same property PowerShell's base64 payload buys on the
+#: Windows side, obtained by not building a script out of user text at all.
+#:
+#: TRAP: interpolating the title or the body into this line is a one-character-looking change
+#: that reintroduces AppleScript injection — a `"` in a question would close the string
+#: literal. notifier/tests/test_mac_adapter.py asserts these three strings are byte-identical
+#: whatever the request says.
+MAC_SCRIPT_ON_RUN = "on run argv"
+MAC_SCRIPT_DISPLAY_LINE = (
+    "display notification (item 1 of argv) with title (item 2 of argv)"
+    ' subtitle (item 3 of argv) sound name "default"'
+)
+MAC_SCRIPT_END_RUN = "end run"
+
+#: The subtitle every notification carries. It is the macOS seat of the Windows payload's
+#: `<text placement='attribution'>SideCrab</text>`, and it earns its place here: a
+#: notification posted through osascript is attributed to Script Editor, so this line is the
+#: only thing on screen that says which product raised it.
+MAC_SUBTITLE = "SideCrab"
+
+
+def notification_text(request: ToastRequest) -> tuple[str, str, str]:
+    """Pure: one request → the three positional arguments, in argv order (body, title, subtitle).
+
+    Body first because `display notification` takes the body as its direct object. The session
+    label is already inside `request.title` (build_request composes "Claude is waiting — …"),
+    and the approval hint is already at the end of `request.body`, so neither is moved here.
+    """
+    return str(request.body), str(request.title), MAC_SUBTITLE
+
+
+def run_osascript(argv: list[str], timeout: float) -> tuple[int, str, str]:
+    """The default runner: a LIST argv, never `shell=True`. Impure, and the only I/O below."""
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+class MacNotificationAdapter:
+    """Posts a macOS notification through osascript. Same one-method contract as the Windows
+    adapter, and the same promise: `show` returns a bool and never raises.
+
+    `runner` is the test seam — `(argv, timeout) -> (returncode, stdout, stderr)`.
+    """
+
+    def __init__(
+        self,
+        osascript: str = MAC_OSASCRIPT,
+        timeout: float = 10.0,
+        runner: Any = None,
+    ) -> None:
+        self.osascript = osascript
+        self.timeout = timeout
+        self.runner = runner or run_osascript
+
+    def build_argv(self, request: ToastRequest) -> list[str]:
+        """Pure: the whole command line. Three -e script constants, `--`, three arguments."""
+        body, title, subtitle = notification_text(request)
+        return [
+            self.osascript,
+            "-e",
+            MAC_SCRIPT_ON_RUN,
+            "-e",
+            MAC_SCRIPT_DISPLAY_LINE,
+            "-e",
+            MAC_SCRIPT_END_RUN,
+            # Everything after this is data. osascript stops reading options here, so a body
+            # that starts with "-e" is text and not a fourth script line.
+            "--",
+            body,
+            title,
+            subtitle,
+        ]
+
+    def show(self, request: ToastRequest) -> bool:
+        returncode, _stdout, _stderr = self.runner(self.build_argv(request), self.timeout)
+        return returncode == 0
+
+
 # --------------------------------------------------------------------------------------
 # The daemon
 # --------------------------------------------------------------------------------------
