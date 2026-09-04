@@ -332,6 +332,58 @@ class DarwinClockGuardTests(LogOnceReset):
         self.assertEqual(block, {"cpuPct": None, "memPct": 62.5,
                                  "memUsedGB": 20.0, "memTotalGB": 32.0})
 
+    def sysconf_counter(self, answers):
+        """os.sysconf replaced by one that walks `answers` (a value, or an exception to
+        raise) and records the names it was asked for."""
+        asked = []
+        queue = list(answers)
+        missing = object()
+        original = getattr(crabd.os, "sysconf", missing)
+
+        def restore():
+            if original is missing:
+                del crabd.os.sysconf
+            else:
+                crabd.os.sysconf = original
+
+        self.addCleanup(restore)
+
+        def counting(name):
+            asked.append(name)
+            answer = queue.pop(0) if queue else 100
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        crabd.os.sysconf = counting
+        return asked
+
+    def test_the_clock_is_read_once_and_then_remembered(self):
+        """CLK_TCK is a property of the KERNEL, not a reading that drifts, and this
+        reader runs every two seconds for the life of the daemon. Resolving it per call
+        buys nothing and pays a syscall for it."""
+        asked = self.sysconf_counter([100])
+        platform = crabd.DarwinPlatform(load_info=lambda: self.RAW)
+        for _ in range(3):
+            self.assertIsNotNone(platform.cpu_times())
+        self.assertEqual(asked, ["SC_CLK_TCK"])
+
+    def test_a_read_that_failed_is_not_what_gets_remembered(self):
+        """Only an ANSWER is cached. A sysconf that raised, or one that answered
+        something that cannot scale the counters, has told this reader nothing - and a
+        remembered failure would be a gauge that stays dark for the life of the process
+        over one bad call."""
+        asked = self.sysconf_counter([OSError("no sysconf yet"), 7, 100])
+        platform = crabd.DarwinPlatform(load_info=lambda: self.RAW)
+        out, _noise = self.capture(
+            lambda: [platform.cpu_times() for _ in range(3)])
+        self.assertEqual(out[:2], [None, None])          # raised, then unusable
+        self.assertEqual(out[2], (30_000_000, 40_000_000, 10_000_000))
+        self.assertEqual(asked, ["SC_CLK_TCK"] * 3)
+        # ...and once it has an answer, that is the end of the asking.
+        self.assertIsNotNone(platform.cpu_times())
+        self.assertEqual(len(asked), 3)
+
     def test_a_host_with_no_sc_clk_tck_answers_absence_not_an_exception(self):
         """Windows is such a host - `os.sysconf` is not there at all. DarwinPlatform is
         never SELECTED on one, but the seam lets anything build one, and a reader called

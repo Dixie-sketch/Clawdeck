@@ -143,7 +143,9 @@ case is a single over-large window served as a percentage (and the sampler still
 if idle then exceeds the total), while the alternative is a null gauge on every long-uptime
 machine.
 
-`CLK_TCK` is read once via `os.sysconf("SC_CLK_TCK")` and must be a positive integer that
+`CLK_TCK` is read via `os.sysconf("SC_CLK_TCK")` once per reader — the answer is remembered,
+a failure is not, so a sysconf that raised is re-asked on the next pass — and must be a
+positive integer that
 divides 10_000_000 evenly; anything else (0, negative, `True`, 3, 7, missing) serves **no
 `cpuPct`** with one stderr line, because the scaling is an integer division.
 

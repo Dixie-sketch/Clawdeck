@@ -3333,6 +3333,9 @@ class DarwinPlatform:
         self._vm_stats = vm_stats or _darwin_vm_statistics64
         self._sysctl = sysctl or _darwin_sysctl
         self._clk_tck = clk_tck
+        # The resolved 100 ns-units-per-tick scale, once SC_CLK_TCK has answered
+        # usefully. See _tick_scale: only an answer is remembered.
+        self._scale: int | None = None
         # The 32-bit unwrap, per bucket: the last RAW value seen, and how many whole
         # 2^32 laps have been added to it.
         #
@@ -3438,7 +3441,15 @@ class DarwinPlatform:
         checked rather than assumed because the division is INTEGER: a CLK_TCK that does
         not divide 10_000_000 evenly would quietly drop part of every tick, and one that
         is zero or negative would divide by zero or invert the counters.
+
+        RESOLVED ONCE and remembered: the clock is a property of the kernel, not a
+        reading that drifts, and this runs every two seconds for the life of the daemon.
+        Only an ANSWER is cached - a sysconf that raised or answered something unusable
+        is re-asked next time, because a remembered failure would be a gauge that stays
+        dark for the whole process over one bad call.
         """
+        if self._scale is not None:
+            return self._scale
         clk = self._clk_tck
         if clk is None:
             try:
@@ -3454,7 +3465,8 @@ class DarwinPlatform:
                       f"crabd: SC_CLK_TCK is {clk!r}, which cannot scale the CPU "
                       f"counters; serving no host CPU")
             return None
-        return HOST_100NS_PER_SEC // clk
+        self._scale = HOST_100NS_PER_SEC // clk
+        return self._scale
 
     def memory(self) -> tuple[int, int] | None:
         """(total physical bytes, available bytes), or None.
