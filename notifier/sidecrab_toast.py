@@ -50,16 +50,13 @@ Windows route — measured on Windows 11, 2026-08-26:
   cooldown, so a notifier that was running when the installer registered the key picks it up
   on its own (see AUMID_REPROBE_SEC).
 
-macOS route — measured on macOS 26.6 with /usr/bin/osascript, 2026-09-04:
+macOS route — /usr/bin/osascript, measured on macOS 26.6, 2026-09-04:
 
-  `osascript -e 'on run argv' -e '<script>' -e 'end run' -- <body> <title> <subtitle>` passes
-  every argument to the script VERBATIM: a probe carrying a double quote, a backslash, a
-  newline, `$(touch …)`, backticks, `&` and `; rm -rf /` came back byte-identical, exit 0,
-  with nothing substituted or executed. So the notification text never has to be interpolated
-  into AppleScript source — the script is three constant strings and the text rides in argv,
-  which is the same boundary PowerShell's base64 payload buys on the Windows side.
-  The display line compiles (osacompile, exit 0) and one live `--test-toast` posted with it,
-  exit 0 and empty stderr.
+  A `display notification` posted by a THREE-CONSTANT AppleScript, with the text riding in
+  argv. The measurement that licenses building it that way — argv arrives verbatim, so nothing
+  is interpolated and nothing needs escaping — is written once, at MAC_SCRIPT_DISPLAY_LINE.
+
+  Nothing here reads a registry, an AUMID or an icon: there is no identity to register.
 
   THE SOUND NAME IS NOT A FILE. `sound name "default"` names nothing under
   /System/Library/Sounds, whose 14 entries are Basso…Tink (measured). AppleScript accepts any
@@ -67,22 +64,20 @@ macOS route — measured on macOS 26.6 with /usr/bin/osascript, 2026-09-04:
   sound rather than erroring, which is why the clause survives here: it asks for the default
   and cannot fail. What was NOT verified from this session: that a sound was audible.
 
-  Nothing here reads a registry, an AUMID or an icon: there is no identity to register.
+  THREE THINGS THIS ROUTE CANNOT DO, all permanent properties of it rather than things to fix:
 
-  TWO RESIDUALS, both permanent properties of this route rather than things to fix later:
+    NO BUTTONS: `display notification` has no action affordance at all. The Acknowledge and
+      Snooze buttons, ACK_SCHEME/SNOOZE_SCHEME and both .pyw handlers are the Windows route's,
+      and stay Windows-only — the operator acknowledges on the panel.
 
-    IDENTITY: notifications posted through osascript appear under Script Editor's identity, so
-      the macOS per-app notification switch is Script Editor's and MAC_SUBTITLE ("SideCrab") is
-      the only thing on screen naming the product.
+    NO REPLACEMENT: it cannot set a replacement identifier, so a second outage notice STACKS
+      beneath the first instead of replacing it. STALE_ID's fixed tag and the digest/budget id
+      prefixes still keep the deciders' ledgers honest; what they no longer buy on this
+      platform is the Action Center slot behaviour they were named for.
 
-    NO REPLACEMENT: `display notification` cannot set a replacement identifier, so a second
-      outage notice STACKS beneath the first instead of replacing it. STALE_ID's fixed tag and
-      the digest/budget id prefixes still keep the deciders' ledgers honest; what they no
-      longer buy on this platform is the Action Center slot behaviour they were named for.
-
-    And it carries NO BUTTONS: `display notification` has no action affordance at all. The
-      Acknowledge and Snooze buttons, ACK_SCHEME/SNOOZE_SCHEME and both .pyw handlers are the
-      Windows route's, and stay Windows-only — the operator acknowledges on the panel.
+    NO IDENTITY: notifications posted through osascript appear under Script Editor's, so the
+      macOS per-app notification switch is Script Editor's and MAC_SUBTITLE ("SideCrab") is the
+      only thing on screen naming the product.
 
 DIGEST (v0.8.0): a second, unrelated toast — one "yesterday" summary per calendar day at a
   configured local time, off the same 10 s poll loop (no extra thread). Its per-day ledger is
@@ -2009,17 +2004,22 @@ class PowerShellToastAdapter:
 
 # -- macOS: the same seam, a different interpreter ---------------------------------------
 
+#: Absolute path by design, the same way POWERSHELL_EXE is pinned: this runs from a LaunchAgent,
+#: whose PATH is not the operator's login-shell PATH, and osascript ships with macOS. A bare
+#: "osascript" would be resolved against a PATH this process does not control.
 MAC_OSASCRIPT = "/usr/bin/osascript"
 
 #: The AppleScript, as three CONSTANT strings handed to osascript with -e. The notification
 #: text NEVER appears here: it rides in argv, past the separator, and the script reads it back
 #: with `item N of argv`.
 #:
-#: MEASURED on macOS 26.6: `osascript -e 'on run argv' ... -- <arg>` passes every argument
-#: through byte for byte — a probe carrying a double quote, a backslash, a newline,
-#: `$(touch ...)`, backticks, `&` and `; rm -rf /` came back identical, exit 0, with nothing
-#: substituted or executed. That is the same property PowerShell's base64 payload buys on the
-#: Windows side, obtained by not building a script out of user text at all.
+#: THE MEASUREMENT THE WHOLE ROUTE RESTS ON, macOS 26.6, 2026-09-04: `osascript -e 'on run
+#: argv' ... -- <arg>` passes every argument through byte for byte — a probe carrying a double
+#: quote, a backslash, a newline, `$(touch ...)`, backticks, `&` and `; rm -rf /` came back
+#: identical, exit 0, with nothing substituted or executed. That is the same property
+#: PowerShell's base64 payload buys on the Windows side, obtained by not building a script out
+#: of user text at all. The line itself compiles (osacompile, exit 0, pinned by
+#: test_mac_adapter.AppleScriptGrammarTests) and has posted live (--test-toast, exit 0).
 #:
 #: TRAP: interpolating the title or the body into this line is a one-character-looking change
 #: that reintroduces AppleScript injection — a `"` in a question would close the string
@@ -2049,9 +2049,10 @@ MAC_TITLE_TRIM = TITLE_TRIM * 2
 def _mac_argument(value: Any, limit: int) -> str:
     """One osascript argument: control bytes stripped, and capped at an existing budget.
 
-    Under budget the text is VERBATIM — a newline or a tab in a question is content, and the
-    argv boundary carries it. Over budget the existing trim() makes the cut, so an argument
-    that no decider trimmed ends up worded exactly like one that did.
+    Under budget the text is passed through unchanged. That is a property of THIS boundary and
+    not a claim about production: every shipping request has already been through trim(), which
+    collapses whitespace, so no decider can hand a tab or a newline down here. The cut, when
+    one is needed, is trim()'s, so an argument no decider trimmed reads exactly like one it did.
     """
     text = strip_control(value)
     return text if len(text) <= limit else trim(text, limit)
@@ -2138,9 +2139,9 @@ class MacNotificationAdapter:
     def show(self, request: ToastRequest) -> bool:
         try:
             returncode, _stdout, stderr = self.runner(self.build_argv(request), self.timeout)
-        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError, ValueError) as exc:
-            # TimeoutExpired is a SubprocessError; naming it first says which one is expected
-            # — osascript can sit behind the operator's one-time permission dialog.
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            # SubprocessError covers TimeoutExpired, which is the one most expected here:
+            # osascript can sit behind the operator's one-time permission dialog.
             #
             # ValueError is NOT paranoia: subprocess refuses an argument it cannot encode, and
             # both refusals are ValueError subclasses raised while converting the argv (before

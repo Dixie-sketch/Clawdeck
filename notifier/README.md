@@ -743,12 +743,12 @@ body, the title and the subtitle as three positional arguments:
   -e 'end run' -- <body> <title> "SideCrab"
 ```
 
-The notification text is never interpolated into the script. *Measured on macOS 26.6:* a
-probe argument carrying `"`, `\`, a newline, `$(touch …)`, backticks, `&` and `; rm -rf /`
-came back byte-identical with exit 0 and nothing substituted or executed — the same boundary
-Windows gets from base64, obtained by not building a script out of operator text at all.
-`notifier/tests/test_mac_adapter.py` pins it: the three `-e` strings must stay byte-identical
-whatever the request says, and the subprocess must be handed a **list** with no `shell=`.
+The notification text is never interpolated into the script — the same boundary Windows gets
+from base64, obtained by not building a script out of operator text at all. The measurement
+that licenses it (argv arrives byte for byte, hostile characters and all) is recorded once, at
+`MAC_SCRIPT_DISPLAY_LINE` in `sidecrab_toast.py`. `notifier/tests/test_mac_adapter.py` pins
+it: the three `-e` strings must stay byte-identical whatever the request says, the subprocess
+must be handed a **list** with no `shell=`, and `osacompile` must accept the AppleScript.
 
 Control bytes are stripped from every argument with the same character class the Windows lane
 strips (`strip_control`), which is load-bearing here rather than cosmetic: `subprocess`

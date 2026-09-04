@@ -6,11 +6,9 @@ same property against a different interpreter, and gets it a stronger way: the A
 three CONSTANT strings and the text rides in ``argv``, so there is no interpolation to escape
 from in the first place.
 
-MEASURED on this Mac (macOS 26.6, /usr/bin/osascript), and the reason the design is what it is:
-``osascript -e 'on run argv' -e '<script>' -e 'end run' -- <arg>`` hands every argument to the
-script byte for byte. A probe string carrying ``"``, ``\\``, a newline, ``$(touch ...)``,
-backticks, ``&`` and ``; rm -rf /`` came back identical, exit 0, and the command substitution
-did not run.
+The measurement that licenses that design — argv arrives byte for byte, so nothing is
+interpolated and nothing needs escaping — is recorded once, beside ``MAC_SCRIPT_DISPLAY_LINE``
+in the module it tests.
 
 Every test here is pure and runs on any OS: the subprocess is an injected runner.
 
@@ -232,7 +230,7 @@ class InjectionTests(unittest.TestCase):
         self.assertEqual(argv[8], HOSTILE, "body")
         self.assertEqual(argv[9], f"Claude is waiting — {HOSTILE}", "title")
 
-    def test_the_script_is_byte_identical_to_a_plain_request_s(self) -> None:
+    def test_the_script_is_byte_identical_for_plain_and_hostile_requests(self) -> None:
         """The mutation gate. Interpolating any of this text into the display line changes
         these three strings, and this is the assertion that notices."""
         plain = self.argv_for(request())[:8]
@@ -307,7 +305,11 @@ class ControlCharacterTests(unittest.TestCase):
         self.assertEqual(runner.argv[8], "body")
         self.assertEqual(runner.argv[9], "title")
 
-    def test_a_multiline_question_still_reaches_argv_with_its_newline(self) -> None:
+    def test_a_newline_is_carried_rather_than_stripped(self) -> None:
+        """Pins the ADAPTER's boundary, not production: every shipping request has been
+        through trim(), which collapses whitespace, so no decider can hand one down. What is
+        asserted is that the strip is a control-byte strip and stops there — widening it to
+        0x00-0x1f would take tab, newline and return with it."""
         runner = RecordingRunner()
         MacNotificationAdapter(runner=runner).show(ToastRequest("s1", "t", "t", "one\ntwo"))
         self.assertEqual(runner.argv[8], "one\ntwo")
