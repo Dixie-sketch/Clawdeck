@@ -4437,11 +4437,17 @@ NOT_FOUND = (1, "", "ERROR: The system cannot find the file specified.\r\r\n")
 
 
 class FleetMappingTests(unittest.TestCase):
-    """crabd's half of the fleet contract, with the subprocess mocked."""
+    """crabd's half of the fleet contract, with the subprocess mocked.
+
+    `platform=WindowsPlatform()` is explicit rather than defaulted so the schtasks task
+    names and the csv mapping keep being proven on EVERY host, not only on the one that
+    would have selected that platform anyway.
+    """
 
     @staticmethod
     def reader(results):
-        return crabd.FleetReader(runner=FakeSchtasks(results))
+        return crabd.FleetReader(runner=FakeSchtasks(results),
+                                 platform=crabd.WindowsPlatform())
 
     def status(self, result):
         return self.reader({"SideCrab-glow": result}).status("SideCrab-glow")
@@ -4503,7 +4509,7 @@ class FleetMappingTests(unittest.TestCase):
 
     def test_the_query_is_cached_for_sixty_seconds(self):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
-        fleet = crabd.FleetReader(runner=runner)
+        fleet = crabd.FleetReader(runner=runner, platform=crabd.WindowsPlatform())
         now = time.time()
         self.assertTrue(fleet.poll(now))
         self.assertFalse(fleet.poll(now + crabd.FLEET_REFRESH_SEC - 1))
@@ -4526,7 +4532,7 @@ class FleetOffRequestPathTests(TempProjects):
 
     def test_building_the_state_never_runs_schtasks(self):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
-        fleet = crabd.FleetReader(runner=runner)
+        fleet = crabd.FleetReader(runner=runner, platform=crabd.WindowsPlatform())
         builder = crabd.StateBuilder(
             crabd.TranscriptStore(self.projects), crabd.HookTracker(), StubLimits(),
             time.time(), None, None, fleet)
@@ -4545,7 +4551,7 @@ class FleetOffRequestPathTests(TempProjects):
         wedged schtasks leaves the LAST reading standing rather than a dead document."""
         boom = FakeSchtasks({"SideCrab-glow": OK_GLOW,
                              "SideCrab-toast": subprocess.TimeoutExpired("schtasks", 10)})
-        fleet = crabd.FleetReader(runner=boom)
+        fleet = crabd.FleetReader(runner=boom, platform=crabd.WindowsPlatform())
         fleet.poll(time.time())
         self.assertEqual(fleet.get(), {"glow": "running", "toast": "unknown"})
 
@@ -4557,7 +4563,8 @@ class FleetServedOverASocket(ServedOverASocket):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW,
                                "SideCrab-toast": (0, schtasks_csv("SideCrab-toast",
                                                                   "Ready"), "")})
-        self.builder.fleet = crabd.FleetReader(runner=runner)
+        self.builder.fleet = crabd.FleetReader(
+            runner=runner, platform=crabd.WindowsPlatform())
         self.builder.fleet.poll(time.time())
         with self.builder._lock:
             self.builder._state = self.builder.build()

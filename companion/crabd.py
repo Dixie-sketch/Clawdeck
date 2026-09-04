@@ -4377,6 +4377,14 @@ class RecapReader:
 
 # -------------------------------------------------------------------------- fleet
 
+def fleet_unknown(platform=None) -> dict:
+    """The `fleet` block for a crabd that has learned nothing yet: every component the
+    platform names, all `unknown`. The keys come from the platform because the SERVICE
+    NAMES do - a builder with no reader attached must still serve the same key set the
+    reader would."""
+    return {name: "unknown" for name, _target in (platform or PLATFORM).fleet_targets()}
+
+
 class FleetReader:
     """`fleet` - SideCrab observing its own Scheduled Tasks (glow, toast).
 
@@ -4396,15 +4404,20 @@ class FleetReader:
     is: two subprocesses on the builder thread would freeze `generatedAt`.
     """
 
-    def __init__(self, runner=None) -> None:
-        self._runner = runner        # tests inject; production uses _run
+    def __init__(self, runner=None, platform=None) -> None:
+        # The reader owns the CACHING and the four-outcome rule; the platform owns the
+        # service manager - which targets exist, how to query one, and how to read its
+        # answer. Splitting them is what lets the schtasks mapping keep being proven on
+        # a host that has no schtasks: `runner=` injects the query, `platform=` the
+        # parse, and neither is a test of what OS this is.
+        self._runner = runner
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._result = self.unknown()
         self._due = 0.0
 
-    @staticmethod
-    def unknown() -> dict:
-        return {name: "unknown" for name, _task in FLEET_TASKS}
+    def unknown(self) -> dict:
+        return fleet_unknown(self._platform)
 
     def get(self) -> dict:
         with self._lock:
@@ -4422,43 +4435,18 @@ class FleetReader:
         return True
 
     def read(self) -> dict:
-        return {name: self.status(task) for name, task in FLEET_TASKS}
+        return {name: self.status(target)
+                for name, target in self._platform.fleet_targets()}
 
-    def status(self, task: str) -> str:
-        runner = self._runner or self._run
+    def status(self, target: str) -> str:
+        runner = self._runner or self._platform.service_query
         try:
-            code, out, err = runner(task, FLEET_TIMEOUT_SEC)
+            code, out, err = runner(target, FLEET_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
             return "unknown"
-        except (OSError, ValueError):    # schtasks missing, or the spawn failed
+        except (OSError, ValueError):    # the query is missing, or the spawn failed
             return "unknown"
-        if code != 0:
-            blob = f"{out or ''}\n{err or ''}".lower()
-            return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
-        return FLEET_STATUS_MAP.get(self._status_field(out), "unknown")
-
-    @staticmethod
-    def _status_field(out) -> str:
-        """Last csv row's status column. `csv` rather than a split: the task name is a
-        quoted field and a task name containing a comma would break a naive split."""
-        try:
-            rows = [row for row in csv.reader((out or "").splitlines())
-                    if len(row) > FLEET_STATUS_COL]
-        except (csv.Error, ValueError):
-            return ""
-        return rows[-1][FLEET_STATUS_COL].strip().lower() if rows else ""
-
-    @staticmethod
-    def _run(task: str, timeout: float):
-        proc = subprocess.run(
-            ["schtasks", "/query", "/tn", task, "/fo", "csv", "/nh"],
-            capture_output=True, timeout=timeout, check=False,
-            # No console under the Scheduled Task, and without this a window would
-            # flash on the desktop on an interactive login.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return (proc.returncode,
-                proc.stdout.decode("utf-8", errors="replace"),
-                proc.stderr.decode("utf-8", errors="replace"))
+        return self._platform.service_status(code, out, err)
 
 
 # ------------------------------------------------------------------ host sampler
@@ -5626,7 +5614,7 @@ class StateBuilder:
             "recap": self.recap.get() if self.recap else None,
             # No reader attached (unit tests) is exactly the "cannot read it" case, and
             # it is served as unknown - never as a pair of green dots.
-            "fleet": self.fleet.get() if self.fleet else FleetReader.unknown(),
+            "fleet": self.fleet.get() if self.fleet else fleet_unknown(),
         }
         # v0.22.0 `host`, and it is sampled HERE - on the builder's own 2 s pass - which
         # is what gives the CPU delta its window. PRESENCE is the feature detection

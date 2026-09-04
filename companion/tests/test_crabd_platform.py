@@ -149,5 +149,53 @@ class WindowsCountersOffWindowsTests(unittest.TestCase):
         self.assertEqual(noise.count("GlobalMemoryStatusEx unavailable"), 1, noise)
 
 
+# ----------------------------------------------------------------- the fleet reader
+
+class FakeServiceQuery:
+    """One canned (code, out, err) per target, or an exception to raise."""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
+
+    def __call__(self, target, timeout):
+        self.calls.append((target, timeout))
+        result = self.results[target]
+        if isinstance(result, BaseException) or (
+                isinstance(result, type) and issubclass(result, BaseException)):
+            raise result
+        return result
+
+
+#: The measured Windows shape: quoted name, next-run-time, status. CRLF, no header.
+RUNNING_CSV = (0, '"\\SideCrab-glow","N/A","Running"\r\n', "")
+
+
+class FleetPlatformTests(unittest.TestCase):
+    def test_a_platform_with_no_service_manager_reports_both_components_unknown(self):
+        """`unknown`, not `stopped`, and both contract keys present. "the notifier is
+        not running" and "I could not find out" are different claims."""
+        for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
+            with self.subTest(platform=platform.name):
+                fleet = crabd.FleetReader(platform=platform)
+                self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
+                fleet.poll(0.0)
+                self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
+
+    def test_the_status_parse_belongs_to_the_platform_not_the_reader(self):
+        """The SAME csv row: Windows reads Running out of it, Darwin has no parser yet
+        and says so. A reader that owned the parse would claim a launchd service was
+        running because a schtasks row said so."""
+        runner = FakeServiceQuery({"SideCrab-glow": RUNNING_CSV})
+        self.assertEqual(
+            crabd.FleetReader(runner=runner,
+                              platform=crabd.WindowsPlatform()).status("SideCrab-glow"),
+            "running")
+        self.assertEqual(
+            crabd.FleetReader(runner=runner,
+                              platform=crabd.DarwinPlatform()).status("SideCrab-glow"),
+            "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
