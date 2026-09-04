@@ -978,6 +978,12 @@ function settingsPlace() {
 	return insideIcue() ? 'the widget settings in iCUE' : 'the panel settings (gear)';
 }
 
+/* THE NAME IS HISTORICAL. This has not been an iCUE-only reader since v0.30.0 —
+   it answers for both hosts, and outside iCUE the answer comes from the panel's
+   own store. It keeps the name because every one of its callers reads as a
+   PROPERTY lookup and renaming it would be a diff across the whole file that
+   says nothing; the property vocabulary (`boolProp`, `strProp`, the metas, the
+   groups block) is the shared language of both surfaces, not iCUE's alone. */
 function getIcueProperty(name) {
 	var hosted = hostProperty(name);
 	if (hosted !== undefined) return hosted;
@@ -3975,7 +3981,9 @@ function settingsRow(meta) {
 	   is correct on the wire — half a typed time is not a window — and completely
 	   invisible on the glass: the operator watched a value they had typed simply
 	   never take effect. */
-	if (SETTINGS_TIME[meta.name]) {
+	/* hasOwnProperty for the same reason SETTINGS_HIDDEN uses it: a property named
+	   `constructor` would inherit a truthy value off Object.prototype. */
+	if (Object.prototype.hasOwnProperty.call(SETTINGS_TIME, meta.name)) {
 		var bad = document.createElement('div');
 		/* NOT also .set-help: that class is the pairing row's prose and a
 		   querySelector for it must not find an empty refusal line first. */
@@ -3994,7 +4002,7 @@ var SETTINGS_TIME = { quietStart: 1, quietEnd: 1 };
    not. The row keeps the element either way, so nothing reflows under a finger
    that is still typing. */
 function markSettingsTime(meta, value) {
-	if (!SETTINGS_TIME[meta.name] || !ui.sheetSettings) return;
+	if (!Object.prototype.hasOwnProperty.call(SETTINGS_TIME, meta.name) || !ui.sheetSettings) return;
 	var el = ui.sheetSettings.querySelector('[data-invalid-for="' + meta.name + '"]');
 	if (!el) return;
 	var bad = normHm(value) === null;

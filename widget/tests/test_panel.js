@@ -473,6 +473,30 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag', 'c
   eq(ctx.crabPlain(), true, 'the crabStyle enum feeds the reader that already accepted the words');
 })();
 
+/* A PROPERTY NAMED OFF Object.prototype MUST NOT VANISH (review). `SETTINGS_HIDDEN`
+   and `SETTINGS_TIME` are plain objects used as sets, and a bare index into one
+   inherits: `SETTINGS_HIDDEN['constructor']` is a function, which is truthy, so
+   a property called `constructor` (or `toString`, or `valueOf`) would be skipped
+   as hidden with nothing said anywhere. Demonstrated rather than argued — the
+   declarations are read from the DOM, so the test adds one and looks. */
+(function () {
+  var ctx = settingsPanel();
+  var groups = ctx.document.getElementById('x-icue-groups');
+  var list = JSON.parse(groups.textContent);
+  list[0].properties.push('constructor');
+  groups.textContent = JSON.stringify(list);
+  var head = ctx.document.querySelectorAll('meta[name="x-icue-property"]')[0].parentNode;
+  var meta = head.appendChild(ctx.document.createElement('meta'));
+  meta.setAttribute('name', 'x-icue-property');
+  meta.setAttribute('content', 'constructor');
+  meta.setAttribute('data-type', 'switch');
+  meta.setAttribute('data-default', 'false');
+  meta.setAttribute('data-label', "tr('Inherited Name')");
+  ctx.openSettingsSheet();
+  ok(!!control(ctx, 'constructor'),
+    'a property whose name is on Object.prototype still gets a control');
+})();
+
 /* A SLIDER META WITH NO RANGE MUST NOT CLAMP TO ZERO (review). Number(null) is
    0, so a missing data-min would have pinned every value of that control to 0
    and sent it to crabd — the contract-legal-null trap, one layer down. */
