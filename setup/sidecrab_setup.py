@@ -50,8 +50,24 @@ HOOK_MARKER = f"127.0.0.1:{PORT}/v1/hook"
 #: not. Arrays merge across settings files, so a project-level list matters too.
 ALLOWED_HOOK_PATTERNS = (f"http://127.0.0.1:{PORT}/*", f"http://localhost:{PORT}/*")
 
+#: Where the operator opens the panel. localhost rather than the dotted form because it
+#: is what a browser bar wants and what the README prints.
+PANEL_URL = f"http://localhost:{PORT}"
+
+#: crabd requires this header on every POST, so the hook entries carry it and the doctor
+#: proves the gate is live by sending one request without it.
+PANEL_HEADER = {"X-SideCrab-Panel": "1"}
+
 #: The substring that identifies OUR statusLine, the way HOOK_MARKER identifies our hooks.
 STATUSLINE_MARKER = "sidecrab_statusline"
+
+#: The alphabet crabd mints pairing codes from: no I, L, O or U, so a code read off a
+#: screen and typed back cannot turn into a different code.
+PAIRING_CODE_RE = re.compile(r"^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}$")
+
+#: A long-lived Claude token (`claude setup-token`). Shape only - it is never decoded.
+LIMITS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
+LIMITS_TOKEN_PREFIX = "sk-ant-"
 
 #: The floor. 3.13 is what the project targets; below it the LaunchAgent would run an
 #: interpreter this code has never been exercised on.
@@ -455,6 +471,19 @@ def _is_executable_file(path) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def _default_read_secret(prompt: str) -> str:
+    """A secret, off a pipe when there is one and off the terminal otherwise.
+
+    Never an argument: a token on the command line is in every `ps` and in the shell
+    history of whoever ran it.
+    """
+    if sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass(prompt)
+    return sys.stdin.readline()
+
+
 @dataclass
 class Environment:
     """Everything this module is not allowed to reach for on its own.
@@ -479,6 +508,10 @@ class Environment:
     emit: callable = staticmethod(print)
     #: None means "not a TTY": every prompt takes its documented default instead.
     ask: callable | None = None
+    read_secret: callable = staticmethod(_default_read_secret)
+    #: None means "use the lazy crabd import"; the suite injects a recorder instead so
+    #: no test ever writes to the developer's Keychain.
+    store_token: callable | None = None
 
     @classmethod
     def default(cls, repo_root=None) -> "Environment":
@@ -1097,7 +1130,89 @@ def refuse_if_foreign_holder(env: Environment, spec: AgentSpec) -> None:
     )
 
 
+# ------------------------------------------------------------------ pairing code, limits token
+
+
+def format_pairing_code(raw) -> str | None:
+    """The minted code as ``XXXXX-XXXXX``, or None when the file holds no usable code. Pure."""
+    code = re.sub(r"[^0-9A-Z]", "", str(raw or "").upper())
+    if not PAIRING_CODE_RE.match(code):
+        return None
+    return f"{code[:5]}-{code[5:]}"
+
+
+def validate_limits_token(token) -> str:
+    """The token, or a refusal naming what is wrong with it. Pure - never logs the value."""
+    value = str(token or "").strip()
+    if not value:
+        raise SetupError("The token is empty - nothing was stored.")
+    if not value.startswith(LIMITS_TOKEN_PREFIX):
+        raise SetupError(
+            f"That does not look like a Claude token: it does not start with "
+            f"{LIMITS_TOKEN_PREFIX}. Run `claude setup-token` and paste what it prints."
+        )
+    if len(value) < 20:
+        raise SetupError("That token is shorter than 20 characters - nothing was stored.")
+    if not LIMITS_TOKEN_RE.match(value):
+        raise SetupError(
+            "That token holds characters a Claude token does not (expected A-Z a-z 0-9 _ -)."
+        )
+    return value
+
+
+def default_store_token(env: Environment, token: str) -> bool:
+    """Hand the token to crabd's own store. Imported lazily: this is the only path that
+    needs companion/, and a setup run that never stores a token must not pay for it."""
+    companion = str(Path(env.repo_root) / "companion")
+    if companion not in sys.path:
+        sys.path.insert(0, companion)
+    import crabd  # noqa: PLC0415 - lazy on purpose
+
+    platform = getattr(crabd, "PLATFORM")
+    return bool(platform.store_limits_token(token))
+
+
 # ------------------------------------------------------------------ commands
+
+
+def command_pairing_code(env: Environment, args) -> int:
+    if not env.token_path.exists():
+        env.emit(
+            f"No pairing code at {env.token_path}. Start crabd first - it mints the code "
+            "on its first start."
+        )
+        return 1
+    code = format_pairing_code(env.token_path.read_text(encoding="utf-8", errors="replace"))
+    if code is None:
+        env.emit(
+            f"{env.token_path} does not hold a usable pairing code. Stop crabd, delete the "
+            "file and start crabd again to mint a new one."
+        )
+        return 1
+    env.emit(f"  pairing code: {code}")
+    env.emit(f"  Enter it in the panel's settings sheet at {PANEL_URL}.")
+    return 0
+
+
+def command_limits_token(env: Environment, args) -> int:
+    """Store a long-lived Claude token for crabd's limit gauges.
+
+    The value is read from stdin (or the terminal), never from argv, and never printed
+    back - not on success, not in an error, not in `status`.
+    """
+    token = validate_limits_token(env.read_secret("Paste the token (claude setup-token): "))
+    store = env.store_token or (lambda value: default_store_token(env, value))
+    try:
+        stored = store(token)
+    except (AttributeError, ImportError) as exc:
+        raise SetupError(
+            f"this crabd cannot store a long-lived token yet ({exc}). "
+            "Update crabd to a build that carries PLATFORM.store_limits_token."
+        ) from exc
+    if not stored:
+        raise SetupError("crabd refused to store the token - see its log.")
+    env.emit("  limits token: stored. Restart crabd to pick it up.")
+    return 0
 
 
 def command_update(env: Environment, args) -> int:
@@ -1150,6 +1265,8 @@ def command_install(env: Environment, args) -> int:
 COMMANDS = {
     "install": command_install,
     "update": command_update,
+    "pairing-code": command_pairing_code,
+    "limits-token": command_limits_token,
 }
 
 
@@ -1170,6 +1287,9 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--yes", action="store_true", help="never prompt; take every default")
 
     sub.add_parser("update", help="refresh the plists from this checkout and restart crabd")
+    sub.add_parser("pairing-code", help="print the code crabd minted, and where to enter it")
+    # No token argument: the value is read from stdin so it never lands in argv.
+    sub.add_parser("limits-token", help="store a long-lived Claude token, read from stdin")
     return parser
 
 
