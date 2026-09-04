@@ -4513,7 +4513,7 @@ class HostSampler:
     and is therefore served on the very first pass.
 
     HONEST FAILURE, in three tiers, because "cannot read" has three different shapes:
-      - no counters at all (a platform with no `ctypes.windll`, or both calls failing)
+      - no counters at all (a platform whose reader answers None, or both calls failing)
         -> NO `host` key in the document. The widget feature-detects presence, so it
         renders nothing rather than a row of em-dashes.
       - one of the two calls failing -> that call's fields null, the other's intact.
@@ -4529,13 +4529,15 @@ class HostSampler:
     overlapping windows served as if they were consecutive.
     """
 
-    def __init__(self, times=None, memory=None) -> None:
-        # Tests inject; production uses the two static readers below. Injection is by
-        # CALLABLE rather than by patching ctypes because the FILETIME arithmetic - the
-        # part with the trap in it - is what needs proving, and it is unreachable if the
-        # test has to own a real kernel counter to get to it.
+    def __init__(self, times=None, memory=None, platform=None) -> None:
+        # Tests inject; production falls through to the platform's two readers.
+        # Injection is by CALLABLE rather than by patching ctypes because the FILETIME
+        # arithmetic - the part with the trap in it - is what needs proving, and it is
+        # unreachable if the test has to own a real kernel counter to get to it. An
+        # injected reader OUTRANKS the platform for that reason.
         self._times = times
         self._memory = memory
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._prev: tuple[int, int, int] | None = None
 
@@ -4552,7 +4554,7 @@ class HostSampler:
     def _cpu(self) -> tuple[float | None, bool]:
         """(cpuPct, did-the-counter-read-succeed). The two are independent: a successful
         read with no predecessor is `(None, True)`, and that is the first-sample rule."""
-        reader = self._times or self._read_times
+        reader = self._times or self._platform.cpu_times
         try:
             reading = reader()
         except Exception as exc:            # an injected reader, or a ctypes surprise
@@ -4619,7 +4621,7 @@ class HostSampler:
     def _mem(self) -> tuple[dict, bool]:
         """({memPct, memUsedGB, memTotalGB}, did-the-read-succeed)."""
         blank = {"memPct": None, "memUsedGB": None, "memTotalGB": None}
-        reader = self._memory or self._read_memory
+        reader = self._memory or self._platform.memory
         try:
             reading = reader()
         except Exception as exc:
@@ -4641,48 +4643,6 @@ class HostSampler:
         return ({"memPct": _pct(100.0 * used / total),
                  "memUsedGB": _gb(used),
                  "memTotalGB": _gb(total)}, True)
-
-    @staticmethod
-    def _read_times() -> tuple[int, int, int] | None:
-        """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
-
-        `ctypes.windll` does not exist off Windows, so the AttributeError below is the
-        platform gate as well as the error path - which is why the sandboxed test run
-        serves no `host` key at all instead of failing.
-        """
-        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
-        try:
-            ok = ctypes.windll.kernel32.GetSystemTimes(
-                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
-        except (AttributeError, OSError, ValueError) as exc:
-            _log_once(HOST_CPU_LOG_KEY,
-                      f"crabd: GetSystemTimes unavailable ({type(exc).__name__}); "
-                      f"serving no host CPU")
-            return None
-        if not ok:
-            _log_once(HOST_CPU_LOG_KEY,
-                      "crabd: GetSystemTimes returned failure; serving no host CPU")
-            return None
-        return (_filetime(idle), _filetime(kernel), _filetime(user))
-
-    @staticmethod
-    def _read_memory() -> tuple[int, int] | None:
-        """GlobalMemoryStatusEx -> (total physical bytes, available bytes), or None."""
-        status = _MEMORYSTATUSEX()
-        status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-        try:
-            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-        except (AttributeError, OSError, ValueError) as exc:
-            _log_once(HOST_MEM_LOG_KEY,
-                      f"crabd: GlobalMemoryStatusEx unavailable ({type(exc).__name__}); "
-                      f"serving no host memory")
-            return None
-        if not ok:
-            _log_once(HOST_MEM_LOG_KEY,
-                      "crabd: GlobalMemoryStatusEx returned failure; "
-                      "serving no host memory")
-            return None
-        return (int(status.ullTotalPhys), int(status.ullAvailPhys))
 
 
 # ---------------------------------------------------------------- continue queue

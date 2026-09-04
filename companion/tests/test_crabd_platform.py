@@ -6,6 +6,7 @@ reaches: three classes with one public surface, chosen by `select_platform`, and
 rule that INJECTION still beats the platform so every reader stays testable on any host.
 """
 
+import io
 import sys
 import tempfile
 import unittest
@@ -86,6 +87,66 @@ class PlatformSurfaceTests(unittest.TestCase):
         for cls in (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform):
             with self.subTest(platform=cls.__name__):
                 self.assertEqual(self.surface(cls), self.SURFACE)
+
+
+# ---------------------------------------------------------------- the host sampler
+
+_TICKS_PER_SEC = 10_000_000        # a FILETIME counts 100 ns units
+_MEM_READING = (32 * 1024 ** 3, 12 * 1024 ** 3)
+_BASE = (100 * _TICKS_PER_SEC, 400 * _TICKS_PER_SEC, 90 * _TICKS_PER_SEC)
+_STEP = (103 * _TICKS_PER_SEC, 404 * _TICKS_PER_SEC, 91 * _TICKS_PER_SEC)
+
+
+class HostSamplerPlatformTests(unittest.TestCase):
+    """Which reader HostSampler uses, and what a platform with no counters serves.
+
+    The arithmetic lives in test_crabd.py; this is only about the seam - that a
+    counter-less platform serves NO `host` key rather than a row of zeroes, and that an
+    injected reader still outranks the platform so the arithmetic stays testable here.
+    """
+
+    def test_a_platform_with_no_counters_serves_no_block_at_all(self):
+        for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
+            with self.subTest(platform=platform.name):
+                self.assertIsNone(crabd.HostSampler(platform=platform).sample())
+
+    def test_an_injected_reader_outranks_the_platform(self):
+        """Injection is the primary seam and the platform is only the DEFAULT. A
+        platform that won the tie would make every scripted-FILETIME test in the suite
+        unreachable off Windows."""
+        readings = [_BASE, _STEP]
+        sampler = crabd.HostSampler(times=lambda: readings.pop(0),
+                                    memory=lambda: _MEM_READING,
+                                    platform=crabd.NullPlatform())
+        self.assertIsNone(sampler.sample()["cpuPct"])   # first sample: no delta yet
+        self.assertEqual(sampler.sample()["cpuPct"], 40.0)
+
+
+@unittest.skipUnless(sys.platform != "win32",
+                     "the Win32 counters answer for real on Windows")
+class WindowsCountersOffWindowsTests(unittest.TestCase):
+    """WindowsPlatform selected on a host that is not Windows: no block, and ONE log
+    line per failure kind. Silence is the forbidden failure mode; a per-pass heartbeat
+    is the other one."""
+
+    def setUp(self):
+        original = set(crabd._LOG_ONCE_SEEN)
+        crabd._LOG_ONCE_SEEN.discard(crabd.HOST_CPU_LOG_KEY)
+        crabd._LOG_ONCE_SEEN.discard(crabd.HOST_MEM_LOG_KEY)
+        self.addCleanup(lambda: (crabd._LOG_ONCE_SEEN.clear(),
+                                 crabd._LOG_ONCE_SEEN.update(original)))
+
+    def test_three_samples_serve_nothing_and_log_each_failure_once(self):
+        sampler = crabd.HostSampler(platform=crabd.WindowsPlatform())
+        original, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            for _ in range(3):
+                self.assertIsNone(sampler.sample())
+            noise = sys.stderr.getvalue()
+        finally:
+            sys.stderr = original
+        self.assertEqual(noise.count("GetSystemTimes unavailable"), 1, noise)
+        self.assertEqual(noise.count("GlobalMemoryStatusEx unavailable"), 1, noise)
 
 
 if __name__ == "__main__":
