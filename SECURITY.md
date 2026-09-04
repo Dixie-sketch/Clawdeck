@@ -57,6 +57,27 @@ The two things an attacker on this machine, or a web page you visit, could want 
   phase of the macOS port, and this paragraph will be rewritten with that section. Everything
   else about the gate - the space, the compare, the lockout, the `requestId`, the `503` - is
   unchanged.)*
+- **Where the browser panel keeps the pairing code (widget 0.30.0), and how that guarantee is
+  weaker.** The panel crabd serves stores the code in `localStorage` on the origin
+  `http://localhost:9999`, inside the one namespaced object it keeps its settings and display
+  state in. What that buys: only a page on the panel's own origin can read it, so no other page
+  the operator visits can - the same-origin policy is the mechanism, and it is the browser's,
+  not ours. A same-user local process can read it, but that was always true: the code is a file
+  at `~/.sidecrab/panel-token` that any such process can open, which is why it is a disclosed
+  residual below rather than a new one.
+
+  **This is weaker than the iCUE-property claim it replaces, and deliberately so.** An iCUE
+  property lives in a host process no web content can reach at all; `localStorage` is reachable
+  by any script that runs on that origin. So an XSS in the panel itself, or a browser extension
+  with storage access, could read the code - neither of which could touch the property form.
+  There is no version of a browser panel that avoids this: a secret the page must send has to be
+  somewhere the page can read.
+
+  What is unchanged is everything the code is one factor of. A `decide` still needs the code AND
+  a `requestId` that matches the request the panel is showing, checked under the lock that
+  applies the decision; ten rejects a minute lock the gate for a minute; the daemon is bound to
+  loopback and refuses every web origin but its own. Reading the code is not by itself a
+  decision, and the vectors that could read it are vectors that could already drive the panel.
 - **The optional long-lived limits token is DPAPI-protected.** `Install-SideCrab.ps1 -LimitsToken`
   stores a `claude setup-token` value in `~/.sidecrab/limits-token.dpapi`, encrypted for the
   current Windows user (no entropy); crabd decrypts it in memory per poll, sends it only to
