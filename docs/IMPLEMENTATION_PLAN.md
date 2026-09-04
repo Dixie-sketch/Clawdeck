@@ -12,7 +12,7 @@ Windows and macOS implementations behind an identical method surface, injectable
 reason; no `sys.platform` checks scattered through the builder; no behaviour change.
 **Tests**: platform selection is pinned (import-time choice, injectable), Windows tests skip
 with reasons, the notifier drive-letter test skips off Windows.
-**Status**: In Progress
+**Status**: Complete (2026-09-04; spec and quality reviews passed; companion 1166 tests, 2 Windows skips)
 
 ## Stage 1: one port, one origin
 **Goal**: crabd on 9999 serves the panel and the API; the origin gate admits only the panel's
@@ -21,8 +21,9 @@ own origin; a second header gate on every mutating endpoint; static serving off 
 mutation-proven; port collision fails loudly; traversal is 404; static reads never block
 `/v1/state`; TRANSPORT section in the contract and SECURITY threat model amended.
 **Tests**: `companion/tests/test_crabd_panel.py` (origin matrix, header gate, static serving,
-traversal, bind address, collision).
-**Status**: Not Started
+traversal, bind address, collision); `hooks/tests/test_hooks_fragment.py`;
+`widget/tests/test_panel.js` (transport half).
+**Status**: In Progress (client half merged; crabd half under way)
 
 ## Stage 2: host metrics on macOS
 **Goal**: `HostSampler` reads `host_statistics` / `host_statistics64` / `hw.memsize` through
