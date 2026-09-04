@@ -304,5 +304,70 @@ class ByteBudgetTests(unittest.TestCase):
         self.assertLess(len(argv[9]), MAC_TITLE_TRIM)
 
 
+class RaisingRunner:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    def __call__(self, argv: list[str], timeout: float) -> tuple[int, str, str]:
+        raise self.exc
+
+
+class FailureTests(unittest.TestCase):
+    """`show` returns a bool and NEVER raises. The daemon's re-arm path (Notifier._emit)
+    reads that bool, and a raise from here is the shape that once buried three live
+    questions in one poll — see test_emit_matrix.py."""
+
+    def show(self, runner) -> bool:
+        return MacNotificationAdapter(runner=runner).show(request())
+
+    def test_a_non_zero_exit_is_a_failure(self) -> None:
+        self.assertFalse(self.show(RecordingRunner(returncode=1, stderr="execution error")))
+
+    def test_a_non_zero_exit_logs_the_code_and_the_stderr(self) -> None:
+        with self.assertLogs("sidecrab.notifier", level="WARNING") as captured:
+            self.show(RecordingRunner(returncode=2, stderr="execution error: -1743"))
+        joined = "\n".join(captured.output)
+        self.assertEqual(len(captured.output), 1, "one line per failure, not one per argument")
+        self.assertIn("rc=2", joined)
+        self.assertIn("-1743", joined)
+
+    def test_the_failure_line_never_carries_the_notification_text(self) -> None:
+        """The log is a file on disk that outlives the notification. A question the operator
+        asked in private does not belong in it — the exit code and osascript's own complaint
+        are what diagnose a broken notification path."""
+        with self.assertLogs("sidecrab.notifier", level="WARNING") as captured:
+            MacNotificationAdapter(runner=RecordingRunner(returncode=1, stderr="boom")).show(
+                request(title="SECRETTITLE", body="SECRETBODY")
+            )
+        joined = "\n".join(captured.output)
+        self.assertNotIn("SECRETTITLE", joined)
+        self.assertNotIn("SECRETBODY", joined)
+
+    def test_a_long_stderr_is_cut_at_120_characters(self) -> None:
+        with self.assertLogs("sidecrab.notifier", level="WARNING") as captured:
+            self.show(RecordingRunner(returncode=1, stderr="E" * 500))
+        self.assertIn("E" * 120, captured.output[0])
+        self.assertNotIn("E" * 121, captured.output[0])
+
+    def test_every_subprocess_failure_shape_is_false_and_never_raises(self) -> None:
+        """A timeout (osascript wedged behind a permission dialog), a missing binary, and the
+        SubprocessError family. Each is a failed notification, not a dead daemon."""
+        for exc in (
+            subprocess.TimeoutExpired(cmd=[MAC_OSASCRIPT], timeout=10.0),
+            FileNotFoundError(2, "No such file or directory: '/usr/bin/osascript'"),
+            PermissionError(13, "Permission denied"),
+            subprocess.SubprocessError("something else went wrong"),
+        ):
+            with self.subTest(exc=type(exc).__name__):
+                with self.assertLogs("sidecrab.notifier", level="ERROR"):
+                    self.assertFalse(self.show(RaisingRunner(exc)))
+
+    def test_a_clean_exit_logs_nothing(self) -> None:
+        """A working notifier fires one of these every few minutes; a line per success would
+        bury the ones that matter."""
+        with self.assertNoLogs("sidecrab.notifier", level="WARNING"):
+            self.assertTrue(self.show(RecordingRunner()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

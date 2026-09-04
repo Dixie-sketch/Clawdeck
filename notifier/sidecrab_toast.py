@@ -2079,8 +2079,21 @@ class MacNotificationAdapter:
         ]
 
     def show(self, request: ToastRequest) -> bool:
-        returncode, _stdout, _stderr = self.runner(self.build_argv(request), self.timeout)
-        return returncode == 0
+        try:
+            returncode, _stdout, stderr = self.runner(self.build_argv(request), self.timeout)
+        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
+            # TimeoutExpired is a SubprocessError; naming it first says which one is expected
+            # — osascript can sit behind the operator's one-time permission dialog.
+            log.error("notification subprocess failed: %s", exc)
+            return False
+
+        if returncode != 0:
+            # The code and osascript's own complaint, and NOT the notification text: this log
+            # is a file on disk that outlives the notification, and the question the operator
+            # asked belongs on his screen rather than in it.
+            log.warning("notification failed rc=%s: %s", returncode, (stderr or "").strip()[:120])
+            return False
+        return True
 
 
 # --------------------------------------------------------------------------------------
