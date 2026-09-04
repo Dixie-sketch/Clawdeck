@@ -180,6 +180,10 @@ carries `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` — ONE 
 the whole daemon, because the panel now ships with crabd and a stale script surviving an
 update is the bug that rule avoids.
 
+One static reply reads at most **64 MB** (`PANEL_MAX_BYTES`), checked by `stat` before
+the read; a larger file is `404` plus one log line. Not a limit the shipped panel comes
+near - it is a limit on a directory `CRABD_PANEL_DIR` can point anywhere.
+
 The origin gate applies to static reads exactly as to the API: a foreign-origin `fetch` of
 `/scripts/sidecrab.js` is 403, while a plain navigation (which sends no `Origin`) is served.
 A static read never touches the builder's lock, so it cannot be blocked by a wedged state

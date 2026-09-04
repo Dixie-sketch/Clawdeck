@@ -16,7 +16,9 @@ turns a CORS-simple POST into a preflighted one, and the preflight only unlocks
 gates are therefore proven SEPARATELY here; either one alone leaves a hole.
 """
 
+import io
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -852,6 +854,74 @@ class PanelContentTypeTests(PanelTree):
                 self.assertEqual(reply.headers.get("Cache-Control"), "no-store", path)
                 self.assertEqual(reply.headers.get("X-Content-Type-Options"),
                                  "nosniff", path)
+
+
+class PanelSizeBoundTests(PanelTree):
+    """A bound on what one static reply may read into memory.
+
+    _do_panel_file reads the whole file, which is right for a panel whose largest asset
+    is a PNG - and wrong for a directory an operator can point anywhere with
+    CRABD_PANEL_DIR, or drop a file into. A big enough file is a MemoryError, and
+    MemoryError is not an OSError: it escapes the narrowed catch on the read, escapes
+    do_GET's `except OSError`, and lands in socketserver's handle_error as a traceback,
+    on a daemon that is now also short of memory.
+    """
+
+    def stderr_of(self, request):
+        """Run `request` with the module's log-once state cleared and stderr captured.
+        The handler runs on the server's own thread, and redirect_stderr rebinds the
+        global sys.stderr that _log_once prints to, so it is captured all the same."""
+        original = set(crabd._LOG_ONCE_SEEN)
+        crabd._LOG_ONCE_SEEN.discard(crabd.PANEL_TOO_BIG_LOG_KEY)
+        self.addCleanup(lambda: (crabd._LOG_ONCE_SEEN.clear(),
+                                 crabd._LOG_ONCE_SEEN.update(original)))
+        saved, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            out = request()
+            return out, sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved
+
+    def test_the_bound_is_a_named_constant(self):
+        self.assertEqual(crabd.PANEL_MAX_BYTES, 64 * 1024 * 1024)
+
+    def test_a_file_over_the_bound_is_refused_and_never_read(self):
+        """SPARSE, via os.truncate: 65 MB of nothing, allocated instantly, and the
+        assertion is that crabd never turns it into 65 MB of bytes."""
+        huge = self.panel / "resources" / "huge.bin"
+        huge.write_bytes(b"")
+        os.truncate(huge, crabd.PANEL_MAX_BYTES + 1)
+        self.assertEqual(huge.stat().st_size, crabd.PANEL_MAX_BYTES + 1)
+        reply, noise = self.stderr_of(lambda: self.client.get("/resources/huge.bin"))
+        self.assertEqual(reply.status, 404)
+        self.assertEqual(reply.body, crabd.NOT_FOUND)
+        self.assertIn("too big", noise)
+        self.assertIn("huge.bin", noise)
+
+    def test_the_reason_is_logged_once_not_per_request(self):
+        huge = self.panel / "resources" / "huge.bin"
+        huge.write_bytes(b"")
+        os.truncate(huge, crabd.PANEL_MAX_BYTES + 1)
+
+        def three():
+            for _ in range(3):
+                self.client.get("/resources/huge.bin")
+            return None
+
+        _, noise = self.stderr_of(three)
+        self.assertEqual(noise.count("too big"), 1, noise)
+
+    def test_a_file_at_the_bound_is_still_served(self):
+        """The boundary, without writing 64 MB: the constant is a module global read per
+        request, so the test can move it rather than the file."""
+        body = b"x" * 4096
+        self.write("resources/exact.bin", body.decode())
+        original = crabd.PANEL_MAX_BYTES
+        crabd.PANEL_MAX_BYTES = len(body)
+        self.addCleanup(lambda: setattr(crabd, "PANEL_MAX_BYTES", original))
+        reply = self.client.get("/resources/exact.bin")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, body)
 
 
 class PanelOriginGateTests(PanelTree):

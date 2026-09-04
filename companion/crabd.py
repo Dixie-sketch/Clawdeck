@@ -720,6 +720,7 @@ STATE_SERIALIZE_LOG_KEY = "state-serialize"
 STATE_BUILD_LOG_KEY = "state-build"
 GET_HANGUP_LOG_KEY = "get-hangup"
 PANEL_READ_LOG_KEY = "panel-read"
+PANEL_TOO_BIG_LOG_KEY = "panel-too-big"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -810,6 +811,14 @@ PANEL_CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
 }
 PANEL_CONTENT_TYPE_DEFAULT = "application/octet-stream"
+# A ceiling on what ONE static reply may read into memory. The whole shipped panel is
+# under a megabyte, so this is not a limit anybody meets - it is a limit on a directory
+# an operator can point anywhere with CRABD_PANEL_DIR, or drop a file into. Without it a
+# big enough file is a MemoryError, and MemoryError is NOT an OSError: it escapes the
+# narrowed catch on the read, escapes do_GET's `except OSError`, and lands in
+# socketserver's handle_error as a traceback on a daemon that is now also short of
+# memory. Checked by stat BEFORE the read, so the bytes are never allocated.
+PANEL_MAX_BYTES = 64 * 1024 * 1024
 # One 404 body for a mistyped endpoint and for a file that is not the panel's to serve.
 # Shared so the two cannot drift into telling a prober which of them it hit.
 NOT_FOUND = b'{"error":"not found"}'
@@ -6466,9 +6475,12 @@ class Handler(BaseHTTPRequestHandler):
         stall a hook (a hook with no answer is a session waiting for one).
 
         The files are small - the whole shipped panel is under a megabyte - so they are
-        read whole and handed to _send. There is no cache and no conditional-GET
-        handling: Cache-Control: no-store is the daemon's one caching rule, and it is
-        what stops a script surviving an update that the crabd it talks to did not.
+        read whole and handed to _send, bounded by PANEL_MAX_BYTES (64 MB) checked by
+        stat BEFORE the read, because "small" is a fact about the shipped tree and not
+        about a directory CRABD_PANEL_DIR can point anywhere. There is no cache and no
+        conditional-GET handling: Cache-Control: no-store is the daemon's one caching
+        rule, and it is what stops a script surviving an update that the crabd it talks
+        to did not.
         """
         target = self._panel_target(path)
         if target is None:
@@ -6479,6 +6491,17 @@ class Handler(BaseHTTPRequestHandler):
         root = PANEL_DIR.resolve()
         candidate = (root / target).resolve()
         if root not in candidate.parents or not candidate.is_file():
+            self._send(404, NOT_FOUND)
+            return
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            size = 0                    # raced away between is_file() and here; the
+        if size > PANEL_MAX_BYTES:      # read below then answers 404 on its own
+            _log_once(PANEL_TOO_BIG_LOG_KEY,
+                      f"crabd: {candidate} is too big to serve "
+                      f"({size} bytes, the bound is {PANEL_MAX_BYTES}); serving 404; "
+                      f"this is logged once")
             self._send(404, NOT_FOUND)
             return
         try:
