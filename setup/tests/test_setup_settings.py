@@ -150,6 +150,57 @@ class RemoveHookEntries(unittest.TestCase):
         self.assertEqual(pruned, {"model": "opus"})
 
 
+class MalformedHookEvents(TempHome):
+    """A hooks value that is not a list of matcher groups is somebody else's shape.
+
+    Iterating a string explodes it into characters and a dict into its keys, and the
+    event comes back rewritten as nonsense. Left alone and reported instead.
+    """
+
+    FRAGMENT = {"SessionStart": [{"hooks": [{"type": "command", "command": f"curl {setup.HOOK_MARKER}"}]}]}
+
+    def test_a_string_or_a_dict_event_survives_the_merge_byte_identical(self):
+        for value in ("nope", {"hooks": "also nope"}, 7):
+            with self.subTest(value=value):
+                prior = {"hooks": {"SessionStart": value, "Stop": []}}
+                merged, _count = setup.merge_hook_fragment(prior, self.FRAGMENT)
+                self.assertEqual(merged["hooks"]["SessionStart"], value)
+
+    def test_the_removal_leaves_it_alone_too(self):
+        prior = {"hooks": {"SessionStart": "nope"}}
+        pruned, removed = setup.remove_hook_entries(prior)
+        self.assertEqual(pruned, prior)
+        self.assertEqual(removed, 0)
+
+    def test_the_count_ignores_it_rather_than_counting_characters(self):
+        self.assertEqual(setup.hook_events({"hooks": {"SessionStart": "curl 127.0.0.1:9999/v1/hook"}}), [])
+
+    def test_the_install_says_which_event_it_refused_to_touch(self):
+        self.write_settings({"hooks": {"SessionStart": "nope"}})
+        self.assertEqual(setup.main(["install", "--yes"], env=self.env()), 0)
+        doc = json.loads((self.home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(doc["hooks"]["SessionStart"], "nope")
+        self.assertIn("SessionStart", self.output)
+        self.assertIn("not a list", self.output)
+
+
+class EmptyHooksObject(unittest.TestCase):
+    def test_a_pre_existing_empty_hooks_object_is_not_ours_to_delete(self):
+        # A run that removes nothing of ours must write nothing at all.
+        settings = {"model": "opus", "hooks": {}}
+        pruned, removed = setup.remove_hook_entries(settings)
+        self.assertEqual(pruned, settings)
+        self.assertEqual(removed, 0)
+
+    def test_a_hooks_object_we_emptied_still_goes(self):
+        settings = {
+            "hooks": {"Stop": [{"hooks": [{"type": "http", "url": f"http://{setup.HOOK_MARKER}/stop"}]}]}
+        }
+        pruned, removed = setup.remove_hook_entries(settings)
+        self.assertEqual(removed, 1)
+        self.assertEqual(pruned, {})
+
+
 class AllowedHttpHookUrls(unittest.TestCase):
     """The allow-list is a switch: creating it blocks every http hook we did not name."""
 
@@ -176,6 +227,22 @@ class AllowedHttpHookUrls(unittest.TestCase):
         self.assertEqual(plan.action, "present")
         self.assertEqual(plan.settings, prior)
 
+    def test_presence_tests_the_type_not_the_key(self):
+        # An explicit null is NOT a set allow-list: writing the two patterns over it
+        # would switch the allowlist on and block every other http hook there is.
+        plan = setup.allowed_hook_urls_plan({"allowedHttpHookUrls": None})
+        self.assertEqual(plan.action, "absent")
+        self.assertIsNone(plan.settings["allowedHttpHookUrls"])
+
+    def test_a_non_list_value_is_left_exactly_as_it_is(self):
+        # A string would otherwise be exploded into characters by the membership test.
+        for value in ("http://example/*", {"a": 1}, 7):
+            with self.subTest(value=value):
+                plan = setup.allowed_hook_urls_plan({"allowedHttpHookUrls": value})
+                self.assertEqual(plan.action, "not-a-list")
+                self.assertIn("not a list", plan.reason)
+                self.assertEqual(plan.settings["allowedHttpHookUrls"], value)
+
 
 class AllowedHttpHookUrlsRemoval(unittest.TestCase):
     def test_ours_go_when_something_of_the_operators_remains(self):
@@ -196,6 +263,14 @@ class AllowedHttpHookUrlsRemoval(unittest.TestCase):
 
     def test_an_absent_key_is_a_no_op(self):
         self.assertEqual(setup.allowed_hook_urls_removal_plan({}).action, "absent")
+
+    def test_a_null_is_absent_and_a_non_list_is_left_alone(self):
+        self.assertEqual(setup.allowed_hook_urls_removal_plan({"allowedHttpHookUrls": None}).action, "absent")
+        for value in ("http://example/*", {"a": 1}):
+            with self.subTest(value=value):
+                plan = setup.allowed_hook_urls_removal_plan({"allowedHttpHookUrls": value})
+                self.assertEqual(plan.action, "not-a-list")
+                self.assertEqual(plan.settings["allowedHttpHookUrls"], value)
 
 
 class StatusLine(unittest.TestCase):

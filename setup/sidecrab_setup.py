@@ -275,14 +275,38 @@ def merge_hook_fragment(settings, fragment_hooks, marker: str = HOOK_MARKER):
 
     merged = 0
     for event, matchers in fragment_hooks.items():
+        existing = hooks.get(event)
+        if event in hooks and not isinstance(existing, list):
+            # Not the shape Claude Code documents, so not a shape this understands.
+            # Iterating a string explodes it into characters and a dict into its keys,
+            # and the event comes back rewritten as nonsense. Left exactly as it is;
+            # malformed_hook_events() is what tells the operator.
+            continue
         kept = []
-        for matcher in hooks.get(event, []) or []:
+        for matcher in existing or []:
             split = split_hook_matcher(matcher, marker)
             if split.foreign is not None:
                 kept.append(split.foreign)
         hooks[event] = kept + copy.deepcopy(list(matchers))
         merged += 1
     return out, merged
+
+
+def malformed_hook_events(settings, fragment_hooks=None) -> list[tuple[str, str]]:
+    """Events whose value is not a list of matcher groups, with the type found. Pure.
+
+    The merge and the removal both step over these; this is how they get said out loud
+    rather than silently skipped.
+    """
+    hooks = (settings or {}).get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    wanted = set(fragment_hooks) if fragment_hooks is not None else set(hooks)
+    return [
+        (event, type(value).__name__)
+        for event, value in hooks.items()
+        if event in wanted and not isinstance(value, list)
+    ]
 
 
 def remove_hook_entries(settings, marker: str = HOOK_MARKER):
@@ -297,10 +321,14 @@ def remove_hook_entries(settings, marker: str = HOOK_MARKER):
     if not isinstance(hooks, dict):
         return out, 0
 
+    was_empty = not hooks
     removed = 0
     for event in list(hooks):
+        existing = hooks[event]
+        if not isinstance(existing, list):
+            continue  # not our shape - see merge_hook_fragment
         kept = []
-        for matcher in hooks.get(event, []) or []:
+        for matcher in existing:
             split = split_hook_matcher(matcher, marker)
             removed += split.our_count
             if split.foreign is not None:
@@ -309,7 +337,9 @@ def remove_hook_entries(settings, marker: str = HOOK_MARKER):
             hooks[event] = kept
         else:
             del hooks[event]
-    if not hooks:
+    # An empty hooks object is noise - but only one WE emptied. A pre-existing empty one
+    # is the operator's, and a run that removes nothing of ours must write nothing.
+    if not hooks and not was_empty:
         del out["hooks"]
     return out, removed
 
@@ -321,9 +351,11 @@ def hook_events(settings, marker: str = HOOK_MARKER) -> list[tuple[str, int]]:
         return []
     out = []
     for event, matchers in hooks.items():
+        if not isinstance(matchers, list):
+            continue  # counting the characters of a string is not a hook count
         count = sum(
             1
-            for matcher in (matchers or [])
+            for matcher in matchers
             if isinstance(matcher, dict)
             for entry in (matcher.get("hooks") or [])
             if hook_entry_is_ours(entry, marker)
@@ -364,14 +396,25 @@ def allowed_hook_urls_plan(settings) -> SettingsPlan:
     would silently block every other http hook the operator has.
     """
     out = copy.deepcopy(settings)
-    if "allowedHttpHookUrls" not in out:
+    value = out.get("allowedHttpHookUrls")
+    # PRESENCE IS A TYPE TEST, not a key test. An explicit null is not a set allow-list:
+    # writing our two patterns over it would switch the allowlist ON and block every
+    # other http hook the operator has - the exact harm this function exists to avoid.
+    if value is None:
         return SettingsPlan(out, "absent", "allowedHttpHookUrls is unset - every hook URL is allowed")
+    if not isinstance(value, list):
+        # A string would be exploded into characters by the membership test below.
+        return SettingsPlan(
+            out,
+            "not-a-list",
+            f"allowedHttpHookUrls is not a list (it holds {type(value).__name__}) - left alone; "
+            "the http hooks may be blocked until it is fixed by hand",
+        )
 
-    patterns = list(out.get("allowedHttpHookUrls") or [])
-    missing = [p for p in ALLOWED_HOOK_PATTERNS if p not in patterns]
+    missing = [p for p in ALLOWED_HOOK_PATTERNS if p not in value]
     if not missing:
         return SettingsPlan(out, "present", "allowedHttpHookUrls already admits crabd")
-    out["allowedHttpHookUrls"] = patterns + missing
+    out["allowedHttpHookUrls"] = list(value) + missing
     return SettingsPlan(out, "added", "added " + ", ".join(missing) + " to allowedHttpHookUrls")
 
 
@@ -383,10 +426,17 @@ def allowed_hook_urls_removal_plan(settings) -> SettingsPlan:
     instead, which is the state they were in before SideCrab.
     """
     out = copy.deepcopy(settings)
-    if "allowedHttpHookUrls" not in out:
+    value = out.get("allowedHttpHookUrls")
+    if value is None:
         return SettingsPlan(out, "absent", "allowedHttpHookUrls is unset")
+    if not isinstance(value, list):
+        return SettingsPlan(
+            out,
+            "not-a-list",
+            f"allowedHttpHookUrls is not a list (it holds {type(value).__name__}) - left alone",
+        )
 
-    patterns = list(out.get("allowedHttpHookUrls") or [])
+    patterns = list(value)
     kept = [p for p in patterns if p not in ALLOWED_HOOK_PATTERNS]
     if kept == patterns:
         return SettingsPlan(out, "not-present", "allowedHttpHookUrls holds none of ours")
@@ -755,6 +805,12 @@ def install_settings(env: Environment, writer: Writer, python: str) -> SettingsO
     fragment = read_hook_fragment(env.repo_root)
     script = str(Path(env.repo_root) / "hooks" / "sidecrab_statusline.py")
     outcome = plan_settings(settings, fragment, statusline_command(python, script))
+
+    for event, kind in malformed_hook_events(settings, fragment):
+        env.emit(
+            f"  hooks:      {event} is not a list of matcher groups (it holds {kind}) - "
+            "left exactly as it is; SideCrab's entry for that event was NOT merged"
+        )
 
     if outcome.save_chain:
         # Written before settings.json: the chain file is what makes taking the slot
@@ -1247,9 +1303,12 @@ def statusline_row(env: Environment, settings) -> str:
 
 
 def allowlist_row(settings) -> str:
-    if settings is None or "allowedHttpHookUrls" not in settings:
+    value = None if settings is None else settings.get("allowedHttpHookUrls")
+    if value is None:
         return "unset - every hook URL is allowed"
-    patterns = list(settings.get("allowedHttpHookUrls") or [])
+    if not isinstance(value, list):
+        return f"not a list (it holds {type(value).__name__}), left alone - fix it by hand"
+    patterns = list(value)
     missing = [p for p in ALLOWED_HOOK_PATTERNS if p not in patterns]
     if not missing:
         return "set and admits crabd"

@@ -139,15 +139,18 @@ class Status(TempHome):
         self.assertIn("chained to", self.output)
         self.assertIn("starship prompt", self.output)
 
-    def test_the_allow_list_row_tells_the_three_states_apart(self):
+    def test_the_allow_list_row_tells_the_states_apart(self):
         rows = [
+            ("absent", "unset"),
             (None, "unset"),
             (["http://example/*"], "does NOT admit"),
             (list(setup.ALLOWED_HOOK_PATTERNS), "admits crabd"),
+            ("http://example/*", "not a list"),
+            ({"a": 1}, "not a list"),
         ]
         for patterns, expected in rows:
             with self.subTest(patterns=patterns):
-                doc = {} if patterns is None else {"allowedHttpHookUrls": patterns}
+                doc = {} if patterns == "absent" else {"allowedHttpHookUrls": patterns}
                 (self.home / ".claude").mkdir(parents=True, exist_ok=True)
                 (self.home / ".claude" / "settings.json").write_text(
                     json.dumps(doc), encoding="utf-8"
