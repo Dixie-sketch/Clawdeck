@@ -2115,9 +2115,16 @@ class MacNotificationAdapter:
     def show(self, request: ToastRequest) -> bool:
         try:
             returncode, _stdout, stderr = self.runner(self.build_argv(request), self.timeout)
-        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
+        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError, ValueError) as exc:
             # TimeoutExpired is a SubprocessError; naming it first says which one is expected
             # — osascript can sit behind the operator's one-time permission dialog.
+            #
+            # ValueError is NOT paranoia: subprocess refuses an argument it cannot encode, and
+            # both refusals are ValueError subclasses raised while converting the argv (before
+            # any process starts). A NUL is stripped upstream; a LONE SURROGATE is not — a
+            # JSON "\ud800" escape decodes to one, it is legal in a Python str, and crabd
+            # serves whatever the transcript held. Without this clause that request reaches
+            # the daemon as a raise where the contract promises a bool.
             log.error("notification subprocess failed: %s", exc)
             return False
 

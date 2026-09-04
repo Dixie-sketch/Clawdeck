@@ -387,6 +387,18 @@ class FailureTests(unittest.TestCase):
                 with self.assertLogs("sidecrab.notifier", level="ERROR"):
                     self.assertFalse(self.show(RaisingRunner(exc)))
 
+    def test_a_lone_surrogate_in_the_title_is_a_failure_and_not_a_raise(self) -> None:
+        """The shape that gets past a catch written from the subprocess docs. A JSON
+        `"\\ud800"` escape decodes to a lone surrogate — legal in a Python str, and something
+        crabd will hand over verbatim because it is what the transcript held — and no UTF-8
+        encoder will take it: `subprocess` raises UnicodeEncodeError, a ValueError SUBCLASS,
+        while converting the arguments. Measured: it is raised before any process starts, so
+        this runs the real default runner against a path that does not exist."""
+        adapter = MacNotificationAdapter(osascript="/nonexistent-sidecrab-probe")
+        surrogate = json.loads('"a\\ud800b"')
+        with self.assertLogs("sidecrab.notifier", level="ERROR"):
+            self.assertFalse(adapter.show(ToastRequest("s1", "t", surrogate, "body")))
+
     def test_a_clean_exit_logs_nothing(self) -> None:
         """A working notifier fires one of these every few minutes; a line per success would
         bury the ones that matter."""
