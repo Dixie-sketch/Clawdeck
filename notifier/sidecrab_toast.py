@@ -1,13 +1,15 @@
-"""SideCrab notifier — a native Windows toast when a Claude session has been waiting too long.
+"""SideCrab notifier — a native desktop alert when a Claude session has been waiting too long.
 
 Standalone read-only consumer of the crabd feed (``/v1/state``, see docs/STATE-CONTRACT.md).
 It polls, decides, and fires at most ONE toast per waiting spell. It never writes config,
 never talks to crabd's POST endpoints, and never raises out of the poll loop.
 
 Layering: everything above ``PowerShellToastAdapter`` is pure and headless-testable
-(``ToastDecider`` does the deciding, the adapter does the only I/O that touches Windows).
+(``ToastDecider`` does the deciding, the adapters do the only platform I/O there is).
 
-TOAST MECHANISM — measured on Windows 11, 2026-08-26:
+TOAST MECHANISM — two routes ship, and pick_adapter() chooses one from sys.platform.
+
+Windows route — measured on Windows 11, 2026-08-26:
 
   Route A (chosen): subprocess to Windows PowerShell 5.1, WinRT projection.
       `[Windows.UI.Notifications.ToastNotificationManager, ..., ContentType=WindowsRuntime]`
@@ -47,6 +49,34 @@ TOAST MECHANISM — measured on Windows 11, 2026-08-26:
   A POSITIVE answer is cached for the process lifetime; a negative one is re-probed on a
   cooldown, so a notifier that was running when the installer registered the key picks it up
   on its own (see AUMID_REPROBE_SEC).
+
+macOS route — measured on macOS 26.6 with /usr/bin/osascript, 2026-09-04:
+
+  `osascript -e 'on run argv' -e '<script>' -e 'end run' -- <body> <title> <subtitle>` passes
+  every argument to the script VERBATIM: a probe carrying a double quote, a backslash, a
+  newline, `$(touch …)`, backticks, `&` and `; rm -rf /` came back byte-identical, exit 0,
+  with nothing substituted or executed. So the notification text never has to be interpolated
+  into AppleScript source — the script is three constant strings and the text rides in argv,
+  which is the same boundary PowerShell's base64 payload buys on the Windows side.
+  `display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv)
+  sound name "default"` compiles clean (osacompile, exit 0).
+
+  Nothing here reads a registry, an AUMID or an icon: there is no identity to register.
+
+  TWO RESIDUALS, both permanent properties of this route rather than things to fix later:
+
+    IDENTITY: notifications posted through osascript appear under Script Editor's identity, so
+      the macOS per-app notification switch is Script Editor's and MAC_SUBTITLE ("SideCrab") is
+      the only thing on screen naming the product.
+
+    NO REPLACEMENT: `display notification` cannot set a replacement identifier, so a second
+      outage notice STACKS beneath the first instead of replacing it. STALE_ID's fixed tag and
+      the digest/budget id prefixes still keep the deciders' ledgers honest; what they no
+      longer buy on this platform is the Action Center slot behaviour they were named for.
+
+    And it carries NO BUTTONS: `display notification` has no action affordance at all. The
+      Acknowledge and Snooze buttons, ACK_SCHEME/SNOOZE_SCHEME and both .pyw handlers are the
+      Windows route's, and stay Windows-only — the operator acknowledges on the panel.
 
 DIGEST (v0.8.0): a second, unrelated toast — one "yesterday" summary per calendar day at a
   configured local time, off the same 10 s poll loop (no extra thread). Its per-day ledger is
@@ -178,7 +208,7 @@ def xml_attr_escape(value: Any) -> str:
 #: printed by --version, and written into STATE_PATH, so "what is on disk" and "what the
 #: Scheduled Task is actually executing" stop being the same unanswerable question. Bump it in
 #: the same commit as any behaviour change; setup/Test-SideCrab.ps1 reads it off both sides.
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 #: A GET, so the X-SideCrab-Panel gate crabd 0.31.0 added does not apply here: it guards
 #: POSTs only. The ack handler, which does POST, sends the header.
@@ -1647,7 +1677,7 @@ def toast_kind(request: ToastRequest) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Toast emission — the only Windows-touching code, behind an adapter
+# Toast emission — the only platform-touching code, behind an adapter (one per platform)
 # --------------------------------------------------------------------------------------
 
 

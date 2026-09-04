@@ -556,5 +556,33 @@ class ModuleImportsAnywhereTests(unittest.TestCase):
                 )
 
 
+class DocumentedTests(unittest.TestCase):
+    """The deliverable includes the answer to "what does this do on a Mac, and what does it
+    NOT do". Both residuals are permanent properties of the route, not bugs to be fixed later,
+    so they are written down where an operator reads rather than left in a commit message."""
+
+    def readme(self) -> str:
+        return (NOTIFIER_DIR / "README.md").read_text(encoding="utf-8")
+
+    def test_the_readme_has_a_macos_section(self) -> None:
+        self.assertIn("## macOS", self.readme())
+
+    def test_the_macos_section_names_the_mechanism_and_both_residuals(self) -> None:
+        # Case-insensitive: this pins the FACTS being written down, not the sentence they
+        # happen to sit in — a heading and a mid-sentence mention are both fine.
+        section = self.readme().split("## macOS", 1)[1].lower()
+        for token in ("osascript", "no buttons", "stack", "script editor"):
+            self.assertIn(token, section, token)
+
+    def test_the_module_docstring_keeps_both_routes(self) -> None:
+        """The Windows toast evidence is the only record of why pwsh 7 is refused; deleting it
+        to make room for the macOS notes would lose a measurement nobody will re-take."""
+        doc = sidecrab_toast.__doc__ or ""
+        self.assertIn("Windows route", doc)
+        self.assertIn("macOS route", doc)
+        self.assertIn("pwsh 7 CANNOT do this", doc)
+        self.assertIn("osascript", doc)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
