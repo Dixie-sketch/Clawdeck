@@ -513,6 +513,113 @@ var SETTINGS_NOT_IN_BROWSER = ['cpuTempSensor', 'gpuTempSensor', 'touchDiag'];
   ok(tr.indexOf('Desktop Notifications') !== -1, 'and the catalogue agrees');
 })();
 
+/* ------------------------------------------------------- the sensors row (D) */
+
+/* NO BRIDGE, NO TEMPERATURES, AND NO PROMPT ABOUT THEM. window.plugins does not
+   exist in a browser and no page can read a die temperature, so the two
+   temperature cells and both of the row's iCUE hints — "pick sensors in
+   settings" and "same sensor" — are simply not there. What is left is the half
+   the companion feeds, and when the companion has nothing to say about this
+   machine the row goes off the glass entirely rather than showing zeros or a
+   line of em-dashes. */
+
+function hostPanel(host, opts) {
+  opts = opts || {};
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '' },
+    storage: fakeStorage('ok'),
+    navigator: opts.navigator
+  });
+  ctx.renderHost(host);
+  return ctx;
+}
+
+(function () {
+  var ctx = hostPanel({ cpuPct: 34.2, memPct: 58.4, memUsedGB: 18.7, memTotalGB: 32.0 });
+  eq(ctx.sensorsPlugin(), null, 'there is no Sensors bridge in a browser');
+  ok(!ctx.ui.sensorCpu.classList.contains('shown') || ctx.ui.hostCpuVal.classList.contains('shown'),
+    'the CPU cell is on the row only for the figure the companion fed it');
+  eq(ctx.ui.sensorCpuVal.textContent, '', 'no temperature is rendered');
+  eq(ctx.ui.sensorGpuVal.textContent, '', 'and none in the GPU cell either');
+  eq(ctx.ui.sensorHint.textContent, '', 'the "pick sensors in settings" hint is absent');
+  eq(ctx.ui.sensorGpuWarn.textContent, '', 'and so is the "same sensor" warning');
+  ok(!ctx.ui.sensorGpu.classList.contains('shown'), 'the GPU cell has nothing to say and is off the row');
+  ok(ctx.ui.sensors.classList.contains('shown'), 'the row IS on the glass: the companion fed it');
+  eq(ctx.ui.hostCpuVal.textContent, '34%', 'the host CPU figure');
+  eq(ctx.ui.hostMemVal.textContent, '58%', 'the host memory figure');
+  ok(ctx.document.body.classList.contains('has-sensors'), 'and the Limits zone knows the row is there');
+})();
+
+/* The ?mock=hot shape: the block is PRESENT with every member null, which is a
+   companion that could not measure this machine. Never 0%. */
+(function () {
+  var ctx = hostPanel({ cpuPct: null, memPct: null, memUsedGB: null, memTotalGB: null });
+  ok(!ctx.ui.sensors.classList.contains('shown'), 'an all-null host block hides the row entirely');
+  eq(ctx.ui.hostCpuVal.textContent, '', 'no 0%');
+  eq(ctx.ui.hostMemVal.textContent, '', 'in either segment');
+  ok(!ctx.document.body.classList.contains('has-sensors'), 'and the Limits zone loses the row with it');
+})();
+
+(function () {
+  var ctx = hostPanel(null);
+  ok(!ctx.ui.sensors.classList.contains('shown'), 'no host block at all hides the row too');
+})();
+
+/* The ?mock=dense shape: one member readable beside one that is not. */
+(function () {
+  var ctx = hostPanel({ cpuPct: null, memPct: 61.0, memUsedGB: null, memTotalGB: null });
+  ok(ctx.ui.sensors.classList.contains('shown'), 'a partially readable host block keeps the row');
+  eq(ctx.ui.hostCpuVal.textContent, '', 'the unreadable member is absent');
+  eq(ctx.ui.hostMemVal.textContent, '61%', 'the readable one is a figure');
+})();
+
+/* "This PC" was a Windows noun on a panel that now runs on a Mac. */
+(function () {
+  var mac = hostPanel({ cpuPct: 10, memPct: 20, memUsedGB: null, memTotalGB: null },
+    { navigator: { userAgent: 'node', platform: 'MacIntel' } });
+  mac.openHostSheet();
+  eq(mac.ui.sheetTitle.textContent, 'This Mac', 'a Mac says so');
+  eq(mac.ui.sensors.getAttribute('aria-label'), "Open this Mac's CPU and memory history",
+    'and the row that opens it says the same');
+
+  var other = hostPanel({ cpuPct: 10, memPct: 20, memUsedGB: null, memTotalGB: null },
+    { navigator: { userAgent: 'node', platform: 'Linux x86_64' } });
+  other.openHostSheet();
+  eq(other.ui.sheetTitle.textContent, 'This machine', 'anything else is "This machine"');
+  eq(other.ui.sensors.getAttribute('aria-label'), "Open this machine's CPU and memory history",
+    'and so is the row');
+
+  var js = fs.readFileSync(harness.SRC, 'utf8');
+  ok(js.indexOf('This PC') === -1, 'the panel never says "This PC" anywhere');
+})();
+
+/* The temperatures block is omitted when no cell has ever rendered one — rather
+   than the sheet printing "no hardware sensor reading" about a bridge that does
+   not exist on this platform at all. */
+(function () {
+  var ctx = hostPanel({ cpuPct: 10, memPct: 20, memUsedGB: null, memTotalGB: null });
+  ctx.openHostSheet();
+  eq(ctx.ui.sheetHost.querySelectorAll('.hs-temps').length, 0,
+    'no temperature has ever rendered, so the sheet says nothing about temperatures');
+  ok(ctx.ui.sheetHost.querySelectorAll('.hs-chart').length === 2, 'the two host charts are still there');
+})();
+
+/* Every sensor dev flag stays gated on ?mock=, so nothing on a served origin can
+   manufacture a reading. */
+(function () {
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/',
+      search: '?sensors=95,84&sensornames=A|B&sensorsame=1&sensorstale=1000' },
+    storage: fakeStorage('ok')
+  });
+  eq(ctx.sensorForced, null, '&sensors= is inert without ?mock=');
+  eq(ctx.sensorForcedSame, false, '&sensorsame= is inert without ?mock=');
+  eq(ctx.SENSOR_STALE_MS, 60000, '&sensorstale= cannot rewrite the tunable without ?mock=');
+  eq(ctx.sensorIdFor('cpu'), '', 'and no sensor id is manufactured');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {

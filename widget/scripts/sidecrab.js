@@ -776,6 +776,9 @@ var sensorApi = null;
 var sensorTimer = null;
 var sensorBootAttempts = 0;
 var sensorShown = { cpu: false, gpu: false };
+/* v0.30.0: has a temperature cell EVER been on the glass in this session. It
+   gates the host sheet's temperatures block — see syncSensorRow. */
+var sensorEverShown = false;
 /* Transition latch for the same-sensor console line. The state is re-derived on
    every reconcile, and a line written every 10 s is a line nobody reads. */
 var sameWarned = false;
@@ -7298,6 +7301,12 @@ function syncSensorRow() {
 	   cannot answer must not take the companion's number off the glass with it. */
 	var cpuOn = sensorShown.cpu || hostMetrics.cpuPct !== null;
 	var gpuOn = sensorShown.gpu || warn;
+	/* v0.30.0. A LATCH, and the host sheet's temperatures block is gated on it:
+	   "no hardware sensor reading" is a true and useful sentence on a machine
+	   whose bridge is there and quiet, and a confusing one on a platform that has
+	   no bridge to be quiet. Latched rather than read live so a sheet open across
+	   a sensor dropout does not lose the block mid-read. */
+	if (sensorShown.cpu || sensorShown.gpu) sensorEverShown = true;
 	var memOn = hostMetrics.memPct !== null;
 	ui.sensorCpu.classList.toggle('shown', cpuOn);
 	ui.sensorGpu.classList.toggle('shown', gpuOn);
@@ -7318,7 +7327,7 @@ function syncSensorRow() {
 	if (drill) {
 		ui.sensors.setAttribute('role', 'button');
 		ui.sensors.setAttribute('tabindex', '0');
-		ui.sensors.setAttribute('aria-label', "Open this PC's CPU and memory history");
+		ui.sensors.setAttribute('aria-label', 'Open ' + thisMachine(true) + "'s CPU and memory history");
 	} else {
 		ui.sensors.removeAttribute('role');
 		ui.sensors.removeAttribute('tabindex');
@@ -7496,9 +7505,22 @@ function openHostSheet() {
 /* Follows the feed like every other sheet: a companion that stops serving `host`
    takes this view with it rather than leaving a ten-minute chart of a machine
    nobody is measuring any more. */
+/* v0.30.0. The title used to name a Windows box outright. navigator.platform is
+   deprecated and is
+   still the only thing every engine this panel runs in answers, and a wrong
+   answer costs a noun rather than a behaviour — which is why it is read here and
+   nowhere that decides anything. Anything that is not a Mac is "this machine"
+   rather than a guess at what it is. */
+function thisMachine(lower) {
+	var p = '';
+	try { p = String((window.navigator && window.navigator.platform) || ''); } catch (e) { p = ''; }
+	var s = p.indexOf('Mac') === 0 ? 'This Mac' : 'This machine';
+	return lower ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
 function syncHostSheet() {
 	if (!hostSheetAvailable()) { closeSheet(); return; }
-	setText(ui.sheetTitle, 'This PC');
+	setText(ui.sheetTitle, thisMachine());
 	setText(ui.sheetRepo, 'last 10 minutes ' + EMDASH + ' sampled from the companion feed');
 
 	var last = hostRing.length ? hostRing[hostRing.length - 1] : null;
@@ -7523,7 +7545,12 @@ function syncHostSheet() {
 	/* The temperatures, as TEXT and never as a third chart: they are not in the ring
 	   (iCUE's bridge feeds them on its own clock, not the poll's) so there is no
 	   ten-minute history of them to draw, and drawing one from the ring's timestamps
-	   would be charting a series against somebody else's samples. */
+	   would be charting a series against somebody else's samples.
+	   v0.30.0: the whole block is OMITTED where no cell has ever rendered one. "no
+	   hardware sensor reading" is a true and useful sentence about a bridge that is
+	   there and quiet; on a platform with no bridge at all it reads as a fault, and
+	   there is nothing the operator could do about it. */
+	if (!sensorEverShown) return;
 	var temps = [];
 	for (var i = 0; i < SENSOR_KEYS.length; i++) {
 		var t = sensorText(SENSOR_KEYS[i]);
