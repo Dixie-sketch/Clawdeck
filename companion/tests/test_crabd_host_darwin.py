@@ -384,6 +384,21 @@ class DarwinClockGuardTests(LogOnceReset):
         self.assertIsNotNone(platform.cpu_times())
         self.assertEqual(len(asked), 3)
 
+    def test_a_reading_that_is_not_four_numbers_serves_no_cpu_and_says_so_once(self):
+        """Two shapes, one answer. `host_statistics` writing a different number of words
+        and a reply whose members are not numbers are the same failure from here: the
+        four buckets this arithmetic names are not where it thinks they are, so there is
+        nothing to scale and the honest answer is no cpuPct at all."""
+        for raw in ((100, 100, 300), (100, 100, 300, 0, 0), ("a", "b", "c", "d"),
+                    (None, None, None, None), 4):
+            with self.subTest(reading=raw):
+                self.forget()
+                platform = crabd.DarwinPlatform(load_info=lambda: raw, clk_tck=100)
+                out, noise = self.capture(
+                    lambda: [platform.cpu_times() for _ in range(3)])
+                self.assertEqual(out, [None, None, None])
+                self.assertEqual(noise.count("not four numbers"), 1, noise)
+
     def test_a_host_with_no_sc_clk_tck_answers_absence_not_an_exception(self):
         """Windows is such a host - `os.sysconf` is not there at all. DarwinPlatform is
         never SELECTED on one, but the seam lets anything build one, and a reader called
@@ -644,6 +659,57 @@ class DarwinLibcDeclarationTests(unittest.TestCase):
         for name in ("host_statistics", "host_statistics64"):
             with self.subTest(entry_point=name):
                 self.assertEqual(getattr(libc, name).argtypes[0], crabd.ctypes.c_uint32)
+
+
+class DarwinLibcIsLookedUpOnceTests(LogOnceReset):
+    """A host where libSystem is not there answers that ONCE.
+
+    `find_library` is a dyld search - a subprocess on some platforms and a filesystem
+    walk on others - and this reader runs every two seconds. The success path already
+    resolved once; the FAILURE path did not, so a crabd whose platform was forced to
+    Darwin on a machine that has no libSystem re-ran the whole search twice a pass, for
+    ever, to be told the same thing.
+    """
+
+    def rig(self):
+        """find_library and CDLL replaced; returns the list of find_library calls."""
+        asked = []
+        original = (crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT,
+                    crabd.ctypes.CDLL, crabd.ctypes.util.find_library)
+
+        def restore():
+            (crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT, crabd.ctypes.CDLL,
+             crabd.ctypes.util.find_library) = original
+
+        self.addCleanup(restore)
+        crabd._DARWIN_LIBC = None
+        crabd._DARWIN_HOST_PORT = None
+
+        def searching(name):
+            asked.append(name)
+            return None
+
+        def refusing(*_a, **_k):
+            raise OSError("no libSystem on this host")
+
+        crabd.ctypes.util.find_library = searching
+        crabd.ctypes.CDLL = refusing
+        return asked
+
+    def test_three_samples_search_for_the_library_once(self):
+        asked = self.rig()
+        platform = crabd.DarwinPlatform(clk_tck=100)
+        out, noise = self.capture(lambda: [platform.cpu_times() for _ in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(asked, ["c"])
+        self.assertEqual(noise.count("serving no host CPU"), 1, noise)
+
+    def test_the_memory_reader_is_answered_by_the_same_remembered_failure(self):
+        asked = self.rig()
+        platform = crabd.DarwinPlatform()
+        out, _noise = self.capture(lambda: [platform.memory() for _ in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(asked, ["c"])
 
 
 class DarwinHostPortTests(unittest.TestCase):

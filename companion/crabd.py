@@ -3210,15 +3210,20 @@ class WindowsPlatform:
         return _read_cli_credentials()
 
 
+#: None = not looked up yet; False = looked up and NOT THERE; anything else is the
+#: loaded library. The false sentinel is what keeps a host without libSystem from
+#: re-running the dyld search twice a pass for the life of the process.
 _DARWIN_LIBC = None
 
 
 def _darwin_libc():
     """libSystem, resolved once, with every entry point crabd calls DECLARED.
 
-    `find_library` is a dyld search, not free, and this is on a 2 s cadence. Off macOS
-    the load or the lookup fails and the callers below turn that into the same None a
-    failed syscall gives.
+    `find_library` is a dyld search - not free, and this is on a 2 s cadence - so the
+    ANSWER IS REMEMBERED EITHER WAY. Off macOS the load or the lookup fails, that failure
+    is remembered too, and the callers below turn the raise into the same None a failed
+    syscall gives. (Unlike the CLK_TCK read, a missing libSystem is not a transient: the
+    library a process has is fixed for its life.)
 
     THE DECLARATIONS ARE NOT DECORATION. ctypes defaults both `argtypes` and `restype` to
     `c_int`, and `mach_port_t` is UNSIGNED 32-bit: a host port at or above 2^31 does not
@@ -3229,21 +3234,33 @@ def _darwin_libc():
     it stops ctypes guessing at an `int` for the address.
     """
     global _DARWIN_LIBC
+    if _DARWIN_LIBC is False:
+        raise OSError("libSystem is not available on this host")
     if _DARWIN_LIBC is None:
-        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib",
-                           use_errno=True)
-        libc.mach_host_self.restype = ctypes.c_uint32
-        libc.mach_host_self.argtypes = []
-        for name in ("host_statistics", "host_statistics64"):
-            entry = getattr(libc, name)
-            entry.restype = ctypes.c_int          # kern_return_t
-            entry.argtypes = [ctypes.c_uint32,    # host_t / host_priv_t
-                              ctypes.c_int,       # the flavour
-                              ctypes.c_void_p,    # the out struct
-                              ctypes.c_void_p]    # the in/out word count
-        libc.sysctlbyname.restype = ctypes.c_int
-        libc.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
-                                      ctypes.c_void_p, ctypes.c_size_t]
+        try:
+            # No use_errno: nothing here reads errno - every one of these calls reports
+            # its own failure in its return value - and asking ctypes to save and restore
+            # it around each call buys a cost and no information.
+            libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib")
+            libc.mach_host_self.restype = ctypes.c_uint32
+            libc.mach_host_self.argtypes = []
+            for name in ("host_statistics", "host_statistics64"):
+                entry = getattr(libc, name)
+                entry.restype = ctypes.c_int          # kern_return_t
+                entry.argtypes = [ctypes.c_uint32,    # host_t / host_priv_t
+                                  ctypes.c_int,       # the flavour
+                                  ctypes.c_void_p,    # the out struct
+                                  ctypes.c_void_p]    # the in/out word count
+            libc.sysctlbyname.restype = ctypes.c_int
+            libc.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                                          ctypes.c_void_p, ctypes.c_void_p,
+                                          ctypes.c_size_t]
+        except Exception:
+            # Every shape of "not this platform" - no such library, no such symbol - and
+            # the FIRST one is re-raised so the caller's log line names it. After that
+            # the sentinel answers, with no search behind it.
+            _DARWIN_LIBC = False
+            raise
         _DARWIN_LIBC = libc
     return _DARWIN_LIBC
 
@@ -3442,14 +3459,13 @@ class DarwinPlatform:
                 _log_once(HOST_CPU_LOG_KEY,
                           "crabd: host_statistics returned failure; serving no host CPU")
                 return None
+            # Both shapes are the same failure - the four buckets this arithmetic names
+            # are not where it thinks they are - so they share an answer and a line.
             try:
                 ticks = [int(v) for v in raw]
             except (TypeError, ValueError):
-                _log_once(HOST_CPU_LOG_KEY,
-                          "crabd: host_statistics gave a reading that is not four "
-                          "numbers; serving no host CPU")
-                return None
-            if len(ticks) != HOST_CPU_STATES:
+                ticks = None
+            if ticks is None or len(ticks) != HOST_CPU_STATES:
                 _log_once(HOST_CPU_LOG_KEY,
                           "crabd: host_statistics gave a reading that is not four "
                           "numbers; serving no host CPU")
