@@ -44,7 +44,7 @@ by opening `index.html` as a `file:` URL.
 | `quiet` | 2 | `quiet.active: true` with one **acked** needs_input — ambient, nothing pulsing. Since v0.22.0 it is also the **override-ON** fixture: `quiet.override {mode: "on"}`, which is why the panel is dim, so the moon chip reads `quiet 58m` and the quiet note names the override instead of the window's 07:00 end |
 | `caveat` | 4 | Since v0.22.0 also the **override-OFF** fixture: `quiet.override {mode: "off"}` on a panel that is not in a quiet window anyway, so the ONLY thing it changes is the chip reading `awake 58m` — the off branch proved from a document without disturbing anything else this fixture is for. **`limits.note` non-null with `available: true`** — the v0.4.0 widened semantics. The gauges stay lit on 61% / 44% and the note renders muted, NOT amber: a caveat is not a failure |
 | `rework` | **5** | **the post-rework production shape** — schema 5 carrying EVERY current field at once: `quiet`, `recap` (4 repos **and `week`**), `limits` with a non-null `note` AND an `extra` window, `burn.today`/`byModel`/`hourly`/`daily`, `fleet` (one running, one **stopped**, so both dot shapes are in one shot), and per-session `question`/`turnStartedAt`/`acked`/`subagentDetail`/`events`/`contextTokens` (including a `null` on the idle row and a `1954200` on the `M` branch). This is the fixture that proves additive fields light up under a pinned schema number. Since v0.7.0 it is also the **countdown** fixture (its three windows sit at +33 min, +2h10m and +4d, one per format branch), the **week strip** fixture (7 days, with a `null` done on the oldest so the em-dash branch is in the shot), and the **per-key 400** fixture (see `_mock` below). Since v0.11.0 it is also the **titles and hung** fixture: one working row is deliberately 3m45s quiet, the `done` row carries `titleSource: "cwd"` and the `idle` row carries no title, repo or branch at all. Since v0.12.0 it also carries `limits.source: "statusline"` (the `official` tag), `burn.costUSD` (the `$N.NN today` line), a top-level `continuePrompts` extra, and a `pendingPermission` on `…50001` (the approval card + panel-wide red glow). Since v0.13.0 it is the **depletion-forecast** fixture, proving all three branches in one shot: `fiveHour` carries an `exhaustAt` **before** its reset (the `~full by …` line renders), `weekly` carries `exhaustAt: null` (no line), and the `extra` "opus weekly" window carries an `exhaustAt` **after** its reset (the guard suppresses the line) . Since v0.15.0 every session carries `queuedContinue` (the key is the widget's feature detection, so it is present and `null` on four of the six rows), and the `pendingPermission`'s `requestedAt` was moved to **10 s before `generatedAt`** so the approval countdown lands mid-hold rather than already expired. Since v0.17.0 it is also the **seeded approval-threshold** fixture: a top-level `toast` block carrying `approvalThresholdSec: 45`, deliberately neither the property default (20) nor a slider step, so a panel showing the property instead of the seed is visibly wrong in the shot. Since v0.22.0 it carries `quiet.override: null` — the member PRESENT and empty, which is the shape a presence test gets wrong if it checks truthiness instead of type. crabd never emits that (0.23.0 omits the key entirely when there is no override), so this is a DEFENSIVE shape the way `_mock.config400` is: the fixture exists to exercise the widget's reader, not to claim a daemon behaviour. It renders identically to an absent member — the chip reads `auto` — which is the whole point. Since v0.21.0 it is also the **host** fixture: a top-level `host` with all four members readable (`34.2` / `58.4` / `18.7` / `32.0`), so the sensors row carries a temperature, a name, a CPU figure and a memory figure at once — which is also the widest the row ever gets, and therefore the fixture the row's width budget is measured on |
-| `future` | **6** | **the break regression.** Otherwise a perfectly valid document — the ONLY thing wrong with it is a schema above `SCHEMA_MAX`, so it must render the **dead feed** (worried crab, dimmed panel, no session cards). A break is still real: if this fixture ever renders its one session card, the ceiling has stopped meaning anything |
+| `future` | **6** | **the break regression.** Otherwise a perfectly valid document — the ONLY thing wrong with it is a schema above `SCHEMA_MAX`, so it must render the **dead feed**: dimmed panel, no session cards, never `live`. A break is still real: if this fixture ever renders its one session card, the ceiling has stopped meaning anything. **CORRECTED v0.30.0, measured in Chromium at 2560x720 — the crab depends on which way you arrive.** On a COLD load (`?mock=future` from a fresh tab, which is how this fixture is normally opened) `everHadData` is still false, so the status is `connecting` and the mood ladder's first rung takes it: the crab is **asleep**, the banner reads "connecting to crabd", and `body` carries `connecting empty`. The **worried** crab is the LIVE-panel case — a panel that had a good document and is then handed a schema-6 one — where the status goes `stale` and the last good cards stay dimmed rather than being re-served as fresh. This row said "worried crab" for both from v0.6.1 until it was driven by a test. Both are pinned: the cold case in the per-fixture loop in `tests/test_panel.js`, the live case in the block immediately after it ("THE OTHER HALF OF THE BREAK REGRESSION") |
 | `recap` | 5 | `burn.daily`, `events` on every session — including one with `events: []` — `recap` (3 repos), `burn.byModel` (4 models), and since v0.6.0 `fleet` (both running) and `contextTokens` on every session **including one `null`** (the idle row, which must render NO ctx chip). It exercises the recap header, the Today timeline, the burn sheet's by-model split and commits list, and the `/v1/config` quiet-hours POST path. Since v0.16.0 it also carries `_mock.config400: ["toast.approvalThresholdSec"]`, which makes it the **0.7.0–0.15.0 crabd** fixture: the `toast` key is accepted, its optional third member is not, so the drop-and-retry fallback runs in a real session. **Renamed at v0.9.0** with the removed feature it used to be named for; everything else about it is unchanged |
 | `hot` | 5 | the **loud** panel: `fiveHour` at **97%** (the red step), `weekly` at 81% (amber) and an `extra` window at 62% (blue) — all three ramp steps in one shot; **30 events across 6 sessions**, so the Today timeline hits its 20-row cap and renders the `+10 earlier` tail; a session at `contextTokens: 1954200` (the `M` branch of `fmtNum`) on a **question card**, where the ctx chip must be ABSENT; and `fleet: {glow: running, toast: stopped}` for the two-shape dot row. Since v0.22.0 its one `needs_input` row is **`acked: true`**, which makes `hot` the **sweating** fixture: with nothing unacked the mood ladder falls through `waving` to `sweating` on the 97% five-hour window, so the red-limit trigger is reachable end to end from the fixture alone with no flag at all. (It was briefly done with `&ackflash=1` instead and that is NOT reliable — the optimistic ack is pruned by the rebase within one poll, the v0.4.0 trap below, so the crab reverted to `waving` before a screenshot could land. A fixture-served `acked` is not optimistic and does not prune.) The card keeps its question and its ctx-chip-absent rendering; it gains an ACKED badge and stops pulsing. Since v0.21.0 it is the **all-null host** fixture: the block is present with every member `null`, which is a crabd that could not measure this machine — both host segments must be ABSENT, never `0%`. Since crabd 0.28.0 it is the **served-denominator** fixture, and the only one carrying `contextWindowTokens`: five rows get a window from the feed with NO marker in the model id (the production case — `claude-opus-5` at 1000000 renders a bar where v0.22.0 rendered none), one row is deliberately `contextWindowTokens: null` beside a real `contextTokens` (**known fill, unknown window, NO bar** — the branch a truthiness test gets wrong), and the `claude-haiku-4-5` row is the mirror of it (**known window 200000, `contextTokens: null`, NO bar**). The `1954200`-on-a-`1000000`-window row also pins the over-100% clamp |
 | `dense` | 5 | **fourteen sessions** (2 needs_input, 6 working, 3 done, 3 idle) — the density fixture. Every other fixture stops at ten, and a compact grid that holds twelve cannot be photographed FULL from ten: the capacity would be a claim rather than a picture. It is also the **filter** fixture, because it is the only one with enough of every state for `showing N of M` to say something in all four modes. Carries `queuedContinue` on three rows (one exact-label match, one trimmed) and a `pendingPermission` for the countdown. Since v0.17.0 it is the **unseeded** counterpart to `rework`: a `toast` block PRESENT with the optional `approvalThresholdSec` ABSENT - the current-crabd, operator-has-never-set-it case, and the one a truthiness test gets wrong. Since v0.22.0 it is the **context-hairline** fixture, and the only one whose models carry a window marker: four of its rows were retargeted so one grid holds every branch at once — `opus-5[1m]` at 972k (**97%, red**), `opus-5[1m]` at 784k (**78%, amber**), `sonnet-4-6[200k]` at 61k (**31%, neutral**, and the `k` branch of the marker parse), `opus-5[1m]` with `contextTokens: null` (**marked but unmeasured, NO bar**) and the ten untouched `opus-5` / `sonnet-4-6` rows (**unmarked, NO bar** — the common case, and the one a guessed denominator would have got wrong). The 97% row is a `needs_input` card, so it is also the proof that the BAR appears where the ctx BADGE cannot: the badge is dropped on a question card to save the badges row a wrap, and the bar is out of flow and costs nothing. Since v0.21.0 it is the **partial host** fixture — `cpuPct: null` beside a readable `memPct` — because "any field may be null" is a per-member fact and a block-level presence test passes this one while getting it wrong. It deliberately carries **NO `contextWindowTokens` at all**, which makes it the **pre-0.28.0 crabd** fixture: the member absent, so `ctxWindowTokens` falls back to parsing the marker itself and this grid must render byte-identically to the way it did at widget 0.22.0. Do not add the member here — that fallback has no other coverage on the glass |
@@ -188,6 +188,204 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 **Since v0.14.0 the swipe dismiss is keyed the same way and inherits the same
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
+
+## v0.30.0 — the browser port: a bounded baseline, a settings sheet, and a window that resizes
+
+crabd serves this tree at `http://localhost:9999/`, so the panel now has an origin, an
+address anyone can type, a window that is dragged rather than a slot that is chosen, and
+no iCUE property bridge behind it. Everything below is what that changed and what it was
+measured at.
+
+### The layout baseline is clamped, and the Edge slot is byte-identical
+
+`--layout-unit: 1vmin` was calibrated for a panel that is always 2560x720. In a browser
+it is whatever the window is, and every token in the stylesheet moves with it — Rule 1/2
+(one baseline, no raw viewport unit in any component selector) is what makes that one
+declaration retune the whole panel, in both directions.
+
+**Measured at HEAD, Chromium 140 headless via Playwright, `?mock=question`, device
+metrics pinned, each size loaded FRESH (see the resize trap below for why that matters):**
+
+| slot | `--layout-unit` before | after | what it was doing |
+|---|---|---|---|
+| 2560x720 (the Edge) | 7.1875 px | **7.1875 px** | inside the ceiling, so the middle term still wins: unchanged |
+| 1440x900 | 9.0 px | **7.1875 px** | a 25% inflation of the entire panel — clock 135 px, card type 30.6 px |
+| 768x1024 | 7.6719 px | **7.1875 px** | 6.7% over the reference |
+| 390x844 | 3.8906 px | **4.5 px** | card question type 11.5 px, below what a phone reads |
+
+`clamp(4.5px, 1vmin, 7.2px)`. The ceiling **is** the reference slot's own vmin rounded
+up (7.1875 measured, 7.2 declared), which is what keeps every px figure elsewhere in this
+file true. The floor is the 390 px phone: 3.89 → 4.5 puts the card question back to
+13.275 px. `--touch-min` is `max(48px, 8.4 * unit)` and cannot shrink past 48 either way.
+
+**2560x720 before and after the change, every zone rect (x/y/w/h):**
+
+| element | before | after |
+|---|---|---|
+| `.zone-identity` | 0, 0, 519.67, 720 | **identical** |
+| `.zone-limits` | 519.67, 0, 619.52, 720 | **identical** |
+| `#cards` | 1167.98, 107.98, 1363.22, 583.22 | **identical** |
+| `#crab` | 28.8, 123.81, 462.08, 421.02 | **identical** |
+| `#limitsHead` | 549.47, 22.31, 559.92, 48.23 | **identical** |
+| grid tracks | 4 x 326.766 px / 2 x 282.25 px | **identical** |
+| `.card-question` | 81.52 px, 21.24 px type, clamp 3 | **identical** |
+
+**The font stack change is also byte-identical here, and the order is the
+measurement's rather than the platform's.** `"Segoe UI Variable Text", "Segoe UI",
+system-ui, -apple-system, "SF Pro Text", sans-serif` — the macOS faces JOIN the stack,
+**behind** the ones every px width comment in this file was measured in (the sensor
+cell's 49.8 px of slack, the row's 360.8, the 13-glyph name clamp). Putting a different
+face in front of Segoe would have invalidated all of them at once with nothing to show
+for it.
+
+Two different kinds of claim, and they are worth separating:
+
+- **On macOS, MEASURED.** Both Segoe families are absent, so the stack resolves to
+  `system-ui` before and after; the table above is the evidence, re-run after the
+  reorder.
+- **On Windows, UNCHANGED BY CONSTRUCTION — not measured.** Nothing was inserted ahead
+  of `Segoe UI Variable Text`, so the face that resolves there cannot have moved. No
+  Windows measurement was taken in this wave (no Edge, no iCUE on this machine), and
+  this line is a claim about the cascade, not about a screenshot.
+
+`--font-mono` gains `"SF Mono", Menlo` **behind** Cascadia, on the same rule.
+
+### The two new slots, measured
+
+**390x844 (a phone, portrait), `?mock=question`, fresh load.** The `<=3:2 / height >= 421
+/ width <= 640` portrait query already owned this shape; what it did not have was a
+readable baseline.
+
+| | measured |
+|---|---|
+| identity band | 390 x 160.36 (crab 84.84 x 123.36, clock 157.16 x 67.5) |
+| Limits zone | 390 x 72.77, the two gauges side by side at 171.2 x 50.2 with **11.69 px between them** — no overlap, and both over the 48 px floor |
+| card grid | **one column**, 354 px, 3 rows x 163.94 px |
+| question | 2 whole lines, 33.97 px, 13.275 px type, clamp 2 — the clamp finishes its lines, so the ellipsis ends it and not the box |
+| overflow | grid 0, child-out-of-card 0, document horizontal **none** |
+| `#coreLine` | `display: none` — the two zones are on the glass, so the CD-33 substitute stays off |
+
+**768x1024 (a tablet, portrait), fresh load.** The near-square query: identity band
+across the top, Limits and Sessions side by side under it.
+
+| | measured |
+|---|---|
+| identity band | 768 x 296.95 |
+| Limits zone | 284.16 x 727.03, gauges **stacked** (225.6 wide, y 381.2 and 474.7) |
+| card grid | **two columns**, 203.766 px each, 2 rows x 285.766 px |
+| question | 2 lines, 54.36 px, 21.24 px type |
+| overflow | grid 0, child 0, horizontal none |
+
+**1440x900 (a laptop window), fresh load.** Three columns, 234.72 px each, 2 rows x
+372.25 px; clock 108 px (was 135); no overflow anywhere. No new query was needed — this
+slot was only ever wrong because of the baseline.
+
+**No breakpoint was added.** The three `<=3:2` queries plus the two width queries already
+partition the space correctly; every measured failure at these sizes was the unbounded
+baseline, and the clamp is the whole fix. A breakpoint added on top of it would have been
+a second answer to a question the cascade already answers.
+
+### THE RESIZE FEEDBACK LOOP — a defect the port introduces by itself
+
+An iCUE slot is chosen once and never resizes. A browser window is dragged, and that
+turns `gridCapacity()` into a loop that cannot escape.
+
+`gridCapacity()` reads the track counts off the computed style, which is what keeps the
+breakpoints in the stylesheet and out of the JS. But **a real engine reports the IMPLICIT
+tracks too**: a grid holding more cards than the new slot has cells has grown a row for
+each of them, so the count read back is the overflow's own — and every later render
+re-reads it.
+
+**Measured, Chromium, `?mock=dense`, 2560x720 then dragged to 390x844:**
+
+| | before | after |
+|---|---|---|
+| `grid-template-columns` | 354 px (correct) | 354 px |
+| `grid-template-rows` | `7.6875 7.70312 7.6875 89.5781 89.5781 89.5781 107.172 34.3906` — 3 explicit rows crushed to slivers plus 5 implicit | `163.938 163.938 163.938` |
+| cards rendered | **8** | **3** |
+| shortest card | **7.69 px** | 163.94 px |
+
+The fix is one line in the resize handler: empty the grid *before* re-rendering, so the
+tracks measured are the stylesheet's answer about the slot and not the grid's answer
+about itself. It costs one empty frame per resize, debounced at 150 ms, and `render()`
+rebuilds on the next statement. `test_panel.js` reproduces it with a `getComputedStyle`
+stub that reports implicit tracks the way an engine does.
+
+### The settings sheet is generated from the declarations iCUE reads
+
+There is no property bridge in a browser, so the panel renders its own settings sheet —
+from the `<meta name="x-icue-property">` tags and the `<script id="x-icue-groups">` block
+in `index.html`, parsed at runtime. Those declarations were written and reviewed for the
+iCUE console; a second copy here would be a copy that can disagree with the one iCUE
+reads. Adding a setting is still one meta and one name in a group.
+
+Measured at 2560x720 with the sheet open: 3 groups, 17 rows, every control 60.5 px tall
+(the 48 px fingertip floor with room over it), region 921.8 x 540.9 scrolling 1449 px of
+content. Every control opens on the value the panel would *read* for that property, so
+the sheet cannot show one thing while the panel behaves as another.
+
+- **`panelToken` gained a group.** It was declared as a property and named by no group at
+  all, which means the iCUE console never rendered it either. It is now its own
+  **Approvals** group. The suite asserts that every declared property is claimed by
+  exactly one group, so the next one cannot go missing quietly.
+- **Not rendered outside iCUE:** `cpuTempSensor`, `gpuTempSensor`, `touchDiag`. Absent
+  rather than disabled — there is no bridge behind any of them in a browser.
+- **`crabStyle` is a real enum control** (`auto` / `plain`). `crabPlain()` has accepted
+  the words since v0.11.0 precisely so this needed no code.
+- **Built once on open, never on the poll**, and every change fires on `change` rather
+  than `input`: a 3 s rebuild would throw away a half-typed pairing code, and a slider
+  firing per pixel would POST per pixel.
+- **"Desktop Toast Alerts" → "Desktop Notifications"** in the meta, the catalogue and the
+  group info. The wire key is still `toast`: a contract key is not a label.
+
+### The standalone case, decided
+
+**The browser panel requires the companion, and there is no static fallback server.** The
+page is *served by* crabd, so a page with no crabd is a page that did not load. That
+inverts the iCUE premise — the store user who installs the widget before the companion —
+and the standalone state's own comment ("the SENSORS row stays: iCUE feeds it, not the
+companion") with it.
+
+What that means concretely, and both halves are already the shipping behaviour:
+
+- **An already-open tab survives.** crabd stopping does not reload it; the poll fails,
+  `computeStatus()` goes stale on the first failure, and the panel renders the worried
+  crab and `crabd not responding — data as of HH:MM` over the last good document. That is
+  the honest account of "the companion went away", and it is pinned by tests.
+- **A fresh navigation gets a browser connection error.** Not a SideCrab screen — there
+  is nothing to serve one. The README states that plainly (a later phase).
+
+### Packaging, decided
+
+**`manifest.json` and the strict-XML check are KEPT and kept passing.** The iCUE build is
+still packageable from this tree: it is the same files, and the browser panel is those
+files served over http rather than a fork of them. Concretely that means the uppercase
+DOCTYPE, no bare `&`, no `--` inside a comment, and the CDATA block around the inlined
+sensor wrapper all stay — the CI parse is the only check that has ever caught a
+blank-panel ship, and it costs nothing to keep.
+
+One string does change: `<title>` was `tr('SideCrab')`, and `tr()` is substituted by the
+iCUE importer and by nothing at all in a browser — so a browser tab read the macro text
+verbatim. It is now the literal `SideCrab`. `tr()` stays on the property labels, which is
+what `translation.json` is a catalogue of.
+
+### The sensors row keeps only the half a browser can fill
+
+No `window.plugins` exists in a browser and no page can read a die temperature, so
+`sensorsPlugin()` returns null and the two temperature cells never render. Both iCUE
+hints go with them — `pick sensors in settings` and `same sensor` were already gated on a
+bound bridge, and that is now pinned rather than incidental. What is left is the
+companion's `host` block; an absent or all-null block takes the whole row off the glass,
+never a row of zeros. The host sheet says **This Mac** when `navigator.platform` starts
+with `Mac` and **This machine** otherwise, and its temperatures block is omitted where no
+cell has ever rendered one — "no hardware sensor reading" is a useful sentence about a
+quiet bridge and a fault report about a platform that has none.
+
+### Where the pairing code lives now
+
+`localStorage` on `http://localhost:9999`, inside the one namespaced object the panel
+keeps its settings and display state in. The guarantee is weaker than the iCUE property's
+and `SECURITY.md` says so outright. The full argument is there, not here.
 
 ## v0.28.2 — the cards get readable: +17% type, two-line titles, and what paid for it
 
@@ -1716,6 +1914,51 @@ navigation of the card grid, keyboard equivalents for the four gestures (swipe-d
 long-press pin, two-finger ack-all, pull-to-refresh), and `aria-live` narration of
 state changes. Each is a real feature, none is a defect this wave found, and all three
 would ship untested against the surface they are for.
+
+**v0.30.0 — the skipped list shrinks to one.** The ground for skipping the gesture
+equivalents was that the surface has no keyboard. A panel with an address in a browser
+is driven from one by definition, so the four are here, and each key calls **the same
+function the gesture calls** rather than a second copy of it:
+
+| key | what it does | the gesture it equals | the function both reach |
+|---|---|---|---|
+| `a` | acknowledge every waiting session | two-finger tap anywhere, **and the crab tap**, which has always been the pointer equivalent of the two-finger one | `fireTwoFingerAck` → `ackAllWaiting` |
+| `p` | pin / unpin the focused card | long press on a card | `pinCard` → `togglePin` |
+| `Delete` / `Backspace` | dismiss the focused card | swipe a done/idle card away | `dismissSwiped` |
+| `r` | refresh now | pull down from the top edge | `forceRefresh` |
+| `s` | open the panel's settings | the gear beside the filter chips | `openSettingsSheet` |
+| `Escape` | close the sheet | the backdrop or the X | `closeSheet` |
+
+Three things had to be true for a bare letter to be safe, and all three are tests:
+
+- **Never while a sheet is open.** The keys would fire behind it, on a grid the
+  operator cannot see.
+- **Never while an input has focus.** The settings sheet is the first surface on this
+  panel with text fields in it, and an `a` typed into a pairing code is a character.
+  `typingInAnInput()` is the guard.
+- **A native `<button>` is still not double-activated.** CD-15's own rule, unchanged:
+  Enter and Space are the engine's to deliver, and synthesising a second click is how
+  one press denies a permission twice.
+
+Two things that only showed up once the keys existed:
+
+- **A pin throws away the node under focus.** Pinning re-sorts the grid and the confirm
+  flash is render state, so `renderSessions` rebuilds every card — and focus goes with
+  the node, to the document. Measured: without `refocusCard(id)` a second `p` had
+  nothing to act on and neither did `Delete`, which is the whole keyboard path dying one
+  keystroke in.
+- **`suppressClick()` belongs to the long press and not to the pin.** The hold consumes
+  an interaction whose finger has not lifted yet; a key has no click coming, and
+  swallowing the operator's next one would be a bug with no cause on the glass. The pin
+  itself is `pinCard()`, shared; the suppression stays in `firePin()`. Both directions
+  are pinned by tests.
+
+**`aria-live` narration** is the last of the three, and it is now partial rather than
+skipped: each keyboard action reports on the same `#notice` line the two gestures with
+no other visible result already use — `acknowledged 3`, `refreshing`, `pinned`,
+`unpinned`, `dismissed`. The asymmetry with the gestures is deliberate: a long press
+puts a pin glyph animating in under the fingertip and a swipe sends the card off the
+glass, and a key gives neither. Arrow-key navigation of the grid is still skipped.
 
 ### 7. Quiet hours could outlive the companion — CD-42
 

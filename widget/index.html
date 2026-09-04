@@ -1,20 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+	<!-- SideCrab widget v0.30.0 (provenance; manifest.json holds the read version) -->
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>tr('SideCrab')</title>
+	<title>SideCrab</title>
 	<link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
 	<link rel="stylesheet" href="styles/sidecrab.css" />
 	<meta name="x-icue-widget-preview" content="resources/preview.png" />
 
 	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'9999'" />
 	<!-- The approval PAIRING CODE (v0.27.0, closes SEC-a). crabd mints it once into
-	     ~/.sidecrab/panel-token and requires it on every Approve/Deny; a widget
-	     property is the one place a web page the operator visits cannot read, which
-	     is the whole point. Read it with `Install-SideCrab.ps1 -PairingCode`. A
-	     textfield because that is a property type the import validator has accepted;
-	     the value is compared case- and hyphen-insensitively. -->
+	     ~/.sidecrab/panel-token and requires it on every Approve/Deny. A textfield
+	     because that is a property type the import validator has accepted; the value
+	     is compared case- and hyphen-insensitively.
+
+	     HOW TO PRINT IT IS SAID TWICE, ONCE PER SURFACE, and they say different
+	     things on purpose. The Approvals group's `info` below is the iCUE console's
+	     only surface and the console renders only on Windows, so it names the
+	     PowerShell command alone. The browser panel builds its own line in
+	     pairingHelp() (scripts/sidecrab.js) naming BOTH commands, because crabd
+	     serves that panel on Windows as readily as on a Mac; buildSettings SKIPS
+	     this group's info so the two never print side by side. Change one and check
+	     the other - the settings-sheet tests pin both.
+	     Neither command is spelled with its leading dashes in THIS comment: the file
+	     is parsed as strict XML, where a double hyphen inside a comment is an
+	     illegal token. Both live in string literals, where the dashes are legal.
+
+	     WHERE IT IS KEPT DEPENDS ON THE HOST, and so does how strong that is. Inside
+	     iCUE it is a widget property, which is the one place a web page the operator
+	     visits cannot read. Served in a browser it is localStorage on the panel's own
+	     origin, which only a page on that origin can read - weaker, deliberately, and
+	     spelled out in SECURITY.md rather than implied here. -->
 	<meta name="x-icue-property" content="panelToken" data-label="tr('Approval Pairing Code')" data-type="textfield" data-default="''" />
 	<meta name="x-icue-property" content="clock24" data-label="tr('24-Hour Clock')" data-type="switch" data-default="false" />
 	<meta name="x-icue-property" content="alertFlash" data-label="tr('Flash On New Alert')" data-type="switch" data-default="true" />
@@ -32,21 +49,24 @@
 	<meta name="x-icue-property" content="quietStart" data-label="tr('Quiet Start (HH:MM)')" data-type="textfield" data-default="'22:00'" />
 	<meta name="x-icue-property" content="quietEnd" data-label="tr('Quiet End (HH:MM)')" data-type="textfield" data-default="'07:00'" />
 
-	<!-- THE MASTER TOAST SWITCH (label re-checked v0.20.0, CD-26). It reads as a
-	     global mute and, as of the notifier's v0.20.0 change, that is exactly what
-	     it is: `toast.enabled` gates EVERY SideCrab toast — waiting sessions,
-	     permission requests, the daily digest and the budget crossing alike — not
-	     only the waiting-session ones it used to gate.
-	     The label is therefore correct as written and is deliberately unchanged;
-	     what is new is that its correctness now depends on the notifier honouring
-	     the key globally. If that ever narrows again, this label and the group
-	     info line below are the two places that go wrong, and they go wrong
-	     silently, so they are named here.
+	<!-- THE MASTER NOTIFICATION SWITCH (label re-checked v0.20.0, CD-26; renamed
+	     v0.30.0). It reads as a global mute and, as of the notifier's v0.20.0
+	     change, that is exactly what it is: `toast.enabled` gates EVERY SideCrab
+	     notification — waiting sessions, permission requests, the daily digest and
+	     the budget crossing alike — not only the waiting-session ones it used to
+	     gate.
+	     The label is therefore correct as written; what is new is that its
+	     correctness depends on the notifier honouring the key globally. If that
+	     ever narrows again, this label and the group info line below are the two
+	     places that go wrong, and they go wrong silently, so they are named here.
+	     "Toast" was the Windows surface's own noun and named nothing a person
+	     using this panel would recognise; the WIRE key is still `toast`, because a
+	     contract key is not a label.
 	     No per-property description attribute is invented for this: switch,
 	     slider, textfield, color and sensors-combobox with data-label are the only
 	     shapes this widget has ever had accepted by the import validator, and the
 	     group `info` is where per-group prose is contractually allowed. -->
-	<meta name="x-icue-property" content="toastEnabled" data-label="tr('Desktop Toast Alerts')" data-type="switch" data-default="true" />
+	<meta name="x-icue-property" content="toastEnabled" data-label="tr('Desktop Notifications')" data-type="switch" data-default="true" />
 	<meta name="x-icue-property" content="toastThreshold" data-label="tr('Toast After')" data-type="slider" data-default="120" data-min="30" data-max="600" data-step="10" data-unit-label="'s'" />
 
 	<!-- The APPROVAL toast threshold (v0.16.0): how long a permission request may
@@ -105,7 +125,12 @@
 		{
 			"title": "tr('SideCrab')",
 			"properties": ["crabdPort", "clock24", "alertFlash", "crabStyle", "quietEnabled", "quietStart", "quietEnd", "toastEnabled", "toastThreshold", "approvalThreshold", "budgetEnabled", "budgetTokens"],
-			"info": "tr('Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions.')"
+			"info": "tr('Claude Code session data comes from the SideCrab companion service, which also serves this panel. Desktop Notifications is a master switch: turning it off silences every SideCrab notification, not only waiting sessions.')"
+		},
+		{
+			"title": "tr('Approvals')",
+			"properties": ["panelToken"],
+			"info": "tr('Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with Install-SideCrab.ps1 -PairingCode. Leave it empty unless panel approvals are turned on.')"
 		},
 		{
 			"title": "tr('Hardware Sensors')",
@@ -925,8 +950,22 @@
 				     socket), the chip says so in place and the next tap tries again -
 				     the same never-latch rule the week strip's day tap keeps. -->
 				<button type="button" id="historyChip" class="head-chip" data-history="" aria-label="Open today's history">History</button>
+				<!-- The panel's own settings (v0.30.0). Served in a browser there is no
+				     iCUE property sheet, so the panel has to own one; inside iCUE the
+				     console still owns it and this chip is hidden by the stylesheet,
+				     because two settings surfaces writing two different stores is the
+				     drift the one-reader rule exists to prevent. Beside the other two
+				     chips and routed the same way, on the control rather than on
+				     coordinates. -->
+				<button type="button" id="settingsChip" class="head-chip head-chip-gear" aria-label="Panel settings">&#9881;</button>
 			</div>
-			<div id="cards" class="cards"></div>
+			<!-- tabindex="-1" (v0.30.0): programmatically focusable, never a tab stop.
+			     It is where focus lands when the keyboard dismisses the last card on
+			     the grid - a div with no tabindex cannot take focus at all, so
+			     focus() would silently drop to the document and the next key would
+			     act on nothing. focusablesIn() skips tabindex="-1", so this does not
+			     join the sheet's Tab trap. -->
+			<div id="cards" class="cards" tabindex="-1"></div>
 			<div id="gridEmpty" class="grid-empty">No active Claude sessions</div>
 		</section>
 
@@ -1032,6 +1071,16 @@
 			     Empty markup on purpose — JS fills it, and an empty region collapses,
 			     so every other mode is exactly what it was. -->
 			<div id="sheetHost" class="sheet-host"></div>
+			<!-- Panel settings (v0.30.0), the eighth mode. Empty markup on purpose, and
+			     for a stronger reason than the host charts have: the CONTROLS ARE
+			     GENERATED FROM THE PROPERTY METAS AND THE x-icue-groups BLOCK ABOVE,
+			     at runtime, so the sheet cannot drift from the declarations the iCUE
+			     console reads. Adding a setting is one meta and one name in a group,
+			     exactly as it was before this sheet existed.
+			     Built once when the sheet opens and never on the poll: these are the
+			     operator's own controls, and a 3 s rebuild under a fingertip would
+			     throw away a half-typed pairing code. -->
+			<div id="sheetSettings" class="sheet-settings"></div>
 			<!-- Today timeline (v0.5.0), the fourth mode of the same panel. It is the
 			     one view that crosses sessions, so it carries no session id either and
 			     is read-only; the per-session events list further down stays exactly

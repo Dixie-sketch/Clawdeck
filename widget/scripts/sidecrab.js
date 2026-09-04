@@ -1,6 +1,11 @@
-/* SideCrab widget runtime — consumes /v1/state (schema 1–5) from crabd on
-   loopback. docs/STATE-CONTRACT.md is authoritative; this file must not invent
-   fields.
+/* SideCrab widget v0.30.0 — runtime, consuming /v1/state (schema 1–5) from crabd
+   on loopback. docs/STATE-CONTRACT.md is authoritative; this file must not
+   invent fields.
+
+   THE VERSION ABOVE IS PROVENANCE, NOT A MACHINE-READ VALUE: manifest.json holds
+   the only one anything reads. It is here, and in the CSS and the HTML, so a file
+   in front of you says which release it belongs to — and a test asserts all four
+   agree, because the whole value of a provenance tag is being swept together.
 
    VERSIONING (rework, v0.6.1): `schema` marks the last BREAKING shape, NOT the
    feature level. Every additive field — contextTokens, fleet, recap, byModel,
@@ -188,6 +193,14 @@ var DENSITY_PROP = 'density';
    the degrade is back to silent, which PRESERVES whatever is on disk, so the
    failure direction is the safe one. */
 var APPROVAL_PROP = 'approvalToast';
+/* v0.30.0 — the key the OBJECT itself lives under when the panel is served in a
+   browser instead of injected into iCUE. Fixed rather than derived: iCUE's
+   uniqueId exists because every widget it serves shares one file:// origin, and
+   a panel crabd serves has an origin of its own that nothing else is on. The
+   settings (clock24, panelToken, the colours, ...) are properties INSIDE this
+   same object, beside PIN_PROP and the two chips, which is what keeps one
+   read-modify-write the only writer of any of it. */
+var PANEL_STORE_KEY = 'sidecrab';
 /* A user-initiated GET, not the poller: it may take a little longer than a poll
    without anything piling up, because a second tap is refused while one is in
    flight. Still bounded — an unsettled fetch would leave the tap dead. */
@@ -768,6 +781,9 @@ var sensorApi = null;
 var sensorTimer = null;
 var sensorBootAttempts = 0;
 var sensorShown = { cpu: false, gpu: false };
+/* v0.30.0: has a temperature cell EVER been on the glass in this session. It
+   gates the host sheet's temperatures block — see syncSensorRow. */
+var sensorEverShown = false;
 /* Transition latch for the same-sensor console line. The state is re-derived on
    every reconcile, and a line written every 10 s is a line nobody reads. */
 var sameWarned = false;
@@ -847,7 +863,41 @@ function onIcueInitialized() { applyProperties(); }
    references icueEvents at all. */
 icueEvents = { onDataUpdated: onIcueDataUpdated, onICUEInitialized: onIcueInitialized };
 
-function getIcueProperty(name) {
+/* WHICH HOST IS THIS, decided ONCE (v0.30.0). iCUE injects every widget property
+   as a same-named global and `uniqueId` is the one it always injects, so its
+   presence is the host test — probed exactly the way a property is, because
+   referencing an undeclared identifier is a ReferenceError and not undefined.
+   Memoised because the answer cannot change under a running panel and because
+   getIcueProperty is on the render path: this must not become an eval per read.
+   NOT named uniqueId, obviously — a declaration with a property's name is a
+   whole-script SyntaxError inside iCUE (v0.27.0 shipped blank from exactly
+   that). */
+var icueHost = null;
+
+function insideIcue() {
+	if (icueHost === null) icueHost = hostHasProperty('uniqueId');
+	return icueHost;
+}
+
+/* EXISTENCE, NOT VALUE, and the two are different questions. hostProperty()
+   answers the PROPERTY question — an empty string means "unset, use the default"
+   — which is right for a colour or a port and wrong for the host test: iCUE
+   injecting an empty uniqueId is still iCUE, and reading that as "no host" would
+   put a widget on the glass onto the browser store, writing pins and settings
+   under a key it then stops reading and letting a previous browser session's
+   values beat the injected properties. So this asks only whether the identifier
+   is DECLARED. */
+function hostHasProperty(name) {
+	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) return true;
+	try {
+		return Function('return typeof ' + name + ' !== "undefined"')();
+	} catch (e) { return false; }
+}
+
+/* The injected-global read, on its own so hostHasProperty and getIcueProperty
+   ask the host through the same probe. Empty is unset here, deliberately: that
+   is the property contract, and the host test above is what must not use it. */
+function hostProperty(name) {
 	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
 		var value = window[name];
 		if (value !== undefined && value !== null && value !== '') return value;
@@ -856,6 +906,95 @@ function getIcueProperty(name) {
 		var v = Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined')();
 		if (v !== undefined && v !== null && v !== '') return v;
 	} catch (e) { /* not running inside iCUE */ }
+	return undefined;
+}
+
+/* THE PANEL'S OWN SETTINGS STORE (v0.30.0) — what replaces the iCUE property
+   sheet when crabd serves this file over http.
+
+   Read LIVE on every call rather than cached at boot, for the reason
+   pairingCode() has always been a function: the settings sheet writes a value
+   and the very next Approve has to carry it. The parse is cached on the RAW
+   string, so a read costs one getItem and a JSON.parse only when the object
+   actually moved — this runs several times a second for the life of the panel. */
+var panelPropsRaw = null;
+var panelPropsCache = {};
+
+function panelSettings() {
+	var store = prefsStorage();
+	if (!store) return panelPropsCache;
+	var raw = null;
+	try { raw = store.getItem(PANEL_STORE_KEY); } catch (e) { raw = null; }
+	if (raw !== panelPropsRaw) {
+		panelPropsRaw = raw;
+		var props = null;
+		try { props = raw ? JSON.parse(raw) : null; } catch (e) { props = null; }
+		panelPropsCache = (props && typeof props === 'object' && !Array.isArray(props)) ? props : {};
+	}
+	return panelPropsCache;
+}
+
+/* READ-MODIFY-WRITE of the whole object, the same discipline savePrefs keeps and
+   for the same reason: the pins, the two chips and the approval touch record are
+   in there too, and so may be keys a future build writes. Then applyProperties(),
+   which is what iCUE's onDataUpdated used to call — so the config sync, the
+   diagnostics reconcile and the render all ride the same edge they always did. */
+function writePanelProperty(name, value) {
+	var props = panelSettings();
+	var next = {};
+	for (var k in props) {
+		if (Object.prototype.hasOwnProperty.call(props, k)) next[k] = props[k];
+	}
+	if (value === null || value === undefined) delete next[name];
+	else next[name] = value;
+	writePanelStore(next);
+	applyProperties();
+}
+
+/* The one writer of the object. Storage that refuses the write degrades to
+   memory for the session (see prefsStorage) and the value is kept, because a
+   setting that vanished mid-session would be worse than one that does not
+   survive a reload. */
+function writePanelStore(next) {
+	var raw = JSON.stringify(next);
+	var store = prefsStorage();
+	try {
+		if (!store) throw new Error('no storage');
+		store.setItem(PANEL_STORE_KEY, raw);
+	} catch (e) {
+		memoryStorage().setItem(PANEL_STORE_KEY, raw);
+	}
+	/* Force the next read to go back to the store rather than trusting `next`:
+	   whichever store took the write is the one that has to answer for it. */
+	panelPropsRaw = null;
+	panelSettings();
+}
+
+/* WHERE THE OPERATOR HAS TO GO, which is not the same place in both hosts. "the
+   widget settings" was iCUE's noun for a surface this panel now owns, and a
+   browser reader sent to an iCUE console has been sent nowhere. Read from the
+   host rather than guessed, so a message written once is right in both. */
+function settingsPlace() {
+	return insideIcue() ? 'the widget settings in iCUE' : 'the panel settings (gear)';
+}
+
+/* THE NAME IS HISTORICAL. This has not been an iCUE-only reader since v0.30.0 —
+   it answers for both hosts, and outside iCUE the answer comes from the panel's
+   own store. It keeps the name because every one of its callers reads as a
+   PROPERTY lookup and renaming it would be a diff across the whole file that
+   says nothing; the property vocabulary (`boolProp`, `strProp`, the metas, the
+   groups block) is the shared language of both surfaces, not iCUE's alone. */
+function getIcueProperty(name) {
+	var hosted = hostProperty(name);
+	if (hosted !== undefined) return hosted;
+	/* Served in a browser there is no bridge, so the panel's own store answers.
+	   Never consulted inside iCUE: the property sheet is the operator's one place
+	   to set these there, and a stale browser copy silently winning over it is
+	   exactly the drift this reader exists to prevent. */
+	if (!insideIcue()) {
+		var v = panelSettings()[name];
+		if (v !== undefined && v !== null && v !== '') return v;
+	}
 	return undefined;
 }
 
@@ -1654,10 +1793,37 @@ function pruneDismissed(sessions) {
    Either one missing leaves prefsStoreKey null and the map in memory for the
    session. Silent by design: a pin that does not survive a restart is a
    nuisance, and an error banner about it would be worse than the nuisance. */
+/* v0.30.0. Once the panel owns its settings, a store that throws is no longer
+   only a lost pin — it is a colour, a quiet-hours window and a pairing code that
+   would not survive being typed. So a refusal degrades to an in-memory object
+   for the SESSION rather than to nothing: what the operator sets is in force
+   until the tab closes, and the reason is one console line. Nothing goes on the
+   glass; a notice about storage would be louder than the loss. */
+var memoryStore = null;
+
+function memoryStorage() {
+	if (!memoryStore) {
+		var data = {};
+		memoryStore = {
+			getItem: function (k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+			setItem: function (k, v) { data[k] = String(v); }
+		};
+		logLine('settings and display state kept in memory for this session (storage unavailable)');
+	}
+	return memoryStore;
+}
+
+/* Probed with a real read rather than tested for existence: some locked-down
+   profiles expose the object and throw on every access, so `window.localStorage`
+   being present says nothing. Once memory has taken over it keeps the session —
+   flipping back mid-session would strand half the settings in each store. */
 function prefsStorage() {
-	try {
-		return window.localStorage || null;
-	} catch (e) { return null; }
+	if (memoryStore) return memoryStore;
+	var store = null;
+	try { store = window.localStorage || null; } catch (e) { store = null; }
+	if (!store) return null;
+	try { store.getItem(PANEL_STORE_KEY); } catch (e) { return memoryStorage(); }
+	return store;
 }
 
 /* Read the whole properties object once. Returns null when there is nothing to
@@ -1703,6 +1869,10 @@ function loadPrefs() {
 	   supplies a genuine uniqueId, and unreachable from the iCUE origin, which
 	   has no query string to carry it. */
 	if ((key === undefined || key === null || key === '') && mockName && devUidOverride) key = devUidOverride;
+	/* v0.30.0: served in a browser there is no host id to key on and none is
+	   needed — the origin is the panel's alone. Same object, same properties, and
+	   the settings sit in it too. */
+	if ((key === undefined || key === null || key === '') && !insideIcue()) key = PANEL_STORE_KEY;
 	if (key === undefined || key === null || key === '') { prefsStoreKey = null; return; }
 	prefsStoreKey = String(key);
 
@@ -1767,7 +1937,15 @@ function savePrefs() {
 	   never opens the property sheet does not accumulate a key either. */
 	if (approvalSeenSec !== null) props[APPROVAL_PROP] = { seen: approvalSeenSec, touched: approvalTouched };
 	try { store.setItem(prefsStoreKey, JSON.stringify(props)); }
-	catch (e) { logLine('display state save failed (storage refused the write)'); }
+	catch (e) {
+		/* v0.30.0: the settings share this object, so a refused write is no longer
+		   only a lost pin. Memory keeps the session; the reason is logged once by
+		   memoryStorage() itself. */
+		memoryStorage().setItem(prefsStoreKey, JSON.stringify(props));
+	}
+	/* The property reader shares this object: the next read has to see what was
+	   just written rather than the string it cached before the save. */
+	if (prefsStoreKey === PANEL_STORE_KEY) panelPropsRaw = null;
 }
 
 /* Oldest pin first, so the cap never evicts the pin somebody just took. */
@@ -2619,14 +2797,20 @@ function renderSessions(sessions, status, quiet, recap) {
 	   reads this list, and a stale one would offer rows the grid no longer cuts. */
 	overflowList = [];
 	document.body.classList.toggle('empty', shown.length === 0);
-	/* The STANDALONE line. A store user installs the widget before the companion,
-	   so the first thing this panel ever renders is this state — it has to read as
-	   a finished display with one part not set up yet, not as a broken one. No URL:
-	   the store listing carries the link, and a hardcoded one goes stale on glass
-	   that nobody re-imports. */
+	/* The STANDALONE line, and it now covers two different situations. Inside iCUE
+	   a store user installs the widget before the companion, so this is the first
+	   thing the panel ever renders. Served in a browser the companion is by
+	   definition running — it served the page — so this is the gap before the first
+	   snapshot, or a poll that has not landed yet.
+	   One sentence for both, and it names the COMPANION rather than a state: what
+	   is missing is the same thing either way. STILL NO URL, for a second reason on
+	   top of the first: on glass a hardcoded address goes stale where nobody
+	   re-imports, and in a browser the reader is already AT it. (v0.30.0 — it used
+	   to send the reader to "the widget's description", which is a store listing a
+	   browser reader has never seen.) */
 	setText(ui.gridEmpty, status === 'connecting'
 		? 'Claude Code stats need the SideCrab companion ' + EMDASH +
-		  " see the widget's description for setup."
+		  ' waiting for it to answer.'
 		/* A filter that emptied the grid says SO, and names the mode it emptied it
 		   in. "No active Claude sessions" under a Waiting chip with four working
 		   sessions behind it would be the panel reporting the filter's answer as
@@ -2737,6 +2921,12 @@ function renderSessions(sessions, status, quiet, recap) {
 			chip.textContent = chipText;
 			ui.cards.appendChild(chip);
 		}
+		/* A KEYBOARD HAND-OFF SURVIVES THE REBUILD (v0.30.0). Every card node is
+		   thrown away here, and focus goes with the node — so a key that removed or
+		   re-sorted the card under focus has to say where focus lands NEXT, and be
+		   answered after the new nodes exist rather than before. A fingertip needs
+		   none of this, which is why it took a keyboard to find it. */
+		flushPendingFocus();
 	}
 
 	/* Ages move without the signature changing, so refresh the anchors every
@@ -3611,6 +3801,360 @@ function syncOverflowSheet() {
 	}
 }
 
+/* ------------------------------------------- the settings sheet (v0.30.0) */
+
+/* WHAT THIS REPLACES. Inside iCUE the console renders a settings sheet from the
+   <meta name="x-icue-property"> tags and the <script id="x-icue-groups"> block
+   in index.html. Served in a browser nothing does, so the panel renders its own
+   — FROM THE SAME DECLARATIONS, parsed at runtime. That is the whole design:
+   the titles, the ordering, the help prose, every type, range, step and default
+   are already written and reviewed in one place, and a second copy of them here
+   would be a copy that can disagree with the one iCUE reads.
+
+   The three properties below are not rendered outside iCUE because there is
+   nothing behind them: the two sensor combo boxes need a Sensors plugin that
+   does not exist in a browser, and the touch recorder was built to find out what
+   the iCUE webview forwards — a question a browser's pointer stream does not
+   raise. Absent, not disabled: a control that cannot do anything is worse than
+   no control. */
+var SETTINGS_HIDDEN = { cpuTempSensor: 1, gpuTempSensor: 1, touchDiag: 1, crabdPort: 1 };
+
+/* crabdPort is in that list for a DIFFERENT reason than the other three, and it
+   is worth naming: it is not unbacked, it is INERT. baseUrl() reads
+   location.protocol first and returns the empty string on a served origin, so
+   the property cannot move where the panel polls — and a control that visibly
+   does nothing is worse than no control. It stays declared for the iCUE case,
+   where the panel is loaded from disk and has to name crabd outright. */
+
+/* THE PAIRING INSTRUCTION, AND THIS IS THE PANEL'S ONE COPY OF IT.
+
+   The split is by SURFACE, not by platform. The Approvals group's `info` in
+   index.html is the iCUE console's, and the console only ever renders on
+   Windows, so it names the PowerShell command alone. This sheet is the browser
+   panel's, and crabd serves the browser panel on Windows as readily as on a Mac
+   — so it names BOTH commands in one sentence. Naming only the shell script
+   here was the earlier mistake: it would have sent every Windows reader of this
+   sheet to a file they do not have.
+   buildSettings SKIPS that group's info so the two never print side by side. */
+function pairingHelp() {
+	return 'Approve and Deny are refused until this matches the code the companion minted. ' +
+		'Print it with Install-SideCrab.ps1 -PairingCode, or setup/install.sh --pairing-code on macOS. ' +
+		'Leave it empty unless panel approvals are turned on.';
+}
+
+/* tr('...') is substituted by iCUE at import time and by nothing at all in a
+   browser, so every label and every group string has to come out of its wrapper
+   here. It stays a wrapper in the markup because the iCUE import still reads
+   these tags. */
+function untr(s) {
+	var v = String(s === null || s === undefined ? '' : s);
+	var m = /^\s*tr\('([\s\S]*)'\)\s*$/.exec(v);
+	return m ? m[1] : v;
+}
+
+function settingsGroups() {
+	var el = document.getElementById('x-icue-groups');
+	if (!el) return [];
+	var list = null;
+	try { list = JSON.parse(el.textContent); } catch (e) { logLine('settings: the x-icue-groups block did not parse'); }
+	return Array.isArray(list) ? list : [];
+}
+
+function settingsMetas() {
+	var out = {};
+	var metas = document.querySelectorAll('meta[name="x-icue-property"]');
+	for (var i = 0; i < metas.length; i++) {
+		var m = metas[i];
+		var name = m.getAttribute('content');
+		if (!name) continue;
+		out[name] = {
+			name: name,
+			label: untr(m.getAttribute('data-label')) || name,
+			type: m.getAttribute('data-type') || 'textfield',
+			dflt: metaDefault(m.getAttribute('data-default')),
+			min: m.getAttribute('data-min'),
+			max: m.getAttribute('data-max'),
+			step: m.getAttribute('data-step'),
+			unit: untr(m.getAttribute('data-unit-label'))
+		};
+	}
+	return out;
+}
+
+/* index.html writes a default the way the iCUE console reads it: a QUOTED string,
+   or a bare number, or a bare true/false. The quotes are the type marker, which
+   is why '9999' is a port string and 9999 would have been a number. */
+function metaDefault(raw) {
+	var s = String(raw === null || raw === undefined ? '' : raw).trim();
+	var q = /^'([\s\S]*)'$/.exec(s);
+	if (q) return q[1];
+	if (s === 'true') return true;
+	if (s === 'false') return false;
+	if (s !== '' && isFinite(Number(s))) return Number(s);
+	return s;
+}
+
+/* Every control opens on what the panel would READ for that property — the same
+   readers the render path uses, so the sheet cannot show one value while the
+   panel behaves as another. Unset falls through to the meta's own default,
+   exactly as it does everywhere else. */
+function settingsControl(meta) {
+	var el;
+	if (meta.name === 'crabStyle') {
+		/* The one property iCUE could only take as a switch: switch, slider,
+		   textfield, color and sensors-combobox are the types its import validator
+		   accepts, and crabPlain() has accepted the WORDS since v0.11.0 precisely so
+		   a real enum control needed no code when one became possible. */
+		el = document.createElement('select');
+		el.appendChild(settingsOption('auto', 'Auto'));
+		el.appendChild(settingsOption('plain', 'Plain'));
+		el.value = crabPlain() ? 'plain' : 'auto';
+	} else if (meta.type === 'switch') {
+		el = document.createElement('input');
+		el.setAttribute('type', 'checkbox');
+		el.checked = boolProp(meta.name, meta.dflt === true);
+	} else if (meta.type === 'slider') {
+		var n = Number(getIcueProperty(meta.name));
+		if (!isFinite(n)) n = Number(meta.dflt);
+		el = document.createElement('input');
+		el.setAttribute('type', 'range');
+		if (meta.min !== null) el.setAttribute('min', meta.min);
+		if (meta.max !== null) el.setAttribute('max', meta.max);
+		if (meta.step !== null) el.setAttribute('step', meta.step);
+		el.value = String(n);
+	} else if (meta.type === 'color') {
+		el = document.createElement('input');
+		el.setAttribute('type', 'color');
+		el.value = strProp(meta.name, String(meta.dflt));
+	} else {
+		el = document.createElement('input');
+		/* The pairing code is a secret typed into a panel anyone can walk past, so
+		   it is masked with a deliberate reveal rather than shown. */
+		el.setAttribute('type', meta.name === 'panelToken' ? 'password' : 'text');
+		el.value = strProp(meta.name, String(meta.dflt));
+	}
+	el.setAttribute('data-prop', meta.name);
+	el.setAttribute('id', 'set-' + meta.name);
+	el.className = 'set-control';
+	return el;
+}
+
+function settingsOption(value, label) {
+	var o = document.createElement('option');
+	o.setAttribute('value', value);
+	o.value = value;
+	o.textContent = label;
+	return o;
+}
+
+function settingsRow(meta) {
+	var row = document.createElement('div');
+	row.className = 'set-row set-' + meta.type;
+	var label = document.createElement('label');
+	label.className = 'set-label';
+	label.setAttribute('for', 'set-' + meta.name);
+	label.textContent = meta.label;
+	row.appendChild(label);
+	row.appendChild(settingsControl(meta));
+	/* The unit label rides beside a slider the way the iCUE console renders it,
+	   and the current value with it: a range input shows neither on its own, and a
+	   threshold nobody can read is a threshold nobody sets. */
+	if (meta.type === 'slider') {
+		var val = document.createElement('span');
+		val.className = 'set-value';
+		val.setAttribute('data-value-for', meta.name);
+		val.textContent = settingsValueText(meta);
+		row.appendChild(val);
+	}
+	if (meta.name === 'panelToken') {
+		var show = document.createElement('button');
+		show.setAttribute('type', 'button');
+		show.setAttribute('id', 'settingsTokenShow');
+		show.className = 'set-reveal';
+		show.textContent = 'Show';
+		row.appendChild(show);
+		var help = document.createElement('div');
+		help.className = 'set-help';
+		help.textContent = pairingHelp();
+		row.appendChild(help);
+	}
+	/* A time field that crabd would refuse says so HERE rather than going quiet
+	   (review). desiredQuietConfig returns null for a value normHm rejects, which
+	   is correct on the wire — half a typed time is not a window — and completely
+	   invisible on the glass: the operator watched a value they had typed simply
+	   never take effect. */
+	/* hasOwnProperty for the same reason SETTINGS_HIDDEN uses it: a property named
+	   `constructor` would inherit a truthy value off Object.prototype. */
+	if (Object.prototype.hasOwnProperty.call(SETTINGS_TIME, meta.name)) {
+		var bad = document.createElement('div');
+		/* NOT also .set-help: that class is the pairing row's prose and a
+		   querySelector for it must not find an empty refusal line first. */
+		bad.className = 'set-invalid';
+		bad.setAttribute('data-invalid-for', meta.name);
+		row.appendChild(bad);
+	}
+	return row;
+}
+
+/* The properties normHm validates. A map rather than a test on the label,
+   because the label is prose and this is a contract. */
+var SETTINGS_TIME = { quietStart: 1, quietEnd: 1 };
+
+/* Shown only while the value is one crabd would refuse; cleared the moment it is
+   not. The row keeps the element either way, so nothing reflows under a finger
+   that is still typing. */
+function markSettingsTime(meta, value) {
+	if (!Object.prototype.hasOwnProperty.call(SETTINGS_TIME, meta.name) || !ui.sheetSettings) return;
+	var el = ui.sheetSettings.querySelector('[data-invalid-for="' + meta.name + '"]');
+	if (!el) return;
+	var bad = normHm(value) === null;
+	setText(el, bad ? 'needs HH:MM, 00:00 to 23:59 — not sent until it is' : '');
+	el.classList.toggle('shown', bad);
+}
+
+function settingsValueText(meta) {
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop="' + meta.name + '"]') : null;
+	var n = el ? Number(el.value) : Number(getIcueProperty(meta.name));
+	if (!isFinite(n)) n = Number(meta.dflt);
+	return n + (meta.unit ? ' ' + meta.unit : '');
+}
+
+/* Built ONCE, when the sheet opens. Not on the poll: these are the operator's own
+   controls and a 3 s rebuild would throw away a half-typed pairing code and
+   fight a finger on a slider. */
+function buildSettings() {
+	var region = ui.sheetSettings;
+	if (!region) return;
+	region.textContent = '';
+	var metas = settingsMetas();
+	var groups = settingsGroups();
+	for (var g = 0; g < groups.length; g++) {
+		var group = groups[g] || {};
+		var names = Array.isArray(group.properties) ? group.properties : [];
+		var rows = [];
+		var ownsPairing = false;
+		for (var i = 0; i < names.length; i++) {
+			/* hasOwnProperty, not a bare index: a property named `constructor` or
+			   `toString` would inherit a truthy value off Object.prototype and vanish
+			   from the sheet with nothing said. */
+			if (Object.prototype.hasOwnProperty.call(SETTINGS_HIDDEN, names[i])) continue;
+			if (names[i] === 'panelToken') ownsPairing = true;
+			if (metas[names[i]]) rows.push(metas[names[i]]);
+		}
+		/* A group whose every property belongs to iCUE renders NOTHING — not an
+		   empty heading, which would read as a feature that failed to load. */
+		if (!rows.length) continue;
+		var sec = document.createElement('div');
+		sec.className = 'set-group';
+		var title = document.createElement('div');
+		title.className = 'set-group-title';
+		title.textContent = untr(group.title);
+		sec.appendChild(title);
+		for (var r = 0; r < rows.length; r++) sec.appendChild(settingsRow(rows[r]));
+		var info = untr(group.info || '');
+		/* The pairing group's info is written for the iCUE console — it is the only
+		   surface iCUE has, and it names the Windows command. The row's own help
+		   line carries this host's version, so rendering the info here as well
+		   would print an instruction for the other platform beside the right one. */
+		if (ownsPairing) info = '';
+		if (info) {
+			var note = document.createElement('div');
+			note.className = 'set-group-info';
+			note.textContent = info;
+			sec.appendChild(note);
+		}
+		region.appendChild(sec);
+	}
+	/* THE REFUSAL LINES ARE SWEPT ON OPEN, not only on change. A value crabd
+	   refuses can already be in the store — typed in an earlier session, or hand
+	   edited — and marking it only when the control MOVES would open the sheet on
+	   an ordinary-looking field whose value has never been sent and never will be.
+	   Last, so every row exists to be marked. */
+	for (var name in SETTINGS_TIME) {
+		if (!Object.prototype.hasOwnProperty.call(SETTINGS_TIME, name)) continue;
+		var timeMeta = metas[name];
+		if (timeMeta) markSettingsTime(timeMeta, strProp(name, String(timeMeta.dflt)));
+	}
+}
+
+/* CHANGE, not input. A range fires input per pixel and a colour picker per drag
+   frame; change fires when the control is released, which is the edge a setting
+   actually moved on. The debounce below it (CFG_DEBOUNCE_MS) is the second
+   brake, not the first. */
+function onSettingsChange(ev) {
+	var el = ev && ev.target;
+	if (!el || !el.getAttribute) return;
+	var name = el.getAttribute('data-prop');
+	if (!name) return;
+	var meta = settingsMetas()[name];
+	if (!meta) return;
+	var value = readSettingsControl(el, meta);
+	writePanelProperty(name, value);
+	if (meta.type === 'slider') {
+		var out = ui.sheetSettings.querySelector('[data-value-for="' + name + '"]');
+		if (out) setText(out, settingsValueText(meta));
+	}
+	markSettingsTime(meta, value);
+}
+
+function readSettingsControl(el, meta) {
+	if (meta.name === 'crabStyle') return el.value === 'plain' ? 'plain' : 'auto';
+	if (meta.type === 'switch') return !!el.checked;
+	if (meta.type === 'slider') {
+		var n = Number(el.value);
+		if (!isFinite(n)) n = Number(meta.dflt);
+		/* NEVER Number(null), which is 0 (review). A slider meta with no declared
+		   min would otherwise clamp every value of that control to zero and send it
+		   — the contract-legal-null trap this whole file tests type for, one layer
+		   down and on the way OUT rather than in. */
+		var lo = meta.min === null || meta.min === undefined ? NaN : Number(meta.min);
+		var hi = meta.max === null || meta.max === undefined ? NaN : Number(meta.max);
+		/* Clamped here as well as in each desired*Config(), because a value outside
+		   the meta's range is a body crabd answers 400 to — and a 400 on the toast
+		   key is indistinguishable from the older-crabd 400 the sync path reads. */
+		if (isFinite(lo)) n = Math.max(lo, n);
+		if (isFinite(hi)) n = Math.min(hi, n);
+		return n;
+	}
+	return String(el.value);
+}
+
+function toggleTokenReveal() {
+	var el = ui.sheetSettings ? ui.sheetSettings.querySelector('[data-prop="panelToken"]') : null;
+	var btn = ui.sheetSettings ? ui.sheetSettings.querySelector('#settingsTokenShow') : null;
+	if (!el || !btn) return;
+	var shown = el.getAttribute('type') === 'text';
+	el.setAttribute('type', shown ? 'password' : 'text');
+	setText(btn, shown ? 'Show' : 'Hide');
+}
+
+/* The eighth mode of the one sheet. Inside iCUE it does not open at all: the
+   console owns the properties there, and a second surface writing a store iCUE
+   never reads would be a settings sheet that silently does nothing. */
+function openSettingsSheet() {
+	if (insideIcue()) return;
+	sheetSessionId = null;
+	sheetGen++;
+	sheetOpenState = null;
+	sheetMode = 'settings';
+	clearSheetTimer();
+	sheetBusy = false;
+	ui.sheet.classList.remove('busy');
+	setSheetStatus('', '');
+	buildSettings();
+	setText(ui.sheetTitle, 'Panel settings');
+	setText(ui.sheetRepo, 'kept in this browser, on this panel’s own address');
+	ui.sheet.setAttribute('data-mode', 'settings');
+	ui.sheet.setAttribute('data-detail-state', '');
+	ui.sheet.setAttribute('data-approval', '');
+	ui.sheet.setAttribute('data-continue', '');
+	setVar(ui.sheet, '--sheet-accent', 'var(--accent)');
+	ui.sheet.classList.add('open');
+	ui.sheet.setAttribute('aria-hidden', 'false');
+	syncSheet();
+	enterSheetFocus();
+}
+
 function closeSheet() {
 	sheetGen++;
 	clearSheetTimer();
@@ -3659,6 +4203,10 @@ function syncSheet() {
 	if (sheetMode === 'timeline') { syncTimelineSheet(); return; }
 	if (sheetMode === 'overflow') { syncOverflowSheet(); return; }
 	if (sheetMode === 'host') { syncHostSheet(); return; }
+	/* The settings sheet deliberately does NOT follow the feed: it is a view of
+	   the panel's own stored settings, not of a document, and nothing crabd can
+	   say should move a control under a fingertip. */
+	if (sheetMode === 'settings') return;
 	/* The day view renders from the ONE document its tap fetched. The poll still
 	   calls through here every 3 s, and it must not turn a read of a fixed past
 	   day into a GET every three seconds. */
@@ -4889,7 +5437,7 @@ function onSheetDecide(decision) {
 	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
 	   operator reads why instead of finding the card still armed after a close. */
 	if (tokenRequired() && !pairingCode()) {
-		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in widget settings', 'err');
+		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in ' + settingsPlace(), 'err');
 		logLine('decide refused locally: no pairing code');
 		return;
 	}
@@ -4903,7 +5451,7 @@ function onSheetDecide(decision) {
 	postAction(id, 'decide', null, decision, null, requestId).then(function (res) {
 		if (res.status === 204 || res.status === 200) { logLine('decision sent: ' + decision); return; }
 		logLine('decide failed (HTTP ' + res.status + ')');
-		if (res.status === 403) { showNotice(decision + ' refused ' + EMDASH + ' pairing code wrong; check widget settings', 'err'); return; }
+		if (res.status === 403) { showNotice(decision + ' refused ' + EMDASH + ' pairing code wrong; check ' + settingsPlace(), 'err'); return; }
 		if (res.status === 409) { showNotice(decision + ' not applied ' + EMDASH + ' the request changed; reopen the card', 'err'); return; }
 		if (res.status === 429) { showNotice(decision + ' refused ' + EMDASH + ' pairing locked, wait a minute', 'err'); return; }
 		showNotice(decision + ' not sent ' + EMDASH + ' decide in terminal', 'err');
@@ -5059,6 +5607,9 @@ function onGridHeadClick(ev) {
 	   fell through would open the ring-buffer timeline over the day view this one
 	   is about to fetch, and the loser would land last. */
 	if (el === ui.historyChip) { openTodayHistory(); return; }
+	/* v0.30.0. Same rule as the three above: a chip tap that fell through would
+	   open the timeline over the settings sheet this one is about to open. */
+	if (el === ui.settingsChip) { openSettingsSheet(); return; }
 	if (el) return;
 	openTimelineSheet();
 }
@@ -5366,13 +5917,25 @@ function cancelLongPress() {
 
 function firePin(card) {
 	if (!card.isConnected) return;
-	var id = card.getAttribute('data-session-id');
-	if (!id) return;
 	/* The hold has consumed the interaction: the sheet must not also open when the
-	   finger comes up, and the finger has not come up yet. */
+	   finger comes up, and the finger has not come up yet. The KEYBOARD path calls
+	   pinCard directly for exactly this reason — there is no click coming, and
+	   swallowing the operator's next one would be a bug with no cause on the
+	   glass. */
 	suppressClick();
+	pinCard(card);
+}
+
+/* The pin itself, shared by the long press and the p key. Returns whether the
+   session is pinned AFTER the toggle, or null when there was nothing to pin. */
+function pinCard(card) {
+	if (!card || !card.isConnected) return null;
+	var id = card.getAttribute('data-session-id');
+	if (!id) return null;
 	togglePin(id);
-	firePinFlash(id, isPinned(id));
+	var on = isPinned(id);
+	firePinFlash(id, on);
+	return on;
 }
 
 /* The confirm. On a PIN the glyph animates in, which is the whole message; on an
@@ -5497,11 +6060,18 @@ function hideNotice() {
      - Enter / Space activate anything already carrying role="button". Native
        <button> elements do this themselves, so they are excluded here rather
        than being clicked twice.
-   Recorded as deliberately skipped: arrow-key navigation of the card grid, any
-   keyboard equivalent for the four gestures (swipe-dismiss, long-press pin,
-   two-finger ack-all, pull-to-refresh), and aria-live narration of state
-   changes. Each is a real feature, none is a defect this wave found, and all
-   three would be shipped untested against the surface they are for. */
+
+   v0.30.0 ADDED THE REST OF IT, because a panel with an address in a browser is
+   driven from a keyboard by definition: `a` ack-all, `p` pin, Delete/Backspace
+   dismiss, `r` refresh, `s` settings — each calling the same function its
+   gesture calls, each narrating itself on the notice line, and each inert
+   behind a modifier, an autorepeat, an open sheet or a focused input.
+
+   Still deliberately skipped, and named so nobody has to re-derive why:
+   arrow-key navigation of the card grid. Tab already reaches every card in
+   order, so arrows would be a second traversal of the same set with its own
+   wrap, edge and column rules to get wrong on a grid whose column count is a
+   media query. */
 function onKeyDown(ev) {
 	var key = ev.key;
 	if (!key) return;
@@ -5511,6 +6081,31 @@ function onKeyDown(ev) {
 		return;
 	}
 	if (key === 'Tab' && open) { trapTab(ev); return; }
+	/* v0.30.0: the gesture keys. Never while a sheet is open (they would fire
+	   behind it, on a grid the operator cannot see) and never while an input has
+	   focus (an "s" typed into the pairing code is a character, not a command) —
+	   the two conditions that make a bare letter safe as a shortcut at all.
+	   Each one calls THE SAME FUNCTION the gesture calls: a second copy of the
+	   ack-all or of the dismissal is a second one that can drift. */
+	/* A MODIFIER MEANS THE BROWSER'S SHORTCUT AND NOT OURS. Every one of the four
+	   letters this panel claims is a browser command with a modifier on it —
+	   Cmd/Ctrl-R reload, Cmd-P print, Cmd-A select-all, Cmd-S save — and a page
+	   somebody lives in must not take those away. Checked before anything else so
+	   no branch below can claim one.
+	   ev.repeat is autorepeat: a held `a` would have made an ack-all POST per OS
+	   repeat and a held `p` would have toggled a pin back and forth until the
+	   finger lifted. One press, one command. */
+	if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
+	if (!open && !typingInAnInput()) {
+		if (key === 's' || key === 'S') { openSettingsSheet(); ev.preventDefault(); return; }
+		if (key === 'a' || key === 'A') { fireTwoFingerAck(); ev.preventDefault(); return; }
+		if (key === 'r' || key === 'R') { forceRefresh(); ev.preventDefault(); return; }
+		if (key === 'p' || key === 'P') { keyboardPin(); ev.preventDefault(); return; }
+		/* Backspace as well as Delete, and preventDefault on both: an unhandled
+		   Backspace is a browser Back on some engines, which would navigate the
+		   panel away from a card the operator only meant to dismiss. */
+		if (key === 'Delete' || key === 'Backspace') { keyboardDismiss(); ev.preventDefault(); return; }
+	}
 	if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') return;
 	var el = document.activeElement;
 	if (!el || el === document.body) return;
@@ -5525,6 +6120,132 @@ function onKeyDown(ev) {
 	/* Space scrolls the page by default, and the sheet's list regions scroll. */
 	ev.preventDefault();
 	el.click();
+}
+
+/* The card a key acts ON. A card is a tab stop, so `p` and Delete need one under
+   focus for the same reason the long press and the swipe need one under a
+   finger; with none they do nothing, which is the honest equivalent of a finger
+   travelling over empty grid. */
+function focusedCard() {
+	var el = document.activeElement;
+	if (!el || !el.closest) return null;
+	var card = el.closest('.card');
+	return card && ui.cards.contains(card) ? card : null;
+}
+
+/* THE KEYBOARD NARRATES, and the gestures mostly do not. That asymmetry is
+   deliberate: a long press gives a fingertip a pin glyph animating in under it
+   and a swipe sends the card off the glass, and a key gives neither. So each key
+   says what it did on the one aria-live line this panel already has for exactly
+   the gestures that had no other visible result. */
+function keyboardPin() {
+	var card = focusedCard();
+	if (!card) return;
+	var id = card.getAttribute('data-session-id');
+	var on = pinCard(card);
+	if (on === null) return;
+	/* THE CARD UNDER FOCUS HAS JUST BEEN THROWN AWAY. A pin re-sorts the grid and
+	   the confirm flash is render state, so renderSessions rebuilds every node —
+	   and focus goes with the node, to the document. Without this a second p has
+	   nothing to act on and neither does Delete, which is the whole keyboard path
+	   dying one keystroke in. */
+	refocusCard(id);
+	showNotice(on ? 'pinned' : 'unpinned', 'ack');
+}
+
+/* By scan rather than by selector: a session id goes into a CSS attribute
+   selector unescaped, and the id is crabd's, not ours. */
+function refocusCard(id) {
+	if (!id) return;
+	var cards = ui.cards.querySelectorAll('.card');
+	for (var i = 0; i < cards.length; i++) {
+		if (cards[i].getAttribute('data-session-id') === String(id)) { safeFocus(cards[i]); return; }
+	}
+}
+
+function keyboardDismiss() {
+	var card = focusedCard();
+	if (!card) return;
+	/* Checked against the LIVE row, the belt startSwipe and dismissSwiped both
+	   wear: a needs_input or working card has no dismissal for the key to BE. */
+	var s = findSession(card.getAttribute('data-session-id'));
+	if (!s || !DISMISSABLE[s.state]) return;
+	/* WHERE FOCUS GOES NEXT, decided BEFORE the card leaves. Without this the
+	   keyboard path ends here: the node under focus is removed, focus falls to the
+	   document, and the next key acts on nothing. The next card along, or the one
+	   before it at the end of the grid, or the grid itself when that was the last
+	   one — the same place a person's eye goes. */
+	var neighbour = neighbourCardId(card);
+	queueCardFocus(neighbour);
+	/* Negative, so the card leaves to the left — the same direction and the same
+	   function a leftward swipe ends in. */
+	dismissSwiped(card, -1);
+	showNotice('dismissed', 'ack');
+	/* TWO MOVES, NOT ONE, and the order is the point. dismissSwiped renders
+	   immediately only under reduced motion; otherwise the rebuild is on the
+	   fly-out timer, several hundred ms away. So focus is moved off the departing
+	   card NOW — it is sliding off the glass — and the QUEUE IS LEFT ALONE, because
+	   the node focused here is one the rebuild is about to throw away and only the
+	   rebuild can hand focus to its replacement. Consuming the queue here instead
+	   was the ordering bug: the animated path then landed focus on a detached
+	   node and the keyboard died one dismissal in. */
+	focusCardNow(neighbour);
+}
+
+/* The id of the card after this one, or the one before it when this is the last.
+   Null when it is the only card, which is the grid's own turn to hold focus. */
+function neighbourCardId(card) {
+	var cards = ui.cards.querySelectorAll('.card');
+	for (var i = 0; i < cards.length; i++) {
+		if (cards[i] !== card) continue;
+		var next = cards[i + 1] || cards[i - 1] || null;
+		return next ? next.getAttribute('data-session-id') : null;
+	}
+	return null;
+}
+
+var pendingFocusId = null;      /* a card to focus once the grid has been rebuilt */
+var pendingFocusGrid = false;   /* ...or the grid itself, when no card is left */
+
+function queueCardFocus(id) {
+	pendingFocusId = id;
+	pendingFocusGrid = !id;
+}
+
+/* Answered wherever new card nodes have just appeared: the rebuild in
+   renderSessions, and the immediate path in keyboardDismiss. Clears itself, so a
+   later poll's rebuild does not steal focus back from wherever the operator has
+   since moved it. */
+function flushPendingFocus() {
+	if (!pendingFocusId && !pendingFocusGrid) return;
+	var id = pendingFocusId;
+	pendingFocusId = null;
+	pendingFocusGrid = false;
+	focusCardNow(id);
+}
+
+/* Focus a card by id against the CURRENT DOM, without touching the queue. The
+   grid takes it when that card is not there — no card left to hold focus is
+   still somewhere for the next Tab to start from, and it is never the document. */
+function focusCardNow(id) {
+	if (id) {
+		var cards = ui.cards.querySelectorAll('.card');
+		for (var i = 0; i < cards.length; i++) {
+			if (cards[i].getAttribute('data-session-id') === String(id)) { safeFocus(cards[i]); return; }
+		}
+	}
+	safeFocus(ui.cards);
+}
+
+/* A text field, a slider or a select has the keystroke: the settings sheet is the
+   only place on this panel with any of them, and this is what keeps a letter key
+   from being a command while somebody is typing. contentEditable is checked too
+   — nothing here uses it, and the day it does this guard already covers it. */
+function typingInAnInput() {
+	var el = document.activeElement;
+	if (!el || !el.tagName) return false;
+	var tag = el.tagName;
+	return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
 }
 
 function focusablesIn(root) {
@@ -5617,6 +6338,12 @@ function onSheetClick(ev) {
 	   null to crabd (caught in the browser, 2026-08-26 — the malformed body was
 	   already on the wire). Any future button that borrows .sheet-btn without a
 	   data-sheet-action must be routed above this line too. */
+	/* The settings sheet's own controls, routed ABOVE every branch below for the
+	   reason Dismiss and Pin are: the reveal is a <button> and the generic
+	   .sheet-btn branch would POST an action of null to crabd. Everything else in
+	   that region is an input, which fires change and never lands here. */
+	if (t.closest && t.closest('#settingsTokenShow')) { toggleTokenReveal(); return; }
+	if (t.closest && t.closest('#sheetSettings')) return;
 	if (t.closest && t.closest('#sheetDismiss')) { onSheetDismiss(); return; }
 	/* Same rule as Dismiss, and the same reason: Pin wears .sheet-btn for its
 	   looks and carries no data-sheet-action, so the generic branch below would
@@ -6854,6 +7581,12 @@ function syncSensorRow() {
 	   cannot answer must not take the companion's number off the glass with it. */
 	var cpuOn = sensorShown.cpu || hostMetrics.cpuPct !== null;
 	var gpuOn = sensorShown.gpu || warn;
+	/* v0.30.0. A LATCH, and the host sheet's temperatures block is gated on it:
+	   "no hardware sensor reading" is a true and useful sentence on a machine
+	   whose bridge is there and quiet, and a confusing one on a platform that has
+	   no bridge to be quiet. Latched rather than read live so a sheet open across
+	   a sensor dropout does not lose the block mid-read. */
+	if (sensorShown.cpu || sensorShown.gpu) sensorEverShown = true;
 	var memOn = hostMetrics.memPct !== null;
 	ui.sensorCpu.classList.toggle('shown', cpuOn);
 	ui.sensorGpu.classList.toggle('shown', gpuOn);
@@ -6874,7 +7607,7 @@ function syncSensorRow() {
 	if (drill) {
 		ui.sensors.setAttribute('role', 'button');
 		ui.sensors.setAttribute('tabindex', '0');
-		ui.sensors.setAttribute('aria-label', "Open this PC's CPU and memory history");
+		ui.sensors.setAttribute('aria-label', 'Open ' + thisMachine(true) + "'s CPU and memory history");
 	} else {
 		ui.sensors.removeAttribute('role');
 		ui.sensors.removeAttribute('tabindex');
@@ -7049,12 +7782,24 @@ function openHostSheet() {
 	enterSheetFocus();
 }
 
+/* v0.30.0. The title used to name a Windows box outright. navigator.platform is
+   deprecated and is still the only thing every engine this panel runs in
+   answers, and a wrong answer costs a NOUN rather than a behaviour — which is
+   why it is read here and nowhere that decides anything. Anything that is not a
+   Mac is "this machine" rather than a guess at what it is. */
+function thisMachine(lower) {
+	var p = '';
+	try { p = String((window.navigator && window.navigator.platform) || ''); } catch (e) { p = ''; }
+	var s = p.indexOf('Mac') === 0 ? 'This Mac' : 'This machine';
+	return lower ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
 /* Follows the feed like every other sheet: a companion that stops serving `host`
    takes this view with it rather than leaving a ten-minute chart of a machine
    nobody is measuring any more. */
 function syncHostSheet() {
 	if (!hostSheetAvailable()) { closeSheet(); return; }
-	setText(ui.sheetTitle, 'This PC');
+	setText(ui.sheetTitle, thisMachine());
 	setText(ui.sheetRepo, 'last 10 minutes ' + EMDASH + ' sampled from the companion feed');
 
 	var last = hostRing.length ? hostRing[hostRing.length - 1] : null;
@@ -7079,7 +7824,18 @@ function syncHostSheet() {
 	/* The temperatures, as TEXT and never as a third chart: they are not in the ring
 	   (iCUE's bridge feeds them on its own clock, not the poll's) so there is no
 	   ten-minute history of them to draw, and drawing one from the ring's timestamps
-	   would be charting a series against somebody else's samples. */
+	   would be charting a series against somebody else's samples.
+	   v0.30.0: the whole block is OMITTED where there is no bridge AND none has ever
+	   answered. "no hardware sensor reading" is a true and useful sentence about a
+	   bridge that is there and quiet — which is a machine whose operator most needs
+	   it — and a fault report on a platform that has no bridge to be quiet.
+	   GATED ON THE BRIDGE FIRST, and the latch only as a fallback: an earlier
+	   version gated on the latch alone and got iCUE exactly backwards, dropping the
+	   line on the bound-but-silent machine it exists for. The latch stays for the
+	   other direction — a bridge that answered once and has since gone (a plugin
+	   torn down under a running panel) keeps the block rather than having the sheet
+	   quietly stop mentioning temperatures it was showing a moment ago. */
+	if (!sensorsPlugin() && !sensorEverShown) return;
 	var temps = [];
 	for (var i = 0; i < SENSOR_KEYS.length; i++) {
 		var t = sensorText(SENSOR_KEYS[i]);
@@ -7905,6 +8661,7 @@ function init() {
 		'coreLine', 'coreSessions', 'coreLimits',
 		'sheet', 'sheetBackdrop', 'sheetTitle', 'sheetRepo', 'sheetQuestion', 'sheetStatus',
 		'sheetMeta', 'sheetSubs', 'sheetEvents', 'sheetBurn', 'sheetTimeline', 'sheetWeek', 'sheetHost',
+		'sheetSettings', 'settingsChip',
 		'sheetPin', 'sheetBack', 'sheetDayFoot', 'sheetPrevDay', 'sheetNextDay',
 		'sheetApprovalDetail', 'sheetApprovalTool', 'sheetApprovalSummary', 'sheetApprovalLeft',
 		'sheetApprovalThreshold', 'sheetApprove', 'sheetDeny',
@@ -8147,8 +8904,19 @@ function init() {
 	applyDensity();
 	syncHeaderChips();
 
+	/* v0.30.0. The panel owns a settings surface only where nothing else does:
+	   inside iCUE the console is still the one place these are set, so the gear is
+	   off the glass there rather than opening a sheet that writes to a store iCUE
+	   never reads. A body class, not a JS branch at every use, because the
+	   stylesheet owns what is visible. */
+	document.body.classList.toggle('panel-settings', !insideIcue());
+
 	ui.cards.addEventListener('click', onCardsClick);
 	ui.sheet.addEventListener('click', onSheetClick);
+	/* On the REGION rather than the sheet: the settings controls are the only
+	   inputs on this panel, and a change listener on the whole sheet would be one
+	   more thing every future control has to be checked against. */
+	if (ui.sheetSettings) ui.sheetSettings.addEventListener('change', onSettingsChange);
 	ui.sparkWrap.addEventListener('click', onSparkClick);
 	ui.crabWrap.addEventListener('click', onCrabTap);
 	ui.limitsHead.addEventListener('click', openBurnSheet);
@@ -8197,7 +8965,31 @@ function init() {
 	   and render() rebuilds the cards whenever the signature moves. */
 	window.addEventListener('resize', function () {
 		if (resizeTimer) clearTimeout(resizeTimer);
-		resizeTimer = setTimeout(function () { resizeTimer = null; render(); }, 150);
+		resizeTimer = setTimeout(function () {
+			resizeTimer = null;
+			/* NOT WITH A FINGER ON A CARD. renderSessions already refuses to rebuild
+			   mid-swipe — `visible` and the surviving DOM can disagree about which row
+			   is at which index — and emptying the grid first is a stronger version of
+			   that same rebuild, so it keeps the same rule. Without this a window
+			   resized mid-drag blanks the grid under the finger and leaves it blank
+			   until the finger lifts. render() still runs: the zones and the gauges
+			   have no such constraint, and the next resize (or the next signature
+			   change) rebuilds the grid. */
+			if (gestureHoldsCards()) { render(); return; }
+			/* EMPTY THE GRID BEFORE MEASURING IT (v0.30.0). gridCapacity() reads the
+			   track counts off the computed style, and an engine reports the IMPLICIT
+			   tracks too — so a grid holding more cards than the new slot has cells
+			   has grown a row for each of them, and the capacity read back is the
+			   overflow's own count. Nothing later escapes that: the grid stays
+			   overfilled for the life of the tab. Measured in Chromium on ?mock=dense,
+			   2560x720 dragged to 390x844: eight cards in one column, the first three
+			   rows 7.69 px tall. Costs one empty frame per resize, debounced, and
+			   render() rebuilds on the next line. An iCUE slot never resizes, which is
+			   why this could not happen before the panel had a window. */
+			cardSig = '';
+			ui.cards.textContent = '';
+			render();
+		}, 150);
 	});
 
 	ui.ready = true;
