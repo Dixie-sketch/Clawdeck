@@ -69,6 +69,10 @@ PAIRING_CODE_RE = re.compile(r"^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}$")
 LIMITS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
 LIMITS_TOKEN_PREFIX = "sk-ant-"
 
+#: The Keychain item crabd stores the long-lived token under. Probed by exit code here
+#: and never read: `security find-generic-password -w` would print the secret.
+KEYCHAIN_SERVICE = "SideCrab limits token"
+
 #: The floor. 3.13 is what the project targets; below it the LaunchAgent would run an
 #: interpreter this code has never been exercised on.
 PYTHON_MIN = (3, 13)
@@ -1175,6 +1179,123 @@ def default_store_token(env: Environment, token: str) -> bool:
 # ------------------------------------------------------------------ commands
 
 
+def keychain_has_limits_token(env: Environment) -> bool:
+    """Is a long-lived token in the login Keychain? By EXIT CODE only.
+
+    `-w` would print the secret. Presence is the whole question a status table gets to
+    ask, and the value never enters this process.
+    """
+    code, _out, _err = env.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", env.user],
+        timeout=10,
+    )
+    return code == 0
+
+
+def read_settings_quietly(env: Environment):
+    """settings.json for a read-only row, or None when it cannot be parsed.
+
+    status and doctor REPORT a broken settings.json; only install refuses over it.
+    """
+    try:
+        return read_json_object(env.settings_path, "settings.json")
+    except SetupError:
+        return None
+
+
+def statusline_row(env: Environment, settings) -> str:
+    current = (settings or {}).get("statusLine")
+    command = str(current.get("command", "")) if isinstance(current, dict) else ""
+    if not statusline_is_ours(command):
+        return "not SideCrab's" if command else "none configured"
+    if not env.chain_path.exists():
+        return "ours, but NO chain file - an uninstall could not restore a prior line"
+    saved = read_json_object(env.chain_path, "the chain file").get("statusLine")
+    if isinstance(saved, dict) and saved.get("command"):
+        return f"ours, chained to {saved['command']}"
+    return "ours, nothing chained (the slot was empty before us)"
+
+
+def allowlist_row(settings) -> str:
+    if settings is None or "allowedHttpHookUrls" not in settings:
+        return "unset - every hook URL is allowed"
+    patterns = list(settings.get("allowedHttpHookUrls") or [])
+    missing = [p for p in ALLOWED_HOOK_PATTERNS if p not in patterns]
+    if not missing:
+        return "set and admits crabd"
+    if hook_url_allowed(f"{BASE_URL}/v1/hook/permission", patterns):
+        return f"set, admits crabd, missing the exact pattern(s) {', '.join(missing)}"
+    return f"set and does NOT admit crabd - add {', '.join(missing)} or the http hooks never fire"
+
+
+def approvals_row(env: Environment, settings) -> str:
+    config = None
+    try:
+        config = read_json_object(env.config_path, "config.json")
+    except SetupError:
+        return f"{env.config_path} is unreadable"
+    block = config.get("panelApprovals")
+    enabled = bool(block.get("enabled")) if isinstance(block, dict) else None
+
+    wired = any(event == "PermissionRequest" for event, _ in hook_events(settings or {}))
+    wiring = "PermissionRequest hook " + ("wired" if wired else "NOT wired")
+    if settings is not None and "allowedHttpHookUrls" in settings:
+        if not hook_url_allowed(f"{BASE_URL}/v1/hook/permission", settings["allowedHttpHookUrls"]):
+            wiring += "; BLOCKED by allowedHttpHookUrls"
+    coded = "pairing code present" if env.token_path.exists() else "NO pairing code"
+    if enabled:
+        return f"ON - taps can allow or deny tool calls; {wiring}; {coded}"
+    posture = "default off (key absent)" if enabled is None else "off"
+    return f"{posture}; {wiring}; {coded}"
+
+
+def command_status(env: Environment, args) -> int:
+    """Read-only by design: probes, prints, and writes nothing anywhere."""
+    settings = read_settings_quietly(env)
+    disabled = disabled_labels(env)
+
+    try:
+        python = env.resolve_python()
+    except SetupError as exc:
+        python = f"none usable - {str(exc).splitlines()[0]}"
+
+    env.emit("SideCrab status (macOS)")
+    env.emit(f"  repo:        {env.repo_root}")
+    env.emit(f"  python:      {python}")
+
+    for spec in AGENTS:
+        state = agent_state(env, spec.label)
+        if spec.label in disabled:
+            detail = "DISABLED by the operator (--force-enable to re-enable)"
+        elif not state.loaded:
+            detail = "not loaded"
+        elif state.pid is not None:
+            detail = f"loaded, {state.state}, pid {state.pid}"
+        else:
+            detail = f"loaded, {state.state}"
+        env.emit(f"  agent {spec.key:<6} {spec.label}: {detail}")
+
+    if settings is None:
+        env.emit(f"  hooks:       {env.settings_path} is unreadable")
+    else:
+        present = sum(count for _event, count in hook_events(settings))
+        env.emit(f"  hooks:       {present} of {len(read_hook_fragment(env.repo_root))} present")
+    env.emit(f"  statusline:  {statusline_row(env, settings)}")
+    env.emit(f"  allowlist:   {allowlist_row(settings)}")
+    env.emit(f"  approvals:   {approvals_row(env, settings)}")
+    env.emit(
+        "  pairing:     "
+        + ("present (print it with install.sh --pairing-code)" if env.token_path.exists()
+           else "absent - crabd mints it on first start")
+    )
+    env.emit(
+        "  limits:      "
+        + ("long-lived token stored" if keychain_has_limits_token(env) else "none stored")
+    )
+    env.emit(f"  panel:       {PANEL_URL}")
+    return 0
+
+
 def command_pairing_code(env: Environment, args) -> int:
     if not env.token_path.exists():
         env.emit(
@@ -1267,6 +1388,7 @@ COMMANDS = {
     "update": command_update,
     "pairing-code": command_pairing_code,
     "limits-token": command_limits_token,
+    "status": command_status,
 }
 
 
@@ -1286,6 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install.add_argument("--yes", action="store_true", help="never prompt; take every default")
 
+    sub.add_parser("status", help="read-only: what is installed, wired and answering")
     sub.add_parser("update", help="refresh the plists from this checkout and restart crabd")
     sub.add_parser("pairing-code", help="print the code crabd minted, and where to enter it")
     # No token argument: the value is read from stdin so it never lands in argv.

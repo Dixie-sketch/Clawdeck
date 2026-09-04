@@ -92,5 +92,97 @@ class LimitsToken(TempHome):
         self.assertEqual(vars(args), {"command": "limits-token"})
 
 
+RUNNING = (0, "com.sidecrab.crabd = {\n\tstate = running\n\tpid = 4242\n}\n", "")
+ABSENT = (113, "", 'Could not find service "x" in domain for user gui: 501\n')
+
+
+class Status(TempHome):
+    def status(self, **kwargs):
+        return setup.main(["status"], env=self.env(**kwargs))
+
+    def test_it_writes_nothing_and_starts_nothing(self):
+        runner = RecordingRunner({"print gui": ABSENT})
+        self.assertEqual(self.status(run=runner), 0)
+        # No settings.json, no config.json, no plist, no chain file.
+        self.assertEqual(list(self.home.rglob("*")), [])
+        for verb in ("bootstrap", "bootout", "kickstart", "enable"):
+            self.assertEqual(runner.argv_for(f"launchctl {verb}"), [], verb)
+
+    def test_the_agent_rows_report_loaded_running_disabled_and_absent(self):
+        runner = RecordingRunner(
+            {
+                "print gui/501/com.sidecrab.crabd": RUNNING,
+                "print gui/501/com.sidecrab.toast": ABSENT,
+                "print-disabled": (0, 'disabled services = {\n\t"com.sidecrab.toast" => true\n}\n', ""),
+            }
+        )
+        self.status(run=runner)
+        self.assertIn("running, pid 4242", self.output)
+        self.assertIn("DISABLED", self.output)
+
+    def test_the_hook_row_counts_our_entries_out_of_seven(self):
+        setup.main(["install", "--yes"], env=self.env())
+        self.printed.clear()
+        self.status()
+        self.assertIn("7 of 7", self.output)
+
+    def test_the_status_line_row_names_what_it_chains_to(self):
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".claude" / "settings.json").write_text(
+            json.dumps({"statusLine": {"type": "command", "command": "starship prompt"}}),
+            encoding="utf-8",
+        )
+        setup.main(["install", "--yes"], env=self.env())
+        self.printed.clear()
+        self.status()
+        self.assertIn("chained to", self.output)
+        self.assertIn("starship prompt", self.output)
+
+    def test_the_allow_list_row_tells_the_three_states_apart(self):
+        rows = [
+            (None, "unset"),
+            (["http://example/*"], "does NOT admit"),
+            (list(setup.ALLOWED_HOOK_PATTERNS), "admits crabd"),
+        ]
+        for patterns, expected in rows:
+            with self.subTest(patterns=patterns):
+                doc = {} if patterns is None else {"allowedHttpHookUrls": patterns}
+                (self.home / ".claude").mkdir(parents=True, exist_ok=True)
+                (self.home / ".claude" / "settings.json").write_text(
+                    json.dumps(doc), encoding="utf-8"
+                )
+                self.printed.clear()
+                self.status()
+                self.assertIn(expected, self.output)
+
+    def test_the_pairing_code_is_reported_present_but_never_printed(self):
+        (self.home / ".sidecrab").mkdir(parents=True)
+        (self.home / ".sidecrab" / "panel-token").write_text("ABCDE23456", encoding="utf-8")
+        self.status()
+        self.assertIn("present", self.output)
+        self.assertNotIn("ABCDE", self.output)
+
+    def test_the_limits_token_is_probed_by_exit_code_and_never_read(self):
+        runner = RecordingRunner({"find-generic-password": (0, "", "")})
+        self.status(run=runner)
+        probe = runner.argv_for("find-generic-password")[0]
+        self.assertEqual(
+            probe,
+            ["security", "find-generic-password", "-s", "SideCrab limits token", "-a", "tester"],
+        )
+        # -w would print the secret; the exit code is the whole answer.
+        self.assertNotIn("-w", probe)
+        self.assertIn("stored", self.output)
+
+    def test_an_absent_limits_token_is_a_state(self):
+        runner = RecordingRunner({"find-generic-password": (44, "", "not found")})
+        self.status(run=runner)
+        self.assertIn("none stored", self.output)
+
+    def test_the_panel_url_is_the_last_word(self):
+        self.status()
+        self.assertIn(setup.PANEL_URL, self.output)
+
+
 if __name__ == "__main__":
     unittest.main()
