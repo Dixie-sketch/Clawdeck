@@ -40,6 +40,7 @@ from sidecrab_toast import (  # noqa: E402
     MAC_SCRIPT_DISPLAY_LINE,
     MAC_SCRIPT_END_RUN,
     MAC_SCRIPT_ON_RUN,
+    MAC_SUBTITLE,
     MAC_TITLE_TRIM,
     TITLE_TRIM,
     MacNotificationAdapter,
@@ -109,6 +110,15 @@ class ArgvShapeTests(unittest.TestCase):
         for item in ("item 1 of argv", "item 2 of argv", "item 3 of argv"):
             self.assertIn(item, MAC_SCRIPT_DISPLAY_LINE, item)
         self.assertIn("display notification", MAC_SCRIPT_DISPLAY_LINE)
+
+    def test_the_third_argument_is_the_product_name(self) -> None:
+        """Both halves, because either alone is passable: the VALUE (nothing else on screen
+        says SideCrab — the notification is posted under Script Editor's identity, so this is
+        the attribution line and not decoration) and the ROUTE (it actually reaches argv)."""
+        self.assertEqual(MAC_SUBTITLE, "SideCrab")
+        runner = RecordingRunner()
+        MacNotificationAdapter(runner=runner).show(request())
+        self.assertEqual(runner.argv[10], MAC_SUBTITLE)
 
     def test_a_clean_exit_is_a_shown_notification(self) -> None:
         self.assertTrue(MacNotificationAdapter(runner=RecordingRunner()).show(request()))
