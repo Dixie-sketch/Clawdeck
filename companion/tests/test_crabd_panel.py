@@ -532,11 +532,16 @@ class PanelPathSafetyTests(PanelTree):
         self.secret = Path(self._tmp.name) / "outside.txt"
         self.secret.write_text("not yours", encoding="utf-8")
 
-    def assertRefused(self, path):
+    def assertRefused(self, path, leak=b"not yours"):
+        """404, none of `leak` in the reply, and crabd still answering.
+
+        The third assertion is not decoration: a refusal that raised out of the handler
+        would also produce no bytes, and "it did not serve the file" is not the same
+        claim as "it answered 404 and stayed up".
+        """
         reply = self.client.get(path)
         self.assertEqual(reply.status, 404, path)
-        self.assertNotIn(b"not yours", reply.body, path)
-        # ...and crabd is still answering, so nothing raised out of the handler.
+        self.assertNotIn(leak, reply.body, path)
         self.assertEqual(self.client.get("/v1/health").status, 200, path)
 
     def test_a_parent_segment_from_the_root(self):
@@ -554,22 +559,59 @@ class PanelPathSafetyTests(PanelTree):
     def test_a_nul_byte(self):
         self.assertRefused("/styles/%00.css")
 
+    @unittest.skipIf(sys.platform == "win32",
+                     "a filename containing a backslash cannot exist on Windows")
     def test_a_backslash_separator(self):
         """Windows accepts `\\` as a separator and POSIX does not, so a path that is
-        harmless on the host it was tested on is a traversal on the other."""
-        self.assertRefused("/styles\\..\\x")
+        harmless on the host it was tested on is a traversal on the other.
+
+        Both files below are REAL, because a refusal of a name that does not exist
+        proves nothing. `styles\\..\\x` at the panel root is what the traversal is
+        aiming at; `styles/a\\b.css` is the one only THIS rule can refuse - it sits
+        inside a served directory and has no dot-leading segment, so the roots
+        allowlist, the dot rule and containment all wave it through.
+        """
+        self.write("styles\\..\\x", "traversal target")
+        self.write("styles/a\\b.css", "backslash in a real name")
+        self.assertRefused("/styles\\..\\x", leak=b"traversal target")
+        self.assertRefused("/styles/a\\b.css", leak=b"backslash in a real name")
 
     def test_a_dot_directory(self):
         self.assertRefused("/.git/config")
 
-    def test_an_empty_segment(self):
-        self.assertRefused("//etc/passwd")
+    def test_an_interior_empty_segment(self):
+        """`/styles//sidecrab.css` names a file that IS there: strip the `//` and it is
+        the stylesheet three tests above serve happily, so the empty-segment rule is the
+        only thing refusing it.
+
+        A LEADING `//` never reaches this branch and is not what this pins:
+        `urlsplit("//etc/passwd")` reads `etc` as the NETLOC and hands back
+        `path="/passwd"`, so do_GET is already looking at a single-segment path by the
+        time _panel_target sees it.
+        """
+        self.assertRefused("/styles//sidecrab.css", leak=b"body { color: red }")
 
     def test_a_current_directory_segment(self):
         self.assertRefused("/styles/./sidecrab.css")
 
     def test_a_percent_that_survives_decoding(self):
-        self.assertRefused("/styles/50%.css")
+        """A REAL file with a per-cent in its name, so the rule is the only refusal:
+        `unquote` leaves `%.c` alone (it is not a valid escape) and the resolved
+        candidate is a file inside the tree."""
+        self.write("styles/50%.css", "a real file with a percent in it")
+        self.assertRefused("/styles/50%.css", leak=b"a real file with a percent in it")
+
+    def test_an_encoded_parent_climbing_back_into_the_panel_root(self):
+        """THE DECODE-ORDER TEST, and the only case here that no second layer catches.
+
+        `/mock/%2e%2e/DEV.md` passes the roots allowlist (its first segment really is
+        `mock`) and RESOLVES to a file that really is inside the panel directory, so
+        containment passes too. The single thing that refuses it is decoding BEFORE the
+        segment rules run: a server that checked the raw path and then decoded would
+        hand over DEV.md - and `manifest.json` and `translation.json` beside it.
+        """
+        self.assertRefused("/mock/%2e%2e/DEV.md", leak=b"measured evidence")
+        self.assertRefused("/scripts/%2e%2e/manifest.json", leak=b'"version"')
 
     def test_a_symlink_inside_the_tree_that_points_outside_it(self):
         """Every text rule above passes this one. `Path.resolve()` is what refuses it."""
