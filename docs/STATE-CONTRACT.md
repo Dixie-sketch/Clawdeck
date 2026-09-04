@@ -14,7 +14,7 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
-## v0.31.0 (2026-09-04 — TRANSPORT: the panel is served by crabd on 9999; the origin allowlist; the panel header; schema stays 5)
+## v0.31.0 (2026-09-04 — TRANSPORT: the panel is served by crabd on 9999; the Host and Origin allowlists; the panel header; schema stays 5)
 
 crabd `VERSION` → `0.31.0`. **Nothing in the DOCUMENT changed.** No field was added, moved,
 renamed or removed on `/v1/state`, `/v1/action` or `/v1/config`, so `schema` stays **5** and
@@ -59,7 +59,37 @@ listener on a port already being listened on — two crabds answering half the r
 and on BSD/Linux it does not, where all it buys is a restart inside the TIME_WAIT window of
 the last connection. A collision is loud on all three either way.
 
-### 2. TRANSPORT: the Origin gate is an ALLOWLIST
+### 2. TRANSPORT: a `Host` allowlist, ahead of everything (DNS rebinding)
+
+Runs FIRST, before the origin gate, on `GET`, `POST` and `OPTIONS` alike. A refusal is
+**403** `{"error":"host not allowed"}` with **no** `Access-Control-Allow-Origin`; a POST
+body is drained first so keep-alive framing survives.
+
+| Request `Host` | Answer |
+|---|---|
+| absent (HTTP/1.0, a hand-rolled probe) | allowed - it is not a claim about anything |
+| `localhost:<port>`, `127.0.0.1:<port>`, `[::1]:<port>` | allowed |
+| `LOCALHOST:<port>` | allowed - the host part is compared case-insensitively |
+| `localhost`, `127.0.0.1`, `[::1]` (no port part) | allowed - the port rule applies only when a port is present |
+| `evil.example:<port>`, `evil.example` | **403** `{"error":"host not allowed"}` |
+| `localhost:<other port>` | **403** - the port is part of the claim |
+| `localhost.:<port>` (trailing dot) | **403** - the fully-qualified form resolves the same, which is exactly why it is a bypass |
+| anything unparseable as `host` / `host:port` (an unbracketed IPv6 literal, an unclosed `[`) | **403** |
+
+`<port>` is the BOUND port, as everywhere else in this section.
+
+**Why, and why the origin gate cannot cover it.** The operator visits
+`http://evil.example:9999`; its DNS record has a short TTL and re-resolves to `127.0.0.1`.
+The browser now believes crabd *is* `evil.example`, so the page is **same-origin** with it -
+and a same-origin `GET` carries no `Origin` header at all. The origin allowlist sees an
+absent Origin, which is the ordinary shape of a hook, a curl and a plain navigation, and
+allows it. Nothing else in the request distinguishes the two. `Host` does: it is taken from
+the URL the page thinks it is talking to, not from the socket, so a rebound page still says
+`evil.example` on every request it makes. Refusing it is not "who is asking" but "you are
+not talking to who you think you are", which is why it is answered before anything about
+CORS.
+
+### 3. TRANSPORT: the Origin gate is an ALLOWLIST
 
 Supersedes the v0.16.0 table above (§1 of that section). The rule is still identical for
 `GET`, `POST` and `OPTIONS` on every path, and `Access-Control-Allow-Origin: *` is still
@@ -94,7 +124,7 @@ ignores the port (every dev server, notebook and other local UI the operator has
 origin serialises to exactly `null` — and a panel that cannot read is a broken product. It is
 also forgeable by a sandboxed iframe, which is what §3 is for.
 
-### 3. TRANSPORT: every POST carries `X-SideCrab-Panel`
+### 4. TRANSPORT: every POST carries `X-SideCrab-Panel`
 
 **`PANEL_HEADER = "X-SideCrab-Panel"`**, any non-empty value. A POST without it is answered
 `403 {"error":"panel header required"}` — a DISTINCT body from the cross-site refusal, so an
@@ -127,7 +157,7 @@ residual) and loses its WRITES: its preflight comes back without permission to s
 header, and the POST never leaves the browser. That is the closure of the forged-null write
 vector `SECURITY.md` carried as a residual.
 
-### 4. crabd serves the panel
+### 5. crabd serves the panel
 
 `GET /` and `/index.html` serve the panel's `index.html`; a path whose first segment is
 `styles`, `scripts`, `resources` or `mock` serves that file. **Nothing else under the panel
@@ -155,7 +185,7 @@ The origin gate applies to static reads exactly as to the API: a foreign-origin 
 A static read never touches the builder's lock, so it cannot be blocked by a wedged state
 build and cannot block a hook.
 
-### 5. `/v1/health` gains `panel`
+### 6. `/v1/health` gains `panel`
 
 ```jsonc
 "panel": { "origins": ["http://127.0.0.1:9999", "http://[::1]:9999", "http://localhost:9999"],

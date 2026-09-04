@@ -781,6 +781,11 @@ CROSS_SITE_REFUSED = b'{"error":"cross-site request refused"}'
 # constant's sharing rule: the two refusals are told apart by an OPERATOR wiring a hook
 # up, and "cross-site request refused" for a curl on the command line sent people
 # looking at CORS for an hour.
+# v0.31.0. The DNS-rebinding refusal. Its own body, because the two other 403s answer a
+# different question: "you are cross-site" and "you sent no panel header" are both about
+# the CALLER, and this one is about the caller's belief that it is talking to
+# evil.example when the socket is loopback.
+HOST_NOT_ALLOWED = b'{"error":"host not allowed"}'
 PANEL_HEADER = "X-SideCrab-Panel"
 PANEL_HEADER_REQUIRED = b'{"error":"panel header required"}'
 # The panel crabd serves on / (v0.31.0). A module GLOBAL read per request, like every
@@ -6204,6 +6209,13 @@ class Handler(BaseHTTPRequestHandler):
         # cross-origin read. A cross-site page's preflight gets no ACAO at all, so its
         # application/json request dies at the preflight; the panel's own origin and the
         # widget's opaque one are reflected so their preflights still pass.
+        # The Host gate first, here as on the other two methods: a preflight answer is
+        # the MAP of both other gates (which origins, which headers), and a rebound page
+        # has no business reading it.
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            self._acao = None
+            self._send(403, HOST_NOT_ALLOWED)
+            return
         origin = self.headers.get("Origin")
         acao = self._preflight_acao(origin)
         self.send_response(204)
@@ -6266,6 +6278,13 @@ class Handler(BaseHTTPRequestHandler):
         # refused; the panel's own origin (v0.31.0), absent, "null" and non-web origins
         # (the QtWebEngine widget, curl, local tools) are allowed and get their own
         # origin reflected back.
+        # The Host gate runs FIRST, and on the reads especially: a DNS-rebound page is
+        # SAME-ORIGIN with crabd as far as the browser is concerned, so its GET carries
+        # no Origin at all and the allowlist below has nothing to refuse it with.
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            self._acao = None
+            self._send(403, HOST_NOT_ALLOWED)
+            return
         origin = self.headers.get("Origin")
         self._record_origin(origin)
         if self._is_cross_site(origin, self.server.server_port):
@@ -6643,6 +6662,68 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return o.startswith("http://") or o.startswith("https://")
 
+    #: The host names this crabd answers to. NOT a convenience list - it is the whole
+    #: DNS-rebinding gate. `[::1]` carries its brackets because that is how a Host
+    #: header spells an IPv6 literal.
+    PANEL_HOSTS = frozenset(("localhost", "127.0.0.1", "[::1]"))
+
+    @staticmethod
+    def _host_parts(host_header: str) -> tuple[str, str | None] | None:
+        """`Host` split into (host, port-or-None), lowercased. None = unparseable.
+
+        Unparseable is REFUSED rather than ignored: a Host crabd cannot read is a Host
+        it cannot check, and the whole point of this gate is that the header is the only
+        thing distinguishing a rebound page from a local one.
+        """
+        value = host_header.strip().lower()
+        if not value:
+            return None
+        if value.startswith("["):                   # an IPv6 literal, [::1] or [::1]:9999
+            end = value.find("]")
+            if end < 0:
+                return None
+            host, rest = value[:end + 1], value[end + 1:]
+            if not rest:
+                return (host, None)
+            return (host, rest[1:]) if rest.startswith(":") else None
+        if value.count(":") > 1:
+            # A bare IPv6 literal with no brackets. Not a legal Host, and guessing which
+            # colon is the port separator is exactly how a parser is walked past.
+            return None
+        if ":" in value:
+            host, _, port = value.partition(":")
+            return (host, port)
+        return (value, None)
+
+    @classmethod
+    def _is_foreign_host(cls, host_header, port: int) -> bool:
+        """True when the caller believes it is talking to somebody else. Refused 403.
+
+        DNS REBINDING, which no other gate here can see. The operator visits
+        http://evil.example:9999; the name has a short TTL and re-resolves to 127.0.0.1,
+        so the browser now believes crabd IS evil.example and the page is SAME-ORIGIN
+        with it. A same-origin GET carries no Origin header at all - which is the
+        ordinary shape of a hook, a curl and a plain navigation - so the origin
+        allowlist waves it through, and the GET is the request that reads /v1/state.
+
+        `Host` is the one header taken from the URL the page thinks it is addressing
+        rather than from the socket, so a rebound page still says evil.example on every
+        request. An ABSENT Host is allowed: HTTP/1.0 has none, several diagnostics in
+        this repo hand-roll requests without one, and absent is not a claim about
+        anything.
+        """
+        if host_header is None:
+            return False
+        parts = cls._host_parts(host_header)
+        if parts is None:
+            return True
+        host, host_port = parts
+        if host not in cls.PANEL_HOSTS:
+            return True
+        # The port is part of the claim: a page served on another local port and rebound
+        # would otherwise pass on the name alone.
+        return host_port is not None and host_port != str(port)
+
     @staticmethod
     def _panel_origins(port: int) -> frozenset:
         """The three spellings of "this crabd", lowercase - the allowlist.
@@ -6678,6 +6759,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            # Same order and the same drain as the two gates below it.
+            self._acao = None
+            self._read_body()
+            self._send(403, HOST_NOT_ALLOWED)
+            return
         origin = self.headers.get("Origin")
         self._record_origin(origin)
         if self._is_cross_site(origin, self.server.server_port):

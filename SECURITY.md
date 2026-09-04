@@ -18,19 +18,27 @@ The two things an attacker on this machine, or a web page you visit, could want 
 
 ## What is enforced
 
+- **`Host` allowlist, ahead of every other gate (crabd 0.31.0).** A present `Host` whose host
+  part is not `localhost`, `127.0.0.1` or `[::1]`, or whose port part is present and is not the
+  bound port, is refused `403 {"error":"host not allowed"}` with no CORS header, on `GET`, `POST`
+  and `OPTIONS` alike; an absent `Host` (HTTP/1.0, a hand-rolled probe) is allowed. This is the
+  DNS-rebinding gate, and it is the only one that can be: a page at `http://evil.example:9999`
+  whose name re-resolves to `127.0.0.1` is SAME-ORIGIN with crabd as far as the browser is
+  concerned, so its `GET` carries no `Origin` at all and the origin allowlist has nothing to
+  refuse it with. `docs/STATE-CONTRACT.md` v0.31.0 §2.
 - **Origin allowlist on every route, reads and writes.** The only `http(s)` origins accepted are
   the three spellings of this crabd's own bound port (`http://localhost:<port>`,
   `http://127.0.0.1:<port>`, `http://[::1]:<port>`), matched exactly and case-insensitively.
   Every other web origin - including the same host on a different port, and the same authority
   over `https` - is refused `403` with no CORS header, so a visited web page cannot read the
   state or post an action through a cross-origin fetch. `Access-Control-Allow-Origin: *` is
-  illegal on every route, method and status. `docs/STATE-CONTRACT.md` v0.31.0 §2.
+  illegal on every route, method and status. `docs/STATE-CONTRACT.md` v0.31.0 §3.
 - **Every POST carries `X-SideCrab-Panel` (crabd 0.31.0).** Any non-empty value; a POST without
   it is refused `403 {"error":"panel header required"}`, on every path including the unknown
   ones. It is not a secret and the value is never read. What it does is make the request
   NON-SIMPLE, so a browser must preflight it - and the preflight only lists the header for an
   origin the allowlist already trusts or a non-web scheme, never for `null`.
-  `docs/STATE-CONTRACT.md` v0.31.0 §3.
+  `docs/STATE-CONTRACT.md` v0.31.0 §4.
 - **The panel crabd serves is confined to its own directory.** `GET /` serves `index.html`, and
   only a path whose first segment is `styles`, `scripts`, `resources` or `mock` serves a file;
   everything else under the panel root is `404`. One percent-decode, then a refusal of `..`
@@ -89,13 +97,21 @@ The two things an attacker on this machine, or a web page you visit, could want 
   push" pushed into a live session by something already running as you. Not remote code
   execution; still a nudge you did not send. The browser half of this is now closed by the
   header gate above.
+- ~~**A page whose own DNS re-resolves to 127.0.0.1 can read the feed.**~~ **CLOSED in crabd
+  0.31.0 (2026-09-04)** by the `Host` allowlist above. Nobody had written this one down, because
+  it costs nothing while the panel is a widget loaded from disk - and everything the moment
+  crabd serves a page on a real web origin, which is the same release. Pinned by
+  `companion/tests/test_crabd_panel.py` `HostAllowlistTests`:
+  `test_a_rebound_hostname_is_refused`, `test_a_loopback_name_on_the_wrong_port_is_refused`,
+  `test_the_host_gate_answers_before_the_origin_gate`.
 - **The panel lives on a real web origin, reachable by any browser on the machine.** That is the
   new exposure and it is stated plainly: `http://localhost:9999` is a page anything can navigate
-  to. What that buys an attacker is bounded by the two gates. A page the operator opens cannot
-  READ the feed cross-origin (it is not on the allowlist) and cannot WRITE (its preflight is
-  refused, so it never obtains the header). A same-user local process still can do both - it can
-  also read `~/.claude`, drive the terminal dialog and inject keystrokes, so it was never inside
-  the threat model. Approvals additionally need the pairing code, a matching `requestId`, and
+  to. What that buys an attacker is bounded by the three gates. A page the operator opens cannot
+  READ the feed cross-origin (it is not on the origin allowlist), cannot WRITE (its preflight is
+  refused, so it never obtains the header), and cannot make itself same-origin by rebinding its
+  own name onto 127.0.0.1 (the `Host` gate). A same-user local process still can do all three -
+  it can also read `~/.claude`, drive the terminal dialog and inject keystrokes, so it was never
+  inside the threat model. Approvals additionally need the pairing code, a matching `requestId`, and
   survive the lockout - unchanged.
 
 ## Closed

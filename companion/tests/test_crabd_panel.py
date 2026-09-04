@@ -240,6 +240,157 @@ class OriginAllowlistTests(PanelServed):
         self.assertTrue(self.acked())
 
 
+# ------------------------------------------------------- B0: the Host allowlist
+
+class HostAllowlistTests(PanelServed):
+    """DNS rebinding, which neither of the other two gates can see.
+
+    The attack, and why the Origin gate is blind to it: the operator visits
+    `http://evil.example:<port>`, whose DNS record has a short TTL and then re-resolves
+    to 127.0.0.1. The browser now believes crabd IS evil.example - so the page is
+    SAME-ORIGIN with it. A same-origin GET carries no `Origin` header at all, and a
+    same-origin POST carries `Origin: http://evil.example:<port>`, which the browser
+    considers its own. The origin allowlist refuses the POST; nothing refuses the GET,
+    and the GET is what reads `/v1/state`.
+
+    The `Host` header is the one thing the browser sends that still names where the page
+    THINKS it is, because it is taken from the URL rather than from the socket. crabd
+    never read it. It does now, ahead of every other gate: this is not "who is asking",
+    it is "you are not talking to who you think you are", and that is answered before
+    anything about CORS.
+    """
+
+    TARGETS = ("/v1/state", "/scripts/sidecrab.js")
+
+    def probe(self, host):
+        """-> the replies for a read, a static read and a write, all carrying `host`."""
+        head = {"Host": host}
+        replies = [self.client.get(path, headers=dict(head)) for path in self.TARGETS]
+        post_head = {"Content-Type": JSON, HEADER: "1", "Host": host}
+        replies.append(self.client.request("POST", "/v1/action",
+                                           body=b'{"action":"ack-all"}',
+                                           headers=post_head))
+        return replies
+
+    def assertAllowed(self, host):
+        read, static, write = self.probe(host)
+        self.assertEqual(read.status, 200, host)
+        self.assertEqual(static.status, 200, host)
+        self.assertEqual(write.status, 204, host)
+
+    def assertRefused(self, host):
+        for reply in self.probe(host):
+            self.assertEqual(reply.status, 403, host)
+            self.assertEqual(reply.body, crabd.HOST_NOT_ALLOWED, host)
+            self.assertIsNone(reply.headers.get(ACAO), host)
+
+    # -- allowed
+
+    def test_each_loopback_name_with_the_bound_port(self):
+        for host in (f"localhost:{self.port}", f"127.0.0.1:{self.port}",
+                     f"[::1]:{self.port}"):
+            with self.subTest(host=host):
+                self.assertAllowed(host)
+
+    def test_the_host_is_matched_case_insensitively(self):
+        self.assertAllowed(f"LOCALHOST:{self.port}")
+
+    def test_a_host_with_no_port_is_allowed(self):
+        """`Host: 127.0.0.1` is what the hooks' curl composes when the URL carries the
+        default port, and what a hand-rolled request sends. The port half of the rule
+        only applies when there IS a port half."""
+        self.assertAllowed("localhost")
+
+    def test_the_hooks_own_curl_shape_passes(self):
+        """The regression that would matter most: every hook POSTs through
+        `curl ... http://127.0.0.1:<port>/v1/hook`, and curl composes exactly this."""
+        reply = self.client.post(
+            "/v1/hook",
+            json.dumps({"session_id": self.SID, "hook_event_name": "Stop"}).encode(),
+            headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertEqual(reply.status, 204)
+
+    def test_an_absent_host_is_allowed(self):
+        """HTTP/1.0 has no Host header, and a hand-rolled probe often omits it. Absent
+        is not a claim about where the caller thinks it is, so there is nothing to
+        refuse - and refusing would break `Test-SideCrab` and every raw-socket
+        diagnostic in this repo."""
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        self.addCleanup(conn.close)
+        conn.sendall(b"GET /v1/health HTTP/1.0\r\n\r\n")
+        answer = b""
+        while b"\r\n\r\n" not in answer:
+            block = conn.recv(4096)
+            if not block:
+                break
+            answer += block
+        self.assertIn(b"200", answer.split(b"\r\n")[0])
+
+    # -- refused
+
+    def test_a_rebound_hostname_is_refused(self):
+        """The attack itself: the socket really is 127.0.0.1, and the page still says
+        evil.example."""
+        self.assertRefused(f"evil.example:{self.port}")
+
+    def test_a_rebound_hostname_without_a_port_is_refused(self):
+        self.assertRefused("evil.example")
+
+    def test_a_loopback_name_on_the_wrong_port_is_refused(self):
+        """The port is part of the claim. A page served on another local port and
+        rebound would otherwise pass on the name alone."""
+        self.assertRefused(f"localhost:{self.port + 1}")
+
+    def test_a_trailing_dot_is_a_different_name(self):
+        """`localhost.` is the fully-qualified form and resolves the same, which is
+        exactly why it is a bypass: it is not the string on the allowlist."""
+        self.assertRefused(f"localhost.:{self.port}")
+
+    # -- order, and the things a refusal must still do
+
+    def test_the_host_gate_answers_before_the_origin_gate(self):
+        """Both would refuse this. The Host answer is the true one - the caller is not
+        talking to who it thinks it is - and it is the one that has to be reachable
+        when the Origin gate would have said something less specific."""
+        reply = self.client.request(
+            "POST", "/v1/action", body=b'{"action":"ack-all"}',
+            headers={"Content-Type": JSON, HEADER: "1",
+                     "Host": f"evil.example:{self.port}",
+                     "Origin": "http://evil.example"})
+        self.assertEqual(reply.status, 403)
+        self.assertEqual(reply.body, crabd.HOST_NOT_ALLOWED)
+
+    def test_a_refused_write_changed_nothing(self):
+        self.assertFalse(self.acked())
+        self.probe("evil.example")
+        self.assertFalse(self.acked())
+
+    def test_a_preflight_is_gated_too(self):
+        """Otherwise a rebound page could still learn which origins and headers crabd
+        accepts, which is the map of both other gates."""
+        reply = self.client.request("OPTIONS", "/v1/action",
+                                    headers={"Host": f"evil.example:{self.port}",
+                                             "Origin": "null"})
+        self.assertEqual(reply.status, 403)
+        self.assertIsNone(reply.headers.get(ACAO))
+        self.assertIsNone(reply.headers.get(ACAH))
+
+    def test_a_refused_post_does_not_desync_the_connection(self):
+        conn = KeepAliveClient(self.port)._connect()
+        self.addCleanup(conn.close)
+        conn.request("POST", "/v1/action",
+                     body=json.dumps({"action": "ack-all", "pad": "x" * 4096}).encode(),
+                     headers={"Content-Type": JSON, HEADER: "1",
+                              "Host": f"evil.example:{self.port}"})
+        first = conn.getresponse()
+        self.assertEqual(first.status, 403)
+        self.assertEqual(first.read(), crabd.HOST_NOT_ALLOWED)
+        conn.request("GET", "/v1/health")
+        second = conn.getresponse()
+        self.assertEqual(second.status, 200)
+        self.assertTrue(json.loads(second.read())["ok"])
+
+
 # --------------------------------------------------------- C: the panel header
 
 class PanelHeaderGateTests(PanelServed):
