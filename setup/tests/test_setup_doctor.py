@@ -180,6 +180,17 @@ class Status(TempHome):
         self.status(run=runner)
         self.assertIn("none stored", self.output)
 
+    def test_an_answer_with_no_running_agent_is_named_as_the_loudest_row(self):
+        # Health alone cannot say WHO answered. A stray process holding 9999 answers
+        # convincingly while the agent is dead - and is also what stops it binding.
+        lsof = "COMMAND  PID USER\nnode  777 someone   6u  IPv4 TCP 127.0.0.1:9999 (LISTEN)\n"
+        runner = RecordingRunner({"print gui": ABSENT, "lsof": (0, lsof, "")})
+        answering = RecordingHttp({"/v1/health": (200, '{"ok": true, "version": "0.31.0"}')})
+        self.status(run=runner, http_get=answering)
+        self.assertIn("foreign", self.output)
+        self.assertIn("777", self.output)
+        self.assertIn("node", self.output)
+
     def test_the_panel_url_is_the_last_word(self):
         self.status()
         self.assertIn(setup.PANEL_URL, self.output)

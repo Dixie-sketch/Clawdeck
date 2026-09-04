@@ -29,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1304,6 +1304,15 @@ def command_status(env: Environment, args) -> int:
         else:
             detail = f"loaded, {state.state}"
         env.emit(f"  agent {spec.key:<6} {spec.label}: {detail}")
+        if spec.key == "crabd":
+            # Two readings, because they disagree in the case that matters: an answer with
+            # no running agent is a foreign process wearing crabd's clothes, and it is also
+            # what stops the real one binding.
+            crabd_state = "DISABLED" if spec.label in disabled else state.state
+            verdict = service_verdict(
+                health_version(env) is not None, crabd_state, port_holders(env, spec.port), spec.port
+            )
+            env.emit(f"  service:     {verdict.verdict} - {verdict.reason}")
 
     if settings is None:
         env.emit(f"  hooks:       {env.settings_path} is unreadable")
