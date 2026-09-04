@@ -194,6 +194,12 @@ class Status(TempHome):
         self.assertIn("777", self.output)
         self.assertIn("node", self.output)
 
+    def test_the_python_row_names_the_version_as_well_as_the_path(self):
+        # The path alone is not the version: /fake/bin/python3.13 could be a 3.9 that
+        # somebody renamed, which is precisely what the probe exists to catch.
+        self.status(python_probe=lambda path: (0, "3.14\n", ""))
+        self.assertIn(f"{self.FAKE_PYTHON} (3.14)", self.output)
+
     def test_the_panel_url_is_the_last_word(self):
         self.status()
         self.assertIn(setup.PANEL_URL, self.output)
@@ -367,6 +373,24 @@ class Doctor(TempHome):
         self.assertEqual(self.rows["agent toast"].verdict, "SKIP")
         self.assertEqual(self.rows["notifier schema"].verdict, "SKIP")
 
+    def test_the_toast_rows_are_judged_once_the_notifier_is_installed(self):
+        setup.main(["install", "--yes", "--with-toast"], env=self.env())
+        runner = RecordingRunner({"print gui": RUNNING})
+        self.doctor(runner)
+        self.assertEqual(self.rows["agent toast"].verdict, "PASS")
+        self.assertEqual(self.rows["notifier schema"].verdict, "PASS")
+
+        # The bug class this row exists for: crabd moves on and the notifier does not,
+        # so it keeps running, keeps polling and never toasts again.
+        self.crabd.schema = 5
+        (self.repo / "notifier" / "sidecrab_toast.py").write_text(
+            "SUPPORTED_SCHEMAS = frozenset({1, 2, 3})\n", encoding="utf-8"
+        )
+        self.assertEqual(self.doctor(RecordingRunner({"print gui": ABSENT})), 1)
+        self.assertEqual(self.rows["agent toast"].verdict, "FAIL")
+        self.assertEqual(self.rows["notifier schema"].verdict, "FAIL")
+        self.assertIn("never toast", self.rows["notifier schema"].detail)
+
     def test_health_reports_that_it_needed_the_retry(self):
         self.crabd.health_fails = 1
         self.assertEqual(self.doctor(), 0)
@@ -452,6 +476,66 @@ class Doctor(TempHome):
             self.doctor()
         self.assertEqual(posted[-1], "SessionEnd")
         self.assertEqual(self.crabd.sessions, {})
+
+    def test_a_status_line_that_is_not_an_object_does_not_crash_the_doctor(self):
+        # null and a bare string are both legal JSON in that slot; .get() on either is
+        # an AttributeError, and a doctor that dies mid-run leaves the smoke session live.
+        for value in (None, "starship prompt", 7, []):
+            with self.subTest(value=value):
+                doc = json.loads((self.home / ".claude" / "settings.json").read_text("utf-8"))
+                doc["statusLine"] = value
+                (self.home / ".claude" / "settings.json").write_text(json.dumps(doc), "utf-8")
+                self.assertEqual(self.doctor(), 1)
+                self.assertEqual(self.rows["statusline chain"].verdict, "FAIL")
+                self.assertEqual(self.crabd.sessions, {})
+
+    def test_the_status_line_row_fails_for_each_way_it_can_be_wrong(self):
+        settings = self.home / ".claude" / "settings.json"
+        ours = json.loads(settings.read_text("utf-8"))["statusLine"]["command"]
+        rows = [
+            ({"type": "command", "command": "starship"}, "not SideCrab"),
+            (dict(ours=None) and {"type": "command", "command": ours}, "NO chain file"),
+            (
+                # The subtle one: a command left behind by ANOTHER checkout matches the
+                # script NAME, so "ours" passes - but every refresh runs a file this
+                # install never checked, and after a repo move, one that is not there.
+                {"type": "command", "command": "/other/repo/hooks/sidecrab_statusline.py"},
+                "does NOT point at",
+            ),
+        ]
+        for index, (value, expected) in enumerate(rows):
+            with self.subTest(expected=expected):
+                doc = json.loads(settings.read_text("utf-8"))
+                doc["statusLine"] = value
+                settings.write_text(json.dumps(doc), "utf-8")
+                if index == 1:
+                    (self.home / ".sidecrab" / "statusline-chain.json").unlink(missing_ok=True)
+                self.assertEqual(self.doctor(), 1)
+                self.assertEqual(self.rows["statusline chain"].verdict, "FAIL")
+                self.assertIn(expected, self.rows["statusline chain"].detail)
+
+    def test_the_python_row_fails_when_no_interpreter_is_usable(self):
+        self.assertEqual(self.doctor(python_probe=lambda path: (1, "", "no developer tools")), 1)
+        self.assertEqual(self.rows["python"].verdict, "FAIL")
+
+    def test_the_config_row_fails_on_a_file_that_does_not_parse(self):
+        (self.home / ".sidecrab" / "config.json").write_text("{ not json", encoding="utf-8")
+        self.assertEqual(self.doctor(), 1)
+        self.assertEqual(self.rows["config.json"].verdict, "FAIL")
+
+    def test_a_session_end_that_never_clears_the_row_fails(self):
+        original = self.crabd.post
+
+        def post(url, body=None, headers=None, timeout=None):
+            payload = json.loads(body) if body else {}
+            if payload.get("hook_event_name") == "SessionEnd" and payload["session_id"] == "smoke-test":
+                return (204, "")  # accepted on the wire, but the row never goes
+            return original(url, body, headers, timeout)
+
+        self.crabd.post = post
+        self.assertEqual(self.doctor(), 1)
+        self.assertEqual(self.rows["hook SessionEnd"].verdict, "FAIL")
+        self.assertIn("still served", self.rows["hook SessionEnd"].detail)
 
     def test_the_limits_row_is_reported_and_never_judged(self):
         self.doctor(RecordingRunner({"print gui": RUNNING, "find-generic-password": (44, "", "")}))

@@ -646,18 +646,20 @@ class Environment:
     def agents_dir(self) -> Path:
         return self.home / "Library" / "LaunchAgents"
 
-    def resolve_python(self) -> str:
+    def resolve_python_choice(self) -> PythonChoice:
+        """The interpreter AND the version it reported. Raises SetupError when none fits."""
         extra = os.environ.get("SIDECRAB_PYTHON_DIRS")
         dirs = list(self.path_dirs)
         if extra is not None:
             dirs += [d for d in extra.split(os.pathsep) if d]
-            candidates = python_candidates(self.python_override, dirs, self.is_file)
-        else:
-            candidates = python_candidates(self.python_override, dirs, self.is_file)
+        candidates = python_candidates(self.python_override, dirs, self.is_file)
         choice = choose_python(candidates, self.python_probe)
         if choice.path is None:
             raise SetupError(python_failure_message(choice))
-        return choice.path
+        return choice
+
+    def resolve_python(self) -> str:
+        return self.resolve_python_choice().path
 
 
 # ------------------------------------------------------------------ impure: files
@@ -1344,7 +1346,10 @@ def command_status(env: Environment, args) -> int:
     disabled = disabled_labels(env)
 
     try:
-        python = env.resolve_python()
+        choice = env.resolve_python_choice()
+        # Path AND version: /fake/bin/python3.13 could be a 3.9 somebody renamed, which
+        # is exactly what the probe exists to catch, so the row states what it reported.
+        python = "%s (%d.%d)" % (choice.path, *choice.version)
     except SetupError as exc:
         python = f"none usable - {str(exc).splitlines()[0]}"
 
@@ -1549,8 +1554,8 @@ def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row
 
     # -- the interpreter
     try:
-        python = env.resolve_python()
-        add("python", True, python)
+        choice = env.resolve_python_choice()
+        add("python", True, "%s (%d.%d)" % (choice.path, *choice.version))
     except SetupError as exc:
         add("python", False, str(exc).splitlines()[0])
 
@@ -1714,7 +1719,12 @@ def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row
     row = statusline_row(env, settings)
     script = Path(env.repo_root) / "hooks" / "sidecrab_statusline.py"
     installed = row.startswith("ours")
-    points_here = str(script) in str((settings or {}).get("statusLine", {}).get("command", ""))
+    # isinstance, not .get(): null and a bare string are both legal JSON in that slot,
+    # and .get() on either is an AttributeError that would kill the run mid-cycle - with
+    # the smoke session already posted and its SessionEnd not yet sent.
+    configured = (settings or {}).get("statusLine")
+    configured = configured if isinstance(configured, dict) else {}
+    points_here = str(script) in str(configured.get("command", ""))
     add(
         "statusline chain",
         installed and points_here and script.exists() and "NO chain file" not in row,
