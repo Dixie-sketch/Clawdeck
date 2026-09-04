@@ -71,6 +71,15 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 
+try:
+    # POSIX only, and it is the login user name for the two macOS Keychain items - see
+    # _login_account. Guarded rather than lazily imported inside the reader so that
+    # "this host has no pwd" is answered once, at import, on the one platform where it
+    # is true (Windows) rather than per call.
+    import pwd
+except ImportError:                     # pragma: no cover - Windows
+    pwd = None
+
 # The served `schema` marks the last BREAKING shape, NOT the feature level - see the
 # VERSIONING REWORK section of docs/STATE-CONTRACT.md. Additive fields (contextTokens,
 # fleet, everything after) ship under this same number and are found by FIELD PRESENCE;
@@ -123,6 +132,12 @@ HISTORY_DONE_KIND = "done"
 # in-memory session table with rows nothing can ever render.
 HISTORY_REPLAY_SEC = 24 * 3600
 CLAUDE_HOME = Path(os.environ.get("CRABD_CLAUDE_HOME") or (Path.home() / ".claude"))
+# Was crabd pointed somewhere other than ~/.claude? Read ONCE, here, because the answer
+# decides whether the login Keychain may be asked for the CLI credential on macOS: the
+# documentation says a custom config dir keys a DIFFERENT Keychain entry, and crabd
+# cannot compose that entry's name - so asking about the default one would answer about
+# a login the operator is not running. See DarwinPlatform.cli_credentials.
+CUSTOM_CLAUDE_HOME = bool(os.environ.get("CRABD_CLAUDE_HOME"))
 PROJECTS_DIR = CLAUDE_HOME / "projects"
 CREDENTIALS_FILE = CLAUDE_HOME / ".credentials.json"
 
@@ -147,6 +162,39 @@ LIMITS_CACHE_FILE = SIDECRAB_DIR / "limits-cache.json"  # survives restarts; no 
 # DPAPI-protected (CurrentUser), and crabd decrypts it in memory when the CLI token is
 # past its expiry. Never logged, never served, never written anywhere else.
 LIMITS_TOKEN_FILE = SIDECRAB_DIR / "limits-token.dpapi"
+# --- macOS: the login Keychain, which is where BOTH secrets live on a Mac.
+#
+# `Claude Code-credentials` is the CLI's OWN credential. MEASURED 2026-09-04 (Claude Code
+# 2.1.260): ~/.claude/.credentials.json does not exist on this machine at all and the
+# Keychain item does, so a crabd that only knows about the file reads "no Claude
+# credentials" for ever on an account that is perfectly logged in. The documentation says
+# the file is written only when the Keychain write FAILS, which is why the file still
+# wins where both exist.
+#
+# `SideCrab limits token` is SideCrab's own store for a long-lived `claude setup-token`
+# value - the macOS answer to the DPAPI blob above. The account half of both items is the
+# login user name, and setup/sidecrab_setup.py probes the same pair by exit code.
+#
+# THE KILL SWITCH is not a feature: it is how the test suite guarantees it cannot raise a
+# Keychain prompt on the operator's desktop or read a secret it has no business seeing.
+# Every companion test module sets it False in setUpModule, exactly as they repoint the
+# path globals, and the tests that exercise this path turn it on with an injected runner.
+KEYCHAIN_CREDENTIALS_ENABLED = True
+KEYCHAIN_CREDENTIALS_SERVICE = "Claude Code-credentials"
+KEYCHAIN_LIMITS_SERVICE = "SideCrab limits token"
+SECURITY_BIN = "/usr/bin/security"
+KEYCHAIN_TIMEOUT_SEC = 5.0
+# MEASURED 2026-09-04: `security find-generic-password` exits 44 for an item that is not
+# there ("The specified item could not be found in the keychain"), on the argv form and
+# inside `security -i` alike. ABSENCE, not failure - it is answered silently.
+KEYCHAIN_ITEM_NOT_FOUND = 44
+# What the panel says when the item is there and crabd was not allowed to read it. It
+# names the ONE action that fixes it. Deliberately not the "no Claude credentials" note:
+# an operator told to log in for a Keychain crabd could not open would do it, watch
+# nothing change, and have no next move.
+KEYCHAIN_REFUSED_NOTE = ("Claude credential is in the Keychain and crabd could not read "
+                         "it - approve the Keychain prompt (Always Allow) or run claude "
+                         "in a terminal")
 # A cached `at` before this is not a stale reading, it is CORRUPT. Measured in
 # production 2026-08-26: the real cache held at=1000.0 (Jan 1970) because the unit
 # suite wrote the live file with fixture data. An `at` from 1970 makes every age
@@ -762,6 +810,8 @@ GET_HANGUP_LOG_KEY = "get-hangup"
 PANEL_READ_LOG_KEY = "panel-read"
 PANEL_TOO_BIG_LOG_KEY = "panel-too-big"
 PANEL_DIR_LOG_KEY = "panel-dir"
+CLI_CREDENTIALS_LOG_KEY = "cli-credentials"
+LIMITS_TOKEN_LOG_KEY = "limits-token"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -3083,6 +3133,35 @@ def _read_cli_credentials() -> str | None:
         return None
 
 
+def _login_account() -> str | None:
+    """The login user name - the ACCOUNT half of both Keychain items - or None.
+
+    `pwd.getpwuid(os.getuid())` rather than $USER: the environment of a LaunchAgent is
+    not the one a terminal has, and an account name that does not match the one the items
+    were created under simply finds nothing. None off POSIX, where there is no Keychain
+    to name anyway.
+    """
+    if pwd is None or not hasattr(os, "getuid"):
+        return None
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, OSError):
+        return None
+
+
+def _run_security(argv: list[str], stdin_text: str | None, timeout: float):
+    """`/usr/bin/security` -> (exit code, stdout, stderr). The ONE place crabd spawns it.
+
+    A SECRET NEVER TRAVELS IN `argv`. `ps` is world-readable on macOS, so an argument
+    list is a broadcast: the store command therefore goes in on STDIN, to `security -i`,
+    and the reads (whose argv names only the item, and whose secret comes back on stdout)
+    are the only ones that use an argument list at all.
+    """
+    proc = subprocess.run([SECURITY_BIN, *argv], input=stdin_text, capture_output=True,
+                          text=True, timeout=timeout, check=False)
+    return (proc.returncode, proc.stdout, proc.stderr)
+
+
 class WindowsPlatform:
     """GetSystemTimes / GlobalMemoryStatusEx, schtasks, DPAPI."""
 
@@ -3205,8 +3284,13 @@ class WindowsPlatform:
         token = raw.decode("utf-8", errors="replace").strip()
         return token or None
 
-    @staticmethod
-    def cli_credentials() -> str | None:
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document, from the FILE and nowhere else.
+
+        An INSTANCE method, like the other two platforms' - only Darwin needs the
+        instance (its Keychain seam lives on it), and the three have to be bound the
+        same way or they are not interchangeable. The surface test pins that.
+        """
         return _read_cli_credentials()
 
 
@@ -3391,11 +3475,20 @@ class DarwinPlatform:
     name = "darwin"
 
     def __init__(self, load_info=None, vm_stats=None, sysctl=None,
-                 clk_tck=None) -> None:
+                 clk_tck=None, security=None, limits_service=None,
+                 custom_claude_home=None) -> None:
         self._load_info = load_info or _darwin_cpu_load_info
         self._vm_stats = vm_stats or _darwin_vm_statistics64
         self._sysctl = sysctl or _darwin_sysctl
         self._clk_tck = clk_tck
+        # The Keychain, behind one seam: `security` is a SUBPROCESS, and a test that had
+        # to spawn the real one could neither run off macOS nor be trusted not to touch
+        # the operator's own items. `limits_service` is parametrised for the one live
+        # test that really does write a Keychain, so it can write its own item.
+        self._security = security or _run_security
+        self._limits_service = limits_service or KEYCHAIN_LIMITS_SERVICE
+        self._custom_claude_home = (CUSTOM_CLAUDE_HOME if custom_claude_home is None
+                                    else bool(custom_claude_home))
         # The resolved 100 ns-units-per-tick scale, once SC_CLK_TCK has answered
         # usefully. See _tick_scale: only an answer is remembered.
         self._scale: int | None = None
@@ -3680,9 +3773,70 @@ class DarwinPlatform:
     def read_limits_token(path) -> str | None:
         return None
 
-    @staticmethod
-    def cli_credentials() -> str | None:
-        return _read_cli_credentials()
+    def _keychain_read(self, service: str) -> tuple[int | None, str, str]:
+        """`security find-generic-password -s <service> -a <login> -w`
+        -> (exit code, stdout, a short reason fit for a log line).
+
+        The code is None when the tool could not be RUN at all (no such binary, a refused
+        spawn, a timeout), and the reason is then a type name. Neither the tool's stdout
+        nor its stderr ever reaches the reason: stdout is the secret, and stderr is output
+        that a future macOS could put anything into.
+
+        No `-i` here. The read carries no secret in its arguments - the item's name is
+        not a secret - and the value comes back on stdout, so an argument list is safe in
+        this direction and only in this direction.
+        """
+        account = _login_account()
+        if account is None:
+            return (None, "", "there is no login account to name")
+        try:
+            code, out, _err = self._security(
+                ["find-generic-password", "-s", service, "-a", account, "-w"],
+                None, KEYCHAIN_TIMEOUT_SEC)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (None, "", type(exc).__name__)
+        return (code, out or "", f"exit {code}")
+
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document: the FILE first, then the login Keychain.
+
+        MEASURED 2026-09-04 (Claude Code 2.1.260): `~/.claude/.credentials.json` is not
+        on this machine at all and the Keychain item is. The file still wins where both
+        exist - the documentation says it is written only when the Keychain write FAILS,
+        which makes it the CLI's own fallback - and asking the Keychain anyway would raise
+        a prompt on the operator's desktop for an answer crabd already had.
+
+        THE PAYLOAD WAS NEVER READ while this was written: it is the operator's live OAuth
+        token, and the session that wrote this refused to look at it. So it is handed back
+        as text and parsed as the FILE's shape by the caller that already does that, and
+        nothing here guesses - a payload that is not that shape reaches the existing
+        "unreadable" and "no access token" notes, never a fabricated token.
+
+        Two gates before the Keychain is touched, both silent absence rather than failure:
+        the module kill switch (see KEYCHAIN_CREDENTIALS_ENABLED), and a custom
+        CRABD_CLAUDE_HOME, which keys a different Keychain entry crabd cannot name.
+
+        A REFUSED READ RAISES PermissionError. It is not "no credentials": the item is
+        there and this process was not allowed to see it, which is what a LaunchAgent
+        meets the first time (a Keychain dialog in a GUI session, exit 36 "User
+        interaction is not allowed" in one with no UI). The two need different words
+        because they have different actions attached - log in, versus approve the prompt.
+        """
+        raw = _read_cli_credentials()
+        if raw is not None:
+            return raw
+        if not KEYCHAIN_CREDENTIALS_ENABLED or self._custom_claude_home:
+            return None
+        code, out, why = self._keychain_read(KEYCHAIN_CREDENTIALS_SERVICE)
+        if code == KEYCHAIN_ITEM_NOT_FOUND:
+            return None                 # no file and no item: nothing is logged in here
+        if code != 0:
+            _log_once(CLI_CREDENTIALS_LOG_KEY,
+                      f"crabd: the login Keychain would not hand over the Claude "
+                      f"credential ({why}); approve the Keychain prompt or run claude in "
+                      f"a terminal; this is logged once")
+            raise PermissionError("the login Keychain refused the Claude credential item")
+        return out.strip() or None
 
 
 class NullPlatform:
@@ -3736,8 +3890,13 @@ class NullPlatform:
     def read_limits_token(path) -> str | None:
         return None
 
-    @staticmethod
-    def cli_credentials() -> str | None:
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document, from the FILE and nowhere else.
+
+        An INSTANCE method, like the other two platforms' - only Darwin needs the
+        instance (its Keychain seam lives on it), and the three have to be bound the
+        same way or they are not interchangeable. The surface test pins that.
+        """
         return _read_cli_credentials()
 
 
@@ -3919,7 +4078,14 @@ class LimitsReader:
         }
 
     def _fetch(self) -> dict:
-        raw = self._platform.cli_credentials()
+        try:
+            raw = self._platform.cli_credentials()
+        except PermissionError:
+            # macOS only: the credential is in the login Keychain and this process was
+            # refused it. A DIFFERENT claim from "there are no credentials", with a
+            # different action attached - the operator has to approve the prompt, and
+            # being told to log in would send them to do something that changes nothing.
+            return self._unavailable(KEYCHAIN_REFUSED_NOTE)
         if raw is None:
             return self._unavailable("no Claude credentials on this machine - run /login")
         try:

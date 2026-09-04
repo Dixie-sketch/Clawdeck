@@ -52,6 +52,11 @@ def setUpModule():
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.PANEL_TOKEN_FILE = root / "panel-token"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
@@ -61,6 +66,7 @@ def tearDownModule():
     # TemporaryDirectory that is about to be deleted.
     crabd.Handler.builder = None
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 class StubLimits:

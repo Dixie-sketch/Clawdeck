@@ -54,6 +54,11 @@ def setUpModule():
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
@@ -66,6 +71,7 @@ def tearDownModule():
     # another module's test failing. Cleared here so the module hands back what it found.
     crabd.Handler.builder = None
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 # OAuth block a StubLimits hands back - the FALLBACK source. Deliberately carries no

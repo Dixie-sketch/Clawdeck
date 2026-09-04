@@ -45,12 +45,18 @@ def setUpModule():
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
     crabd.LIMITS_TOKEN_FILE = root / "no-such-limits-token.dpapi"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
     (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE, crabd.HISTORY_FILE,
      crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE) = setUpModule.originals
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 class ModuleIsolationTests(unittest.TestCase):
@@ -125,10 +131,11 @@ class PlatformSurfaceTests(unittest.TestCase):
         stops being one the moment anything subclasses or rebinds. The promise is that
         the three are INTERCHANGEABLE, not that they merely answer alike right now.
 
-        Today the split is: `cpu_times` and `memory` are plain instance methods on all
-        three, everything else is static. Only DarwinPlatform needs the instance (the
-        32-bit mach counters are unwrapped against state it keeps); the other two carry
-        none and are instance methods anyway, so that this test keeps passing."""
+        Today the split is: `cpu_times`, `memory` and `cli_credentials` are plain
+        instance methods on all three, everything else is static. Only DarwinPlatform
+        needs the instance (the 32-bit mach counters are unwrapped against state it
+        keeps, and the Keychain runner is a seam on it); the other two carry no state and
+        are instance methods anyway, so that this test keeps passing."""
         for name in sorted(self.SURFACE):
             with self.subTest(method=name):
                 kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
@@ -188,9 +195,14 @@ class PortHolderHintTests(unittest.TestCase):
 
 
 class CliCredentialsAreOneReaderTests(unittest.TestCase):
-    """All three platforms read the CLI credential document, identically. One body,
-    delegated to - three copies is three places for the per-call CREDENTIALS_FILE
-    lookup to be quietly bound at import in a later edit."""
+    """All three platforms read the CLI credential FILE through one body, delegated to -
+    three copies is three places for the per-call CREDENTIALS_FILE lookup to be quietly
+    bound at import in a later edit.
+
+    Since v0.34.0 macOS has a SECOND source behind that one (the login Keychain), and
+    this pins the order from the other end: with the file answering, all three give the
+    same answer and Darwin never gets as far as its Keychain seam.
+    """
 
     def test_all_three_delegate_to_the_one_module_level_reader(self):
         original = crabd._read_cli_credentials
@@ -198,7 +210,7 @@ class CliCredentialsAreOneReaderTests(unittest.TestCase):
         crabd._read_cli_credentials = lambda: "sentinel"
         for cls in PlatformSurfaceTests.PLATFORMS:
             with self.subTest(platform=cls.__name__):
-                self.assertEqual(cls.cli_credentials(), "sentinel")
+                self.assertEqual(cls().cli_credentials(), "sentinel")
 
 
 class OnePlatformDecisionTests(unittest.TestCase):

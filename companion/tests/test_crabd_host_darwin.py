@@ -48,12 +48,18 @@ def setUpModule():
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
     crabd.LIMITS_TOKEN_FILE = root / "no-such-limits-token.dpapi"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
     (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE, crabd.HISTORY_FILE,
      crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE) = setUpModule.originals
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 class ModuleIsolationTests(unittest.TestCase):
