@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import crabd  # noqa: E402
+from _httpkeepalive import start_test_server  # noqa: E402
 
 
 # --------------------------------------------------------------- module isolation
@@ -572,6 +573,140 @@ class KeychainPayloadShapeTests(KeychainCase):
         self.assertFalse(out["available"])
         self.assertIn("no Claude access token", out["note"])
         self.assertEqual(self.seen, [])
+
+
+# ------------------------------------------- the notes, and what the panel is told
+
+class LimitsTokenHintTests(unittest.TestCase):
+    """The command an operator has to run is a PLATFORM answer, like the port-holder
+    hint before it. Three notes name it, and until now all three named a PowerShell
+    script - on a Mac, an instruction to run something that is not there and cannot be
+    installed. A note whose whole job is to say what to do next has to be runnable."""
+
+    def test_each_platform_names_its_own_command(self):
+        self.assertEqual(crabd.WindowsPlatform().limits_token_hint(),
+                         "Install-SideCrab.ps1 -LimitsToken")
+        self.assertEqual(crabd.DarwinPlatform().limits_token_hint(),
+                         "setup/install.sh --limits-token")
+
+    def test_a_platform_with_no_store_says_so_instead_of_naming_a_command(self):
+        """NullPlatform's store_limits_token answers False, so there is no command to
+        give - and inventing one would send an operator to a tool that cannot work."""
+        hint = crabd.NullPlatform().limits_token_hint()
+        self.assertEqual(hint, "(no long-lived token store on this platform)")
+        self.assertIs(crabd.NullPlatform().store_limits_token(GOOD_TOKEN), False)
+
+
+class LimitsPrecedenceThroughTheSeamTests(KeychainCase):
+    """v0.30.0's precedence, unchanged, with both sources coming out of the Keychain.
+
+    The rule is CLI-when-fresh, else the long-lived token: the CLI token is the one whose
+    scopes are proven against this endpoint every day, and the stored one is what keeps
+    the gauges alive for the hours (or days) the CLI credential sits expired. Nothing
+    about that moved on macOS - only where the two values are read from.
+    """
+
+    def documents(self, expires_in_ms, token=None):
+        """A fake holding the CLI credential item, and optionally the SideCrab one."""
+        items = {(CLI_SERVICE, self.account()):
+                 credential_document("cli-token", expires_in_ms)}
+        if token is not None:
+            items[(crabd.KEYCHAIN_LIMITS_SERVICE, self.account())] = token
+        return FakeSecurity(items)
+
+    def services_asked(self, fake):
+        return [argv[2] for argv, _stdin, _timeout in fake.calls
+                if argv and argv[0] == "find-generic-password"]
+
+    def test_a_fresh_cli_credential_wins_and_the_stored_token_is_never_fetched(self):
+        fake = self.documents(3_600_000, GOOD_TOKEN)
+        out = self.reader(fake).get(1_800_000_000.0, force=True)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["tokenSource"], "cli")
+        self.assertEqual(self.seen, ["Bearer cli-token"])
+        self.assertEqual(self.services_asked(fake), [CLI_SERVICE])
+
+    def test_an_expired_cli_credential_falls_back_to_the_stored_token(self):
+        fake = self.documents(-1000, GOOD_TOKEN)
+        out = self.reader(fake).get(1_800_000_000.0, force=True)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["tokenSource"], "sidecrab")
+        self.assertEqual(self.seen, ["Bearer " + GOOD_TOKEN])
+        self.assertEqual(self.services_asked(fake),
+                         [CLI_SERVICE, crabd.KEYCHAIN_LIMITS_SERVICE])
+
+    def test_expired_with_nothing_stored_names_the_command_for_this_platform(self):
+        out = self.reader(self.documents(-1000)).get(1_800_000_000.0, force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("expired", out["note"])
+        self.assertIn("setup/install.sh --limits-token", out["note"])
+        self.assertNotIn("Install-SideCrab", out["note"])
+        self.assertEqual(self.seen, [])          # the endpoint was never reached
+
+    def test_a_rejected_stored_token_names_itself_and_the_same_command(self):
+        """401 while the STORED token is in use is its own failure: the CLI credential is
+        fine and the long-lived one has been revoked or has expired, so "run /login"
+        would be advice about the wrong secret."""
+        fake = self.documents(-1000, GOOD_TOKEN)
+        rejecting = []
+
+        def refusing(request, timeout=None):
+            rejecting.append(request.get_header("Authorization"))
+            raise crabd.urllib.error.HTTPError(request.full_url, 401, "no", {}, None)
+
+        crabd.urllib.request.urlopen = refusing
+        out = self.reader(fake).get(1_800_000_000.0, force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("SideCrab limits token rejected", out["note"])
+        self.assertIn("claude setup-token", out["note"])
+        self.assertIn("setup/install.sh --limits-token", out["note"])
+        self.assertEqual(rejecting, ["Bearer " + GOOD_TOKEN])
+
+
+class NeitherSecretReachesTheWireTests(KeychainCase):
+    """The rule both problems share, asserted on the bytes crabd actually serves.
+
+    The tokens are read, used as a request header and dropped: never logged, never
+    cached, never in `/v1/state` and never in `/v1/health`. This is the test that would
+    catch a future `note` composed from an exception, or a diagnostic block that grew a
+    field it should not have.
+    """
+
+    def served(self, fake):
+        """(the /v1/state bytes, the /v1/health bytes) from a real crabd on a test port,
+        built over a limits reader that has just used the stored token."""
+        root = self.root / "projects"
+        root.mkdir(exist_ok=True)
+        reader = self.reader(fake)
+        reader.get(1_800_000_000.0, force=True)
+        builder = crabd.StateBuilder(crabd.TranscriptStore(root), crabd.HookTracker(),
+                                     reader, 1_800_000_000.0)
+        with builder._lock:
+            builder._state = builder.build()
+        original = crabd.Handler.builder
+        self.addCleanup(lambda: setattr(crabd.Handler, "builder", original))
+        crabd.Handler.builder = builder
+        server, thread, _port, client = start_test_server(
+            lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
+        self.addCleanup(client.close)
+
+        def stop():
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+        self.addCleanup(stop)
+        return (client.get("/v1/state").body, client.get("/v1/health").body)
+
+    def test_the_stored_token_is_in_neither_served_document(self):
+        fake = FakeSecurity({
+            (CLI_SERVICE, self.account()): credential_document("cli-token", -1000),
+            (crabd.KEYCHAIN_LIMITS_SERVICE, self.account()): GOOD_TOKEN})
+        state, health = self.served(fake)
+        self.assertIn(b'"tokenSource": "sidecrab"', state)   # it really was used
+        for body in (state, health):
+            self.assertNotIn(GOOD_TOKEN.encode(), body)
+            self.assertNotIn(b"cli-token", body)
 
 
 # ------------------------------------------------------- the suite cannot reach it

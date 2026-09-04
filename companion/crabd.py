@@ -3335,6 +3335,12 @@ class WindowsPlatform:
             return False
         return True
 
+    def limits_token_hint(self) -> str:
+        """The command that stores a long-lived token HERE. Three of LimitsReader's notes
+        end with it, and a note whose whole job is to say what to do next is worth
+        nothing if it names a tool this platform does not have."""
+        return "Install-SideCrab.ps1 -LimitsToken"
+
     def cli_credentials(self) -> str | None:
         """The CLI credential document, from the FILE and nowhere else.
 
@@ -3896,6 +3902,9 @@ class DarwinPlatform:
             return False
         return True
 
+    def limits_token_hint(self) -> str:
+        return "setup/install.sh --limits-token"
+
     def _keychain_read(self, service: str) -> tuple[int | None, str, str]:
         """`security find-generic-password -s <service> -a <login> -w`
         -> (exit code, stdout, a short reason fit for a log line).
@@ -4018,6 +4027,11 @@ class NullPlatform:
         though it had been stored properly is worse than saying no. The installer reads
         False as "nothing is confirmed stored"."""
         return False
+
+    def limits_token_hint(self) -> str:
+        """No command, because there is nothing here to run one against - and inventing
+        one would send an operator to a tool that cannot work on their machine."""
+        return "(no long-lived token store on this platform)"
 
     def cli_credentials(self) -> str | None:
         """The CLI credential document, from the FILE and nowhere else.
@@ -4260,18 +4274,23 @@ class LimitsReader:
         # setup token is the fallback for the hours (or days) the CLI file sits expired.
         token_source = "cli"
         if not cli_usable:
+            # The command that stores one is the PLATFORM's - `Install-SideCrab.ps1
+            # -LimitsToken` on Windows, `setup/install.sh --limits-token` on a Mac. These
+            # notes are the panel's only instruction for this failure, and naming a
+            # PowerShell script to a Mac operator is naming something they cannot run.
+            hint = self._platform.limits_token_hint()
             fallback = read_limits_token(platform=self._platform)
             if fallback:
                 token = fallback
                 token_source = "sidecrab"
             elif not isinstance(token, str) or not token:
                 return self._unavailable(
-                    "no Claude access token - run claude in a terminal, or store a "
-                    "long-lived one: Install-SideCrab.ps1 -LimitsToken")
+                    f"no Claude access token - run claude in a terminal, or store a "
+                    f"long-lived one: {hint}")
             else:
                 out = self._unavailable(
-                    "Claude token expired - run claude in a terminal to refresh it, or "
-                    "store a long-lived one: Install-SideCrab.ps1 -LimitsToken")
+                    f"Claude token expired - run claude in a terminal to refresh it, or "
+                    f"store a long-lived one: {hint}")
                 out["subscriptionType"] = subscription
                 out["rateLimitTier"] = tier
                 return out
@@ -4291,8 +4310,9 @@ class LimitsReader:
         except urllib.error.HTTPError as exc:
             code = exc.code
             if code in (401, 403) and token_source == "sidecrab":
-                note = ("SideCrab limits token rejected - mint a new one with "
-                        "claude setup-token and re-run Install-SideCrab.ps1 -LimitsToken")
+                note = (f"SideCrab limits token rejected - mint a new one with "
+                        f"claude setup-token and store it again: "
+                        f"{self._platform.limits_token_hint()}")
             elif code in (401, 403):
                 note = "Claude token rejected - run /login in Claude Code"
             else:

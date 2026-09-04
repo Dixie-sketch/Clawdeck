@@ -103,7 +103,8 @@ class PlatformSurfaceTests(unittest.TestCase):
 
     SURFACE = {"cpu_times", "memory", "fleet_targets", "service_query",
                "service_status", "read_limits_token", "store_limits_token",
-               "cli_credentials", "server_reuse_address", "port_holder_hint"}
+               "limits_token_hint", "cli_credentials", "server_reuse_address",
+               "port_holder_hint"}
     PLATFORMS = (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform)
 
     @staticmethod
@@ -132,8 +133,8 @@ class PlatformSurfaceTests(unittest.TestCase):
         the three are INTERCHANGEABLE, not that they merely answer alike right now.
 
         Today the split is: `cpu_times`, `memory`, `cli_credentials`,
-        `read_limits_token` and `store_limits_token` are plain instance methods on all
-        three, everything else is static. Only DarwinPlatform needs the instance (the
+        `read_limits_token`, `store_limits_token` and `limits_token_hint` are plain
+        instance methods on all three, everything else is static. Only DarwinPlatform needs the instance (the
         32-bit mach counters are unwrapped against state it keeps, and the Keychain
         runner and the item's service name are seams on it); the other two carry no state
         and are instance methods anyway, so that this test keeps passing."""
