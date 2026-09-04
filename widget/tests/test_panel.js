@@ -620,6 +620,78 @@ function hostPanel(host, opts) {
   eq(ctx.sensorIdFor('cpu'), '', 'and no sensor id is manufactured');
 })();
 
+/* ------------------------------------------- the dev flags stay gated (E) */
+
+/* THE ONE SECURITY REGRESSION THE PORT INTRODUCES BY ITSELF, pinned. Every
+   screenshot flag was gated on ?mock= on the stated ground that the iCUE origin
+   carries no query string. That ground is gone the moment crabd serves the panel
+   at an address anyone can type: &ackflash=1 performs a REAL live ack-all POST,
+   &sensorstale= rewrites a module tunable, and &quietov= and &budget= rewrite the
+   served document. The gate is the same one it always was — the flags live
+   inside `if (mockName)` — and this is what says so out loud, from a served
+   http origin with every flag in the query string at once. */
+
+var EVERY_DEV_FLAG = '?ackflash=1&refreshflash=1&age=30&filter=waiting&density=compact' +
+  '&budget=150&quietov=on&sensorstale=1000&hold=10&approvalsec=45&crab=party&mood=worried' +
+  '&uid=devbox&touchdiag=1&action400=1&sheet=first&sheet2=first&pin=first&swipe=first' +
+  '&pinflash=first&spark=7d&celebrate=1&blink=2&burn=1&timeline=1&day=2026-08-21&hist=error' +
+  '&host=1&approval=1&sensors=95,84&sensornames=A|B&sensorsame=1&sensorfail=1&sensorlog=1';
+
+/* name -> the value it MUST still hold. Read off the declarations in
+   sidecrab.js, so a flag that gains a variable and no gate shows up here as an
+   undefined rather than passing quietly. */
+var DEV_FLAG_RESTING = {
+  mockName: null, ackFlashAuto: false, refreshFlashAuto: false, noticeHold: false,
+  ageOverrideMin: null, filterForced: null, densityForced: null, budgetPctOverride: null,
+  quietForced: null, mockQuietOv: null, SENSOR_STALE_MS: 60000, holdOverrideSec: null,
+  approvalForcedSec: null, accForced: null, forcedTrick: null, moodForced: null,
+  devUidOverride: null, diagForced: false, actionForce400: false, sheetAutoId: null,
+  sheetAutoDetailId: null, pinAuto: null, swipeFreeze: null, pinFlashAuto: null,
+  pinFlashHold: false, sparkMode: '24h', celebrateForced: false, burnAuto: false,
+  timelineAuto: false, dayAuto: null, histAuto: null, hostAuto: false, approvalAuto: false,
+  sensorForced: null, sensorForcedSame: false, sensorForcedFail: false, sensorLogVerbose: false
+};
+
+(function () {
+  var calls = [];
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: EVERY_DEV_FLAG },
+    storage: fakeStorage('ok'),
+    fetch: function (url, init) {
+      calls.push({ url: url, init: init });
+      return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({}); } });
+    }
+  });
+  Object.keys(DEV_FLAG_RESTING).forEach(function (k) {
+    eq(ctx[k], DEV_FLAG_RESTING[k], k + ' is untouched by a query string on a served origin');
+  });
+  eq(ctx.blinkMinMs, ctx.BLINK_MIN_MS, '&blink= cannot pin the idle-blink interval either');
+  var posts = calls.filter(function (c) { return c.init && c.init.method === 'POST'; });
+  eq(posts.length, 0, 'and NOTHING was POSTed: the ack-all flag did not fire');
+  ok(ctx.document.body.className.indexOf('pinflash-frozen') === -1,
+    'nor did a flag put a frozen animation class on the body');
+})();
+
+/* The same flags WITH ?mock= are the screenshot harness working as designed —
+   and even then the ack-all it really performs never leaves the page. */
+(function () {
+  var calls = [];
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '?mock=normal&ackflash=1' },
+    storage: fakeStorage('ok'),
+    fetch: function (url, init) {
+      calls.push({ url: url, init: init });
+      return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ schema: 1, generatedAt: new Date().toISOString(), sessions: [] }); } });
+    }
+  });
+  eq(ctx.mockName, 'normal', '?mock= turns the harness on');
+  eq(ctx.ackFlashAuto, true, 'and the flag is honoured');
+  var posts = calls.filter(function (c) { return c.init && c.init.method === 'POST'; });
+  eq(posts.length, 0, 'the mock action stub answers in-page: no POST reaches the wire');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {
