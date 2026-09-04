@@ -188,6 +188,13 @@ KEYCHAIN_TIMEOUT_SEC = 5.0
 # there ("The specified item could not be found in the keychain"), on the argv form and
 # inside `security -i` alike. ABSENCE, not failure - it is answered silently.
 KEYCHAIN_ITEM_NOT_FOUND = 44
+#: What crabd is willing to STORE as a long-lived token: the SHAPE of a `claude
+#: setup-token` value (`sk-ant-oat01-...`), never decoded, never logged. The same
+#: expression setup/sidecrab_setup.py validates with before it hands one over. It is also
+#: a safety rule, not only a typo catcher: the macOS store command goes through
+#: `security -i`'s own tokenizer, so a value carrying a quote or a newline is refused
+#: here rather than quoted around.
+LIMITS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
 # What the panel says when the item is there and crabd was not allowed to read it. It
 # names the ONE action that fixes it. Deliberately not the "no Claude credentials" note:
 # an operator told to log in for a Keychain crabd could not open would do it, watch
@@ -3133,6 +3140,12 @@ def _read_cli_credentials() -> str | None:
         return None
 
 
+def _usable_limits_token(token) -> bool:
+    """Is this something crabd is willing to store? SHAPE only - see LIMITS_TOKEN_RE -
+    and the value is never named in a log line or an exception on the way out."""
+    return isinstance(token, str) and bool(LIMITS_TOKEN_RE.match(token))
+
+
 def _login_account() -> str | None:
     """The login user name - the ACCOUNT half of both Keychain items - or None.
 
@@ -3264,8 +3277,7 @@ class WindowsPlatform:
             return ""
         return rows[-1][FLEET_STATUS_COL].strip().lower() if rows else ""
 
-    @staticmethod
-    def read_limits_token(path) -> str | None:
+    def read_limits_token(self, path) -> str | None:
         """The long-lived usage token, or None. Read fresh on every call so a token
         stored while crabd runs is picked up on the next poll; the decrypted string is
         returned to the caller and dropped - LimitsReader keeps the same no-log,
@@ -3283,6 +3295,45 @@ class WindowsPlatform:
             return None
         token = raw.decode("utf-8", errors="replace").strip()
         return token or None
+
+    def store_limits_token(self, token: str) -> bool:
+        """Store the long-lived token DPAPI-protected in LIMITS_TOKEN_FILE. True when it
+        is on disk; False - having written nothing - for anything else.
+
+        The path is read off the MODULE per call, like every other path in this file, so
+        the suite can point it somewhere harmless.
+
+        ATOMIC, and 0600 from the moment the bytes exist: a temp file in the same
+        directory (so the rename cannot cross a volume) opened with the mode already set,
+        then os.replace. A store that crashed half way through the old shape left a
+        truncated blob that decrypts to nothing, which reads exactly like "no token
+        stored" and would have sent the operator to store it again.
+        """
+        if not _usable_limits_token(token):
+            return False
+        blob = _dpapi_protect(token.encode("utf-8"))
+        if not blob:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: DPAPI would not protect the limits token; nothing was "
+                      "stored; this is logged once")
+            return False
+        path = LIMITS_TOKEN_FILE
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp, "wb", opener=lambda p, flags: os.open(p, flags, 0o600)) as fh:
+                fh.write(blob)
+            os.replace(temp, path)
+        except OSError as exc:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the limits token could not be written "
+                      f"({type(exc).__name__}); nothing was stored; this is logged once")
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            return False
+        return True
 
     def cli_credentials(self) -> str | None:
         """The CLI credential document, from the FILE and nowhere else.
@@ -3769,9 +3820,81 @@ class DarwinPlatform:
                 return value.strip().lower()
         return ""
 
-    @staticmethod
-    def read_limits_token(path) -> str | None:
-        return None
+    def read_limits_token(self, path) -> str | None:
+        """The long-lived token out of the login Keychain, or None.
+
+        `path` IS IGNORED here, deliberately: the three platforms have to take the same
+        arguments (the surface pin says so) and on Windows the token really is that file.
+        On a Mac it is a generic-password item, service `SideCrab limits token`, account
+        the login user - the pair setup/sidecrab_setup.py probes by exit code.
+
+        Read fresh on every poll, so a token stored while crabd runs is picked up on the
+        next pass with no restart, and dropped as soon as the caller has used it as a
+        header. Exit 44 is ABSENCE and is silent - the ordinary state of a machine whose
+        operator never ran `--limits-token`, on every poll for ever. Anything else is one
+        line naming the exit code, never the output: in this direction the output IS the
+        token.
+        """
+        if not KEYCHAIN_CREDENTIALS_ENABLED:
+            return None
+        code, out, why = self._keychain_read(self._limits_service)
+        if code == KEYCHAIN_ITEM_NOT_FOUND:
+            return None
+        if code != 0:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not hand over the limits token "
+                      f"({why}); the gauges fall back to the CLI token; this is logged "
+                      f"once")
+            return None
+        return out.strip() or None
+
+    def store_limits_token(self, token: str) -> bool:
+        """Store the long-lived token in the login Keychain. True when it is in.
+
+        THE SECRET TRAVELS ON STDIN. `ps` is world-readable on macOS, so a value in an
+        argument list is handed to every user on the machine - and to anything sampling
+        `ps` for ever after. `security -i` reads its commands from stdin, so the argv here
+        is exactly ["-i"], and `-X` takes the value HEX-ENCODED, which removes the last
+        question about quoting the secret itself.
+
+        `-U` updates an item that is already there instead of failing on it: storing a
+        second token is what an operator does after minting a new one, and the failure
+        mode without it is the OLD, rejected token staying in the Keychain.
+
+        The service name is quoted because it has spaces in it. MEASURED 2026-09-04:
+        `security -i` honours double quotes - `find-generic-password -s "SideCrab quoting
+        probe (no such item)" -a probe -w` fed to it answered "could not be found"
+        (exit 44), not a usage error. A value that would need quoting of its own never
+        gets this far; _usable_limits_token refuses it.
+
+        Items created through this tool carry the tool in their access list, so crabd's
+        own later reads through it do not raise a prompt.
+        """
+        if not _usable_limits_token(token):
+            return False                # nothing stored, and the value never named
+        account = _login_account()
+        if account is None:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: there is no login account to name a Keychain item with; "
+                      "nothing was stored; this is logged once")
+            return False
+        command = (f'add-generic-password -a "{account}" -s "{self._limits_service}" '
+                   f'-X {token.encode("utf-8").hex()} -U\n')
+        try:
+            code, _out, _err = self._security(["-i"], command, KEYCHAIN_TIMEOUT_SEC)
+        except (OSError, subprocess.SubprocessError) as exc:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not take the limits token "
+                      f"({type(exc).__name__}); nothing was stored; this is logged once")
+            return False
+        finally:
+            del command
+        if code != 0:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not take the limits token "
+                      f"(exit {code}); nothing was stored; this is logged once")
+            return False
+        return True
 
     def _keychain_read(self, service: str) -> tuple[int | None, str, str]:
         """`security find-generic-password -s <service> -a <login> -w`
@@ -3886,9 +4009,15 @@ class NullPlatform:
         """
         return "unknown"
 
-    @staticmethod
-    def read_limits_token(path) -> str | None:
+    def read_limits_token(self, path) -> str | None:
         return None
+
+    def store_limits_token(self, token: str) -> bool:
+        """False: there is nowhere to put it here. Not an exception and not a plain
+        file - an unprotected bearer token on disk that later reads would hand out as
+        though it had been stored properly is worse than saying no. The installer reads
+        False as "nothing is confirmed stored"."""
+        return False
 
     def cli_credentials(self) -> str | None:
         """The CLI credential document, from the FILE and nowhere else.
@@ -3926,6 +4055,33 @@ PLATFORM = select_platform(sys.platform)
 
 class _DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_protect(raw: bytes) -> bytes | None:
+    """CryptProtectData for the current user, no entropy - the exact mirror of
+    `_dpapi_unprotect` below, and of the `[ProtectedData]::Protect(bytes, $null,
+    'CurrentUser')` the PowerShell installer used to write this file with. None on any
+    failure (not Windows, a refused call), and the caller then stores NOTHING: an
+    unprotected token written to that path would be handed out by every later read as
+    though it had been encrypted.
+    """
+    if not raw or not hasattr(ctypes, "windll"):
+        return None
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        buf = ctypes.create_string_buffer(raw, len(raw))
+        inp = _DATA_BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        out = _DATA_BLOB()
+        if not crypt32.CryptProtectData(ctypes.byref(inp), None, None, None, None, 0,
+                                        ctypes.byref(out)):
+            return None
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            kernel32.LocalFree(out.pbData)
+    except (OSError, AttributeError, ValueError):
+        return None
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes | None:

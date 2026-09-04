@@ -102,8 +102,8 @@ class PlatformSurfaceTests(unittest.TestCase):
     """
 
     SURFACE = {"cpu_times", "memory", "fleet_targets", "service_query",
-               "service_status", "read_limits_token", "cli_credentials",
-               "server_reuse_address", "port_holder_hint"}
+               "service_status", "read_limits_token", "store_limits_token",
+               "cli_credentials", "server_reuse_address", "port_holder_hint"}
     PLATFORMS = (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform)
 
     @staticmethod
@@ -131,11 +131,12 @@ class PlatformSurfaceTests(unittest.TestCase):
         stops being one the moment anything subclasses or rebinds. The promise is that
         the three are INTERCHANGEABLE, not that they merely answer alike right now.
 
-        Today the split is: `cpu_times`, `memory` and `cli_credentials` are plain
-        instance methods on all three, everything else is static. Only DarwinPlatform
-        needs the instance (the 32-bit mach counters are unwrapped against state it
-        keeps, and the Keychain runner is a seam on it); the other two carry no state and
-        are instance methods anyway, so that this test keeps passing."""
+        Today the split is: `cpu_times`, `memory`, `cli_credentials`,
+        `read_limits_token` and `store_limits_token` are plain instance methods on all
+        three, everything else is static. Only DarwinPlatform needs the instance (the
+        32-bit mach counters are unwrapped against state it keeps, and the Keychain
+        runner and the item's service name are seams on it); the other two carry no state
+        and are instance methods anyway, so that this test keeps passing."""
         for name in sorted(self.SURFACE):
             with self.subTest(method=name):
                 kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
@@ -257,7 +258,7 @@ class OnePlatformDecisionTests(unittest.TestCase):
 
     def test_windll_appears_only_in_the_windows_platform_and_the_dpapi_helper(self):
         self.assertLessEqual(set(self.owners_of("windll")),
-                             {"WindowsPlatform", "_dpapi_unprotect"})
+                             {"WindowsPlatform", "_dpapi_protect", "_dpapi_unprotect"})
 
     def test_os_name_is_never_a_platform_test(self):
         self.assertNotIn("os.name", self.SOURCE)
@@ -420,9 +421,15 @@ class FleetPlatformTests(unittest.TestCase):
 class LimitsTokenPlatformTests(unittest.TestCase):
     """`~/.sidecrab/limits-token.dpapi` is a DPAPI blob, which is a Windows fact.
 
-    A platform with no token store answers None rather than handing the raw bytes on as
-    a bearer token - the file is ciphertext everywhere, and "I could not decrypt it" is
+    A platform that cannot read that FILE answers None rather than handing the raw bytes
+    on as a bearer token - it is ciphertext everywhere, and "I could not decrypt it" is
     not "here it is".
+
+    Since v0.34.0 macOS HAS a token store, but it is not this file: it is a login
+    Keychain item, and what a Mac reads out of it is pinned in
+    test_crabd_token_darwin.py. Here it answers None because the module kill switch is
+    off, which is exactly the guarantee this module wants - a reader built with no
+    injected seam cannot reach the operator's Keychain.
     """
 
     def setUp(self):
@@ -433,7 +440,10 @@ class LimitsTokenPlatformTests(unittest.TestCase):
         original = crabd._dpapi_unprotect
         self.addCleanup(lambda: setattr(crabd, "_dpapi_unprotect", original))
 
-    def test_a_platform_with_no_token_store_reads_nothing_from_a_file_that_has_bytes(self):
+    def test_a_platform_that_does_not_read_this_file_reads_nothing_from_it(self):
+        """Null has no store at all; Darwin has one that is not a file, and with the
+        Keychain switched off for this module it reaches nothing. Neither hands the
+        undecrypted bytes on."""
         for platform in (crabd.NullPlatform(), crabd.DarwinPlatform()):
             with self.subTest(platform=platform.name):
                 self.assertIsNone(

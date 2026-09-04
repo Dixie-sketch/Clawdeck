@@ -236,6 +236,180 @@ class KeychainCase(unittest.TestCase):
         return FakeSecurity({(service, self.account()): payload})
 
 
+# ------------------------------------------- problem one: the long-lived token store
+
+#: A `claude setup-token` value's shape. Never a real one, and never printed.
+GOOD_TOKEN = "sk-ant-oat01-" + "a" * 40
+
+
+class LimitsTokenStoreTests(KeychainCase):
+    """`~/.sidecrab/limits-token.dpapi` is a DPAPI blob, which is a WINDOWS fact. The
+    macOS store is a generic-password item in the login Keychain, service `SideCrab
+    limits token`, account the login user - the same pair setup/sidecrab_setup.py probes
+    by exit code when it prints the status row."""
+
+    def store(self, fake, token=GOOD_TOKEN):
+        return self.platform(fake).store_limits_token(token)
+
+    def test_a_token_stored_is_a_token_read_back(self):
+        fake = FakeSecurity()
+        self.assertIs(self.store(fake), True)
+        self.assertEqual(self.platform(fake).read_limits_token(None), GOOD_TOKEN)
+
+    def test_the_item_is_named_the_way_the_installer_names_it(self):
+        fake = FakeSecurity()
+        self.store(fake)
+        self.assertEqual(sorted(fake.items),
+                         [(crabd.KEYCHAIN_LIMITS_SERVICE, self.account())])
+        self.assertEqual(crabd.KEYCHAIN_LIMITS_SERVICE, "SideCrab limits token")
+
+    def test_the_store_updates_an_existing_item_rather_than_failing_on_it(self):
+        """`-U`. Without it, storing a second token is an error on an operator who has
+        simply minted a new one - and the old, rejected token stays in the Keychain."""
+        fake = FakeSecurity()
+        self.store(fake)
+        self.assertIn(" -U", fake.calls[0][1])
+        self.assertIs(self.store(fake, "sk-ant-oat01-" + "b" * 40), True)
+        self.assertEqual(self.platform(fake).read_limits_token(None),
+                         "sk-ant-oat01-" + "b" * 40)
+
+    def test_the_secret_never_appears_in_an_argument_list(self):
+        """THE ARGV TEST, and it is the reason the store goes through `security -i`.
+
+        `ps` is world-readable on macOS: a secret in an argument list is a secret handed
+        to every user on the machine for as long as the process lives, and to anything
+        sampling `ps` for ever after. So the store's argv is exactly ["-i"], the command
+        that carries the value travels on STDIN, and the value is hex-encoded there so no
+        quoting question can arise about it. The read needs no secret in either place -
+        it names the item and the value comes back on stdout.
+        """
+        fake = FakeSecurity()
+        self.store(fake)
+        self.platform(fake).read_limits_token(None)
+        for argv, stdin, _timeout in fake.calls:
+            for word in argv:
+                self.assertNotIn(GOOD_TOKEN, word)
+                for start in range(0, len(GOOD_TOKEN) - 12):
+                    self.assertNotIn(GOOD_TOKEN[start:start + 12], word)
+        self.assertEqual(fake.calls[0][0], ["-i"])
+        self.assertIn(GOOD_TOKEN.encode("utf-8").hex(), fake.calls[0][1])
+        self.assertIsNone(fake.calls[1][1])
+
+    def test_a_value_that_is_not_a_token_is_refused_before_anything_is_spawned(self):
+        """Shape only - crabd never decodes the token - and the refusal happens BEFORE
+        the seam, so a value with a quote or a newline in it never reaches `security -i`'s
+        own tokenizer. That is the injection this closes: everything after the newline
+        would be a second command, in a tool that writes the Keychain.
+        """
+        fake = FakeSecurity()
+        for bad in ("has space", "", "x" * 10, "sk-ant-oat01-" + "a" * 600,
+                    'sk-ant-"quote"-token-aaaaaaaaaaaaa',
+                    "sk-ant-oat01-aaaaaaaaaaaaaaaaaaaa\nadd-generic-password -a x",
+                    None, 12345):
+            with self.subTest(token=repr(bad)[:40]):
+                self.assertIs(self.store(fake, bad), False)
+        self.assertEqual(fake.calls, [])
+
+
+class LimitsTokenReadFailureTests(KeychainCase):
+    """Absence is silent; every other failure says so once and says nothing else."""
+
+    def test_no_item_reads_as_none_with_nothing_on_stderr(self):
+        """The ordinary state of a machine whose operator has never run
+        `--limits-token`, on every single limits poll."""
+        fake = FakeSecurity()
+        out, noise = self.capture(lambda: self.platform(fake).read_limits_token(None))
+        self.assertIsNone(out)
+        self.assertEqual(noise, "")
+
+    def test_a_failure_that_is_not_absence_is_one_line_over_three_reads(self):
+        refused = (1, "", "security: User interaction is not allowed.\n")
+        platform = self.platform(FakeSecurity(answer=refused))
+        out, noise = self.capture(
+            lambda: [platform.read_limits_token(None) for _ in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(noise.count("would not hand over the limits token"), 1, noise)
+        self.assertIn("exit 1", noise)
+        self.assertNotIn(GOOD_TOKEN, noise)
+        self.assertNotIn("User interaction", noise)     # the tool's output, not ours
+
+    def test_a_timeout_is_the_same_refusal(self):
+        """`security` can block on a locked Keychain. The limits poll is on the builder's
+        cadence and must not wait for it: the seam has its own timeout, and a timed-out
+        read is an absent token, not an exception on a daemon thread."""
+        platform = self.platform(
+            FakeSecurity(answer=subprocess.TimeoutExpired("security", 5)))
+        out, noise = self.capture(
+            lambda: [platform.read_limits_token(None) for _ in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(noise.count("would not hand over the limits token"), 1, noise)
+        self.assertIn("TimeoutExpired", noise)
+
+
+class WindowsTokenStoreTests(unittest.TestCase):
+    """The other half of the same surface: Windows stores the token DPAPI-protected in
+    the file it has always read, and every other host refuses rather than pretending."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        original = (crabd.LIMITS_TOKEN_FILE, set(crabd._LOG_ONCE_SEEN))
+
+        def restore():
+            crabd.LIMITS_TOKEN_FILE = original[0]
+            crabd._LOG_ONCE_SEEN.clear()
+            crabd._LOG_ONCE_SEEN.update(original[1])
+
+        self.addCleanup(restore)
+        crabd.LIMITS_TOKEN_FILE = Path(self.tmp.name) / "limits-token.dpapi"
+        crabd._LOG_ONCE_SEEN.discard(crabd.LIMITS_TOKEN_LOG_KEY)
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI is Windows-only")
+    def test_a_token_stored_here_round_trips_through_the_real_dpapi(self):
+        """What the store writes is what the reader reads, through CryptProtectData and
+        CryptUnprotectData - the same pair PowerShell's [ProtectedData] uses, which is
+        what wrote this file before crabd could."""
+        platform = crabd.WindowsPlatform()
+        self.assertIs(platform.store_limits_token(GOOD_TOKEN), True)
+        self.assertNotIn(GOOD_TOKEN.encode(), crabd.LIMITS_TOKEN_FILE.read_bytes())
+        self.assertEqual(platform.read_limits_token(crabd.LIMITS_TOKEN_FILE), GOOD_TOKEN)
+
+    @unittest.skipIf(sys.platform == "win32", "this is the NOT-Windows answer")
+    def test_off_windows_it_refuses_once_and_writes_nothing(self):
+        """`ctypes.windll` does not exist here, so there is no way to protect the value -
+        and storing it unprotected would be worse than refusing: a bearer token in a
+        plain file that every later read would hand out as though it had been encrypted.
+        """
+        platform = crabd.WindowsPlatform()
+        out, noise = self.capture(
+            lambda: [platform.store_limits_token(GOOD_TOKEN) for _ in range(3)])
+        self.assertEqual(out, [False, False, False])
+        self.assertFalse(crabd.LIMITS_TOKEN_FILE.exists())
+        self.assertEqual(noise.count("nothing was stored"), 1, noise)
+        self.assertNotIn(GOOD_TOKEN, noise)
+
+    def test_a_value_that_is_not_a_token_is_refused_on_every_platform(self):
+        for platform in (crabd.WindowsPlatform(), crabd.NullPlatform()):
+            with self.subTest(platform=platform.name):
+                self.assertIs(platform.store_limits_token("has space"), False)
+        self.assertFalse(crabd.LIMITS_TOKEN_FILE.exists())
+
+    def test_a_platform_with_no_store_at_all_says_so_by_answering_false(self):
+        """NullPlatform: no DPAPI, no Keychain. False is the honest answer and the
+        installer reads it as "nothing is confirmed stored"."""
+        self.assertIs(crabd.NullPlatform().store_limits_token(GOOD_TOKEN), False)
+        self.assertIsNone(crabd.NullPlatform().read_limits_token(
+            crabd.LIMITS_TOKEN_FILE))
+
+    @staticmethod
+    def capture(call):
+        original, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            return call(), sys.stderr.getvalue()
+        finally:
+            sys.stderr = original
+
+
 # ------------------------------------------------- problem two: the CLI credential
 
 class CredentialsFileWinsTests(KeychainCase):
