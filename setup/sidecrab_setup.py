@@ -19,6 +19,7 @@ import copy
 import fnmatch
 import json
 import os
+import plistlib
 import re
 import shlex
 import subprocess
@@ -788,7 +789,346 @@ def install_config(env: Environment, writer: Writer, args) -> ApprovalsDecision:
     return decision
 
 
+# ------------------------------------------------------------------ LaunchAgents
+
+
+@dataclass(frozen=True)
+class AgentSpec:
+    """One LaunchAgent, described once. Adding a component is one row in AGENTS."""
+
+    key: str
+    label: str
+    script: str
+    #: 0 = this component owns no port. Which one does is a fact of the catalogue,
+    #: never a guess made at the call site.
+    port: int
+
+
+AGENTS = (
+    AgentSpec("crabd", "com.sidecrab.crabd", "companion/crabd.py", PORT),
+    AgentSpec("toast", "com.sidecrab.toast", "notifier/sidecrab_toast.py", 0),
+)
+
+#: A LaunchAgent inherits launchd's PATH, not the operator's login PATH. Pinned to the
+#: system directories so the agents never pick up a shim from a shell profile.
+AGENT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+#: Polls, not wall clock: the sleep is injectable, and a clock-based deadline under a
+#: neutered sleep either spins forever or gives up after one attempt.
+HEALTH_WAIT_POLLS = 20
+HEALTH_POLL_SEC = 0.5
+
+
+def agent_spec(key: str) -> AgentSpec:
+    for spec in AGENTS:
+        if spec.key == key:
+            return spec
+    raise KeyError(key)
+
+
+def plist_document(spec: AgentSpec, python: str, repo_root, logs_dir) -> dict:
+    """The LaunchAgent property list, as a dict. Pure.
+
+    No ProcessType key on purpose: whether App Nap or timer coalescing touches a
+    KeepAlive agent on this hardware is UNMEASURED (docs/GETTING-STARTED-MACOS-NOTES.md
+    carries the command to measure it), and a guessed value would read as a finding.
+    """
+    log = str(Path(logs_dir) / f"{spec.label}.log")
+    return {
+        "Label": spec.label,
+        "ProgramArguments": [python, str(Path(repo_root) / spec.script)],
+        "WorkingDirectory": str(repo_root),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+        "EnvironmentVariables": {"PATH": AGENT_PATH},
+    }
+
+
+def parse_disabled(text: str) -> set[str]:
+    """The labels `launchctl print-disabled` reports as disabled. Pure.
+
+    Only ``=> true`` counts: the answer lists every label launchd knows a state for,
+    and reading a ``false`` row as disabled would park a healthy agent.
+    """
+    return set(re.findall(r'"([^"]+)"\s*=>\s*true', text or ""))
+
+
+@dataclass(frozen=True)
+class AgentState:
+    label: str
+    loaded: bool
+    pid: int | None
+    state: str
+
+
+def parse_agent_state(label: str, code: int, out: str, err: str) -> AgentState:
+    """`launchctl print gui/<uid>/<label>` as a state. Pure, and never an error.
+
+    A label that is not loaded answers non-zero with the measured
+    ``Could not find service "..." in domain for user gui: 501`` - a state to report,
+    not a failure to raise.
+    """
+    if code != 0:
+        return AgentState(label, loaded=False, pid=None, state="absent")
+    state = "unknown"
+    match = re.search(r"^\s*state\s*=\s*(.+?)\s*$", out or "", re.MULTILINE)
+    if match:
+        state = match.group(1)
+    pid = None
+    match = re.search(r"^\s*pid\s*=\s*(\d+)\s*$", out or "", re.MULTILINE)
+    if match:
+        pid = int(match.group(1))
+    return AgentState(label, loaded=True, pid=pid, state=state)
+
+
+@dataclass(frozen=True)
+class PortHolder:
+    pid: int
+    command: str
+
+
+def parse_port_holders(text: str) -> list[PortHolder]:
+    """`lsof -nP -iTCP:<port> -sTCP:LISTEN` rows. Pure.
+
+    Health-by-HTTP cannot tell WHO answered: after a failed restart a stray process can
+    hold the port and answer convincingly while the agent itself is dead. The PID is the
+    only thing that separates our daemon from something wearing its clothes.
+    """
+    holders = []
+    for line in (text or "").splitlines():
+        fields = line.split()
+        if len(fields) < 2 or not fields[1].isdigit():
+            continue
+        holders.append(PortHolder(pid=int(fields[1]), command=fields[0]))
+    return holders
+
+
+def format_port_holders(holders, port: int) -> str:
+    if not holders:
+        return f"no listener found on port {port}"
+    return ", ".join(f"PID {h.pid} ({h.command})" for h in holders)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    verdict: str
+    ok: bool
+    reason: str
+
+
+def service_verdict(health_ok: bool, agent_state: str, holders, port: int) -> Verdict:
+    """Is crabd actually up? Answered by BOTH readings, never by health alone. Pure.
+
+    An answer with no running agent is not "fine": it is the loudest row on the table,
+    because that process is also what stops the real instance from ever binding.
+    """
+    running = agent_state == "running"
+    where = f"the agent is {agent_state}"
+
+    if health_ok and running:
+        return Verdict("ok", True, f"crabd answered and the agent is running - it owns port {port}")
+    if health_ok:
+        return Verdict(
+            "foreign-answerer",
+            False,
+            f"something answered on port {port} but {where} - a health answer is NOT proof the "
+            f"agent is up. Port {port} is held by {format_port_holders(holders, port)}: a foreign "
+            "process, or an orphan from a failed restart, which is also what stops the real "
+            "instance binding.",
+        )
+    if running:
+        return Verdict(
+            "not-answering",
+            False,
+            f"the agent is running but nothing answered on port {port} - still starting, or up "
+            "and unbound",
+        )
+    return Verdict("down", False, f"nothing answered on port {port} and {where} - crabd is not running")
+
+
+def task_enable_decision(registered: bool, prior_disabled: bool, force_enable: bool) -> Decision:
+    """Should a re-registration leave the agent DISABLED, and should it be started? Pure.
+
+    Re-registering a disabled agent is fine and keeps its interpreter and paths current.
+    STARTING it, or enabling it, overturns a decision the operator made deliberately -
+    and --force-enable is the only way to overturn it.
+
+    Keyed on the DISABLED LIST alone, not on whether our plist happens to be there:
+    `launchctl disable` is a per-domain override that outlives the plist, so a label the
+    operator disabled and then lost the plist for is still a label they said no to.
+    """
+    was_disabled = prior_disabled
+    if was_disabled and not force_enable:
+        return Decision(
+            "leave-disabled",
+            False,
+            "was DISABLED - the plist was refreshed and it was left disabled "
+            "(--force-enable to override)",
+        )
+    if was_disabled:
+        return Decision("force-enabled", True, "was DISABLED - re-enabled by --force-enable")
+    return Decision("load", True, "re-registered" if registered else "newly registered")
+
+
+# -- the impure launchctl wrappers
+
+
+def launchctl(env: Environment, *argv, timeout=30):
+    return env.run(["launchctl", *argv], timeout=timeout)
+
+
+def disabled_labels(env: Environment) -> set[str]:
+    code, out, _err = launchctl(env, "print-disabled", f"gui/{env.uid}")
+    return parse_disabled(out) if code == 0 else set()
+
+
+def agent_state(env: Environment, label: str) -> AgentState:
+    code, out, err = launchctl(env, "print", f"gui/{env.uid}/{label}")
+    return parse_agent_state(label, code, out, err)
+
+
+def port_holders(env: Environment, port: int) -> list[PortHolder]:
+    # lsof exits 1 with no output when nothing matches; an absent listener is a state.
+    _code, out, _err = env.run(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10
+    )
+    return parse_port_holders(out)
+
+
+def ensure_logs_dir(env: Environment) -> Path:
+    # 0700: the agents' stdout carries session titles and repo paths.
+    env.logs_dir.mkdir(parents=True, exist_ok=True)
+    env.logs_dir.chmod(0o700)
+    return env.logs_dir
+
+
+def load_agent(env: Environment, spec: AgentSpec, python: str, disabled: set[str], force: bool) -> Decision:
+    """Write the plist, then load it - unless the operator disabled this label."""
+    plist_path = env.agents_dir / f"{spec.label}.plist"
+    decision = task_enable_decision(plist_path.exists(), spec.label in disabled, force)
+
+    document = plistlib.dumps(plist_document(spec, python, env.repo_root, env.logs_dir))
+    env.agents_dir.mkdir(parents=True, exist_ok=True)
+    if not plist_path.exists() or plist_path.read_bytes() != document:
+        plist_path.write_bytes(document)
+
+    if decision.action == "leave-disabled":
+        env.emit(f"  agent:      {spec.label} {decision.reason}")
+        return decision
+    if decision.action == "force-enabled":
+        launchctl(env, "enable", f"gui/{env.uid}/{spec.label}")
+    # bootout first: bootstrapping a label that is already loaded fails, and its
+    # "not found" exit for a label that is not is exactly what we want to ignore.
+    launchctl(env, "bootout", f"gui/{env.uid}/{spec.label}")
+    launchctl(env, "bootstrap", f"gui/{env.uid}", str(plist_path))
+    env.emit(f"  agent:      {spec.label} {decision.reason}")
+    return decision
+
+
+def selected_agents(args) -> list[AgentSpec]:
+    return [spec for spec in AGENTS if spec.key == "crabd" or getattr(args, "with_toast", False)]
+
+
+def install_agents(env: Environment, python: str, args) -> None:
+    ensure_logs_dir(env)
+    disabled = disabled_labels(env)
+    for spec in selected_agents(args):
+        load_agent(env, spec, python, disabled, getattr(args, "force_enable", False))
+
+
+# ------------------------------------------------------------------ update / restart
+
+
+def read_crabd_version(repo_root) -> str | None:
+    """The VERSION the checkout would serve, so the wait knows what it is waiting for."""
+    path = Path(repo_root) / "companion" / "crabd.py"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r'^VERSION\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def health_version(env: Environment) -> str | None:
+    status, body = env.http_get(f"{BASE_URL}/v1/health", timeout=3)
+    if status != 200:
+        return None
+    try:
+        return str(json.loads(body).get("version") or "") or None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def wait_for_version(env: Environment, expected: str | None, polls: int = HEALTH_WAIT_POLLS):
+    """Poll /v1/health until the expected version answers. Returns (ok, last_seen)."""
+    seen = None
+    for attempt in range(polls):
+        seen = health_version(env)
+        if seen and (expected is None or seen == expected):
+            return True, seen
+        if attempt + 1 < polls:
+            env.sleep(HEALTH_POLL_SEC)
+    return False, seen
+
+
+def refuse_if_foreign_holder(env: Environment, spec: AgentSpec) -> None:
+    """Never start over a process we do not own. Raises rather than starting blind.
+
+    Starting blind is what produced a dark panel on Windows: the restart "succeeded",
+    the new process lost the bind race and exited 1, and the only trace was an exit
+    code on an agent that read as fine.
+    """
+    if spec.port <= 0:
+        return
+    holders = port_holders(env, spec.port)
+    if not holders:
+        return
+    ours = agent_state(env, spec.label)
+    if ours.pid is not None and all(h.pid == ours.pid for h in holders):
+        return
+    raise SetupError(
+        f"{spec.label} was NOT restarted: port {spec.port} is held by "
+        f"{format_port_holders(holders, spec.port)}, which is not this agent. Starting now "
+        "would lose the bind race - crabd refuses to share the port, so the new process "
+        "would exit and serve nothing. Stop that process (kill <pid>) and re-run."
+    )
+
+
 # ------------------------------------------------------------------ commands
+
+
+def command_update(env: Environment, args) -> int:
+    python = env.resolve_python()
+    spec = agent_spec("crabd")
+    env.emit("SideCrab update (macOS)")
+    env.emit(f"  repo:       {env.repo_root}")
+    env.emit(f"  python:     {python}")
+
+    # Before anything is started: a foreign holder is a different problem from a slow
+    # shutdown, and the PID is the only thing that tells them apart.
+    refuse_if_foreign_holder(env, spec)
+
+    ensure_logs_dir(env)
+    disabled = disabled_labels(env)
+    for candidate in AGENTS:
+        if candidate.key == "crabd" or (env.agents_dir / f"{candidate.label}.plist").exists():
+            load_agent(env, candidate, python, disabled, force=False)
+
+    expected = read_crabd_version(env.repo_root)
+    launchctl(env, "kickstart", "-k", f"gui/{env.uid}/{spec.label}")
+    ok, seen = wait_for_version(env, expected)
+    if not ok:
+        env.emit(
+            f"  health:     crabd is serving {seen or 'nothing'} after "
+            f"{HEALTH_WAIT_POLLS} polls; this checkout is {expected}. "
+            f"Check {env.logs_dir / (spec.label + '.log')}."
+        )
+        return 1
+    env.emit(f"  health:     crabd {seen} answering on {BASE_URL}")
+    return 0
 
 
 def command_install(env: Environment, args) -> int:
@@ -802,11 +1142,14 @@ def command_install(env: Environment, args) -> int:
     # cannot parse aborts before anything at all has been written or loaded.
     install_settings(env, writer, python)
     install_config(env, writer, args)
+    install_agents(env, python, args)
+    env.emit(f"  panel:      {BASE_URL}")
     return 0
 
 
 COMMANDS = {
     "install": command_install,
+    "update": command_update,
 }
 
 
@@ -825,6 +1168,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="re-enable an agent the operator disabled - the only override",
     )
     install.add_argument("--yes", action="store_true", help="never prompt; take every default")
+
+    sub.add_parser("update", help="refresh the plists from this checkout and restart crabd")
     return parser
 
 
