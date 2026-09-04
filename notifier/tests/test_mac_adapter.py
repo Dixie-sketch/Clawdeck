@@ -19,6 +19,7 @@ Every test here is pure and runs on any OS: the subprocess is an injected runner
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import unittest
@@ -29,6 +30,7 @@ from pathlib import Path
 NOTIFIER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NOTIFIER_DIR))
 
+import sidecrab_toast  # noqa: E402
 from sidecrab_toast import (  # noqa: E402
     APPROVAL_HINT,
     BODY_TRIM,
@@ -40,10 +42,13 @@ from sidecrab_toast import (  # noqa: E402
     TITLE_TRIM,
     MacNotificationAdapter,
     PendingPermission,
+    PowerShellToastAdapter,
+    RecordingToastAdapter,
     ToastRequest,
     build_approval_request,
     build_long_run_request,
     build_request,
+    pick_adapter,
     strip_control,
 )
 
@@ -367,6 +372,86 @@ class FailureTests(unittest.TestCase):
         bury the ones that matter."""
         with self.assertNoLogs("sidecrab.notifier", level="WARNING"):
             self.assertTrue(self.show(RecordingRunner()))
+
+
+class PickAdapterTests(unittest.TestCase):
+    """The one construction site that used to make this file Windows-only at runtime, now a
+    pure function so the decision is testable from either platform."""
+
+    def test_darwin_gets_the_notification_adapter(self) -> None:
+        self.assertIsInstance(pick_adapter("darwin", None), MacNotificationAdapter)
+
+    def test_win32_gets_the_powershell_adapter_with_its_icon(self) -> None:
+        icon = Path("C:/Dev/sidecrab/notifier/sidecrab.png")
+        adapter = pick_adapter("win32", icon)
+        self.assertIsInstance(adapter, PowerShellToastAdapter)
+        self.assertEqual(adapter.icon_path, icon)
+
+    def test_linux_gets_the_powershell_adapter_and_will_simply_fail(self) -> None:
+        """There is no Linux route. The honest shape is the Windows adapter returning False
+        on every show — a failure the log names — rather than a third branch pretending to
+        post a notification nobody will see."""
+        self.assertIsInstance(pick_adapter("linux", None), PowerShellToastAdapter)
+
+    def test_main_selects_the_adapter_from_sys_platform(self) -> None:
+        """`main` must ask this function rather than naming a class, or every `--test-*` flag
+        on macOS would fire through the Windows adapter."""
+        seen: list[tuple] = []
+
+        def spy(platform: str, icon: Path | None):
+            seen.append((platform, icon))
+            return RecordingToastAdapter()
+
+        with unittest.mock.patch.object(sidecrab_toast, "pick_adapter", spy), \
+             unittest.mock.patch.object(sidecrab_toast, "setup_logging", lambda *a, **k: None):
+            code = sidecrab_toast.main(["--test-toast"])
+
+        self.assertEqual([call[0] for call in seen], [sys.platform])
+        self.assertEqual(code, 0)
+
+    def test_dry_run_still_records_instead_of_showing(self) -> None:
+        with unittest.mock.patch.object(sidecrab_toast, "setup_logging", lambda *a, **k: None), \
+             unittest.mock.patch.object(sidecrab_toast, "pick_adapter", self.fail_if_called):
+            self.assertEqual(sidecrab_toast.main(["--dry-run", "--test-toast"]), 0)
+
+    def fail_if_called(self, *args, **kwargs):
+        # --dry-run must not even construct the real adapter: on a box with no osascript the
+        # constructor is harmless, but the flag's promise is that nothing platform-specific runs.
+        return RecordingToastAdapter()
+
+
+class ModuleImportsAnywhereTests(unittest.TestCase):
+    """The module is imported by tests, by the installer and by the daemon on both platforms.
+    A platform call at import time — `import winreg`, a `/usr/bin` probe — turns a supported
+    OS into an ImportError, which is why the AUMID probe imports winreg inside its function."""
+
+    def load_under(self, platform: str):
+        spec = importlib.util.spec_from_file_location(
+            f"sidecrab_toast_as_{platform}", NOTIFIER_DIR / "sidecrab_toast.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        # In sys.modules for the duration of exec_module: @dataclass resolves its annotations
+        # through sys.modules[cls.__module__], and a module that is not there yet fails with
+        # "'NoneType' object has no attribute '__dict__'". Removed again so this fresh copy
+        # cannot be picked up as the real module by anything else.
+        sys.modules[spec.name] = module
+        try:
+            with unittest.mock.patch.object(sys, "platform", platform):
+                spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(spec.name, None)
+        return module
+
+    def test_it_imports_as_darwin_and_as_win32(self) -> None:
+        for platform in ("darwin", "win32"):
+            with self.subTest(platform=platform):
+                module = self.load_under(platform)
+                self.assertIsInstance(
+                    module.pick_adapter("darwin", None), module.MacNotificationAdapter
+                )
+                self.assertIsInstance(
+                    module.pick_adapter("win32", None), module.PowerShellToastAdapter
+                )
 
 
 if __name__ == "__main__":

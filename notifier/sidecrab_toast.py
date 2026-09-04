@@ -2096,6 +2096,22 @@ class MacNotificationAdapter:
         return True
 
 
+def pick_adapter(sys_platform: str, icon_path: Path | None) -> ToastAdapter:
+    """Pure: the platform string → the adapter that can post on it.
+
+    Takes the platform as an ARGUMENT rather than reading sys.platform, so the decision is
+    testable from either OS. `main` passes sys.platform, and every --test-* flag below it then
+    fires through the right adapter for free.
+
+    Everything that is not Darwin gets the Windows adapter, Linux included: there is no Linux
+    route, and the honest shape of that is a show() returning False with the reason in the log,
+    not a third branch pretending to post a notification nobody will see.
+    """
+    if sys_platform == "darwin":
+        return MacNotificationAdapter()
+    return PowerShellToastAdapter(icon_path=icon_path)
+
+
 # --------------------------------------------------------------------------------------
 # The daemon
 # --------------------------------------------------------------------------------------
@@ -2530,7 +2546,9 @@ def main(argv: list[str] | None = None) -> int:
     # about nothing. This line is the one that makes a stale Scheduled Task visible in the log.
     log.info("sidecrab notifier v%s from %s", __version__, Path(__file__).resolve())
 
-    real = PowerShellToastAdapter(icon_path=default_icon())
+    # THE one construction site. Every --test-* branch below reads `adapter`, so the platform
+    # is decided once, here, and never again further down.
+    real = pick_adapter(sys.platform, default_icon())
     adapter: ToastAdapter = RecordingToastAdapter() if args.dry_run else real
 
     if args.test_toast:
