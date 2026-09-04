@@ -75,7 +75,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.29.0"
+VERSION = "0.30.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -129,6 +129,14 @@ LIMITS_LAST_GOOD_MAX_AGE = 10800  # serve last-good through a lockout up to 3 h 
 # limits.note to a caveat that rides alongside available:true.
 LIMITS_NOTE_STALE_SEC = 900
 LIMITS_CACHE_FILE = SIDECRAB_DIR / "limits-cache.json"  # survives restarts; no secrets in it
+# v0.30.0: an OPTIONAL long-lived token for the usage endpoint. The CLI's own access
+# token in ~/.claude/.credentials.json lives ~6 h and is rewritten only when a terminal
+# `claude` makes an API call - the desktop app keeps its refreshed token elsewhere - so a
+# panel fed from that file reads "token expired" most mornings. `claude setup-token`
+# mints a token that lasts about a year; Install-SideCrab.ps1 -LimitsToken stores it here
+# DPAPI-protected (CurrentUser), and crabd decrypts it in memory when the CLI token is
+# past its expiry. Never logged, never served, never written anywhere else.
+LIMITS_TOKEN_FILE = SIDECRAB_DIR / "limits-token.dpapi"
 # A cached `at` before this is not a stale reading, it is CORRUPT. Measured in
 # production 2026-08-26: the real cache held at=1000.0 (Jan 1970) because the unit
 # suite wrote the live file with fixture data. An `at` from 1970 makes every age
@@ -2924,6 +2932,50 @@ class HookTracker:
 
 # ------------------------------------------------------------------------- limits
 
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_unprotect(blob: bytes) -> bytes | None:
+    """CryptUnprotectData for the current user, no entropy - the exact inverse of
+    PowerShell's [ProtectedData]::Protect(bytes, $null, 'CurrentUser'), which is what
+    the installer writes. None on any failure (wrong user, tampered, not Windows)."""
+    if not blob or not hasattr(ctypes, "windll"):
+        return None
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        buf = ctypes.create_string_buffer(blob, len(blob))
+        inp = _DATA_BLOB(len(blob), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        out = _DATA_BLOB()
+        if not crypt32.CryptUnprotectData(ctypes.byref(inp), None, None, None, None, 0,
+                                          ctypes.byref(out)):
+            return None
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            kernel32.LocalFree(out.pbData)
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def read_limits_token(path: Path = None) -> str | None:
+    """The long-lived usage token, or None. Read fresh on every call so a token stored
+    while crabd runs is picked up on the next poll; the decrypted string is returned to
+    the caller and dropped - LimitsReader keeps the same no-log, no-store rule for it
+    that it keeps for the CLI token."""
+    path = path or LIMITS_TOKEN_FILE
+    try:
+        blob = path.read_bytes()
+    except OSError:
+        return None
+    raw = _dpapi_unprotect(blob)
+    if not raw:
+        return None
+    token = raw.decode("utf-8", errors="replace").strip()
+    return token or None
+
+
 class LimitsReader:
     """Claude OAuth usage endpoint, cached LIMITS_TTL_SEC.
 
@@ -3050,14 +3102,30 @@ class LimitsReader:
         token = oauth.get("accessToken")
         subscription = oauth.get("subscriptionType")
         tier = oauth.get("rateLimitTier")
-        if not isinstance(token, str) or not token:
-            return self._unavailable("no Claude access token - run /login in Claude Code")
         expires_at = oauth.get("expiresAt")
-        if isinstance(expires_at, (int, float)) and expires_at / 1000.0 < time.time():
-            out = self._unavailable("Claude token expired - run /login in Claude Code")
-            out["subscriptionType"] = subscription
-            out["rateLimitTier"] = tier
-            return out
+        cli_usable = (isinstance(token, str) and bool(token)
+                      and not (isinstance(expires_at, (int, float))
+                               and expires_at / 1000.0 < time.time()))
+        # v0.30.0: precedence is CLI-when-fresh, else the long-lived token. The CLI
+        # token is the one whose scopes are proven against this endpoint every day; the
+        # setup token is the fallback for the hours (or days) the CLI file sits expired.
+        token_source = "cli"
+        if not cli_usable:
+            fallback = read_limits_token()
+            if fallback:
+                token = fallback
+                token_source = "sidecrab"
+            elif not isinstance(token, str) or not token:
+                return self._unavailable(
+                    "no Claude access token - run claude in a terminal, or store a "
+                    "long-lived one: Install-SideCrab.ps1 -LimitsToken")
+            else:
+                out = self._unavailable(
+                    "Claude token expired - run claude in a terminal to refresh it, or "
+                    "store a long-lived one: Install-SideCrab.ps1 -LimitsToken")
+                out["subscriptionType"] = subscription
+                out["rateLimitTier"] = tier
+                return out
 
         request = urllib.request.Request(
             USAGE_URL,
@@ -3073,7 +3141,10 @@ class LimitsReader:
                 body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             code = exc.code
-            if code in (401, 403):
+            if code in (401, 403) and token_source == "sidecrab":
+                note = ("SideCrab limits token rejected - mint a new one with "
+                        "claude setup-token and re-run Install-SideCrab.ps1 -LimitsToken")
+            elif code in (401, 403):
                 note = "Claude token rejected - run /login in Claude Code"
             else:
                 note = f"usage endpoint returned HTTP {code}"
@@ -3098,7 +3169,11 @@ class LimitsReader:
             payload = json.loads(body)
         except ValueError:
             return self._unavailable("usage endpoint returned unparseable data")
-        return self.map_payload(payload, subscription, tier)
+        mapped = self.map_payload(payload, subscription, tier)
+        # Additive (contract v0.30.0): which token answered. Diagnostic for the operator
+        # (`-Status` reads it back off /v1/state); never the token.
+        mapped["tokenSource"] = token_source
+        return mapped
 
     @staticmethod
     def _window(obj) -> dict | None:

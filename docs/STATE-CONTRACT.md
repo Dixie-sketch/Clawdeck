@@ -14,6 +14,33 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.30.0 (2026-09-04 — ADDITIVE: `limits.tokenSource`; the long-lived limits token; schema stays 5)
+
+crabd `VERSION` → `0.30.0`. One additive member, one new optional file, no wire change on any
+write path.
+
+**`limits.tokenSource`** — `"cli"` | `"sidecrab"`, present only when `limits.available` is true.
+Which token answered the usage endpoint: the CLI's own access token from
+`~/.claude/.credentials.json` (`cli`), or the long-lived token the operator stored with
+`Install-SideCrab.ps1 -LimitsToken` (`sidecrab`). Diagnostic; an older widget ignores it.
+
+**Why.** The CLI access token lives about six hours and is rewritten only when a terminal
+`claude` makes an API call — the desktop app keeps its refreshed token elsewhere — so a panel fed
+from that file read *"Claude token expired - run /login"* most mornings, and `/login` was not even
+the fix (the CLI was still logged in; its file was merely stale). `claude setup-token` mints a
+token that lasts about a year.
+
+**Precedence.** CLI token when unexpired, else the stored token, else the (reworded) unavailable
+notes: *"Claude token expired - run claude in a terminal to refresh it, or store a long-lived one:
+Install-SideCrab.ps1 -LimitsToken"*. A `401`/`403` while the stored token is in use reads
+*"SideCrab limits token rejected - mint a new one with claude setup-token and re-run
+Install-SideCrab.ps1 -LimitsToken"*, so the two failure modes are never confused.
+
+**The store.** `~/.sidecrab/limits-token.dpapi`: the token, DPAPI-protected for the current
+Windows user with no entropy (`[ProtectedData]::Protect(..., CurrentUser)`), decrypted in memory by
+crabd with `CryptUnprotectData` on each limits poll and dropped — never logged, never served, never
+copied anywhere. Read fresh every poll, so storing it needs no restart.
+
 ## v0.29.0 (2026-09-01 — ADDITIVE fields + a TRANSPORT change on `decide`; schema stays 5)
 
 crabd `VERSION` → `0.29.0`, widget `0.27.0`. **Closes SEC-a and WID-a.** Two additive fields, one

@@ -121,6 +121,22 @@ pwsh -File .\setup\Test-SideCrab.ps1              # end-to-end smoke test, PASS/
 
 Start a Claude Code session. Within a few seconds a card for it appears on the panel.
 
+### Keeping the limit gauges alive (recommended)
+
+The gauges read the same OAuth token Claude Code uses. That token lives about six hours and is
+only rewritten when a terminal `claude` session makes an API call, so on a machine where you
+mostly use the desktop app the gauges go dark by the next morning. Fix it once with a long-lived
+token:
+
+```powershell
+claude setup-token                                            # opens a browser sign-in, prints a token
+pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken           # paste it; stored DPAPI-encrypted for your account
+```
+
+crabd uses the stored token only when the CLI's own token has expired. It is decrypted in memory
+on each poll, never logged and never served. `Install-SideCrab.ps1 -Status` shows whether one is
+stored; `Test-SideCrab.ps1` shows which token is answering.
+
 ### Updating, uninstalling
 
 ```powershell
@@ -250,7 +266,7 @@ guarantees are worth reading rather than assuming:
 |---|---|---|
 | Worried grey crab, "data as of HH:MM" | The companion is stopped, or the feed is older than 30 s | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
 | Panel is fine but no session cards | Hooks are not firing | Check `~/.claude/settings.json` has the SideCrab entries; re-run the installer, which merges them idempotently |
-| Limit gauges show an em-dash and "/login" | Claude Code's local credential has expired | Run `claude` and sign in again; the gauges return on the next poll |
+| Limit gauges show an em-dash and "token expired" | The CLI's access token in `~/.claude` has passed its ~6 h life and nothing has refreshed it | Store a long-lived token once (below), or run any `claude` command in a terminal to refresh the file |
 | Temperatures frozen or wrong | The wrong iCUE sensor is selected | The row names the sensor it reads. Pick the right one in the widget settings |
 | "No usable python.exe found" | Only the Store alias stub is on `PATH` | Install Python 3.13 from python.org and tick "Add to PATH" |
 | A finished session still reads "working" | A session was killed by an app restart, so no end hook fired | It clears itself within 15 minutes; taps on it are refused rather than queued |

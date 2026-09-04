@@ -534,6 +534,51 @@ function Get-SideCrabPanelToken {
     $out
 }
 
+function Get-SideCrabLimitsTokenState {
+    <# Read-only probe of the long-lived usage token store (crabd 0.30.0):
+       ~/.sidecrab/limits-token.dpapi, a CurrentUser DPAPI blob written by
+       Set-SideCrabLimitsToken. Presence and size only - it is never decrypted here. #>
+    param([Parameter(Mandatory)][string] $TokenPath)
+    $out = [pscustomobject]@{ TokenPath = $TokenPath; Present = $false; Bytes = 0 }
+    if (-not (Test-Path -LiteralPath $TokenPath)) { return $out }
+    try { $out.Bytes = (Get-Item -LiteralPath $TokenPath).Length } catch { return $out }
+    $out.Present = $out.Bytes -gt 0
+    $out
+}
+
+function Set-SideCrabLimitsToken {
+    <# Stores a long-lived Claude token (from `claude setup-token`) for crabd's limit
+       gauges, DPAPI-protected for the CURRENT USER with no entropy - exactly what crabd's
+       CryptUnprotectData reader expects. The plaintext lives in this process only; the
+       SecureString is cleared before return. Atomic replace. #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string] $TokenPath,
+        [Parameter(Mandatory)][securestring] $Token
+    )
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Token)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr).Trim()
+        if (-not $plain) { throw 'The token is empty.' }
+        if ($plain -notmatch '^sk-ant-') { throw 'That does not look like a Claude token (expected it to start with sk-ant-).' }
+        $bytes = [Text.Encoding]::UTF8.GetBytes($plain)
+        $blob  = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        [Array]::Clear($bytes, 0, $bytes.Length)
+        $plain = $null
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    $dir = Split-Path -Parent $TokenPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    if ($PSCmdlet.ShouldProcess($TokenPath, 'Store DPAPI-protected limits token')) {
+        $tmp = "$TokenPath.tmp"
+        [IO.File]::WriteAllBytes($tmp, $blob)
+        Move-Item -LiteralPath $tmp -Destination $TokenPath -Force
+    }
+    [pscustomobject]@{ TokenPath = $TokenPath; Bytes = $blob.Length }
+}
+
 function Set-SideCrabPanelApprovals {
     <# Writes config.json's panelApprovals.enabled, PRESERVING every other key - the same
        whole-file-rewrite contract POST /v1/config honours. Creates the file/dir if absent. #>

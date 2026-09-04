@@ -33,6 +33,11 @@ The two things an attacker on this machine, or a web page you visit, could want 
   presence and lockout only). The widget holds it as an iCUE property, which no web page can
   read. Each pending request carries a `requestId` the tap must echo, checked under the same
   lock that applies the decision. A companion with no gate object answers `503`, never `204`.
+- **The optional long-lived limits token is DPAPI-protected.** `Install-SideCrab.ps1 -LimitsToken`
+  stores a `claude setup-token` value in `~/.sidecrab/limits-token.dpapi`, encrypted for the
+  current Windows user (no entropy); crabd decrypts it in memory per poll, sends it only to
+  Anthropic's usage endpoint over HTTPS, and never logs, serves or copies it. Revoke it from
+  your Anthropic account settings; delete the file to stop using it.
 - **Atomic config writes, bounded caches, never-500.** A failed config write cannot empty
   `config.json`; every ring and LRU is capped so a flood cannot grow memory; malformed input is
   answered with a 4xx and a sanitised body.

@@ -109,6 +109,21 @@ at the hook rows.
 
 ---
 
+## 4b. Keep the limit gauges alive (two commands, once)
+
+The LIMITS gauges read Claude Code's own sign-in token, which expires about six hours after the
+last time a terminal `claude` made a request. If you mostly use the desktop app, the gauges will
+show "token expired" by the next morning. Fix it once:
+
+```powershell
+claude setup-token
+pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
+```
+
+The first command opens a browser sign-in and prints a long-lived token; paste it into the
+second. It is stored encrypted for your Windows account, and used only when the short-lived one
+has expired.
+
 ## 5. Make it yours (optional)
 
 All of these live in `~/.sidecrab/config.json`, and most are also on the panel's settings sheet.
@@ -211,7 +226,7 @@ Remove the widget from the Edge in iCUE as you would any other widget.
 | Blank panel, no crab | Re-import the newest `.icuewidget`; then open an issue with your iCUE version |
 | Worried grey crab, "data as of HH:MM" | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
 | No session cards | `Test-SideCrab.ps1`; check `~/.claude/settings.json` still has the SideCrab hooks |
-| Gauges show a dash and "/login" | Run `claude` and sign in again |
+| Gauges show a dash and "token expired" | The CLI token lives ~6 h. Store a long-lived one: `claude setup-token`, then `Install-SideCrab.ps1 -LimitsToken` (README, "Keeping the limit gauges alive") |
 | Temperatures frozen or wrong | Pick the right sensor in the widget's settings; the row names the one it reads |
 | "not paired" or "pairing code wrong" on Approve | Re-paste the code from `-PairingCode` into the widget's settings |
 | Anything else | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL row for every piece |

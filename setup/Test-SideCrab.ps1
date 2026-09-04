@@ -381,6 +381,24 @@ if (-not (Test-SideCrabStatusLineIsOurs -Command $slCmd)) {
                -Detail "installed; $chainMsg$(if ($why.Count) { ' - ' + ($why -join '; ') })"
 }
 
+# -- 9b. limits token source (crabd 0.30.0) --------------------------------------------
+# Reported, never judged: the gauges reading the CLI token is the ordinary state. The row
+# says which token is answering and, when the gauges are dark, why - so "token expired"
+# on the glass is a row here and not a mystery.
+try {
+    $lim = (Invoke-RestMethod "$BaseUri/v1/state" -TimeoutSec 5).limits
+    $ltState = Get-SideCrabLimitsTokenState -TokenPath (Join-Path (Split-Path -Parent $ConfigPath) 'limits-token.dpapi')
+    $stored = if ($ltState.Present) { 'long-lived token stored' } else { 'no long-lived token stored' }
+    if ($lim.available) {
+        $src = if ($lim.PSObject.Properties['tokenSource']) { $lim.tokenSource } else { 'cli (pre-0.30.0 crabd)' }
+        Add-Result -Check 'limits token' -Pass $true -Detail "gauges live via token source '$src'; $stored"
+    } else {
+        Add-Result -Check 'limits token' -Pass $true -Detail "gauges dark: $($lim.note); $stored"
+    }
+} catch {
+    Add-Result -Check 'limits token' -Pass $true -Detail 'state not readable - see the state rows above'
+}
+
 # -- 10. panel approvals ---------------------------------------------------------------
 # OFF is the default and a valid state, so an OFF posture is reported, never judged. ON is
 # judged: config saying "taps decide" while the PermissionRequest hook is absent or blocked

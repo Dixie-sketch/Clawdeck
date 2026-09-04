@@ -83,7 +83,12 @@ param(
     [switch] $Status,
     # Prints the approval pairing code (crabd 0.29.0) and exits. The code goes into iCUE's
     # widget settings under "Approval Pairing Code"; Approve/Deny taps are refused without it.
-    [switch] $PairingCode
+    [switch] $PairingCode,
+    # Prompts for a long-lived Claude token (from `claude setup-token`) and stores it
+    # DPAPI-protected for crabd's limit gauges (crabd 0.30.0), then exits. Without it the
+    # gauges depend on ~/.claude/.credentials.json, whose access token lives ~6 h and is only
+    # refreshed by a terminal `claude` that makes an API call.
+    [switch] $LimitsToken
 )
 
 Set-StrictMode -Version Latest
@@ -93,6 +98,7 @@ $ErrorActionPreference = 'Stop'
 
 $HookUrlMarker = '127.0.0.1:2722/v1/hook'
 $TokenPath     = Join-Path (Split-Path -Parent $ConfigPath) 'panel-token'
+$LimitsTokenPath = Join-Path (Split-Path -Parent $ConfigPath) 'limits-token.dpapi'
 
 function Write-Step { param([string] $Message) Write-Host "  $Message" }
 
@@ -264,6 +270,14 @@ function Show-Status {
         Write-Step "pairing: NO code yet ($TokenPath) - crabd 0.29.0+ mints it on first start; until it exists Approve/Deny taps are refused"
     }
 
+    # the long-lived limits token (crabd 0.30.0): presence only, never decrypted here.
+    $lt = Get-SideCrabLimitsTokenState -TokenPath $LimitsTokenPath
+    if ($lt.Present) {
+        Write-Step "limits:  long-lived token stored ($LimitsTokenPath) - gauges survive the CLI token's 6 h expiry"
+    } else {
+        Write-Step "limits:  no long-lived token - gauges read ~/.claude/.credentials.json, which expires ~6 h after the last terminal claude call; store one with -LimitsToken"
+    }
+
     $widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
     if ($widget) { Write-Step "widget:  manifest $widget (installed into iCUE by import, not by this script)" }
 
@@ -274,6 +288,17 @@ function Show-Status {
 
 $plan = Get-ComponentPlan -RepoRoot $RepoRoot -WithGlow $WithGlow.IsPresent `
                           -WithToast $WithToast.IsPresent
+
+if ($LimitsToken) {
+    Write-Host 'Long-lived limits token for the SideCrab gauges.'
+    Write-Host '  1. In a terminal run:  claude setup-token   (it opens a browser sign-in and prints a token)'
+    Write-Host '  2. Paste that token below. It is stored DPAPI-protected for your Windows account only,'
+    Write-Host '     at ' + $LimitsTokenPath + ', and used only when the CLI token has expired.'
+    $secure = Read-Host -Prompt 'Token' -AsSecureString
+    $res = Set-SideCrabLimitsToken -TokenPath $LimitsTokenPath -Token $secure
+    Write-Host "Stored ($($res.Bytes) bytes, encrypted). crabd reads it on its next limits poll (within 10 minutes) - or restart it now with Update-SideCrab.ps1."
+    exit 0
+}
 
 if ($PairingCode) {
     $tok = Get-SideCrabPanelToken -TokenPath $TokenPath

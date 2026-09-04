@@ -1279,6 +1279,7 @@ Describe 'SideCrab setup' {
             script:Import-AstFunction -Path $script:Common -Name @(
                 'Get-SideCrabPanelApprovalsState', 'Set-SideCrabPanelApprovals',
                 'Clear-SideCrabPanelApprovals', 'Get-SideCrabPanelToken',
+                'Get-SideCrabLimitsTokenState', 'Set-SideCrabLimitsToken',
                 'Backup-SideCrabFile', 'Write-SideCrabFileAtomic', 'Get-SideCrabBackupFile',
                 'Get-SideCrabBackupPattern', 'Read-SideCrabBackupStamp',
                 'Save-SideCrabPriorStatusLine', 'Get-SideCrabSavedStatusLine'
@@ -1311,6 +1312,21 @@ Describe 'SideCrab setup' {
             $statusLine = ($text -split "`n" | Where-Object { $_ -match 'pairing: code present' })
             $statusLine | Should -Not -BeNullOrEmpty
             ($statusLine -match '\$\(\$tok\.Code\)') | Should -BeFalse
+        }
+
+        It 'stores the long-lived limits token DPAPI-protected and reports presence only (crabd 0.30.0)' {
+            $lt = Join-Path $script:Tmp 'limits-token.dpapi'
+            (Get-SideCrabLimitsTokenState -TokenPath $lt).Present | Should -BeFalse
+            $secure = ConvertTo-SecureString 'sk-ant-oat01-testtoken' -AsPlainText -Force
+            $res = Set-SideCrabLimitsToken -TokenPath $lt -Token $secure
+            $res.Bytes | Should -BeGreaterThan 40
+            (Get-SideCrabLimitsTokenState -TokenPath $lt).Present | Should -BeTrue
+            $blob = [IO.File]::ReadAllBytes($lt)
+            ([Text.Encoding]::UTF8.GetString($blob)) | Should -Not -Match 'sk-ant-oat01'     # never plaintext on disk
+            Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+            $back = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, 'CurrentUser')
+            [Text.Encoding]::UTF8.GetString($back) | Should -Be 'sk-ant-oat01-testtoken'
+            { Set-SideCrabLimitsToken -TokenPath $lt -Token (ConvertTo-SecureString 'nope' -AsPlainText -Force) } | Should -Throw
         }
 
         It 'reads panelApprovals as null when the config file is absent' {

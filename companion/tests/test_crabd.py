@@ -1321,6 +1321,128 @@ class LimitsMappingTests(unittest.TestCase):
         self.assertEqual(out["extra"], [])
 
 
+class LimitsTokenFallbackTests(unittest.TestCase):
+    """v0.30.0: the long-lived token in ~/.sidecrab/limits-token.dpapi is used only when
+    the CLI's own token is expired, and never leaks. urlopen is stubbed so no test talks
+    to the usage endpoint; the DPAPI reader is stubbed except in the one Windows-only
+    round-trip test."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.creds = root / "credentials.json"
+        self.token_file = root / "limits-token.dpapi"
+        self.orig = (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+                     crabd.urllib.request.urlopen, crabd._dpapi_unprotect)
+        crabd.CREDENTIALS_FILE = self.creds
+        crabd.LIMITS_TOKEN_FILE = self.token_file
+        self.seen = []
+        payload = json.dumps({"five_hour": {"utilization": 0.25, "resets_at": 1800000000},
+                              "seven_day": {"utilization": 0.5, "resets_at": 1800500000}}).encode()
+
+        class _Resp:
+            def __init__(self, body): self._b = body
+            def read(self): return self._b
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(request, timeout=None):
+            self.seen.append(request.get_header("Authorization"))
+            if self.reject:
+                raise crabd.urllib.error.HTTPError(request.full_url, 401, "nope", {}, None)
+            return _Resp(payload)
+
+        self.reject = False
+        crabd.urllib.request.urlopen = fake_urlopen
+        crabd._dpapi_unprotect = lambda blob: blob[::-1]     # "decrypt" = reverse
+        self.reader = crabd.LimitsReader(cache_file=root / "cache.json")
+
+    def tearDown(self):
+        (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
+         crabd.urllib.request.urlopen, crabd._dpapi_unprotect) = self.orig
+
+    def write_creds(self, token="cli-token", expires_in_ms=3_600_000):
+        self.creds.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": token, "expiresAt": int(time.time() * 1000) + expires_in_ms,
+            "subscriptionType": "max", "rateLimitTier": "t"}}), encoding="utf-8")
+
+    def store_token(self, token="sk-ant-oat01-long"):
+        self.token_file.write_bytes(token.encode()[::-1])
+
+    def test_a_fresh_cli_token_wins_even_when_a_long_lived_one_is_stored(self):
+        self.write_creds(); self.store_token()
+        out = self.reader.get(time.time(), force=True)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["tokenSource"], "cli")
+        self.assertEqual(self.seen, ["Bearer cli-token"])
+
+    def test_an_expired_cli_token_falls_back_to_the_long_lived_one(self):
+        self.write_creds(expires_in_ms=-1000); self.store_token()
+        out = self.reader.get(time.time(), force=True)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["tokenSource"], "sidecrab")
+        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-long"])
+        self.assertNotIn("sk-ant-oat01-long", json.dumps(out))
+
+    def test_a_missing_cli_file_still_uses_the_long_lived_token(self):
+        self.store_token()
+        out = self.reader.get(time.time(), force=True)
+        self.assertFalse(out["available"])   # no file at all is the "no credentials" note
+        self.assertIn("no Claude credentials", out["note"])
+
+    def test_expired_with_no_long_lived_token_says_how_to_fix_it(self):
+        self.write_creds(expires_in_ms=-1000)
+        out = self.reader.get(time.time(), force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("expired", out["note"])
+        self.assertIn("-LimitsToken", out["note"])
+        self.assertEqual(self.seen, [])
+        self.assertIsNone(out["fiveHour"])
+
+    def test_a_rejected_long_lived_token_names_itself(self):
+        self.write_creds(expires_in_ms=-1000); self.store_token(); self.reject = True
+        out = self.reader.get(time.time(), force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("SideCrab limits token rejected", out["note"])
+        self.assertIn("setup-token", out["note"])
+
+    def test_an_unreadable_token_file_is_the_same_as_none(self):
+        self.write_creds(expires_in_ms=-1000)
+        crabd._dpapi_unprotect = lambda blob: None
+        self.token_file.write_bytes(b"garbage")
+        out = self.reader.get(time.time(), force=True)
+        self.assertFalse(out["available"])
+        self.assertIn("expired", out["note"])
+
+    def test_the_token_is_read_fresh_on_every_fetch(self):
+        """Stored while crabd runs -> used on the next poll, no restart."""
+        self.write_creds(expires_in_ms=-1000)
+        self.assertFalse(self.reader.get(time.time(), force=True)["available"])
+        self.store_token()
+        self.assertTrue(self.reader.get(time.time(), force=True)["available"])
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI is Windows-only")
+    def test_a_real_dpapi_blob_from_protecteddata_round_trips(self):
+        """What the installer writes ([ProtectedData]::Protect, CurrentUser, no entropy)
+        is what crabd reads. Encrypt here with CryptProtectData through the same ctypes
+        surface, then read through the real reader."""
+        crabd._dpapi_unprotect = self.orig[3]
+        secret = b"sk-ant-oat01-roundtrip"
+        crypt32 = crabd.ctypes.windll.crypt32
+        buf = crabd.ctypes.create_string_buffer(secret, len(secret))
+        inp = crabd._DATA_BLOB(len(secret), crabd.ctypes.cast(buf, crabd.ctypes.POINTER(crabd.ctypes.c_char)))
+        out = crabd._DATA_BLOB()
+        self.assertTrue(crypt32.CryptProtectData(crabd.ctypes.byref(inp), None, None, None, None, 0,
+                                                 crabd.ctypes.byref(out)))
+        blob = crabd.ctypes.string_at(out.pbData, out.cbData)
+        crabd.ctypes.windll.kernel32.LocalFree(out.pbData)
+        self.token_file.write_bytes(blob)
+        self.assertEqual(crabd.read_limits_token(self.token_file), "sk-ant-oat01-roundtrip")
+        self.token_file.write_bytes(blob[:-5] + b"xxxxx")   # tampered -> None, never garbage
+        self.assertIsNone(crabd.read_limits_token(self.token_file))
+
+
 # ------------------------------------------------- limits cache: isolation + sanity
 
 GOOD_LIMITS = {"available": True, "note": None,
@@ -3071,7 +3193,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.29.0")
+        self.assertEqual(crabd.VERSION, "0.30.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5835,7 +5957,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.29.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.30.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
