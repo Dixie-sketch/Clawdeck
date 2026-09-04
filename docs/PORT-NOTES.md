@@ -65,6 +65,30 @@ at baseline. Anything found later is added to the seam table below with its buck
   refreshTokenExpiresAt, scopes, subscriptionType, rateLimitTier, clientId}`: the same shape the
   file carries. `claude setup-token` prints a bare `sk-ant-oat...` string and saves nothing. The
   reader treats a missing or renamed key as unknown, never as a hard failure.
+- **CPU ticks on macOS (Phase 2).** `host_statistics(HOST_CPU_LOAD_INFO)` through libSystem returns
+  four cumulative 32-bit counters in the order user, system, idle, nice, in 1/100 s units
+  (`SC_CLK_TCK` = 100), summed across cores: one second on this 16-core machine moved them by
+  213, 103, 1280, 0. Two consequences the Darwin reader carries: the counters wrap 2^32 in
+  about 31 days of uptime at that rate, so the reader unwraps them into 64-bit values before the
+  sampler sees a delta; and the sampler keeps its Windows convention (kernel includes idle, 100 ns
+  units), so the reader hands it `(idle, system + idle, user + nice) * 100000` and its arithmetic
+  and `CPU_MIN_TOTAL_TICKS` are untouched. `nice` counts as busy time.
+- **Memory on macOS (Phase 2).** `host_statistics64(HOST_VM_INFO64)` returns 38 words (page counts);
+  `vm.pagesize` is 16384 and `hw.memsize` 128.0 GiB here. Activity Monitor's headline "Memory Used"
+  is app memory (internal minus purgeable) plus wired plus compressed, 66.0 GiB at the time of
+  measurement, while `top` reports total minus free, 98.3 GiB. The contract promises the Activity
+  Monitor figure, so that formula is the one served.
+- **launchctl output (Phase 3).** `launchctl print gui/<uid>/<label>` exits 0 for a loaded agent
+  with tab-indented first-level lines (`state = running` plus `pid = N`, or `state = not running`);
+  deeper sub-objects carry their own `state = active` lines, so only the first-level line counts.
+  An absent label exits 113 with `Could not find service "<label>" in domain for user gui: <uid>`.
+  Other first-level state words in use: `waiting`, `spawn scheduled`.
+- **The security tool (Phase 4).** `security -i` reads commands from stdin, so a secret can be
+  stored without ever appearing in a process argument list; `find-generic-password -w` prints it
+  to stdout; an absent item exits 44 with "The specified item could not be found in the keychain".
+  Items created through the tool carry the tool in their access list, so crabd's later reads through
+  the same tool do not prompt; the CLI's own credential item was created by Claude Code and does
+  prompt once (see above).
 - **Existing hooks in the operator's `~/.claude/settings.json`**: one unrelated
   `UserPromptSubmit` command hook, no `statusLine`, no `allowedHttpHookUrls`. The installer
   must preserve that hook.
