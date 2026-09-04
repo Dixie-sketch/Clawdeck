@@ -2166,6 +2166,36 @@ class MacNotificationAdapter:
         return True
 
 
+class UnsupportedPlatformAdapter:
+    """The honest answer on a platform with no notification route.
+
+    Handing a Linux operator the Windows adapter would fail too, but it would fail by logging
+    `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` at him — a path describing
+    a machine he does not have, which reads as a broken install rather than an unsupported
+    platform. This says the true thing, names his platform, and returns the False the daemon
+    already knows how to handle.
+
+    The request is not even read: there is no route to build a payload for, so the
+    notification text never leaves the process.
+    """
+
+    def __init__(self, sys_platform: str) -> None:
+        self.sys_platform = sys_platform
+        #: One line, then silence — the same latch, and the same reason, as
+        #: MacNotificationAdapter._log_failure. This one can never clear: nothing about a
+        #: missing platform route changes while the process runs.
+        self._logged = False
+
+    def show(self, request: ToastRequest) -> bool:
+        del request
+        if self._logged:
+            log.debug("no notification route on %s", self.sys_platform)
+            return False
+        self._logged = True
+        log.error("no notification route on %s", self.sys_platform)
+        return False
+
+
 def pick_adapter(sys_platform: str, icon_path: Path | None) -> ToastAdapter:
     """Pure: the platform string → the adapter that can post on it.
 
@@ -2173,13 +2203,14 @@ def pick_adapter(sys_platform: str, icon_path: Path | None) -> ToastAdapter:
     testable from either OS. `main` passes sys.platform, and every --test-* flag below it then
     fires through the right adapter for free.
 
-    Everything that is not Darwin gets the Windows adapter, Linux included: there is no Linux
-    route, and the honest shape of that is a show() returning False with the reason in the log,
-    not a third branch pretending to post a notification nobody will see.
+    Three answers, not two: a platform with no route says so in its own terms rather than
+    borrowing a Windows failure — see UnsupportedPlatformAdapter.
     """
     if sys_platform == "darwin":
         return MacNotificationAdapter()
-    return PowerShellToastAdapter(icon_path=icon_path)
+    if sys_platform.startswith("win"):
+        return PowerShellToastAdapter(icon_path=icon_path)
+    return UnsupportedPlatformAdapter(sys_platform)
 
 
 # --------------------------------------------------------------------------------------

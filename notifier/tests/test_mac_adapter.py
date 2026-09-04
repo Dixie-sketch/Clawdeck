@@ -49,6 +49,7 @@ from sidecrab_toast import (  # noqa: E402
     PowerShellToastAdapter,
     RecordingToastAdapter,
     ToastRequest,
+    UnsupportedPlatformAdapter,
     build_approval_request,
     build_long_run_request,
     build_request,
@@ -459,11 +460,32 @@ class PickAdapterTests(unittest.TestCase):
         self.assertIsInstance(adapter, PowerShellToastAdapter)
         self.assertEqual(adapter.icon_path, icon)
 
-    def test_linux_gets_the_powershell_adapter_and_will_simply_fail(self) -> None:
-        """There is no Linux route. The honest shape is the Windows adapter returning False
-        on every show — a failure the log names — rather than a third branch pretending to
-        post a notification nobody will see."""
-        self.assertIsInstance(pick_adapter("linux", None), PowerShellToastAdapter)
+    def test_an_unsupported_platform_gets_an_adapter_that_says_so(self) -> None:
+        """There is no Linux route, and the honest shape of that is NOT the Windows adapter:
+        that one would have a Linux operator reading `C:\\Windows\\System32\\...` in his log,
+        which describes a machine he does not have. This one names his platform."""
+        adapter = pick_adapter("linux", None)
+        self.assertIsInstance(adapter, UnsupportedPlatformAdapter)
+        self.assertNotIsInstance(adapter, PowerShellToastAdapter)
+        self.assertEqual(adapter.sys_platform, "linux")
+
+    def test_an_unsupported_platform_fails_every_show_and_says_it_once(self) -> None:
+        adapter = pick_adapter("freebsd14", None)
+        with self.assertLogs("sidecrab.notifier", level="DEBUG") as captured:
+            for _ in range(3):
+                self.assertFalse(adapter.show(request()))
+        self.assertEqual([record.levelname for record in captured.records],
+                         ["ERROR", "DEBUG", "DEBUG"])
+        self.assertIn("no notification route on freebsd14", captured.output[0])
+
+    def test_an_unsupported_platform_never_logs_the_notification_text(self) -> None:
+        """Same rule as the adapter that can post: the log outlives the notification."""
+        adapter = pick_adapter("linux", None)
+        with self.assertLogs("sidecrab.notifier", level="DEBUG") as captured:
+            adapter.show(request(title="SECRETTITLE", body="SECRETBODY"))
+        joined = "\n".join(captured.output)
+        self.assertNotIn("SECRETTITLE", joined)
+        self.assertNotIn("SECRETBODY", joined)
 
     def test_main_selects_the_adapter_from_sys_platform(self) -> None:
         """`main` must ask this function rather than naming a class, or every `--test-*` flag

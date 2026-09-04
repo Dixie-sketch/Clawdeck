@@ -774,8 +774,12 @@ it is allowed, `osascript` can exit non-zero or sit until the adapter's 10 s tim
 logged (`notification failed rc=…`) and both return `False`, which re-arms a waiting question
 for the next poll rather than consuming it.
 
-There is no Linux route. `pick_adapter` hands every other platform the Windows adapter, whose
-`show()` then fails honestly with the reason in the log.
+There is no Linux route. `pick_adapter` hands any platform that is neither Darwin nor Windows
+an `UnsupportedPlatformAdapter`, whose `show()` logs `no notification route on <platform>`
+once and returns `False` — the failure shape the daemon already handles, said in the
+operator's own terms. It is deliberately *not* the Windows adapter: that one fails too, but it
+fails by naming `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, which reads as a
+broken install rather than an unsupported platform.
 
 ---
 
