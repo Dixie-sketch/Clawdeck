@@ -2930,6 +2930,226 @@ class HookTracker:
                     del self._titles[sid]
 
 
+# ---------------------------------------------------------------------- platform
+#
+# Everything crabd knows about the OS it is running on, behind ONE interface with three
+# implementations. The readers above and below (HostSampler, FleetReader, LimitsReader)
+# each take a `platform=` and default to PLATFORM, so none of them contains an OS test:
+# they own their arithmetic and their honest-failure rules, the platform owns the
+# syscall. A reader that reaches for `ctypes.windll` or `schtasks` directly is the bug
+# this section exists to prevent - it is unreachable, and therefore untested, on the
+# host most of this suite runs on.
+#
+# The three classes are INTERCHANGEABLE by contract, pinned by a test that compares
+# their public method sets. Adding a method to one alone ships an AttributeError to
+# every other OS, in a daemon whose one promise is to keep serving.
+
+class WindowsPlatform:
+    """GetSystemTimes / GlobalMemoryStatusEx, schtasks, DPAPI."""
+
+    name = "windows"
+
+    @staticmethod
+    def cpu_times() -> tuple[int, int, int] | None:
+        """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
+
+        KERNEL TIME INCLUDES IDLE TIME here; the busy fraction is HostSampler's job.
+        `ctypes.windll` does not exist off Windows, so the AttributeError below is the
+        error path for a host that selected this platform anyway (a test does) as well
+        as for a real syscall failure.
+        """
+        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+        try:
+            ok = ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+        except (AttributeError, OSError, ValueError) as exc:
+            _log_once(HOST_CPU_LOG_KEY,
+                      f"crabd: GetSystemTimes unavailable ({type(exc).__name__}); "
+                      f"serving no host CPU")
+            return None
+        if not ok:
+            _log_once(HOST_CPU_LOG_KEY,
+                      "crabd: GetSystemTimes returned failure; serving no host CPU")
+            return None
+        return (_filetime(idle), _filetime(kernel), _filetime(user))
+
+    @staticmethod
+    def memory() -> tuple[int, int] | None:
+        """GlobalMemoryStatusEx -> (total physical bytes, available bytes), or None."""
+        status = _MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        try:
+            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        except (AttributeError, OSError, ValueError) as exc:
+            _log_once(HOST_MEM_LOG_KEY,
+                      f"crabd: GlobalMemoryStatusEx unavailable ({type(exc).__name__}); "
+                      f"serving no host memory")
+            return None
+        if not ok:
+            _log_once(HOST_MEM_LOG_KEY,
+                      "crabd: GlobalMemoryStatusEx returned failure; "
+                      "serving no host memory")
+            return None
+        return (int(status.ullTotalPhys), int(status.ullAvailPhys))
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        return FLEET_TASKS
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        proc = subprocess.run(
+            ["schtasks", "/query", "/tn", target, "/fo", "csv", "/nh"],
+            capture_output=True, timeout=timeout, check=False,
+            # No console under the Scheduled Task, and without this a window would
+            # flash on the desktop on an interactive login.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return (proc.returncode,
+                proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
+
+    @classmethod
+    def service_status(cls, code, out, err) -> str:
+        if code != 0:
+            blob = f"{out or ''}\n{err or ''}".lower()
+            return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
+        return FLEET_STATUS_MAP.get(cls._status_field(out), "unknown")
+
+    @staticmethod
+    def _status_field(out) -> str:
+        """Last csv row's status column. `csv` rather than a split: the task name is a
+        quoted field and a task name containing a comma would break a naive split."""
+        try:
+            rows = [row for row in csv.reader((out or "").splitlines())
+                    if len(row) > FLEET_STATUS_COL]
+        except (csv.Error, ValueError):
+            return ""
+        return rows[-1][FLEET_STATUS_COL].strip().lower() if rows else ""
+
+    @staticmethod
+    def read_limits_token(path) -> str | None:
+        """The long-lived usage token, or None. Read fresh on every call so a token
+        stored while crabd runs is picked up on the next poll; the decrypted string is
+        returned to the caller and dropped - LimitsReader keeps the same no-log,
+        no-store rule for it that it keeps for the CLI token.
+
+        `_dpapi_unprotect` is looked up on the MODULE at call time, not bound at import:
+        the suite stubs `crabd._dpapi_unprotect` to reach this path off Windows.
+        """
+        try:
+            blob = path.read_bytes()
+        except OSError:
+            return None
+        raw = _dpapi_unprotect(blob)
+        if not raw:
+            return None
+        token = raw.decode("utf-8", errors="replace").strip()
+        return token or None
+
+    @staticmethod
+    def cli_credentials() -> str | None:
+        """The CLI credential document's raw text, or None when there is no file.
+        CREDENTIALS_FILE is read off the module per call: the suites repoint it."""
+        try:
+            return CREDENTIALS_FILE.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+
+class DarwinPlatform:
+    """macOS. The CLI credential file is the one reader that is already portable; the
+    host counters and launchd are later phases, and until then they answer the honest
+    "I cannot read this" that the contract's null / unknown columns are for."""
+
+    name = "darwin"
+
+    @staticmethod
+    def cpu_times() -> tuple[int, int, int] | None:
+        return None
+
+    @staticmethod
+    def memory() -> tuple[int, int] | None:
+        return None
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        return (("glow", "com.sidecrab.glow"), ("toast", "com.sidecrab.toast"))
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        raise OSError("launchctl reader not wired")
+
+    @staticmethod
+    def service_status(code, out, err) -> str:
+        return "unknown"
+
+    @staticmethod
+    def read_limits_token(path) -> str | None:
+        return None
+
+    @staticmethod
+    def cli_credentials() -> str | None:
+        try:
+            return CREDENTIALS_FILE.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+
+class NullPlatform:
+    """Any other OS (Linux CI). Every OS-specific reading is absent, which the readers
+    turn into no `host` key and an unknown fleet - never a fabricated zero."""
+
+    name = "none"
+
+    @staticmethod
+    def cpu_times() -> tuple[int, int, int] | None:
+        return None
+
+    @staticmethod
+    def memory() -> tuple[int, int] | None:
+        return None
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        # The contract's two keys are always present; there is no service to name.
+        return (("glow", ""), ("toast", ""))
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        # RAISES rather than returning None: the caller unpacks the result, and a None
+        # would be a TypeError past FleetReader's catch list - a crash, not an unknown.
+        raise OSError("no service manager on this platform")
+
+    @staticmethod
+    def service_status(code, out, err) -> str:
+        return "unknown"
+
+    @staticmethod
+    def read_limits_token(path) -> str | None:
+        return None
+
+    @staticmethod
+    def cli_credentials() -> str | None:
+        try:
+            return CREDENTIALS_FILE.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+
+def select_platform(sys_platform: str):
+    if sys_platform == "win32":
+        return WindowsPlatform()
+    if sys_platform == "darwin":
+        return DarwinPlatform()
+    return NullPlatform()
+
+
+#: THE ONLY `sys.platform` READ IN THIS MODULE, and a test asserts that it stays the
+#: only one. Every OS-specific reader defaults to this object; a second platform test
+#: anywhere downstream is a second answer that can disagree with this one.
+PLATFORM = select_platform(sys.platform)
+
+
 # ------------------------------------------------------------------------- limits
 
 class _DATA_BLOB(ctypes.Structure):
