@@ -70,8 +70,17 @@ The two things an attacker on this machine, or a web page you visit, could want 
   property lives in a host process no web content can reach at all; `localStorage` is reachable
   by any script that runs on that origin. So an XSS in the panel itself, or a browser extension
   with storage access, could read the code - neither of which could touch the property form.
-  There is no version of a browser panel that avoids this: a secret the page must send has to be
-  somewhere the page can read.
+  There is no version in which **the page itself holds the secret** that avoids this: a value
+  the page can send is a value the page can read.
+
+  **There is a version in which the page does not hold it, and it was not taken.** crabd could
+  mint an `HttpOnly` session cookie on the panel's own origin; the browser would attach it to
+  every `decide` and no script on the page - ours, an injected one, or an extension's - could
+  read it back. That is strictly stronger and it is the obvious next move. It is not this
+  change because it is a different feature: it needs a cookie the daemon issues and rotates, a
+  pairing flow that is a request rather than a value the operator types, and a `decide` wire
+  shape without a `token` member - and this port deliberately changed neither the pairing flow
+  nor the wire. Recorded as a residual below rather than done badly here.
 
   What is unchanged is everything the code is one factor of. A `decide` still needs the code AND
   a `requestId` that matches the request the panel is showing, checked under the lock that
@@ -92,6 +101,13 @@ The two things an attacker on this machine, or a web page you visit, could want 
 - **A same-user local process can read the pairing code.** It can also read `~/.claude`, drive
   the terminal dialog and inject keystrokes, so it was never inside the threat model of a
   localhost service; the gate exists for the web-page vector, which it closes.
+- **The browser panel holds the pairing code where its own page can read it** (widget 0.30.0).
+  `localStorage` on `http://localhost:9999`, so an XSS in the panel or an extension with
+  storage access could read it, where an iCUE property could not. An `HttpOnly` cookie minted
+  by crabd would avoid it and is the intended next move; it is a change to the pairing flow and
+  the `decide` wire shape, neither of which this port touched. See "Where the browser panel
+  keeps the pairing code" under **What is enforced** for the full argument and for what the
+  code is only one factor of.
 - **`/v1/state` is readable by a forged `null` Origin.** Still open, and still deliberate: the
   iCUE build's opaque origin serialises to exactly `null` and has no other value to allowlist, so
   refusing `null` would refuse the product. It discloses what your sessions are doing, not a way
