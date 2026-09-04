@@ -251,6 +251,31 @@ class LaunchctlQueryTests(unittest.TestCase):
         self.assertIs(seen["kwargs"]["capture_output"], True)
         self.assertEqual(result, (0, RUNNING_BLOCK, ""))
 
+    def test_a_host_with_no_getuid_is_unknown_rather_than_a_crash(self):
+        """`os.getuid` is POSIX-only and it is read OUTSIDE the subprocess call, so on a
+        host without it the AttributeError comes out of service_query itself - past
+        FleetReader's catch list (TimeoutExpired, OSError, ValueError) and into
+        `_fleet_loop`, which is a crash on the fleet thread where an honest `unknown`
+        belongs.
+
+        DarwinPlatform is never SELECTED on such a host, but the seam lets anything build
+        one and this suite does exactly that. Raising it as OSError puts it back in the
+        shape the reader already answers - and it is the same shape NullPlatform's
+        service_query uses to say it has no service manager.
+
+        Patched by side effect rather than by deleting the attribute: a real Windows host
+        raises at the lookup and this raises at the call, which no caller can tell apart,
+        and deleting `os.getuid` process-wide would be visible to every other thread.
+        """
+        with mock.patch("crabd.os.getuid",
+                        side_effect=AttributeError("module 'os' has no getuid")):
+            with self.assertRaises(OSError):
+                crabd.DarwinPlatform().service_query("com.sidecrab.toast", 10)
+            reader = crabd.FleetReader(platform=crabd.DarwinPlatform())
+            self.assertEqual(reader.status("com.sidecrab.toast"), "unknown")
+            reader.poll(0.0)
+            self.assertEqual(reader.get(), {"glow": "absent", "toast": "unknown"})
+
     def test_a_component_with_no_service_is_answered_without_spawning_anything(self):
         """The sentinel pair. An empty target means this platform has no service for
         that component at all - `launchctl print gui/502/` is a different question with

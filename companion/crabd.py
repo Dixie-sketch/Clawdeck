@@ -3625,8 +3625,17 @@ class DarwinPlatform:
         """
         if not target:
             return FLEET_NO_SERVICE
+        try:
+            uid = os.getuid()
+        except AttributeError as exc:
+            # POSIX-only, and read OUTSIDE the subprocess call. This platform is never
+            # SELECTED on a host without it, but the seam lets anything build one (the
+            # suite does), and an AttributeError from here lands past FleetReader's catch
+            # list and crashes the fleet thread. OSError is the shape that reader already
+            # answers `unknown` to, and the one NullPlatform uses to say the same thing.
+            raise OSError("os.getuid is not available on this host") from exc
         proc = subprocess.run(
-            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{target}"],
+            ["/bin/launchctl", "print", f"gui/{uid}/{target}"],
             capture_output=True, timeout=timeout, check=False)
         return (proc.returncode,
                 proc.stdout.decode("utf-8", errors="replace"),
