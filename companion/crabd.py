@@ -3208,16 +3208,36 @@ _DARWIN_LIBC = None
 
 
 def _darwin_libc():
-    """libSystem, resolved once. `find_library` is a dyld search, not free, and this is
-    on a 2 s cadence. Off macOS the load or the lookup fails and the callers below turn
-    that into the same None a failed syscall gives."""
+    """libSystem, resolved once, with every entry point crabd calls DECLARED.
+
+    `find_library` is a dyld search, not free, and this is on a 2 s cadence. Off macOS
+    the load or the lookup fails and the callers below turn that into the same None a
+    failed syscall gives.
+
+    THE DECLARATIONS ARE NOT DECORATION. ctypes defaults both `argtypes` and `restype` to
+    `c_int`, and `mach_port_t` is UNSIGNED 32-bit: a host port at or above 2^31 does not
+    fit the default signed conversion on the way IN to host_statistics, which is where
+    the failure would land - on the machines whose port happens to have the high bit set
+    and not on the others. The restype is the same fact one step later. The pointer
+    arguments are `c_void_p`, which is what a `byref()` is handed to the kernel as, and
+    it stops ctypes guessing at an `int` for the address.
+    """
     global _DARWIN_LIBC
     if _DARWIN_LIBC is None:
         libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib",
                            use_errno=True)
-        # mach_port_t is a uint32; ctypes' default c_int restype would sign-extend a
-        # port with the high bit set into a negative number and every call would fail.
         libc.mach_host_self.restype = ctypes.c_uint32
+        libc.mach_host_self.argtypes = []
+        for name in ("host_statistics", "host_statistics64"):
+            entry = getattr(libc, name)
+            entry.restype = ctypes.c_int          # kern_return_t
+            entry.argtypes = [ctypes.c_uint32,    # host_t / host_priv_t
+                              ctypes.c_int,       # the flavour
+                              ctypes.c_void_p,    # the out struct
+                              ctypes.c_void_p]    # the in/out word count
+        libc.sysctlbyname.restype = ctypes.c_int
+        libc.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_void_p, ctypes.c_size_t]
         _DARWIN_LIBC = libc
     return _DARWIN_LIBC
 

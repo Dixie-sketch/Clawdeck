@@ -566,6 +566,77 @@ class DarwinMemoryRefusalTests(LogOnceReset):
                                  "memUsedGB": None, "memTotalGB": None})
 
 
+class FakeEntryPoint:
+    """A ctypes entry point that records what was declared on it. `argtypes` and
+    `restype` start as ctypes leaves them on a fresh function pointer: unset."""
+
+    def __init__(self, name):
+        self.name = name
+        self.argtypes = None
+        self.restype = None
+        self.calls = 0
+
+    def __call__(self, *args):
+        self.calls += 1
+        return 0
+
+
+class FakeLibc:
+    """A stand-in for the loaded libSystem: attribute access mints an entry point."""
+
+    def __init__(self):
+        self.functions = {}
+
+    def __getattr__(self, name):
+        return self.functions.setdefault(name, FakeEntryPoint(name))
+
+
+class DarwinLibcDeclarationTests(unittest.TestCase):
+    """Every mach entry point crabd calls declares its argument and return types.
+
+    ctypes defaults BOTH to `c_int`, and that is the trap here rather than a formality:
+    `mach_port_t` is an unsigned 32-bit value, so a host port at or above 2^31 does not
+    fit the default c_int ARGUMENT conversion on the way in to host_statistics - which is
+    where the failure would happen, and it would happen on some machines and not others.
+    The return declaration is the same fact one step later.
+    """
+
+    NAMES = ("mach_host_self", "host_statistics", "host_statistics64", "sysctlbyname")
+
+    def loaded(self) -> FakeLibc:
+        """crabd's libc holder, freshly resolved over a fake CDLL. Pure: nothing here
+        loads a real library, so it runs on any OS."""
+        fake = FakeLibc()
+        original = (crabd._DARWIN_LIBC, crabd.ctypes.CDLL, crabd.ctypes.util.find_library)
+
+        def restore():
+            (crabd._DARWIN_LIBC, crabd.ctypes.CDLL,
+             crabd.ctypes.util.find_library) = original
+
+        self.addCleanup(restore)
+        crabd._DARWIN_LIBC = None
+        crabd.ctypes.util.find_library = lambda _name: "libc.dylib"
+        crabd.ctypes.CDLL = lambda *a, **k: fake
+        return crabd._darwin_libc()
+
+    def test_all_four_entry_points_declare_their_types(self):
+        libc = self.loaded()
+        for name in self.NAMES:
+            with self.subTest(entry_point=name):
+                entry = getattr(libc, name)
+                self.assertIsNotNone(entry.argtypes, name)
+                self.assertIsNotNone(entry.restype, name)
+
+    def test_the_host_port_is_unsigned_going_in_and_coming_out(self):
+        """The one that matters. Undeclared, a port with the high bit set is converted
+        as a signed c_int in both directions."""
+        libc = self.loaded()
+        self.assertEqual(libc.mach_host_self.restype, crabd.ctypes.c_uint32)
+        for name in ("host_statistics", "host_statistics64"):
+            with self.subTest(entry_point=name):
+                self.assertEqual(getattr(libc, name).argtypes[0], crabd.ctypes.c_uint32)
+
+
 class DarwinVmStructTests(unittest.TestCase):
     """The declared struct is 38 32-bit words, which is both what the call passes in as
     its capacity and what it checks on the way back. Pinned here because the two halves
