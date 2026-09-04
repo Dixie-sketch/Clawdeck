@@ -188,6 +188,14 @@ var DENSITY_PROP = 'density';
    the degrade is back to silent, which PRESERVES whatever is on disk, so the
    failure direction is the safe one. */
 var APPROVAL_PROP = 'approvalToast';
+/* v0.30.0 — the key the OBJECT itself lives under when the panel is served in a
+   browser instead of injected into iCUE. Fixed rather than derived: iCUE's
+   uniqueId exists because every widget it serves shares one file:// origin, and
+   a panel crabd serves has an origin of its own that nothing else is on. The
+   settings (clock24, panelToken, the colours, ...) are properties INSIDE this
+   same object, beside PIN_PROP and the two chips, which is what keeps one
+   read-modify-write the only writer of any of it. */
+var PANEL_STORE_KEY = 'sidecrab';
 /* A user-initiated GET, not the poller: it may take a little longer than a poll
    without anything piling up, because a second tap is refused while one is in
    flight. Still bounded — an unsettled fetch would leave the tap dead. */
@@ -847,7 +855,25 @@ function onIcueInitialized() { applyProperties(); }
    references icueEvents at all. */
 icueEvents = { onDataUpdated: onIcueDataUpdated, onICUEInitialized: onIcueInitialized };
 
-function getIcueProperty(name) {
+/* WHICH HOST IS THIS, decided ONCE (v0.30.0). iCUE injects every widget property
+   as a same-named global and `uniqueId` is the one it always injects, so its
+   presence is the host test — probed exactly the way a property is, because
+   referencing an undeclared identifier is a ReferenceError and not undefined.
+   Memoised because the answer cannot change under a running panel and because
+   getIcueProperty is on the render path: this must not become an eval per read.
+   NOT named uniqueId, obviously — a declaration with a property's name is a
+   whole-script SyntaxError inside iCUE (v0.27.0 shipped blank from exactly
+   that). */
+var icueHost = null;
+
+function insideIcue() {
+	if (icueHost === null) icueHost = hostProperty('uniqueId') !== undefined;
+	return icueHost;
+}
+
+/* The injected-global read, on its own so insideIcue and getIcueProperty ask the
+   host the same question. */
+function hostProperty(name) {
 	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
 		var value = window[name];
 		if (value !== undefined && value !== null && value !== '') return value;
@@ -856,6 +882,81 @@ function getIcueProperty(name) {
 		var v = Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined')();
 		if (v !== undefined && v !== null && v !== '') return v;
 	} catch (e) { /* not running inside iCUE */ }
+	return undefined;
+}
+
+/* THE PANEL'S OWN SETTINGS STORE (v0.30.0) — what replaces the iCUE property
+   sheet when crabd serves this file over http.
+
+   Read LIVE on every call rather than cached at boot, for the reason
+   pairingCode() has always been a function: the settings sheet writes a value
+   and the very next Approve has to carry it. The parse is cached on the RAW
+   string, so a read costs one getItem and a JSON.parse only when the object
+   actually moved — this runs several times a second for the life of the panel. */
+var panelPropsRaw = null;
+var panelPropsCache = {};
+
+function panelSettings() {
+	var store = prefsStorage();
+	if (!store) return panelPropsCache;
+	var raw = null;
+	try { raw = store.getItem(PANEL_STORE_KEY); } catch (e) { raw = null; }
+	if (raw !== panelPropsRaw) {
+		panelPropsRaw = raw;
+		var props = null;
+		try { props = raw ? JSON.parse(raw) : null; } catch (e) { props = null; }
+		panelPropsCache = (props && typeof props === 'object' && !Array.isArray(props)) ? props : {};
+	}
+	return panelPropsCache;
+}
+
+/* READ-MODIFY-WRITE of the whole object, the same discipline savePrefs keeps and
+   for the same reason: the pins, the two chips and the approval touch record are
+   in there too, and so may be keys a future build writes. Then applyProperties(),
+   which is what iCUE's onDataUpdated used to call — so the config sync, the
+   diagnostics reconcile and the render all ride the same edge they always did. */
+function writePanelProperty(name, value) {
+	var props = panelSettings();
+	var next = {};
+	for (var k in props) {
+		if (Object.prototype.hasOwnProperty.call(props, k)) next[k] = props[k];
+	}
+	if (value === null || value === undefined) delete next[name];
+	else next[name] = value;
+	writePanelStore(next);
+	applyProperties();
+}
+
+/* The one writer of the object. Storage that refuses the write degrades to
+   memory for the session (see prefsStorage) and the value is kept, because a
+   setting that vanished mid-session would be worse than one that does not
+   survive a reload. */
+function writePanelStore(next) {
+	var raw = JSON.stringify(next);
+	var store = prefsStorage();
+	try {
+		if (!store) throw new Error('no storage');
+		store.setItem(PANEL_STORE_KEY, raw);
+	} catch (e) {
+		memoryStorage().setItem(PANEL_STORE_KEY, raw);
+	}
+	/* Force the next read to go back to the store rather than trusting `next`:
+	   whichever store took the write is the one that has to answer for it. */
+	panelPropsRaw = null;
+	panelSettings();
+}
+
+function getIcueProperty(name) {
+	var hosted = hostProperty(name);
+	if (hosted !== undefined) return hosted;
+	/* Served in a browser there is no bridge, so the panel's own store answers.
+	   Never consulted inside iCUE: the property sheet is the operator's one place
+	   to set these there, and a stale browser copy silently winning over it is
+	   exactly the drift this reader exists to prevent. */
+	if (!insideIcue()) {
+		var v = panelSettings()[name];
+		if (v !== undefined && v !== null && v !== '') return v;
+	}
 	return undefined;
 }
 
@@ -1654,10 +1755,37 @@ function pruneDismissed(sessions) {
    Either one missing leaves prefsStoreKey null and the map in memory for the
    session. Silent by design: a pin that does not survive a restart is a
    nuisance, and an error banner about it would be worse than the nuisance. */
+/* v0.30.0. Once the panel owns its settings, a store that throws is no longer
+   only a lost pin — it is a colour, a quiet-hours window and a pairing code that
+   would not survive being typed. So a refusal degrades to an in-memory object
+   for the SESSION rather than to nothing: what the operator sets is in force
+   until the tab closes, and the reason is one console line. Nothing goes on the
+   glass; a notice about storage would be louder than the loss. */
+var memoryStore = null;
+
+function memoryStorage() {
+	if (!memoryStore) {
+		var data = {};
+		memoryStore = {
+			getItem: function (k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+			setItem: function (k, v) { data[k] = String(v); }
+		};
+		logLine('settings and display state kept in memory for this session (storage unavailable)');
+	}
+	return memoryStore;
+}
+
+/* Probed with a real read rather than tested for existence: some locked-down
+   profiles expose the object and throw on every access, so `window.localStorage`
+   being present says nothing. Once memory has taken over it keeps the session —
+   flipping back mid-session would strand half the settings in each store. */
 function prefsStorage() {
-	try {
-		return window.localStorage || null;
-	} catch (e) { return null; }
+	if (memoryStore) return memoryStore;
+	var store = null;
+	try { store = window.localStorage || null; } catch (e) { store = null; }
+	if (!store) return null;
+	try { store.getItem(PANEL_STORE_KEY); } catch (e) { return memoryStorage(); }
+	return store;
 }
 
 /* Read the whole properties object once. Returns null when there is nothing to
@@ -1703,6 +1831,10 @@ function loadPrefs() {
 	   supplies a genuine uniqueId, and unreachable from the iCUE origin, which
 	   has no query string to carry it. */
 	if ((key === undefined || key === null || key === '') && mockName && devUidOverride) key = devUidOverride;
+	/* v0.30.0: served in a browser there is no host id to key on and none is
+	   needed — the origin is the panel's alone. Same object, same properties, and
+	   the settings sit in it too. */
+	if ((key === undefined || key === null || key === '') && !insideIcue()) key = PANEL_STORE_KEY;
 	if (key === undefined || key === null || key === '') { prefsStoreKey = null; return; }
 	prefsStoreKey = String(key);
 
@@ -1767,7 +1899,15 @@ function savePrefs() {
 	   never opens the property sheet does not accumulate a key either. */
 	if (approvalSeenSec !== null) props[APPROVAL_PROP] = { seen: approvalSeenSec, touched: approvalTouched };
 	try { store.setItem(prefsStoreKey, JSON.stringify(props)); }
-	catch (e) { logLine('display state save failed (storage refused the write)'); }
+	catch (e) {
+		/* v0.30.0: the settings share this object, so a refused write is no longer
+		   only a lost pin. Memory keeps the session; the reason is logged once by
+		   memoryStorage() itself. */
+		memoryStorage().setItem(prefsStoreKey, JSON.stringify(props));
+	}
+	/* The property reader shares this object: the next read has to see what was
+	   just written rather than the string it cached before the save. */
+	if (prefsStoreKey === PANEL_STORE_KEY) panelPropsRaw = null;
 }
 
 /* Oldest pin first, so the cap never evicts the pin somebody just took. */

@@ -34,7 +34,22 @@ var DEFAULT_LOCATION = { protocol: 'file:', search: '', href: 'file:///C:/widget
                    — hasOwnProperty, not `||`, is what keeps those distinguishable.
    opts.fetch      the fetch stub every request lands in
    opts.props      iCUE widget properties, injected as globals the way iCUE does
+   opts.storage    window.localStorage. ABSENT means none at all, which is the
+                   locked-down profile the panel has always had to survive; a
+                   stub that THROWS is the other half of that case
+   opts.console    where logLine lands, for a suite that asserts on it
    opts.domReason  what createElement throws, naming the suite that called it */
+/* setVar() reads a custom property back before writing it, so the stub has to
+   answer both halves or every colour write throws. */
+function cssStyleStub() {
+  var vars = {};
+  return {
+    getPropertyValue: function (n) { return Object.prototype.hasOwnProperty.call(vars, n) ? vars[n] : ''; },
+    setProperty: function (n, v) { vars[n] = String(v); },
+    removeProperty: function (n) { delete vars[n]; }
+  };
+}
+
 function loadWidget(opts) {
   opts = opts || {};
   var listeners = 0;
@@ -42,13 +57,14 @@ function loadWidget(opts) {
   var doc = {
     readyState: 'loading',
     addEventListener: function () { listeners++; },
-    documentElement: { style: { setProperty: function () {} } },
+    documentElement: { style: cssStyleStub() },
     body: { classList: { toggle: function () {}, add: function () {}, remove: function () {}, contains: function () { return false; } } },
     getElementById: function () { return null; },
     querySelector: function () { return null; },
     createElement: function () { throw new Error(reason); }
   };
-  var sandbox = { document: doc, console: console };
+  var sandbox = { document: doc, console: opts.console || console };
+  if (Object.prototype.hasOwnProperty.call(opts, 'storage')) sandbox.localStorage = opts.storage;
   sandbox.window = sandbox;
   sandbox.self = sandbox;
   sandbox.location = Object.prototype.hasOwnProperty.call(opts, 'location') ? opts.location : DEFAULT_LOCATION;

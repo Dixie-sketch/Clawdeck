@@ -175,6 +175,162 @@ var pending = [];
   }));
 })();
 
+/* ------------------------------------------------- the settings adapter (A) */
+
+/* WHAT REPLACED THE iCUE PROPERTY BRIDGE. Inside iCUE every property arrives as
+   a same-named injected global and getIcueProperty reads it back. Served in a
+   browser there is no bridge at all, so the same chokepoint reads ONE namespaced
+   object in localStorage under the fixed key "sidecrab" — the vendor's
+   one-object-per-widget shape, kept for the same reason it was adopted: a panel
+   that scattered bare keys across its origin would be sharing a namespace with
+   anything else served from it, and the read-modify-write is what lets an older
+   build save a pin without deleting a newer build's settings.
+   "Inside iCUE" is decided ONCE, off the uniqueId probe, so a browser can never
+   be talked into the injected-global path and vice versa. */
+
+/* A localStorage stand-in. `mode` decides how it misbehaves: 'ok' stores,
+   'throwGet' throws on every access (the private-browsing shape), 'throwSet'
+   stores nothing and throws on the write (the quota shape). */
+function fakeStorage(mode, seed) {
+  var data = seed || {};
+  return {
+    data: data,
+    getItem: function (k) {
+      if (mode === 'throwGet') throw new Error('storage refused the read');
+      return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
+    },
+    setItem: function (k, v) {
+      if (mode === 'throwGet' || mode === 'throwSet') throw new Error('storage refused the write');
+      data[k] = String(v);
+    }
+  };
+}
+
+function panel(opts) {
+  opts = opts || {};
+  return loadWidget({
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: opts.search || '' },
+    props: opts.props,
+    storage: Object.prototype.hasOwnProperty.call(opts, 'storage') ? opts.storage : fakeStorage('ok', opts.seed),
+    console: opts.console
+  });
+}
+
+/* One round trip per property KIND, because each one arrives as a different
+   JavaScript type and the readers tolerate strings for all of them. */
+(function () {
+  var st = fakeStorage('ok');
+  var ctx = panel({ storage: st });
+  ctx.writePanelProperty('clock24', true);
+  ctx.writePanelProperty('quietStart', '23:30');
+  ctx.writePanelProperty('toastThreshold', 240);
+  ctx.writePanelProperty('accentColor', '#123456');
+  eq(ctx.use24Clock(), true, 'a switch round-trips through the settings adapter');
+  eq(ctx.strProp('quietStart', '22:00'), '23:30', 'a textfield round-trips');
+  eq(ctx.desiredToastConfig().toast.thresholdSec, 240, 'a slider round-trips as a number');
+  eq(ctx.strProp('accentColor', '#BE7E6E'), '#123456', 'a colour round-trips');
+  var stored = JSON.parse(st.data.sidecrab || '{}');
+  eq(stored.clock24, true, 'every property lives inside ONE object under the fixed key "sidecrab"');
+  eq(Object.keys(st.data).sort(), ['sidecrab'], 'nothing is scattered across the origin as a bare key');
+})();
+
+/* audit-F2, one wave on: the read-modify-write already protected unknown KEYS
+   and unknown VALUES of a known key against a pin save. A property write is the
+   third writer of the same object and has to keep the same promise. */
+(function () {
+  var st = fakeStorage('ok', {
+    sidecrab: JSON.stringify({ futureThing: 7, sessionFilter: 'archived', clock24: true })
+  });
+  var ctx = panel({ storage: st });
+  ctx.writePanelProperty('alertFlash', false);
+  var props = JSON.parse(st.data.sidecrab);
+  eq(props.futureThing, 7, 'audit-F2: an unknown top-level key survives a property write');
+  eq(props.sessionFilter, 'archived', 'audit-F2: an unknown VALUE of a known key survives a property write');
+  eq(props.clock24, true, 'a property this write did not touch survives it');
+  eq(props.alertFlash, false, 'the written property lands');
+})();
+
+/* A pin save must not delete the settings either — the same object, the other
+   writer. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ clock24: true, futureThing: 'keep me' }) });
+  var ctx = panel({ storage: st });
+  ctx.loadPrefs();
+  ctx.togglePin('sess-1');
+  var props = JSON.parse(st.data.sidecrab);
+  eq(props.clock24, true, 'a pin save leaves the settings in the object it shares');
+  eq(props.futureThing, 'keep me', 'and leaves a future build\'s key alone');
+  ok(props.pinnedSessions && props.pinnedSessions['sess-1'], 'the pin lands beside them');
+})();
+
+/* Private browsing and a full quota both THROW. A lost setting is a nuisance;
+   a panel that stopped rendering over one would be the failure. */
+(function () {
+  var lines = [];
+  var ctx = panel({ storage: fakeStorage('throwGet'), console: { log: function (m) { lines.push(String(m)); } } });
+  var threw = null;
+  try { ctx.writePanelProperty('clock24', true); ctx.render(); } catch (e) { threw = e; }
+  ok(!threw, 'a throwing localStorage never breaks a write or a render  (' + (threw && threw.message) + ')');
+  eq(ctx.use24Clock(), true, 'the setting is kept in memory for the session instead');
+  ok(lines.some(function (l) { return /memory/i.test(l); }),
+    'one console line says so, and nothing goes on the glass');
+})();
+
+(function () {
+  var lines = [];
+  var st = fakeStorage('throwSet');
+  var ctx = panel({ storage: st, console: { log: function (m) { lines.push(String(m)); } } });
+  ctx.writePanelProperty('clock24', true);
+  eq(ctx.use24Clock(), true, 'a storage that reads but refuses the write degrades the same way');
+  eq(st.data.sidecrab, undefined, 'and nothing was written');
+})();
+
+/* The pairing code is read LIVE on every tap — never cached in a variable — so
+   a code pasted into the settings sheet is in force for the next Approve. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ panelToken: 'AAAA-BBBB' }) });
+  var ctx = panel({ storage: st });
+  eq(ctx.pairingCode(), 'AAAA-BBBB', 'the pairing code is read from the panel store');
+  st.data.sidecrab = JSON.stringify({ panelToken: 'CCCC-DDDD' });
+  eq(ctx.pairingCode(), 'CCCC-DDDD', 'read LIVE: a value changed between two reads is seen');
+})();
+
+/* The injected-global path is untouched, and the store is not consulted at all
+   when the host is supplying properties of its own. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ clock24: true, panelToken: 'BROWSER' }) });
+  var ctx = loadWidget({ props: { uniqueId: 'abc-123', clock24: false }, storage: st });
+  ok(ctx.insideIcue(), 'an injected uniqueId is what "inside iCUE" means');
+  eq(ctx.use24Clock(), false, 'inside iCUE the injected property wins');
+  eq(ctx.pairingCode(), '', 'inside iCUE the browser store is not consulted at all');
+  ctx.loadPrefs();
+  eq(ctx.prefsStoreKey, 'abc-123', 'inside iCUE the prefs key is still the host-injected uniqueId');
+})();
+
+(function () {
+  var ctx = panel();
+  ok(!ctx.insideIcue(), 'a served page with no injected uniqueId is not inside iCUE');
+  ctx.loadPrefs();
+  eq(ctx.prefsStoreKey, 'sidecrab', 'outside iCUE the prefs key is the origin\'s one object');
+})();
+
+/* THE ACCENT DEFAULT IS STATED THREE TIMES and they move together: :root in the
+   stylesheet, the property meta, and the strProp fallback that wins at runtime.
+   A drift renders one colour in a browser and another on the glass. */
+(function () {
+  var html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  var css = fs.readFileSync(path.join(__dirname, '..', 'styles', 'sidecrab.css'), 'utf8');
+  var js = fs.readFileSync(harness.SRC, 'utf8');
+  var meta = /name="x-icue-property"\s+content="accentColor"[^>]*data-default="'(#[0-9A-Fa-f]{6})'"/.exec(html);
+  var root = /\n\t--accent:\s*(#[0-9A-Fa-f]{6});/.exec(css);
+  var fallback = /strProp\('accentColor',\s*'(#[0-9A-Fa-f]{6})'\)/.exec(js);
+  ok(!!meta, 'index.html states the accent default');
+  ok(!!root, ':root in sidecrab.css states the accent default');
+  ok(!!fallback, 'the strProp fallback states the accent default');
+  eq([meta && meta[1], root && root[1]], [fallback && fallback[1], fallback && fallback[1]],
+    'the meta and :root both state the accent the JS fallback wins with');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {
