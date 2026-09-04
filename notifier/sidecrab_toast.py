@@ -136,6 +136,18 @@ def xml_escape(value: Any) -> str:
     return _sax_escape(_XML_ILLEGAL.sub("", str(value)))
 
 
+def strip_control(value: Any) -> str:
+    """The control-byte strip on its own, for a payload that is NOT XML.
+
+    Same character class as xml_escape's, deliberately: one rule for both adapters means one
+    rule to remember. The macOS route has no markup to break, and a different reason to strip
+    — a NUL in an argv element makes subprocess raise ValueError (measured), which is not one
+    of the failures the adapter converts to False, so the daemon would see a raise where the
+    contract promises a bool. Tab, newline and carriage return are content and are kept.
+    """
+    return _XML_ILLEGAL.sub("", str(value))
+
+
 #: Quote escapes saxutils.escape() does NOT apply by default. Numeric refs, not &apos;/&quot;
 #: names, because &apos; is the one XML predefined entity HTML parsers do not know and the
 #: payload crosses a WinRT boundary — a numeric ref is understood by every conformant reader.
@@ -1998,7 +2010,7 @@ def notification_text(request: ToastRequest) -> tuple[str, str, str]:
     label is already inside `request.title` (build_request composes "Claude is waiting — …"),
     and the approval hint is already at the end of `request.body`, so neither is moved here.
     """
-    return str(request.body), str(request.title), MAC_SUBTITLE
+    return strip_control(request.body), strip_control(request.title), strip_control(MAC_SUBTITLE)
 
 
 def run_osascript(argv: list[str], timeout: float) -> tuple[int, str, str]:

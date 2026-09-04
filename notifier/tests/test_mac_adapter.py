@@ -37,6 +37,7 @@ from sidecrab_toast import (  # noqa: E402
     MacNotificationAdapter,
     ToastRequest,
     build_request,
+    strip_control,
 )
 
 
@@ -182,6 +183,60 @@ class InjectionTests(unittest.TestCase):
         self.assertNotIn("shell", kwargs, "shell= must not be set at all")
         self.assertIn(HOSTILE_MULTILINE, args[0], "and the text is still one element")
         self.assertEqual(args[0][0], MAC_OSASCRIPT)
+
+
+#: The bands the notifier has stripped since the F1 fix: 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F.
+ILLEGAL = "".join(chr(c) for c in list(range(0x00, 0x09)) + [0x0B, 0x0C] + list(range(0x0E, 0x20)))
+
+#: The three that are real text and must survive: tab, newline, carriage return.
+LEGAL_WHITESPACE = "\t\n\r"
+
+
+class ControlCharacterTests(unittest.TestCase):
+    """One character class for both adapters. The Windows lane strips these because an
+    XML-1.0-illegal byte makes LoadXml reject the whole document (F1); this lane strips them
+    because a NUL in an argv element makes subprocess raise, and because a control byte is
+    not something a notification can render either way."""
+
+    def test_strip_control_drops_the_illegal_bands(self) -> None:
+        self.assertEqual(strip_control(f"a{ILLEGAL}b"), "ab")
+
+    def test_strip_control_keeps_tab_newline_and_return(self) -> None:
+        """0x09/0x0A/0x0D are content. A question written across two lines stays two lines."""
+        self.assertEqual(strip_control(f"a{LEGAL_WHITESPACE}b"), f"a{LEGAL_WHITESPACE}b")
+
+    def test_strip_control_keeps_every_metacharacter(self) -> None:
+        """It is a control-byte strip and nothing else — it must not become a sanitiser that
+        quietly mangles the text the operator is meant to read."""
+        self.assertEqual(strip_control(HOSTILE_MULTILINE), HOSTILE_MULTILINE)
+
+    def test_strip_control_never_raises_on_a_non_string(self) -> None:
+        self.assertEqual(strip_control(None), "None")
+
+    def test_every_argument_reaches_argv_stripped(self) -> None:
+        runner = RecordingRunner()
+        MacNotificationAdapter(runner=runner).show(
+            ToastRequest("s1", "t", f"ti{ILLEGAL}tle", f"bo{ILLEGAL}dy")
+        )
+        for argument in runner.argv[8:]:
+            for bad in ILLEGAL:
+                self.assertNotIn(bad, argument, repr(bad))
+        self.assertEqual(runner.argv[8], "body")
+        self.assertEqual(runner.argv[9], "title")
+
+    def test_a_multiline_question_still_reaches_argv_with_its_newline(self) -> None:
+        runner = RecordingRunner()
+        MacNotificationAdapter(runner=runner).show(ToastRequest("s1", "t", "t", "one\ntwo"))
+        self.assertEqual(runner.argv[8], "one\ntwo")
+
+    def test_a_null_byte_is_what_makes_the_strip_load_bearing(self) -> None:
+        """Not cosmetic. subprocess rejects an embedded NUL with ValueError — raised while
+        converting the arguments, before any process starts — and ValueError is not one of the
+        failures show() turns into False, so an unstripped NUL would reach the daemon as a
+        raise where the contract promises a bool. Measured with a path that does not exist:
+        the NUL is refused first, the missing executable second."""
+        with self.assertRaises(ValueError):
+            subprocess.run(["/nonexistent-sidecrab-probe", "a\x00b"], capture_output=True)
 
 
 if __name__ == "__main__":
