@@ -7,9 +7,10 @@ no security and no socket is ever touched.
 
 from __future__ import annotations
 
-import unittest
-
 import json
+import os
+import unittest
+from unittest import mock
 
 from _harness import TempHome, setup
 
@@ -477,6 +478,62 @@ class PanelApprovals(TempHome):
     def test_a_tty_that_answers_yes_turns_them_on(self):
         self.install(ask=lambda prompt: "y")
         self.assertIs(self.config()["panelApprovals"]["enabled"], True)
+
+
+class AtomicWrite(TempHome):
+    """The replace must not silently widen a file the operator narrowed."""
+
+    def writer(self):
+        return setup.Writer(lambda: self.clock)
+
+    def test_the_targets_mode_survives_the_replace_and_the_backup_keeps_it(self):
+        path = self.home / "secret.json"
+        path.write_text('{"a": 1}', encoding="utf-8")
+        path.chmod(0o600)
+
+        writer = self.writer()
+        backup = writer.write_json(path, {"a": 2})
+
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+    def test_a_first_ever_write_is_not_world_readable(self):
+        path = self.home / "new.json"
+        self.writer().write_json(path, {"a": 1})
+        self.assertEqual(path.stat().st_mode & 0o777 & 0o077, 0)
+
+    def test_the_bytes_are_flushed_and_fsynced_before_the_replace(self):
+        seen = []
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            seen.append(fd)
+            return real_fsync(fd)
+
+        path = self.home / "durable.json"
+        with mock.patch.object(os, "fsync", fsync):
+            self.writer().write_json(path, {"a": 1})
+        self.assertTrue(seen, "the temp file was replaced over the target without an fsync")
+
+    def test_an_unwritable_directory_is_a_refusal_not_a_traceback(self):
+        blocked = self.home / "blocked"
+        blocked.mkdir()
+        blocked.chmod(0o500)
+        self.addCleanup(blocked.chmod, 0o700)
+
+        with self.assertRaises(setup.SetupError) as caught:
+            self.writer().write_json(blocked / "x.json", {"a": 1})
+        self.assertIn(str(blocked / "x.json"), str(caught.exception))
+
+    def test_the_command_layer_turns_that_into_an_exit_code(self):
+        settings = self.home / ".claude"
+        settings.mkdir(parents=True)
+        (settings / "settings.json").write_text('{"model": "opus"}', encoding="utf-8")
+        settings.chmod(0o500)
+        self.addCleanup(settings.chmod, 0o700)
+
+        self.assertEqual(setup.main(["install", "--yes"], env=self.env()), 1)
+        self.assertIn("ERROR", self.output)
 
 
 class Uninstall(TempHome):

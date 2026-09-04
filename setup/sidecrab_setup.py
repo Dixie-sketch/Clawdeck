@@ -714,6 +714,10 @@ class Writer:
         self.backups: list[Path] = []
         self.written: list[Path] = []
 
+    #: A file this tool creates from nothing. Not 0644: ~/.sidecrab/config.json and the
+    #: chain file describe the operator's sessions, and nothing else needs to read them.
+    NEW_FILE_MODE = 0o600
+
     def backup(self, path: Path):
         path = Path(path)
         if path in self._backed_up or not path.exists():
@@ -721,7 +725,12 @@ class Writer:
             return None
         stamp = self._now().strftime("%Y%m%d-%H%M%S")
         target = path.with_name(f"{path.name}.sidecrab-bak-{stamp}")
-        target.write_bytes(path.read_bytes())
+        try:
+            # copy2, not write_bytes: a backup of a 0600 file that lands 0644 hands the
+            # contents to anyone on the machine, which is the opposite of a safety copy.
+            shutil.copy2(path, target)
+        except OSError as exc:
+            raise SetupError(f"{path} could not be backed up to {target} ({exc}). Nothing was written.") from exc
         self._backed_up.add(path)
         self.backups.append(target)
         return target
@@ -729,14 +738,29 @@ class Writer:
     def write_text(self, path: Path, text: str):
         path = Path(path)
         backup = self.backup(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # The mode the target already has, so a file the operator narrowed stays narrow:
+        # os.replace takes the TEMP file's mode, not the target's.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            mode = self.NEW_FILE_MODE
         # The temp sits BESIDE the target so the replace is a same-volume rename and
         # cannot degrade into copy+delete; the '-tmp-' infix is not '-bak-', so a
         # leftover could never be mistaken for a restorable backup.
         tmp = path.with_name(f"{path.name}.sidecrab-tmp-{uuid.uuid4().hex}")
         try:
-            tmp.write_text(text, encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                # Flush and fsync BEFORE the replace: without them the rename can land
+                # while the bytes are still in the page cache, and a crash leaves the
+                # target present and empty - the truncation the temp file exists to stop.
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, mode)  # O_CREAT's mode is masked by umask; this is not
             os.replace(tmp, path)
+        except OSError as exc:
+            raise SetupError(f"{path} could not be written ({exc}).") from exc
         finally:
             if tmp.exists():
                 tmp.unlink()
