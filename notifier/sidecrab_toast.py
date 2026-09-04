@@ -2002,15 +2002,38 @@ MAC_SCRIPT_END_RUN = "end run"
 #: only thing on screen that says which product raised it.
 MAC_SUBTITLE = "SideCrab"
 
+#: The composed-title budget. NOT TITLE_TRIM: that one caps the session LABEL, and a
+#: notification title is a composed line ("Claude is waiting — <label>", "Finished after
+#: 12h 34m — <label>"), so capping the composed line at 48 would eat the label the
+#: notification exists to name. Twice the label budget clears the longest prefix this file
+#: builds and still bounds the argument.
+MAC_TITLE_TRIM = TITLE_TRIM * 2
+
+
+def _mac_argument(value: Any, limit: int) -> str:
+    """One osascript argument: control bytes stripped, and capped at an existing budget.
+
+    Under budget the text is VERBATIM — a newline or a tab in a question is content, and the
+    argv boundary carries it. Over budget the existing trim() makes the cut, so an argument
+    that no decider trimmed ends up worded exactly like one that did.
+    """
+    text = strip_control(value)
+    return text if len(text) <= limit else trim(text, limit)
+
 
 def notification_text(request: ToastRequest) -> tuple[str, str, str]:
     """Pure: one request → the three positional arguments, in argv order (body, title, subtitle).
 
     Body first because `display notification` takes the body as its direct object. The session
     label is already inside `request.title` (build_request composes "Claude is waiting — …"),
-    and the approval hint is already at the end of `request.body`, so neither is moved here.
+    and the approval hint is already at the end of `request.body` (APPROVAL_BODY_TRIM reserves
+    it out of the budget), so neither is moved here.
     """
-    return strip_control(request.body), strip_control(request.title), strip_control(MAC_SUBTITLE)
+    return (
+        _mac_argument(request.body, BODY_TRIM),
+        _mac_argument(request.title, MAC_TITLE_TRIM),
+        _mac_argument(MAC_SUBTITLE, MAC_TITLE_TRIM),
+    )
 
 
 def run_osascript(argv: list[str], timeout: float) -> tuple[int, str, str]:

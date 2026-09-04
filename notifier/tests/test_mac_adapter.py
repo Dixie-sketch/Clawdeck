@@ -23,19 +23,26 @@ import subprocess
 import sys
 import unittest
 import unittest.mock
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOTIFIER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NOTIFIER_DIR))
 
 from sidecrab_toast import (  # noqa: E402
+    APPROVAL_HINT,
+    BODY_TRIM,
     MAC_OSASCRIPT,
     MAC_SCRIPT_DISPLAY_LINE,
     MAC_SCRIPT_END_RUN,
     MAC_SCRIPT_ON_RUN,
+    MAC_TITLE_TRIM,
     TITLE_TRIM,
     MacNotificationAdapter,
+    PendingPermission,
     ToastRequest,
+    build_approval_request,
+    build_long_run_request,
     build_request,
     strip_control,
 )
@@ -237,6 +244,64 @@ class ControlCharacterTests(unittest.TestCase):
         the NUL is refused first, the missing executable second."""
         with self.assertRaises(ValueError):
             subprocess.run(["/nonexistent-sidecrab-probe", "a\x00b"], capture_output=True)
+
+
+class ByteBudgetTests(unittest.TestCase):
+    """The arguments are bounded here as well as upstream. `build_request` trims what IT
+    composes; a request assembled any other way (a future decider, a `--test-*` flag) would
+    otherwise hand osascript an unbounded argument."""
+
+    def argv_for(self, request: ToastRequest) -> list[str]:
+        runner = RecordingRunner()
+        MacNotificationAdapter(runner=runner).show(request)
+        return runner.argv
+
+    def test_a_four_kilobyte_question_is_trimmed_the_way_build_request_trims(self) -> None:
+        argv = self.argv_for(
+            build_request({"id": "s1", "title": "the lane", "question": "x" * 4096}, "t")
+        )
+        self.assertEqual(len(argv[8]), BODY_TRIM)
+        self.assertTrue(argv[8].endswith("…"), "the existing ellipsis, not a hard cut")
+
+    def test_a_four_kilobyte_body_that_skipped_build_request_is_still_capped(self) -> None:
+        """The non-vacuous half: this request never passed through `trim`."""
+        argv = self.argv_for(ToastRequest("s1", "t", "title", "y" * 4096))
+        self.assertEqual(len(argv[8]), BODY_TRIM)
+
+    def test_the_approval_hint_survives_at_the_end_of_the_body(self) -> None:
+        """APPROVAL_BODY_TRIM reserves the hint out of the budget on purpose: the tool
+        summary is what gets cut, never the line telling the operator where to act."""
+        pending = PendingPermission(
+            session_id="s1", tool="Bash", summary="git push --force " + "z" * 400,
+            requested_at="2026-09-04T09:00:00Z",
+        )
+        argv = self.argv_for(build_approval_request(pending))
+        self.assertTrue(argv[8].endswith(APPROVAL_HINT), argv[8])
+        self.assertLessEqual(len(argv[8]), BODY_TRIM)
+
+    def test_a_long_title_is_capped(self) -> None:
+        argv = self.argv_for(ToastRequest("s1", "t", "T" * 4096, "body"))
+        self.assertEqual(len(argv[9]), MAC_TITLE_TRIM)
+
+    def test_a_composed_title_at_the_existing_label_budget_is_never_cut(self) -> None:
+        """Why the title budget is not TITLE_TRIM. That one caps the session LABEL, and the
+        notification title is "Claude is waiting — <label>" — capping the composed line at 48
+        would eat the very label the notification exists to name."""
+        label = "L" * TITLE_TRIM
+        argv = self.argv_for(build_request({"id": "s1", "title": label, "question": "q"}, "t"))
+        self.assertEqual(argv[9], f"Claude is waiting — {label}")
+        self.assertNotIn("…", argv[9])
+
+    def test_a_long_run_title_at_the_same_budget_is_never_cut(self) -> None:
+        """The longest prefix this file composes, so the budget is proven against the worst
+        real case rather than the common one."""
+        started = datetime(2026, 9, 4, 1, 0, 0, tzinfo=timezone.utc)
+        finished = started + timedelta(hours=12, minutes=34)
+        argv = self.argv_for(
+            build_long_run_request({"title": "L" * TITLE_TRIM}, "s1", started, finished)
+        )
+        self.assertNotIn("…", argv[9])
+        self.assertLess(len(argv[9]), MAC_TITLE_TRIM)
 
 
 if __name__ == "__main__":
