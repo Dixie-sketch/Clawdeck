@@ -3019,6 +3019,14 @@ class WindowsPlatform:
         return (int(status.ullTotalPhys), int(status.ullAvailPhys))
 
     @staticmethod
+    def server_reuse_address() -> bool:
+        """False. Windows SO_REUSEADDR lets a SECOND process bind a port that is
+        already being listened on, and the two servers then answer half the requests
+        each - the split feed measured during build QA. Refusing reuse is what turns
+        that into a loud "already running"."""
+        return False
+
+    @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
         return FLEET_TASKS
 
@@ -3093,6 +3101,17 @@ class DarwinPlatform:
         return None
 
     @staticmethod
+    def server_reuse_address() -> bool:
+        """True, and it is NOT the Windows setting under another name. BSD
+        SO_REUSEADDR does not admit a second listener on an address something is
+        already listening on, so a collision still fails loudly here; all it permits is
+        a fresh listener taking a port that a CLOSED connection still holds in
+        TIME_WAIT. Without it crabd restarted inside that window cannot have its own
+        port back, and prints the "another process is holding it" message about its own
+        dead connection."""
+        return True
+
+    @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
         # PROVISIONAL. Stage 3 (fleet state on launchd) is what installs the agents and
         # pins these labels against a measured `launchctl print`; until then nothing
@@ -3130,6 +3149,13 @@ class NullPlatform:
     @staticmethod
     def memory() -> tuple[int, int] | None:
         return None
+
+    @staticmethod
+    def server_reuse_address() -> bool:
+        """True, for the same reason as Darwin: Linux SO_REUSEADDR does not admit a
+        second listener either, and a CI run that restarts crabd back to back is the
+        exact TIME_WAIT case."""
+        return True
 
     @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
@@ -7196,10 +7222,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class CrabdServer(ThreadingHTTPServer):
-    # Windows SO_REUSEADDR lets a SECOND crabd bind the same port and answer half the
-    # requests - two instances raced during build QA. Refusing reuse turns that into
-    # a loud "already running" instead of a silently split feed.
-    allow_reuse_address = False
+    # SO_REUSEADDR is a per-platform ANSWER, not a constant, because the option means
+    # two different things: on Windows it admits a second listener on a port already
+    # being listened on (two crabds answering half the requests each - measured during
+    # build QA), and on BSD/Linux it does not, so all it buys there is a restart inside
+    # the TIME_WAIT window of the last connection. Each platform class says which it is;
+    # a collision is loud on all three either way.
+    allow_reuse_address = PLATFORM.server_reuse_address()
     daemon_threads = True
     # socketserver's default accept backlog is FIVE. That was survivable while crabd
     # only saw hook POSTs; it is not now that the control surface is wired. The status

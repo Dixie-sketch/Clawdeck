@@ -10,6 +10,7 @@ rather than a constant.
 """
 
 import contextlib
+import http.client
 import io
 import os
 import re
@@ -17,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -292,6 +294,52 @@ class PortCollisionTests(unittest.TestCase):
             code = crabd.main()
         self.assertEqual(code, 1)
         self.assertIn("crabd: 9999 is held by pid 4", err.getvalue())
+
+
+# --------------------------------------------------------------- A5: socket reuse
+
+class SocketReuseTests(unittest.TestCase):
+    """The server takes its reuse answer from the platform, and a collision is still
+    loud on every one of them."""
+
+    def test_the_server_asks_the_platform_rather_than_deciding_itself(self):
+        self.assertIs(crabd.CrabdServer.allow_reuse_address,
+                      crabd.PLATFORM.server_reuse_address())
+
+    def test_two_servers_on_one_port_still_collide(self):
+        """The safety the Windows answer was protecting, asserted on whatever host is
+        running this. SO_REUSEADDR on BSD and Linux does not admit a second listener, so
+        turning it on there cannot bring the split feed back."""
+        first = crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler)
+        self.addCleanup(first.server_close)
+        with self.assertRaises(OSError):
+            second = crabd.CrabdServer(("127.0.0.1", first.server_address[1]),
+                                       crabd.Handler)
+            second.server_close()
+
+    @unittest.skipUnless(sys.platform == "darwin",
+                         "the TIME_WAIT rebind is the BSD/macOS answer's whole point")
+    def test_a_restart_inside_time_wait_binds_the_same_port_again(self):
+        """The ordinary restart. One request answered with `Connection: close` makes
+        crabd the side that closes first, which is the side that holds the 4-tuple in
+        TIME_WAIT; without reuse the very next start cannot have its own port back, and
+        the operator reads a message about another process holding it."""
+        server = crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/v1/health", headers={"Connection": "close"})
+            response = conn.getresponse()
+            response.read()
+            conn.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+        again = crabd.CrabdServer(("127.0.0.1", port), crabd.Handler)
+        again.server_close()
 
 
 if __name__ == "__main__":

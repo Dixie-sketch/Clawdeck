@@ -96,7 +96,8 @@ class PlatformSurfaceTests(unittest.TestCase):
     """
 
     SURFACE = {"cpu_times", "memory", "fleet_targets", "service_query",
-               "service_status", "read_limits_token", "cli_credentials"}
+               "service_status", "read_limits_token", "cli_credentials",
+               "server_reuse_address"}
     PLATFORMS = (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform)
 
     @staticmethod
@@ -128,6 +129,27 @@ class PlatformSurfaceTests(unittest.TestCase):
                 kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
                          for cls in self.PLATFORMS}
                 self.assertEqual(len(set(kinds.values())), 1, kinds)
+
+
+class SocketReusePlatformTests(unittest.TestCase):
+    """SO_REUSEADDR means two different things, so it is a platform ANSWER.
+
+    On Windows it lets a SECOND process bind a port that is already being listened on -
+    two crabds then answer half the requests each, which is the split feed that was
+    measured during build QA. Refusing reuse there turns that into a loud "already
+    running".
+
+    On BSD and Linux it does NOT admit a second listener; all it does is let a fresh
+    listener take a port that a CLOSED connection still holds in TIME_WAIT. Refusing it
+    there buys no safety at all and costs the ordinary restart: crabd stopped and started
+    again inside the TIME_WAIT window cannot bind, and prints the "another process is
+    holding it" message about its own dead connection.
+    """
+
+    def test_windows_refuses_reuse_and_the_other_two_take_it(self):
+        self.assertIs(crabd.WindowsPlatform().server_reuse_address(), False)
+        self.assertIs(crabd.DarwinPlatform().server_reuse_address(), True)
+        self.assertIs(crabd.NullPlatform().server_reuse_address(), True)
 
 
 class CliCredentialsAreOneReaderTests(unittest.TestCase):
