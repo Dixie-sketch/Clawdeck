@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ------------------------------------------------------------------ constants
@@ -72,6 +72,31 @@ LIMITS_TOKEN_PREFIX = "sk-ant-"
 #: The Keychain item crabd stores the long-lived token under. Probed by exit code here
 #: and never read: `security find-generic-password -w` would print the secret.
 KEYCHAIN_SERVICE = "SideCrab limits token"
+
+#: The schema the panel and this build of crabd agree on (docs/STATE-CONTRACT.md).
+SCHEMA_EXPECTED = 5
+STATE_REQUIRED_KEYS = ("schema", "generatedAt", "crabd", "limits", "burn", "sessions")
+
+#: The panel calls the feed stale at 30 s. Same number here on purpose: the doctor must
+#: fail exactly when the panel would show its stale banner, not a second later.
+STALE_SEC = 30
+
+#: What a served panel carries. A 200 alone proves only that SOMETHING is on the port.
+PANEL_TITLE = "<title>SideCrab"
+
+#: Below this, the doctor's own fake needs_input could mature past the notifier's
+#: threshold mid-run and raise a real toast about a session that does not exist.
+MIN_SAFE_THRESHOLD_SEC = 60
+TOAST_DEFAULT_THRESHOLD_SEC = 120
+
+#: The one session the doctor writes, and the one it probes the header gate with. The
+#: probe id never exists, so an accepted probe - the failing case - still changes nothing.
+SMOKE_SESSION_ID = "smoke-test"
+HEADER_PROBE_SESSION_ID = "sidecrab-header-probe"
+
+HEALTH_RETRY_SEC = 3
+HOOK_WAIT_POLLS = 20
+HOOK_POLL_SEC = 0.7
 
 #: The floor. 3.13 is what the project targets; below it the LaunchAgent would run an
 #: interpreter this code has never been exercised on.
@@ -527,7 +552,7 @@ class Environment:
             repo_root=root,
             uid=os.getuid(),
             user=getpass.getuser(),
-            now=datetime.now,
+            now=lambda: datetime.now().astimezone(),
             run=_default_run,
             http_get=_default_http,
             http_post=_default_http,
@@ -1296,6 +1321,367 @@ def command_status(env: Environment, args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ doctor
+
+
+@dataclass(frozen=True)
+class Row:
+    """One doctor row: PASS, FAIL or SKIP, and the detail that makes it actionable."""
+
+    check: str
+    verdict: str
+    detail: str = ""
+
+
+def parse_iso8601(text) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def state_lag_seconds(generated_at, now) -> float | None:
+    """Seconds between generatedAt and now, or None when generatedAt is unparseable.
+
+    A naive value on either side is read as UTC - crabd stamps generatedAt in UTC, and
+    the real Environment hands out an aware clock.
+    """
+    parsed = parse_iso8601(generated_at)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    reference = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    return (reference - parsed).total_seconds()
+
+
+def parse_widget_schema_max(repo_root) -> int | None:
+    path = Path(repo_root) / "widget" / "scripts" / "sidecrab.js"
+    try:
+        match = re.search(r"SCHEMA_MAX\s*=\s*(\d+)", path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return int(match.group(1)) if match else None
+
+
+def parse_notifier_schemas(repo_root) -> set[int] | None:
+    path = Path(repo_root) / "notifier" / "sidecrab_toast.py"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"SUPPORTED_SCHEMAS\s*=\s*frozenset\(\{([0-9,\s]+)\}\)", text)
+    if not match:
+        return None
+    return {int(part) for part in match.group(1).split(",") if part.strip()}
+
+
+def get_json(env: Environment, path: str, timeout=5.0):
+    status, body = env.http_get(f"{BASE_URL}{path}", headers=dict(PANEL_HEADER), timeout=timeout)
+    if status != 200:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
+def health_with_retry(env: Environment):
+    """One health reading with ONE retry after a backoff, and an honest account of it.
+
+    A single GET can read a healthy crabd as dead right after a restart. Swallowing the
+    first failure silently would hide the other half: a crabd that needs two attempts is
+    not the same as one that answers first time, and the operator gets to decide whether
+    that matters.
+    """
+    first = get_json(env, "/v1/health", timeout=3)
+    if first:
+        return first, True, False
+    env.sleep(HEALTH_RETRY_SEC)
+    second = get_json(env, "/v1/health", timeout=3)
+    return second, bool(second), bool(second)
+
+
+def post_hook(env: Environment, event: str, session_id: str, headers=None, message=None):
+    payload = {"session_id": session_id, "hook_event_name": event, "cwd": str(env.repo_root)}
+    if message:
+        payload["message"] = message
+    status, _body = env.http_post(
+        f"{BASE_URL}/v1/hook",
+        body=json.dumps(payload),
+        headers=dict(PANEL_HEADER) if headers is None else headers,
+        timeout=5,
+    )
+    return status
+
+
+def wait_for_state(env: Environment, predicate, polls: int = HOOK_WAIT_POLLS):
+    """Poll /v1/state until the predicate holds. crabd rebuilds every ~2 s, so the wait
+    IS the assertion - a hook is never visible on the very next read."""
+    for attempt in range(polls):
+        state = get_json(env, "/v1/state")
+        if state is not None and predicate(state):
+            return True, state
+        if attempt + 1 < polls:
+            env.sleep(HOOK_POLL_SEC)
+    return False, None
+
+
+def state_session(state, session_id):
+    for row in (state or {}).get("sessions") or []:
+        if isinstance(row, dict) and row.get("id") == session_id:
+            return row
+    return None
+
+
+def toast_threshold_sec(env: Environment) -> int:
+    try:
+        config = read_json_object(env.config_path, "config.json")
+    except SetupError:
+        return TOAST_DEFAULT_THRESHOLD_SEC
+    toast = config.get("toast")
+    if isinstance(toast, dict) and isinstance(toast.get("thresholdSec"), int):
+        return int(toast["thresholdSec"])
+    return TOAST_DEFAULT_THRESHOLD_SEC
+
+
+def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row]:
+    """Every row, in the documented order. Read-only but for one self-cleaning cycle."""
+    rows: list[Row] = []
+
+    def add(check, ok, detail="", skip=False):
+        rows.append(Row(check, "SKIP" if skip else ("PASS" if ok else "FAIL"), detail))
+
+    disabled = disabled_labels(env)
+
+    # -- the agents
+    for spec in AGENTS:
+        installed = (env.agents_dir / f"{spec.label}.plist").exists()
+        if spec.key == "toast" and not installed:
+            add("agent toast", True, "the notifier is not installed - n/a", skip=True)
+            continue
+        if spec.label in disabled:
+            # A DISABLED label is a stated decision, not a fault.
+            add(f"agent {spec.key}", True, f"{spec.label} disabled by the operator - deliberate")
+            continue
+        state = agent_state(env, spec.label)
+        running = state.loaded and state.state == "running"
+        detail = f"{spec.label} {state.state}" + (f", pid {state.pid}" if state.pid else "")
+        add(f"agent {spec.key}", running, detail)
+
+    # -- the interpreter
+    try:
+        python = env.resolve_python()
+        add("python", True, python)
+    except SetupError as exc:
+        add("python", False, str(exc).splitlines()[0])
+
+    # -- health, with one retry
+    health, health_ok, recovered = health_with_retry(env)
+    version = (health or {}).get("version")
+    detail = f"crabd {version}" if health_ok else f"no answer on {BASE_URL}/v1/health"
+    if recovered:
+        detail += " (recovered on retry - the first attempt failed)"
+    add("health", health_ok, detail)
+
+    # -- the feed
+    state = get_json(env, "/v1/state")
+    add(
+        "state reachable",
+        state is not None,
+        f"{len(state.get('sessions') or [])} session(s)" if state else f"GET {BASE_URL}/v1/state failed",
+    )
+    served = state.get("schema") if isinstance(state, dict) else None
+    if state is None:
+        add("state schema", True, "no state document", skip=True)
+        add("state freshness", True, "no state document", skip=True)
+    else:
+        missing = [k for k in STATE_REQUIRED_KEYS if k not in state]
+        add(
+            "state schema",
+            not missing and served == SCHEMA_EXPECTED,
+            f"missing key(s): {', '.join(missing)}" if missing
+            else f"schema {served} (expected {SCHEMA_EXPECTED})",
+        )
+        lag = state_lag_seconds(state.get("generatedAt"), env.now())
+        add(
+            "state freshness",
+            lag is not None and lag < STALE_SEC,
+            f"unparseable generatedAt {state.get('generatedAt')!r}" if lag is None
+            else f"generatedAt lag {lag:.1f}s (limit {STALE_SEC}s)",
+        )
+
+    # -- the panel itself
+    status, body = env.http_get(f"{BASE_URL}/", headers=dict(PANEL_HEADER), timeout=5)
+    served_panel = status == 200 and PANEL_TITLE in (body or "")
+    add(
+        "panel",
+        served_panel,
+        f"GET {BASE_URL}/ is {status}" + ("" if served_panel else f" and does not carry {PANEL_TITLE}"),
+    )
+
+    schema_max = parse_widget_schema_max(env.repo_root)
+    if schema_max is None or served is None:
+        add("panel schema", True, "no SCHEMA_MAX or no state document", skip=True)
+    else:
+        add(
+            "panel schema",
+            schema_max >= served,
+            f"crabd serves {served}; the panel accepts up to {schema_max}"
+            + ("" if schema_max >= served else " - it will show nothing"),
+        )
+
+    toast_installed = (env.agents_dir / "com.sidecrab.toast.plist").exists()
+    accepted = parse_notifier_schemas(env.repo_root)
+    if not toast_installed:
+        add("notifier schema", True, "the notifier is not installed - n/a", skip=True)
+    elif accepted is None or served is None:
+        add("notifier schema", False, "could not read SUPPORTED_SCHEMAS or no state document")
+    else:
+        add(
+            "notifier schema",
+            served in accepted,
+            f"crabd serves {served}; the notifier accepts {sorted(accepted)}"
+            + ("" if served in accepted else " - it will never toast"),
+        )
+
+    # -- the header gate, proved live. SessionEnd for an id that never existed, so an
+    # -- accepted probe (the failing case) still changes nothing.
+    unheadered = post_hook(env, "SessionEnd", HEADER_PROBE_SESSION_ID, headers={})
+    add(
+        "hook header",
+        unheadered == 403,
+        f"a POST to /v1/hook without {list(PANEL_HEADER)[0]} answered {unheadered} "
+        f"(expected 403)",
+    )
+
+    # -- the hook round trip
+    already_live = state_session(state, session_id) is not None
+    threshold = toast_threshold_sec(env)
+    notify_safe = threshold >= MIN_SAFE_THRESHOLD_SEC
+    if already_live:
+        for check in ("hook SessionStart", "hook Notification", "hook SessionEnd"):
+            add(check, True, f"session id {session_id!r} is already live", skip=True)
+    else:
+        try:
+            posted = [f"SessionStart={post_hook(env, 'SessionStart', session_id)}"]
+            appeared, seen = wait_for_state(
+                env, lambda s: state_session(s, session_id) is not None
+            )
+            row = state_session(seen, session_id) if appeared else None
+            add(
+                "hook SessionStart",
+                appeared,
+                f"row appeared, state {row.get('state')!r}" if appeared
+                else f"row never appeared ({' '.join(posted)})",
+            )
+            if notify_safe:
+                posted.append(
+                    "Notification=%s"
+                    % post_hook(
+                        env,
+                        "Notification",
+                        session_id,
+                        message="SideCrab doctor - not a real question",
+                    )
+                )
+                waiting, _seen = wait_for_state(
+                    env,
+                    lambda s: (state_session(s, session_id) or {}).get("state") == "needs_input",
+                )
+                add(
+                    "hook Notification",
+                    waiting,
+                    "row moved to needs_input" if waiting else "row never reached needs_input",
+                )
+            else:
+                add(
+                    "hook Notification",
+                    True,
+                    f"toast thresholdSec={threshold} < {MIN_SAFE_THRESHOLD_SEC}s - a real toast "
+                    "would fire about a session that does not exist",
+                    skip=True,
+                )
+        finally:
+            # ALWAYS. A failed assertion above must not strand a phantom row in the panel.
+            posted.append(f"SessionEnd={post_hook(env, 'SessionEnd', session_id)}")
+            gone, _seen = wait_for_state(env, lambda s: state_session(s, session_id) is None)
+            add(
+                "hook SessionEnd",
+                gone,
+                f"row cleared ({' '.join(posted)})" if gone
+                else f"row still served after SessionEnd ({' '.join(posted)})",
+            )
+    add(
+        "hook cycle",
+        not already_live,
+        f"session id {session_id!r} was free" if not already_live
+        else f"session id {session_id!r} is already live - the cycle was not run",
+    )
+
+    # -- the files
+    try:
+        config = read_json_object(env.config_path, "config.json")
+        add(
+            "config.json",
+            True,
+            f"{env.config_path} absent - defaults apply" if not env.config_path.exists()
+            else f"parses; keys: {', '.join(config)}",
+        )
+    except SetupError as exc:
+        add("config.json", False, str(exc).splitlines()[0])
+
+    settings = read_settings_quietly(env)
+    row = statusline_row(env, settings)
+    script = Path(env.repo_root) / "hooks" / "sidecrab_statusline.py"
+    installed = row.startswith("ours")
+    points_here = str(script) in str((settings or {}).get("statusLine", {}).get("command", ""))
+    add(
+        "statusline chain",
+        installed and points_here and script.exists() and "NO chain file" not in row,
+        row + ("" if points_here else f" - the command does NOT point at {script}"),
+    )
+
+    # Reported, never judged: the gauges reading the CLI token is the ordinary state.
+    limits = (state or {}).get("limits") if isinstance(state, dict) else None
+    stored = "long-lived token stored" if keychain_has_limits_token(env) else "none stored"
+    if isinstance(limits, dict) and limits.get("available"):
+        add("limits token", True, f"gauges live via {limits.get('tokenSource', 'cli')}; {stored}")
+    else:
+        note = (limits or {}).get("note", "no state document")
+        add("limits token", True, f"gauges dark: {note}; {stored}")
+
+    # OFF is a posture and is reported; ON is judged, because config saying "taps decide"
+    # while the hook cannot reach crabd is the silent failure worth catching.
+    approvals = approvals_row(env, settings)
+    if approvals.startswith("ON"):
+        wired = any(event == "PermissionRequest" for event, _ in hook_events(settings or {}))
+        allowed = settings is None or hook_url_allowed(
+            f"{BASE_URL}/v1/hook/permission", settings.get("allowedHttpHookUrls")
+        )
+        add("panel approvals", wired and allowed and env.token_path.exists(), approvals)
+    else:
+        add("panel approvals", True, approvals)
+
+    return rows
+
+
+def doctor_exit_code(rows) -> int:
+    return 1 if any(row.verdict == "FAIL" for row in rows) else 0
+
+
+def command_doctor(env: Environment, args) -> int:
+    env.emit(f"SideCrab doctor ({BASE_URL})")
+    env.emit(f"  repo: {env.repo_root}")
+    rows = run_doctor(env)
+    for row in rows:
+        env.emit(f"  {row.verdict:<4} {row.check:<18} {row.detail}")
+    failed = [row for row in rows if row.verdict == "FAIL"]
+    env.emit("")
+    env.emit(f"{len(rows)} check(s): {len(rows) - len(failed)} passed or skipped, {len(failed)} failed")
+    return doctor_exit_code(rows)
+
+
 def command_pairing_code(env: Environment, args) -> int:
     if not env.token_path.exists():
         env.emit(
@@ -1389,6 +1775,7 @@ COMMANDS = {
     "pairing-code": command_pairing_code,
     "limits-token": command_limits_token,
     "status": command_status,
+    "doctor": command_doctor,
 }
 
 
@@ -1409,6 +1796,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--yes", action="store_true", help="never prompt; take every default")
 
     sub.add_parser("status", help="read-only: what is installed, wired and answering")
+    sub.add_parser("doctor", help="a PASS/FAIL table over the whole chain a session travels")
     sub.add_parser("update", help="refresh the plists from this checkout and restart crabd")
     sub.add_parser("pairing-code", help="print the code crabd minted, and where to enter it")
     # No token argument: the value is read from stdin so it never lands in argv.
