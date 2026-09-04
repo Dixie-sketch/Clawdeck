@@ -7719,15 +7719,43 @@ class ContinueEndpointTests(V12ServedTests):
             self.assertEqual(json.loads(body), {}, raw)
 
 
+#: The versioned-directory layout, measured on this Mac 2026-09-04:
+#: ~/.local/bin/claude -> ~/.local/share/claude/versions/2.1.260, a Mach-O executable.
+_CLAUDE_VERSIONS_DIR = "versions"
+#: The npm layout, the same two path segments the WinGet path below ends with.
+_CLAUDE_NPM_SEGMENTS = ("@anthropic-ai", "claude-code")
+
+
+def _claude_layout_version(path: Path) -> str | None:
+    """The CLI version this resolved path DECLARES, or None if the path is not in a
+    layout the CLI actually installs in.
+
+    Recognising the layout is not fussiness, it is the difference between skipping and
+    a false alarm: mise / nvm / asdf put a `#!/bin/sh` wrapper named `claude` on PATH,
+    and streaming EVIDENCE needles at a shell script fails every one of them with a
+    message that says the CLI changed under a shipping write path.
+    """
+    if path.parent.name == _CLAUDE_VERSIONS_DIR:
+        return path.name                     # .../versions/<version>
+    parts = path.parts
+    if any(parts[i:i + 2] == _CLAUDE_NPM_SEGMENTS for i in range(len(parts) - 1)):
+        manifest = path.parent.parent / "package.json"
+        try:
+            return json.loads(manifest.read_text(encoding="utf-8"))["version"]
+        except Exception:   # noqa: BLE001 - a missing/renamed manifest is not the claim
+            return "unknown"
+    return None
+
+
 def _shipped_claude_binary():
     """The shipped CLI, or None. `CRABD_CLAUDE_BINARY` overrides for a differently
     installed host.
 
     Two defaults, because the CLI installs two different ways. Windows: the WinGet-
     managed Node install, named in full. Elsewhere: whatever `claude` PATH points at,
-    RESOLVED - the launcher is normally a symlink into a versioned directory
-    (~/.local/bin/claude -> ~/.local/share/claude/versions/<v>), and the pin streams the
-    file itself.
+    RESOLVED (the launcher is a symlink into a versioned directory) and then CHECKED
+    against the layouts above - an unrecognised one is None, so the pin skips rather
+    than measuring something that is not the CLI.
     """
     override = os.environ.get("CRABD_CLAUDE_BINARY")
     if override:
@@ -7744,7 +7772,9 @@ def _shipped_claude_binary():
     if not found:
         return None
     path = Path(found).resolve()
-    return path if path.is_file() else None
+    if not path.is_file() or _claude_layout_version(path) is None:
+        return None
+    return path
 
 
 @unittest.skipIf(sys.platform == "win32",
@@ -7759,40 +7789,99 @@ class ShippedClaudeBinaryPathLookupTests(unittest.TestCase):
     """
 
     def setUp(self):
+        """PATH is set to a temp bin/ and the REAL shutil.which runs over it. A stubbed
+        `which` would let a test assert a shape the resolver never actually produces -
+        executability and dangling links are its rules, not this file's."""
         override = os.environ.pop("CRABD_CLAUDE_BINARY", None)
         if override is not None:
             self.addCleanup(os.environ.__setitem__, "CRABD_CLAUDE_BINARY", override)
-        original = shutil.which
-        self.addCleanup(lambda: setattr(shutil, "which", original))
+        original_path = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", original_path)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        os.environ["PATH"] = str(self.bin)
 
-    def test_a_symlinked_launcher_on_path_resolves_to_the_real_file(self):
-        real = self.root / "versions" / "2.1.260"
-        real.parent.mkdir()
-        real.write_bytes(b"\x7fELF")
-        link = self.root / "claude"
-        link.symlink_to(real)
-        shutil.which = lambda name: str(link) if name == "claude" else None
+    def launcher(self, target: Path):
+        """`claude` on PATH, as a symlink - which is how every installer writes it."""
+        (self.bin / "claude").symlink_to(target)
+
+    def executable(self, path: Path, body=b"\x7fELF\x02\x01\x01"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        path.chmod(0o755)
+        return path
+
+    def test_the_versioned_directory_layout_resolves_to_the_real_file(self):
+        """The layout measured on this Mac:
+        ~/.local/bin/claude -> ~/.local/share/claude/versions/<version>."""
+        real = self.executable(self.root / "share" / "claude" / "versions" / "2.1.260")
+        self.launcher(real)
         found = _shipped_claude_binary()
         # real.resolve() rather than real: macOS's own temp root is a symlink
         # (/var/folders -> /private/var/folders), so the expectation has to be resolved
         # too or this asserts the platform's quirk instead of the lookup's behaviour.
         self.assertEqual(found, real.resolve())
-        self.assertNotEqual(found, link)          # the symlink itself is not the answer
+        self.assertNotEqual(found, self.bin / "claude")   # the symlink is not the answer
+
+    def test_the_npm_layout_is_accepted_too(self):
+        real = self.executable(self.root / "node_modules" / "@anthropic-ai" /
+                               "claude-code" / "cli.js")
+        self.launcher(real)
+        self.assertEqual(_shipped_claude_binary(), real.resolve())
+
+    def test_a_shell_shim_on_path_is_refused(self):
+        """THE ONE THAT MATTERS. mise / nvm / asdf put a `#!/bin/sh` wrapper named
+        `claude` on PATH. Its bytes are a shell script, so every EVIDENCE needle is
+        missing from it - and the shape pin would then hard-fail saying the CLI changed
+        under a shipping write path, which is the exact false alarm its docstring
+        forbids. An unrecognised layout must SKIP, not fail."""
+        shim = self.executable(self.bin / "claude",
+                               b"#!/bin/sh\nexec mise x -- claude \"$@\"\n")
+        self.assertTrue(shim.is_file())          # it really is on PATH and executable
+        self.assertIsNone(_shipped_claude_binary())
 
     def test_no_claude_on_path_is_none_rather_than_a_crash(self):
         """The CI case. None means SKIP downstream, which is the honest answer where
         there is nothing to measure."""
-        shutil.which = lambda name: None
         self.assertIsNone(_shipped_claude_binary())
 
-    def test_a_path_entry_that_is_not_a_file_is_none(self):
-        directory = self.root / "claude"
-        directory.mkdir()
-        shutil.which = lambda name: str(directory)
+    def test_a_dangling_launcher_is_none(self):
+        """shutil.which filters it (os.access follows the link and fails), and the
+        is_file() check behind it is the belt to that brace."""
+        self.launcher(self.root / "share" / "claude" / "versions" / "gone")
         self.assertIsNone(_shipped_claude_binary())
+
+
+class ShippedClaudeVersionTests(unittest.TestCase):
+    """The version NAMED in the pin's failure message. Never asserted - a CLI upgrade
+    is a healthy night - but it has to be right or the message misdirects."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_the_versioned_directory_names_the_version(self):
+        path = self.root / "share" / "claude" / "versions" / "2.1.260"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "2.1.260")
+
+    def test_the_npm_layout_still_reads_its_manifest(self):
+        pkg = self.root / "node_modules" / "@anthropic-ai" / "claude-code"
+        (pkg / "bin").mkdir(parents=True)
+        (pkg / "package.json").write_text('{"version": "2.1.199"}', encoding="utf-8")
+        path = pkg / "bin" / "claude"
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "2.1.199")
+
+    def test_a_layout_with_neither_says_unknown(self):
+        path = self.root / "claude"
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "unknown")
 
 
 class StopContinueShapeBinaryPinTests(unittest.TestCase):
@@ -7856,12 +7945,12 @@ class StopContinueShapeBinaryPinTests(unittest.TestCase):
     @staticmethod
     def _version(path):
         """Named in the failure message, NOT asserted. The evidence strings are the pin;
-        a CLI upgrade is a healthy night and must not redden this suite on its own."""
-        manifest = path.parent.parent / "package.json"
-        try:
-            return json.loads(manifest.read_text(encoding="utf-8"))["version"]
-        except Exception:   # noqa: BLE001 - a missing/renamed manifest is not the claim
-            return "unknown"
+        a CLI upgrade is a healthy night and must not redden this suite on its own.
+
+        The versioned-directory layout names the version in the file name and carries no
+        manifest beside it; the npm layout reads package.json. Same recogniser the
+        lookup uses, so a path the lookup accepted always has an answer here."""
+        return _claude_layout_version(path) or "unknown"
 
     @staticmethod
     def _count(path, needles):
