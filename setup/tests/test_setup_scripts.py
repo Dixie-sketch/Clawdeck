@@ -11,6 +11,7 @@ import os
 import stat
 import subprocess
 import unittest
+from pathlib import Path
 
 from _harness import SETUP_DIR, TempHome
 
@@ -58,7 +59,7 @@ class ShellWrapper(TempHome):
         bindir = self._fake_python("3.13", argv_log=log)
         result = self._run("install.sh", "--status", bindir=bindir)
         self.assertEqual(result.returncode, 0, result.stderr)
-        recorded = open(log, encoding="utf-8").read().split()
+        recorded = Path(log).read_text(encoding="utf-8").split()
         self.assertEqual(recorded, [str(SETUP_DIR / "sidecrab_setup.py"), "status"])
 
     def test_every_wrapper_maps_onto_its_own_command(self):
@@ -72,8 +73,51 @@ class ShellWrapper(TempHome):
                 bindir = self._fake_python("3.14", argv_log=log)
                 result = self._run(script, bindir=bindir)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                recorded = open(log, encoding="utf-8").read().split()
+                recorded = Path(log).read_text(encoding="utf-8").split()
                 self.assertEqual(recorded[1], expected)
+
+    def test_a_bare_name_in_sidecrab_python_is_resolved_through_path(self):
+        # The Python side does the same in absolute_override(); the plist needs the
+        # absolute path either way.
+        log = str(self.home.parent / "argv-barename.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "python3",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "status")
+
+    def test_a_sidecrab_python_that_resolves_to_nothing_is_refused_by_name(self):
+        bindir = self._fake_python("3.13")
+        env = {
+            "PATH": bindir,
+            "HOME": str(self.home),
+            "SIDECRAB_PYTHON_DIRS": "",
+            "SIDECRAB_PYTHON": "nosuchpython",
+        }
+        result = subprocess.run(
+            ["/bin/sh", str(SETUP_DIR / "install.sh"), "--status"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nosuchpython", result.stderr)
+        self.assertIn("did not resolve", result.stderr)
+
+    def test_an_empty_extra_dirs_value_means_none_on_the_shell_side_too(self):
+        # Proved by the fact that every other case in this file runs with
+        # SIDECRAB_PYTHON_DIRS="" and a PATH holding only the fake: a shell that fell
+        # back to the Homebrew defaults would find the real 3.14 and pass the 3.9 case.
+        bindir = self._fake_python("3.9")
+        result = self._run("install.sh", "--status", bindir=bindir)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No usable Python", result.stdout + result.stderr)
 
     def test_sidecrab_python_overrides_the_search(self):
         log = str(self.home.parent / "argv-override.log")
@@ -88,7 +132,7 @@ class ShellWrapper(TempHome):
             timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(open(log, encoding="utf-8").read().split()[1], "doctor")
+        self.assertEqual(Path(log).read_text(encoding="utf-8").split()[1], "doctor")
 
 
 if __name__ == "__main__":

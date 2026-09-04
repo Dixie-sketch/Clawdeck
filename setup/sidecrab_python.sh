@@ -35,13 +35,33 @@ sidecrab_py_ok() {
     [ "$_maj" -eq "$SIDECRAB_PY_MIN_MAJOR" ] && [ "$_min" -ge "$SIDECRAB_PY_MIN_MINOR" ]
 }
 
+sidecrab_py_absolute() {
+    # $SIDECRAB_PYTHON as an absolute path, or empty. The plist stores whatever this
+    # resolves to and a LaunchAgent has no working directory, so `python3.13` and
+    # `./python3` must both end up absolute. Same rule as absolute_override().
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        */*) printf '%s\n' "$(pwd)/${1#./}" ;;
+        *) command -v -- "$1" 2>/dev/null | while IFS= read -r _p; do
+               case "$_p" in /*) printf '%s\n' "$_p" ;; esac
+           done ;;
+    esac
+}
+
 sidecrab_find_python() {
     if [ -n "${SIDECRAB_PYTHON:-}" ]; then
-        if sidecrab_py_ok "$SIDECRAB_PYTHON"; then
-            SIDECRAB_PY=$SIDECRAB_PYTHON
+        _abs=$(sidecrab_py_absolute "$SIDECRAB_PYTHON")
+        if [ -n "$_abs" ] && [ -x "$_abs" ] && sidecrab_py_ok "$_abs"; then
+            SIDECRAB_PY=$_abs
             return 0
         fi
-        echo "SIDECRAB_PYTHON=$SIDECRAB_PYTHON is not a usable Python" >&2
+        if [ -z "$_abs" ] || [ ! -x "$_abs" ]; then
+            echo "SIDECRAB_PYTHON=$SIDECRAB_PYTHON did not resolve to an executable file." >&2
+            echo "  Give an absolute path, or a name that is on PATH - the LaunchAgent stores" >&2
+            echo "  the path it resolves to and has no working directory to resolve against." >&2
+            return 1
+        fi
+        echo "SIDECRAB_PYTHON=$SIDECRAB_PYTHON ($_abs) is not a usable Python" >&2
     fi
     _dirs="${PATH}:${SIDECRAB_PYTHON_DIRS}"
     for _name in $SIDECRAB_PY_NAMES; do

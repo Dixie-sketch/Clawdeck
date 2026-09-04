@@ -142,11 +142,15 @@ def parse_probe_version(out: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
-def python_candidates(override, path_dirs, is_file) -> list[str]:
+def python_candidates(override, path_dirs, is_file, extra_dirs=PYTHON_EXTRA_DIRS) -> list[str]:
     """Absolute interpreter paths to probe, best first, no duplicates. Pure.
 
     ``$SIDECRAB_PYTHON`` wins outright: an operator naming an interpreter has already
     made the decision this search exists to make.
+
+    ``extra_dirs`` is a parameter rather than a constant read inside so that an empty
+    ``$SIDECRAB_PYTHON_DIRS`` means the same here as it does in sidecrab_python.sh -
+    "no extra directories", not "the defaults".
     """
     out: list[str] = []
 
@@ -157,9 +161,38 @@ def python_candidates(override, path_dirs, is_file) -> list[str]:
     if override:
         add(override)
     for name in PYTHON_NAMES:
-        for directory in list(path_dirs) + list(PYTHON_EXTRA_DIRS):
+        for directory in list(path_dirs) + list(extra_dirs):
             add(f"{directory.rstrip('/')}/{name}")
     return out
+
+
+def absolute_override(value, path_dirs, is_file, cwd=None) -> str | None:
+    """``$SIDECRAB_PYTHON`` as an absolute path, or None when it is unset.
+
+    The plist stores the interpreter path and a LaunchAgent has no useful working
+    directory, so `python3.13` or `./python3` would produce an agent that never starts.
+    A name is looked up on PATH, a relative path is resolved against the working
+    directory, and anything that resolves to nothing is refused BY NAME - the same rule
+    sidecrab_python.sh applies with `command -v`.
+    """
+    if not value:
+        return None
+    if value.startswith("/"):
+        return value
+    if "/" in value:
+        resolved = os.path.normpath(os.path.join(cwd or os.getcwd(), value))
+        if is_file(resolved):
+            return resolved
+    else:
+        for directory in path_dirs:
+            candidate = f"{directory.rstrip('/')}/{value}"
+            if is_file(candidate):
+                return candidate
+    raise SetupError(
+        f"SIDECRAB_PYTHON={value} did not resolve to an executable file. Give an "
+        "absolute path, or a name that is on PATH - the LaunchAgent stores the path it "
+        "resolves to and has no working directory to resolve a relative one against."
+    )
 
 
 def python_failure_message(choice: PythonChoice) -> str:
@@ -649,10 +682,12 @@ class Environment:
     def resolve_python_choice(self) -> PythonChoice:
         """The interpreter AND the version it reported. Raises SetupError when none fits."""
         extra = os.environ.get("SIDECRAB_PYTHON_DIRS")
-        dirs = list(self.path_dirs)
-        if extra is not None:
-            dirs += [d for d in extra.split(os.pathsep) if d]
-        candidates = python_candidates(self.python_override, dirs, self.is_file)
+        # Unset means the defaults; SET-BUT-EMPTY means none. Same rule as the shell's.
+        extra_dirs = (
+            PYTHON_EXTRA_DIRS if extra is None else tuple(d for d in extra.split(os.pathsep) if d)
+        )
+        override = absolute_override(self.python_override, self.path_dirs, self.is_file)
+        candidates = python_candidates(override, self.path_dirs, self.is_file, extra_dirs)
         choice = choose_python(candidates, self.python_probe)
         if choice.path is None:
             raise SetupError(python_failure_message(choice))
