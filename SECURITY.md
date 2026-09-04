@@ -79,16 +79,20 @@ The two things an attacker on this machine, or a web page you visit, could want 
 - **A same-user local process can read the pairing code.** It can also read `~/.claude`, drive
   the terminal dialog and inject keystrokes, so it was never inside the threat model of a
   localhost service; the gate exists for the web-page vector, which it closes.
-- **`/v1/state` is readable by a forged `null` Origin.** Still open, and still deliberate: the
-  iCUE build's opaque origin serialises to exactly `null` and has no other value to allowlist, so
-  refusing `null` would refuse the product. It discloses what your sessions are doing, not a way
-  to act on them.
+- **`/v1/state` is readable by a forged `null` Origin.** Still open, and still deliberate: a
+  QtWebEngine build that collapses its page to an opaque origin has no other value it could
+  send, so refusing `null` risks refusing the product on a build nobody has measured. (The one
+  build that HAS been measured reports `file://` - ORIGIN-b.) It discloses what your sessions
+  are doing, not a way to act on them.
 - ~~**A forged `null` Origin can WRITE - queue-continue, and any other POST.**~~ **CLOSED in
   crabd 0.31.0 (2026-09-04)** by the panel header. A custom request header makes the POST
   non-simple, so the browser must preflight it, and `do_OPTIONS` never lists
   `X-SideCrab-Panel` for `Origin: null` - a forged-null page therefore comes back from its
   preflight without permission to send the header its POST needs, while `null` READS stay
-  allowed for the iCUE build. Pinned by `companion/tests/test_crabd_panel.py`:
+  allowed. The iCUE build itself is unaffected because its origin was measured as `file://`,
+  not `null` (ORIGIN-b, `originsSeen` 2026-09-02), and a web page cannot forge that; a build
+  that reports `null` instead would keep its reads and lose its taps, which is the accepted
+  trade rather than an oversight. Pinned by `companion/tests/test_crabd_panel.py`:
   `PanelPreflightTests.test_null_may_never_unlock_the_header`,
   `PanelHeaderGateTests.test_a_post_without_the_header_is_refused_with_its_own_body` and
   `.test_every_post_path_requires_it_including_the_unknown_ones`.

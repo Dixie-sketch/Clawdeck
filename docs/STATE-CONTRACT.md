@@ -203,11 +203,23 @@ and "which panel build is it serving" were answerable only by reading the source
 ### Compatibility, stated honestly
 
 An installed iCUE widget older than 0.29.0 **cannot POST to this crabd**: it sends no
-`X-SideCrab-Panel`, so every write is refused 403. Its READS are unaffected — `null` is still
-allowed and reflected — so it keeps rendering the panel, and only its taps stop working. That
-is the same shape as the 0.29.0 `decide` change and it is safe for the same reason: the writes
-that stop, stop by being refused, and every one of them has a terminal-side fallback. (It is
-also polling 2722, so in practice it shows the standalone state until it is re-imported.)
+`X-SideCrab-Panel`, so every write is refused 403. Its READS are unaffected — its origin,
+whatever it is, is one this crabd allows and reflects — so it keeps rendering the panel, and
+only its taps stop working. That is the same shape as the 0.29.0 `decide` change and it is safe
+for the same reason: the writes that stop, stop by being refused, and every one of them has a
+terminal-side fallback. (It is also polling 2722, so in practice it shows the standalone state
+until it is re-imported.)
+
+**Which origin the iCUE build sends, and the case that is NOT covered.** Measured, not assumed:
+`originsSeen` recorded `origin: file://` (AppleWebKit/537.36 UA) on 2026-09-02, after the 0.27.0
+import — ORIGIN-b in `docs/BACKLOG.md`. QtWebEngine did *not* collapse its file page to an
+opaque origin, and a web page cannot forge `Origin: file://`, which is why §4's preflight table
+unlocks the panel header for a non-web scheme. That is **one reading on one iCUE build**. A
+build that reports `Origin: null` instead — a different QtWebEngine, a different iCUE — keeps
+its reads and **loses its taps**, because `null` is forgeable and its preflight therefore never
+unlocks the header. That is the accepted trade: widening `null` to cover it would re-open the
+forged-null write for every browser on the machine. A second install's `originsSeen` is what
+would settle it.
 
 ## v0.30.0 (2026-09-04 — ADDITIVE: `limits.tokenSource`; the long-lived limits token; schema stays 5)
 

@@ -6251,13 +6251,26 @@ class Handler(BaseHTTPRequestHandler):
         """Which request headers this preflight may unlock. THE FORGED-NULL WRITE IS
         CLOSED HERE and nowhere else.
 
-        `null` gets exactly Content-Type - the same list it got before 0.31.0. It keeps
-        its ACAO, so the iCUE build's cors-mode READS still work, but a page that forged
-        `Origin: null` (a sandboxed allow-scripts iframe on anything the operator visits)
-        comes back from its preflight without permission to send PANEL_HEADER, and its
-        POST therefore never leaves the browser. Every other allowed origin - the panel's
-        own, and the non-web schemes a locally-served page reports - is one a forged page
-        cannot claim, so it gets the header.
+        `null` gets exactly Content-Type - the same list it got before 0.31.0 - and keeps
+        its ACAO, so a `null` caller can still READ. A page that forged `Origin: null` (a
+        sandboxed allow-scripts iframe on anything the operator visits) comes back from
+        its preflight without permission to send PANEL_HEADER, and its POST therefore
+        never leaves the browser.
+
+        WHY A NON-WEB SCHEME GETS THE HEADER, and the measurement it rests on. The iCUE
+        build's origin was MEASURED as `file://`, not `null` - originsSeen on 2026-09-02
+        after the 0.27.0 import, `origin: file://` with an AppleWebKit/537.36 UA; the
+        reading is ORIGIN-b in docs/BACKLOG.md. A web page cannot forge `Origin: file://`
+        (a browser serialises an opaque origin as `null` and nothing else), so unlocking
+        the header for a non-web scheme hands it to something a visited page cannot
+        claim to be.
+
+        THE ACCEPTED TRADE, stated rather than hidden: that measurement is one reading on
+        one iCUE build. A build that reports `null` instead keeps its reads and loses its
+        taps - the same shape as the 0.29.0 `decide` change, and safe for the same
+        reason, since every write it makes has a terminal-side fallback. Widening `null`
+        to close that would re-open the forged-null write for every browser on the
+        machine, which is the trade going the wrong way.
         """
         if isinstance(origin, str) and origin.strip().lower() == "null":
             return "Content-Type"
@@ -6696,16 +6709,20 @@ class Handler(BaseHTTPRequestHandler):
         The PURE half of the gate - it says what KIND of caller this is, not whether it
         is allowed. `_is_cross_site` below is the gate; this is what it asks first.
 
-        THE TRADE this rests on, and its assumption: an opaque "null" Origin is not a web
-        origin. The iCUE build runs from a file/qrc page inside QtWebEngine (Chromium),
-        and a cross-origin fetch from an opaque origin serializes its Origin header to
-        exactly "null" - it can carry no other value we could allowlist, and a panel that
-        cannot POST is a broken product. A sandboxed-iframe attacker can also FORGE
-        Origin:null, so this predicate cannot separate the two, and no amount of
-        tightening here will. DO NOT "fix" it by rejecting null: the QtWebEngine build
-        legitimately sends it, and reads from it are still allowed for exactly that
-        reason. The forged-null WRITE is closed a layer up, by PANEL_HEADER and the
-        preflight rule in _preflight_headers.
+        WHAT WAS ACTUALLY MEASURED, because this docstring used to assert the opposite.
+        The iCUE build reports `file://`, not `null` - originsSeen on 2026-09-02 after
+        the 0.27.0 import, `origin: file://` with an AppleWebKit/537.36 UA (ORIGIN-b in
+        docs/BACKLOG.md). QtWebEngine did NOT collapse its file page to an opaque origin.
+        Both land here as "not a web origin", so this predicate never had to tell them
+        apart - but the two are not interchangeable one layer up, where
+        _preflight_headers hands the panel header to `file://` and refuses it to `null`.
+
+        `null` is still not a web origin, and DO NOT "fix" that by rejecting it. A
+        QtWebEngine build that does collapse to an opaque origin has no other value it
+        could send, and reads from it cost nothing to allow. A sandboxed-iframe attacker
+        can FORGE Origin:null, so this predicate cannot separate the two and no amount of
+        tightening here will; the forged-null WRITE is closed a layer up, by PANEL_HEADER
+        and the preflight rule in _preflight_headers.
         """
         if not isinstance(origin, str):
             return False
