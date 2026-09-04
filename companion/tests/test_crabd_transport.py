@@ -326,6 +326,25 @@ class PortCollisionTests(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertEqual(attempts, [("127.0.0.1", 9999)])
 
+    def test_main_says_when_there_is_no_panel_directory_to_serve(self):
+        """Not fatal - crabd without a panel is still the feed the notifier, the glow
+        and an iCUE widget all live on - but said out loud, and BEFORE the bind so it is
+        the first thing on stderr rather than something to scroll back for."""
+        original_dir = crabd.PANEL_DIR
+        crabd.PANEL_DIR = Path(_MODULE_TMP.name) / "no-such-panel"
+        self.addCleanup(lambda: setattr(crabd, "PANEL_DIR", original_dir))
+        original = crabd._bind_server
+        crabd._bind_server = lambda host, port: (None, "crabd: bind refused")
+        self.addCleanup(lambda: setattr(crabd, "_bind_server", original))
+        self.addCleanup(lambda: setattr(crabd.Handler, "builder", None))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            crabd.main()
+        noise = err.getvalue()
+        self.assertIn("no-such-panel", noise)
+        self.assertIn("CRABD_PANEL_DIR", noise)
+        self.assertLess(noise.index("no-such-panel"), noise.index("bind refused"))
+
     def test_main_prints_the_message_to_stderr_and_returns_one(self):
         """The operator-visible half. A message composed and then swallowed is the
         silent failure this whole shape exists to remove."""

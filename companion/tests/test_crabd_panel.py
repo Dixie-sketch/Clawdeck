@@ -924,6 +924,71 @@ class PanelSizeBoundTests(PanelTree):
         self.assertEqual(reply.body, body)
 
 
+class PanelSaysWhyItServedNothingTests(PanelTree):
+    """Silence is the forbidden failure mode, and a 404 is a silent answer.
+
+    Two ways a perfectly healthy crabd serves 404 for a file that is right there, and
+    both look identical from the browser - and identical to a routing bug in this
+    daemon, which is where anybody would go looking first.
+    """
+
+    def stderr_of(self, key, request):
+        original = set(crabd._LOG_ONCE_SEEN)
+        crabd._LOG_ONCE_SEEN.discard(key)
+        self.addCleanup(lambda: (crabd._LOG_ONCE_SEEN.clear(),
+                                 crabd._LOG_ONCE_SEEN.update(original)))
+        saved, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            out = request()
+            return out, sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved
+
+    def test_a_file_that_cannot_be_read_is_404_and_says_so_once(self):
+        """Permissions, an antivirus lock, a file being replaced under the daemon.
+        Path.read_bytes is patched rather than the mode bits, because chmod 000 is a
+        no-op for root and meaningless on Windows - and the branch is the same one."""
+        original = Path.read_bytes
+
+        def refusing(self):
+            if self.name == "sidecrab.css":
+                raise PermissionError(13, "Permission denied")
+            return original(self)
+
+        Path.read_bytes = refusing
+        self.addCleanup(lambda: setattr(Path, "read_bytes", original))
+        (reply, noise) = self.stderr_of(
+            crabd.PANEL_READ_LOG_KEY,
+            lambda: self.client.get("/styles/sidecrab.css"))
+        self.assertEqual(reply.status, 404)
+        self.assertEqual(reply.body, crabd.NOT_FOUND)
+        self.assertIn("PermissionError", noise)
+        self.assertEqual(noise.count("could not be read"), 1, noise)
+
+    def test_a_panel_directory_that_is_not_there_says_so_once(self):
+        """The one that would waste an afternoon. Point CRABD_PANEL_DIR at a typo and
+        every asset is a 404 - the API answers perfectly, the page is blank, and nothing
+        anywhere says the directory is the problem."""
+        crabd.PANEL_DIR = self.panel.parent / "no-such-panel"
+
+        def three():
+            return [self.client.get(path).status
+                    for path in ("/", "/styles/sidecrab.css", "/scripts/sidecrab.js")]
+
+        statuses, noise = self.stderr_of(crabd.PANEL_DIR_LOG_KEY, three)
+        self.assertEqual(statuses, [404, 404, 404])
+        self.assertIn("no-such-panel", noise)
+        self.assertEqual(noise.count("is not there"), 1, noise)
+
+    def test_an_ordinary_missing_file_says_nothing(self):
+        """The bound on the line above: a 404 for a file that simply is not in a panel
+        that IS there is the ordinary answer, and logging it would be a line per
+        favicon probe."""
+        _, noise = self.stderr_of(crabd.PANEL_DIR_LOG_KEY,
+                                  lambda: self.client.get("/scripts/nope.js"))
+        self.assertEqual(noise, "")
+
+
 class PanelOriginGateTests(PanelTree):
     """The static routes are gated exactly like the API - they are reads of the same
     daemon, and the panel's own script is not something a visited page may fetch."""

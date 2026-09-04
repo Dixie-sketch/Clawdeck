@@ -721,6 +721,7 @@ STATE_BUILD_LOG_KEY = "state-build"
 GET_HANGUP_LOG_KEY = "get-hangup"
 PANEL_READ_LOG_KEY = "panel-read"
 PANEL_TOO_BIG_LOG_KEY = "panel-too-big"
+PANEL_DIR_LOG_KEY = "panel-dir"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -6484,14 +6485,14 @@ class Handler(BaseHTTPRequestHandler):
         """
         target = self._panel_target(path)
         if target is None:
-            self._send(404, NOT_FOUND)
+            self._panel_not_found()
             return
         # RESOLVE, then check containment. The text rules above cannot see a symlink:
         # `styles/escape.css` passes every one of them and can still point at ~/.ssh.
         root = PANEL_DIR.resolve()
         candidate = (root / target).resolve()
         if root not in candidate.parents or not candidate.is_file():
-            self._send(404, NOT_FOUND)
+            self._panel_not_found()
             return
         try:
             size = candidate.stat().st_size
@@ -6519,6 +6520,24 @@ class Handler(BaseHTTPRequestHandler):
                    PANEL_CONTENT_TYPES.get(candidate.suffix.lower(),
                                            PANEL_CONTENT_TYPE_DEFAULT),
                    nosniff=True)
+
+    def _panel_not_found(self) -> None:
+        """404 for a panel request - and, ONCE, the reason when the reason is that there
+        is no panel.
+
+        A PANEL_DIR pointing at a typo answers 404 for every asset while the API answers
+        perfectly: the page is blank, and the first place anybody looks is the routing in
+        this file. The stat is paid only on the 404 path, so an asset that is served
+        never pays for it. Deliberately NOT logged for an ordinary missing file inside a
+        panel that IS there - that is the normal answer, and it would be a line per
+        favicon probe.
+        """
+        if not PANEL_DIR.is_dir():
+            _log_once(PANEL_DIR_LOG_KEY,
+                      f"crabd: the panel directory {PANEL_DIR} is not there, so every "
+                      f"panel request answers 404 (the API is unaffected; set "
+                      f"CRABD_PANEL_DIR); this is logged once")
+        self._send(404, NOT_FOUND)
 
     @classmethod
     def _panel_target(cls, path: str) -> str | None:
@@ -7672,6 +7691,13 @@ def main() -> int:
     threading.Thread(target=_fleet_loop, args=(fleet, stop), daemon=True).start()
     threading.Thread(target=_expiry_loop, args=(builder, stop), daemon=True).start()
 
+    # Said BEFORE the bind, so it is the first thing on stderr rather than something to
+    # scroll back for. Not fatal: crabd without a panel is still the feed the notifier,
+    # the glow and an iCUE widget all live on.
+    if not PANEL_DIR.is_dir():
+        print(f"crabd: the panel directory {PANEL_DIR} is not there - the API will "
+              f"serve normally but http://{HOST}:{PORT}/ will answer 404 "
+              f"(set CRABD_PANEL_DIR)", file=sys.stderr, flush=True)
     server, failure = _bind_server(HOST, PORT)
     if server is None:
         stop.set()
