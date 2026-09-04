@@ -196,5 +196,90 @@ class DarwinCounterWrapTests(unittest.TestCase):
                              [30_000_000, 40_000_000, 10_000_000])
 
 
+class LogOnceReset(unittest.TestCase):
+    """`_log_once` is process-wide and these tests COUNT its lines, so the two host keys
+    are cleared going in and the whole set is put back going out. Silence is the
+    forbidden failure mode here, and a per-pass heartbeat is the other one."""
+
+    def setUp(self):
+        original = set(crabd._LOG_ONCE_SEEN)
+        self.addCleanup(lambda: (crabd._LOG_ONCE_SEEN.clear(),
+                                 crabd._LOG_ONCE_SEEN.update(original)))
+        self.forget()
+
+    @staticmethod
+    def forget():
+        crabd._LOG_ONCE_SEEN.discard(crabd.HOST_CPU_LOG_KEY)
+        crabd._LOG_ONCE_SEEN.discard(crabd.HOST_MEM_LOG_KEY)
+
+    @staticmethod
+    def capture(call):
+        """(what `call` returned, what it printed to stderr)."""
+        original, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            return call(), sys.stderr.getvalue()
+        finally:
+            sys.stderr = original
+
+
+class DarwinClockGuardTests(LogOnceReset):
+    """CLK_TCK turns mach's ticks into the sampler's 100 ns units, by INTEGER division.
+
+    100 on every macOS measured, so the scale is 100_000 - but the division is where a
+    surprising value stops being surprising and starts being silent: 0 divides by zero,
+    a negative one inverts the counters, and one that does not divide 10_000_000 evenly
+    drops part of every tick. All of them are refused, which is the contract's null
+    column, and each says so once.
+    """
+
+    RAW = (100, 100, 300, 0)
+
+    def test_a_clk_tck_that_cannot_scale_the_counters_serves_no_cpu(self):
+        # 250 would be a bad example: it divides 10_000_000 exactly. 3 and 7 do not.
+        for clk in (0, -1, 3, 7, True, "100", 100.0):
+            with self.subTest(clk_tck=clk):
+                self.forget()
+                platform = crabd.DarwinPlatform(load_info=lambda: self.RAW,
+                                                clk_tck=clk)
+                out, noise = self.capture(
+                    lambda: [platform.cpu_times() for _ in range(3)])
+                self.assertEqual(out, [None, None, None])
+                self.assertEqual(noise.count("cannot scale the CPU counters"), 1, noise)
+
+    def test_the_sampler_then_serves_memory_with_no_cpu_beside_it(self):
+        """Tier 2 of the three honest-failure tiers: one of the two reads failed, so
+        that read's field is null and the other's are intact. Not a missing `host`
+        block, which is what BOTH failing means."""
+        platform = crabd.DarwinPlatform(load_info=lambda: self.RAW, clk_tck=7)
+        block, _ = self.capture(sampler_over(platform.cpu_times).sample)
+        self.assertEqual(block, {"cpuPct": None, "memPct": 62.5,
+                                 "memUsedGB": 20.0, "memTotalGB": 32.0})
+
+    def test_a_host_with_no_sc_clk_tck_answers_absence_not_an_exception(self):
+        """Windows is such a host - `os.sysconf` is not there at all. DarwinPlatform is
+        never SELECTED on one, but the seam lets anything build one, and a reader called
+        from a daemon thread has to answer None rather than raise."""
+        missing = object()
+        original = getattr(crabd.os, "sysconf", missing)
+
+        def restore():
+            if original is missing:
+                del crabd.os.sysconf
+            else:
+                crabd.os.sysconf = original
+
+        self.addCleanup(restore)
+
+        def boom(_name):
+            raise OSError("no sysconf here")
+
+        crabd.os.sysconf = boom
+        platform = crabd.DarwinPlatform(load_info=lambda: self.RAW)
+        out, noise = self.capture(
+            lambda: [platform.cpu_times() for _ in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(noise.count("SC_CLK_TCK unreadable (OSError)"), 1, noise)
+
+
 if __name__ == "__main__":
     unittest.main()
