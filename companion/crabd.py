@@ -2936,7 +2936,7 @@ class HookTracker:
 # implementations. The readers above and below (HostSampler, FleetReader, LimitsReader)
 # each take a `platform=` and default to PLATFORM, so none of them contains an OS test:
 # they own their arithmetic and their honest-failure rules, the platform owns the
-# syscall. A reader that reaches for `ctypes.windll` or `schtasks` directly is the bug
+# syscall. A reader that reaches for the Win32 DLLs or `schtasks` directly is the bug
 # this section exists to prevent - it is unreachable, and therefore untested, on the
 # host most of this suite runs on.
 #
@@ -3144,9 +3144,11 @@ def select_platform(sys_platform: str):
     return NullPlatform()
 
 
-#: THE ONLY `sys.platform` READ IN THIS MODULE, and a test asserts that it stays the
-#: only one. Every OS-specific reader defaults to this object; a second platform test
-#: anywhere downstream is a second answer that can disagree with this one.
+#: THE ONLY READ OF THE HOST'S PLATFORM STRING IN THIS MODULE, and a source-text test
+#: asserts that it stays the only one. Every OS-specific reader defaults to this object;
+#: a second platform test anywhere downstream is a second answer that can disagree with
+#: this one - and it would be correct on the host it was written on, which is why no
+#: behavioural test can catch it.
 PLATFORM = select_platform(sys.platform)
 
 

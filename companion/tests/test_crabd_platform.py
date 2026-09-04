@@ -89,6 +89,46 @@ class PlatformSurfaceTests(unittest.TestCase):
                 self.assertEqual(self.surface(cls), self.SURFACE)
 
 
+class OnePlatformDecisionTests(unittest.TestCase):
+    """Read against the SOURCE TEXT, because that is where the rule lives.
+
+    A behavioural test cannot catch a second `sys.platform` branch: the branch is
+    correct on the host that runs the suite and wrong on the one that does not, which
+    is the whole failure mode. Every OS-specific syscall belongs to a platform class,
+    and there is exactly one place that decides which one.
+    """
+
+    SOURCE = (Path(crabd.__file__).read_text(encoding="utf-8"))
+    LINES = SOURCE.splitlines()
+
+    @classmethod
+    def owner(cls, index: int) -> str:
+        """The top-level `class X` / `def x` a line sits INSIDE. A line at column 0 is
+        inside nothing, which is what makes the module-level selector distinguishable
+        from a branch smuggled into a reader."""
+        line = cls.LINES[index]
+        if line[:1] not in (" ", "\t"):
+            return "<module>"
+        for above in reversed(cls.LINES[:index]):
+            if above.startswith("class ") or above.startswith("def "):
+                return above.split("(")[0].split(":")[0].split()[1]
+        return "<module>"
+
+    def test_sys_platform_is_read_exactly_once(self):
+        """One line, and it is the selector call. Named in full rather than counted:
+        the claim is WHICH line, not how many."""
+        self.assertEqual([line.strip() for line in self.LINES if "sys.platform" in line],
+                         ["PLATFORM = select_platform(sys.platform)"])
+
+    def test_windll_appears_only_in_the_windows_platform_and_the_dpapi_helper(self):
+        owners = {self.owner(i) for i, line in enumerate(self.LINES)
+                  if "windll" in line}
+        self.assertLessEqual(owners, {"WindowsPlatform", "_dpapi_unprotect"})
+
+    def test_os_name_is_never_a_platform_test(self):
+        self.assertNotIn("os.name", self.SOURCE)
+
+
 # ---------------------------------------------------------------- the host sampler
 
 _TICKS_PER_SEC = 10_000_000        # a FILETIME counts 100 ns units
@@ -306,6 +346,48 @@ class LimitsReaderPlatformTests(unittest.TestCase):
                 out = self.reader(platform).get(1_800_000_000.0, force=True)
                 self.assertFalse(out["available"])
                 self.assertIn("no Claude credentials", out["note"])
+
+
+# ------------------------------------------------- what this host actually serves
+
+class StubLimits:
+    def get(self, now, force=False):
+        return {"available": False, "note": "stub", "fiveHour": None, "weekly": None,
+                "extra": [], "subscriptionType": None, "rateLimitTier": None}
+
+
+class DefaultBuilderOnThisHostTests(unittest.TestCase):
+    """The phase's no-behaviour-change claim, taken off a real document.
+
+    Everything above proves the seam in isolation with a platform injected. This is the
+    one that would catch the seam changing what a DEFAULT crabd serves here: the widget
+    feature-detects `host` by presence, so a block appearing where none used to is a
+    contract change, and `fleet` folding into anything but unknown is a green dot on a
+    component nobody asked about.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        (root / "projects").mkdir()
+        original = crabd.USER_CONFIG_FILE
+        crabd.USER_CONFIG_FILE = root / "config.json"
+        self.addCleanup(lambda: setattr(crabd, "USER_CONFIG_FILE", original))
+        self.builder = crabd.StateBuilder(
+            crabd.TranscriptStore(root / "projects"), crabd.HookTracker(),
+            StubLimits(), 0.0)
+
+    def test_a_builder_with_no_fleet_reader_serves_both_components_unknown(self):
+        self.assertEqual(self.builder.build()["fleet"],
+                         {"glow": "unknown", "toast": "unknown"})
+
+    @unittest.skipUnless(sys.platform != "win32",
+                         "the Win32 counters really do answer on Windows")
+    def test_a_host_with_no_counters_still_serves_no_host_key(self):
+        state = self.builder.build()
+        self.assertNotIn("host", state)
+        self.assertEqual(state["schema"], 5)     # nothing else moved
 
 
 if __name__ == "__main__":
