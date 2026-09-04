@@ -567,18 +567,20 @@ class DarwinMemoryRefusalTests(LogOnceReset):
 
 
 class FakeEntryPoint:
-    """A ctypes entry point that records what was declared on it. `argtypes` and
-    `restype` start as ctypes leaves them on a fresh function pointer: unset."""
+    """A ctypes entry point that records what was declared on it and what it was called
+    with. `argtypes` and `restype` start as ctypes leaves them on a fresh function
+    pointer: unset."""
 
     def __init__(self, name):
         self.name = name
         self.argtypes = None
         self.restype = None
-        self.calls = 0
+        self.answer = 0
+        self.calls = []
 
     def __call__(self, *args):
-        self.calls += 1
-        return 0
+        self.calls.append(args)
+        return self.answer
 
 
 class FakeLibc:
@@ -635,6 +637,48 @@ class DarwinLibcDeclarationTests(unittest.TestCase):
         for name in ("host_statistics", "host_statistics64"):
             with self.subTest(entry_point=name):
                 self.assertEqual(getattr(libc, name).argtypes[0], crabd.ctypes.c_uint32)
+
+
+class DarwinHostPortTests(unittest.TestCase):
+    """`mach_host_self()` is asked ONCE, not once per reading.
+
+    It takes a SEND RIGHT and hands back a reference, and nothing here ever releases it
+    (`mach_port_deallocate`), so every call adds one uref to this task's right to the
+    host port. MEASURED 2026-09-04 on this Mac: 2 urefs after one call, 1002 after 1001 -
+    one leaked reference per call, exactly.
+
+    The endpoint is undramatic (at two calls per two-second pass it is years to
+    MACH_PORT_UREFS_MAX, and past it host_statistics simply fails and the gauges null out
+    honestly), which is why this is a tidiness fix and not an incident. It is still a
+    counter climbing for the life of a daemon meant to run for months, over a value that
+    cannot change: the host port is a property of the task.
+    """
+
+    def use_fake_libc(self) -> FakeLibc:
+        fake = FakeLibc()
+        original = (crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT)
+
+        def restore():
+            crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT = original
+
+        self.addCleanup(restore)
+        crabd._DARWIN_LIBC = fake
+        crabd._DARWIN_HOST_PORT = None
+        # A port with the HIGH BIT SET, which is the one a signed conversion mangles.
+        fake.mach_host_self.answer = 0x9000_0001
+        fake.host_statistics.answer = 0
+        fake.host_statistics64.answer = 0
+        return fake
+
+    def test_three_readings_resolve_the_port_once_and_all_pass_the_same_one(self):
+        fake = self.use_fake_libc()
+        crabd._darwin_cpu_load_info()
+        crabd._darwin_cpu_load_info()
+        crabd._darwin_vm_statistics64()
+        self.assertEqual(len(fake.mach_host_self.calls), 1)
+        passed = [call[0] for call in
+                  fake.host_statistics.calls + fake.host_statistics64.calls]
+        self.assertEqual(passed, [0x9000_0001] * 3)
 
 
 class DarwinVmStructTests(unittest.TestCase):

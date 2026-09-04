@@ -3242,6 +3242,26 @@ def _darwin_libc():
     return _DARWIN_LIBC
 
 
+_DARWIN_HOST_PORT = None
+
+
+def _darwin_host_port() -> int:
+    """The mach host port, resolved ONCE for the life of the process.
+
+    `mach_host_self()` takes a send right and returns a REFERENCE to it, and nothing here
+    ever gives one back (`mach_port_deallocate`), so each call adds one uref to this
+    task's right. MEASURED 2026-09-04: 2 urefs after one call, 1002 after 1001 - one per
+    call, exactly. The endpoint is undramatic (years of two-second passes to
+    MACH_PORT_UREFS_MAX, and past it host_statistics fails and the gauges null out the
+    honest way), but it is a counter climbing for the life of a daemon meant to run for
+    months, over a value that cannot change: the host port is a property of the task.
+    """
+    global _DARWIN_HOST_PORT
+    if _DARWIN_HOST_PORT is None:
+        _DARWIN_HOST_PORT = _darwin_libc().mach_host_self()
+    return _DARWIN_HOST_PORT
+
+
 def _darwin_cpu_load_info() -> tuple[int, int, int, int] | None:
     """`host_statistics(HOST_CPU_LOAD_INFO)` -> (user, system, idle, nice) raw ticks.
 
@@ -3255,7 +3275,7 @@ def _darwin_cpu_load_info() -> tuple[int, int, int, int] | None:
     libc = _darwin_libc()
     info = (ctypes.c_uint32 * HOST_CPU_STATES)()
     count = ctypes.c_uint32(HOST_CPU_STATES)
-    kr = libc.host_statistics(libc.mach_host_self(), HOST_CPU_LOAD_INFO,
+    kr = libc.host_statistics(_darwin_host_port(), HOST_CPU_LOAD_INFO,
                               ctypes.byref(info), ctypes.byref(count))
     if kr != 0 or count.value != HOST_CPU_STATES:
         return None
@@ -3312,7 +3332,7 @@ def _darwin_vm_statistics64() -> dict | None:
     libc = _darwin_libc()
     stats = _VM_STATISTICS64()
     count = ctypes.c_uint32(HOST_VM_STAT_WORDS)
-    kr = libc.host_statistics64(libc.mach_host_self(), HOST_VM_INFO64,
+    kr = libc.host_statistics64(_darwin_host_port(), HOST_VM_INFO64,
                                 ctypes.byref(stats), ctypes.byref(count))
     if kr != 0:
         return None
