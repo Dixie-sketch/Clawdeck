@@ -1,0 +1,87 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/curl -s -m 2 -X POST -H 'X-SideCrab-Panel: 1' --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/curl -s -m 2 -X POST -H 'X-SideCrab-Panel: 1' --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/curl -s -m 2 -X POST -H 'X-SideCrab-Panel: 1' --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:9999/v1/hook/stop",
+            "timeout": 5,
+            "headers": {
+              "X-SideCrab-Panel": "1"
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/curl -s -m 2 -X POST -H 'X-SideCrab-Panel: 1' --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:9999/v1/hook/permission",
+            "timeout": 60,
+            "headers": {
+              "X-SideCrab-Panel": "1"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/curl -s -m 2 -X POST -H 'X-SideCrab-Panel: 1' --data-binary @- http://127.0.0.1:9999/v1/hook || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
