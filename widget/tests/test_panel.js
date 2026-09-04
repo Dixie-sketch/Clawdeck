@@ -314,6 +314,30 @@ function panel(opts) {
   eq(ctx.prefsStoreKey, 'sidecrab', 'outside iCUE the prefs key is the origin\'s one object');
 })();
 
+/* WHICH HOST IS A QUESTION ABOUT EXISTENCE, NOT ABOUT VALUE (review). The
+   property reader treats '' as "unset and fall back to the default", which is
+   right for a property — but iCUE injecting an EMPTY uniqueId is still iCUE, and
+   reading that as "no host" would flip a widget on the glass onto the browser
+   store: pins and settings written to a key the panel then stops reading, and
+   the injected properties beaten by whatever a previous browser session left
+   behind. The probe asks whether the identifier is DECLARED. */
+(function () {
+  var st = fakeStorage('ok', { sidecrab: JSON.stringify({ clock24: true, panelToken: 'BROWSER' }) });
+  var ctx = loadWidget({ props: { uniqueId: '', clock24: false }, storage: st });
+  ok(ctx.insideIcue(), 'an injected but empty uniqueId is still iCUE');
+  eq(ctx.pairingCode(), '', 'so the browser store is still not consulted');
+  eq(ctx.use24Clock(), false, 'and the injected property still wins');
+  ctx.loadPrefs();
+  /* An empty id is no key to store under, which is the pre-existing degrade:
+     memory only, never the browser origin's object. */
+  eq(ctx.prefsStoreKey, null, 'an empty id stores nowhere rather than in the browser object');
+})();
+
+(function () {
+  var ctx = loadWidget({ props: { uniqueId: null }, storage: fakeStorage('ok') });
+  ok(ctx.insideIcue(), 'a declared uniqueId of null is still a host that declared it');
+})();
+
 /* THE ACCENT DEFAULT IS STATED THREE TIMES and they move together: :root in the
    stylesheet, the property meta, and the strProp fallback that wins at runtime.
    A drift renders one colour in a browser and another on the glass. */
@@ -1352,6 +1376,37 @@ function cardOfState(ctx, state) {
 
   eq(cardCount(ctx), 3, 'the narrow slot re-measures to THREE, not to the eight it was holding');
   ok(ctx.gridCapacity() <= 3, 'and the capacity read back is the stylesheet\'s, not the overflow\'s');
+})();
+
+/* ...BUT NOT WITH A FINGER ON A CARD (review). renderSessions already refuses to
+   rebuild mid-swipe — `visible` and the surviving DOM can disagree about which
+   row is at which index — and emptying the grid before it is asked is a stronger
+   version of the same rebuild, so it has to keep the same rule. A window
+   resized while a card is held would otherwise blank the grid under the finger
+   and leave it blank until the finger lifted. */
+(function () {
+  var ctx = keyPanel();
+  var before = cardCount(ctx);
+  ok(before > 0, 'the grid has cards to hold');
+  /* The state a swipe in progress leaves behind, set the way startSwipe sets it. */
+  ctx.swipe = { id: 'x', card: cardOfState(ctx, 'done'), dx: 20, base: 1 };
+  ok(ctx.gestureHoldsCards(), 'a swipe in progress holds the cards');
+
+  ctx.timers.length = 0;
+  ctx.listeners.resize[0]();
+  var queued = ctx.timers.slice();
+  ctx.timers.length = 0;
+  queued.forEach(function (t) { t.fn(); });
+  eq(cardCount(ctx), before, 'a resize mid-drag leaves the grid alone');
+
+  /* And once the finger is up, the next resize measures as it should. */
+  ctx.swipe = null;
+  ctx.timers.length = 0;
+  ctx.listeners.resize[0]();
+  queued = ctx.timers.slice();
+  ctx.timers.length = 0;
+  queued.forEach(function (t) { t.fn(); });
+  ok(cardCount(ctx) > 0, 'and the grid is rebuilt after it lifts');
 })();
 
 /* ----------------------------------------------- the strings, and packaging (J, K) */

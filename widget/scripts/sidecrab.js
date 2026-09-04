@@ -870,12 +870,28 @@ icueEvents = { onDataUpdated: onIcueDataUpdated, onICUEInitialized: onIcueInitia
 var icueHost = null;
 
 function insideIcue() {
-	if (icueHost === null) icueHost = hostProperty('uniqueId') !== undefined;
+	if (icueHost === null) icueHost = hostHasProperty('uniqueId');
 	return icueHost;
 }
 
-/* The injected-global read, on its own so insideIcue and getIcueProperty ask the
-   host the same question. */
+/* EXISTENCE, NOT VALUE, and the two are different questions. hostProperty()
+   answers the PROPERTY question — an empty string means "unset, use the default"
+   — which is right for a colour or a port and wrong for the host test: iCUE
+   injecting an empty uniqueId is still iCUE, and reading that as "no host" would
+   put a widget on the glass onto the browser store, writing pins and settings
+   under a key it then stops reading and letting a previous browser session's
+   values beat the injected properties. So this asks only whether the identifier
+   is DECLARED. */
+function hostHasProperty(name) {
+	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) return true;
+	try {
+		return Function('return typeof ' + name + ' !== "undefined"')();
+	} catch (e) { return false; }
+}
+
+/* The injected-global read, on its own so hostHasProperty and getIcueProperty
+   ask the host through the same probe. Empty is unset here, deliberately: that
+   is the property contract, and the host test above is what must not use it. */
 function hostProperty(name) {
 	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
 		var value = window[name];
@@ -8926,6 +8942,15 @@ function init() {
 		if (resizeTimer) clearTimeout(resizeTimer);
 		resizeTimer = setTimeout(function () {
 			resizeTimer = null;
+			/* NOT WITH A FINGER ON A CARD. renderSessions already refuses to rebuild
+			   mid-swipe — `visible` and the surviving DOM can disagree about which row
+			   is at which index — and emptying the grid first is a stronger version of
+			   that same rebuild, so it keeps the same rule. Without this a window
+			   resized mid-drag blanks the grid under the finger and leaves it blank
+			   until the finger lifts. render() still runs: the zones and the gauges
+			   have no such constraint, and the next resize (or the next signature
+			   change) rebuilds the grid. */
+			if (gestureHoldsCards()) { render(); return; }
 			/* EMPTY THE GRID BEFORE MEASURING IT (v0.30.0). gridCapacity() reads the
 			   track counts off the computed style, and an engine reports the IMPLICIT
 			   tracks too — so a grid holding more cards than the new slot has cells
