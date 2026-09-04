@@ -19,6 +19,7 @@ Every test here is pure and runs on any OS: the subprocess is an injected runner
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import subprocess
@@ -633,7 +634,16 @@ class ModuleImportsAnywhereTests(unittest.TestCase):
         # cannot be picked up as the real module by anything else.
         sys.modules[spec.name] = module
         try:
-            with unittest.mock.patch.object(sys, "platform", platform):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(unittest.mock.patch.object(sys, "platform", platform))
+                if platform == "darwin":
+                    # `sys.modules["winreg"] = None` is what makes `import winreg` raise
+                    # ImportError, which is what a Mac actually offers. Without it this half
+                    # of the test is VACUOUS on Windows CI: the module would import a real
+                    # winreg and prove nothing about the platform it claims to be testing.
+                    stack.enter_context(
+                        unittest.mock.patch.dict(sys.modules, {"winreg": None})
+                    )
                 spec.loader.exec_module(module)
         finally:
             sys.modules.pop(spec.name, None)
