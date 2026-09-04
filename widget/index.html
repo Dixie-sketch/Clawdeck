@@ -3,18 +3,26 @@
 <head>
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>tr('SideCrab')</title>
+	<title>SideCrab</title>
 	<link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
 	<link rel="stylesheet" href="styles/sidecrab.css" />
 	<meta name="x-icue-widget-preview" content="resources/preview.png" />
 
 	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'9999'" />
 	<!-- The approval PAIRING CODE (v0.27.0, closes SEC-a). crabd mints it once into
-	     ~/.sidecrab/panel-token and requires it on every Approve/Deny; a widget
-	     property is the one place a web page the operator visits cannot read, which
-	     is the whole point. Read it with `Install-SideCrab.ps1 -PairingCode`. A
-	     textfield because that is a property type the import validator has accepted;
-	     the value is compared case- and hyphen-insensitively. -->
+	     ~/.sidecrab/panel-token and requires it on every Approve/Deny. Print it by
+	     running `setup/install.sh` with its pairing-code flag - written without its
+	     leading dashes HERE, and only here, because this file is parsed as strict
+	     XML and a double hyphen inside a comment is an illegal token. The Approvals
+	     group's info string below carries the command whole; that is a JSON text
+	     node, where the dashes are legal, and it is what the settings sheet renders.
+	     A textfield because that is a property type the import validator has
+	     accepted; the value is compared case- and hyphen-insensitively.
+	     WHERE IT IS KEPT DEPENDS ON THE HOST, and so does how strong that is. Inside
+	     iCUE it is a widget property, which is the one place a web page the operator
+	     visits cannot read. Served in a browser it is localStorage on the panel's own
+	     origin, which only a page on that origin can read - weaker, deliberately, and
+	     spelled out in SECURITY.md rather than implied here. -->
 	<meta name="x-icue-property" content="panelToken" data-label="tr('Approval Pairing Code')" data-type="textfield" data-default="''" />
 	<meta name="x-icue-property" content="clock24" data-label="tr('24-Hour Clock')" data-type="switch" data-default="false" />
 	<meta name="x-icue-property" content="alertFlash" data-label="tr('Flash On New Alert')" data-type="switch" data-default="true" />

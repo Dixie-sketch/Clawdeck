@@ -1157,6 +1157,86 @@ function cardOfState(ctx, state) {
   ok(ctx.gridCapacity() <= 3, 'and the capacity read back is the stylesheet\'s, not the overflow\'s');
 })();
 
+/* ----------------------------------------------- the strings, and packaging (J, K) */
+
+/* tr() IS SUBSTITUTED BY THE iCUE IMPORTER AND BY NOTHING ELSE. A browser tab
+   showed the macro text of the title verbatim, so the title is a literal. The
+   wrappers stay on the property labels, which is what translation.json is a
+   catalogue OF — and the manifest and the strict-XML check stay with them,
+   because the iCUE build is still packaged from this tree. */
+(function () {
+  var html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  var title = /<title>([^<]*)<\/title>/.exec(html);
+  eq(title && title[1], 'SideCrab', 'the tab title is a literal, not a tr() macro');
+  ok(/name="x-icue-property"[^>]*data-label="tr\('/.test(html), 'tr() stays on the property labels');
+  ok(html.indexOf('Install-SideCrab.ps1 -PairingCode') === -1,
+    'index.html no longer sends the operator to a PowerShell script');
+  ok(html.indexOf('setup/install.sh --pairing-code') !== -1, 'it names the way the code is printed now');
+
+  var manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
+  ok(manifest.description.indexOf('â') === -1 && manifest.description.indexOf('â€”') === -1,
+    'the manifest description carries no mojibake em-dash');
+  ok(manifest.description.indexOf('—') !== -1, 'it carries a real one');
+  eq(manifest.version, '0.30.0', 'the manifest is the one machine-read version');
+})();
+
+/* The standalone line, reworded. It has never carried a URL and still must not:
+   the served page is already AT the address, and the iCUE build reaches a
+   companion the store listing describes. What it has to name is the companion. */
+(function () {
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '' },
+    storage: fakeStorage('ok')
+  });
+  var line = ctx.ui.gridEmpty.textContent;
+  ok(/SideCrab companion/.test(line), 'the standalone line names the companion  (' + line + ')');
+  ok(!/localhost|127\.0\.0\.1|http/.test(line), 'and hard-codes no address');
+  ok(!/widget's description/.test(line), 'and no longer sends a browser reader to a store listing');
+})();
+
+/* "widget settings" was iCUE's noun for a surface this panel now owns. The panel
+   says where the control actually IS, which is not the same place in both hosts
+   — so it is read from the host rather than guessed. */
+(function () {
+  var served = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '' },
+    storage: fakeStorage('ok')
+  });
+  eq(served.settingsPlace(), 'the panel settings (gear)', 'served in a browser, the gear is where it is');
+  var icue = loadWidget({ dom: true, props: { uniqueId: 'abc' }, storage: fakeStorage('ok') });
+  eq(icue.settingsPlace(), 'the widget settings in iCUE', 'inside iCUE it is still the console');
+
+  var js = fs.readFileSync(harness.SRC, 'utf8');
+  var hits = js.split('\n').filter(function (l) {
+    return /['"][^'"]*\bwidget settings\b/.test(l) && l.indexOf('function settingsPlace') === -1 &&
+      l.indexOf('insideIcue() ?') === -1;
+  });
+  eq(hits.length, 1, 'the only literal "widget settings" left is the sensors row, which no browser reaches');
+  ok(/pick a different GPU sensor/.test(hits[0] || ''), 'and it is that one  (' + (hits[0] || '').trim() + ')');
+})();
+
+/* The two pairing refusals are the strings an operator reads at the moment a tap
+   was refused, so they have to say where to go. */
+(function () {
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '?mock=rework' },
+    storage: fakeStorage('ok')
+  });
+  var doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-rework.json'), 'utf8'));
+  doc.approvals = { tokenRequired: true };
+  ctx.acceptDoc(doc);
+  var pending = doc.sessions.filter(function (s) { return s.pendingPermission; })[0];
+  ok(!!pending, 'the rework fixture carries a pending permission');
+  ctx.openSheet(pending.id);
+  ctx.onSheetDecide('allow');
+  ok(/the panel settings \(gear\)/.test(ctx.ui.noticeText.textContent),
+    'an unpaired decide says where the code goes  (' + ctx.ui.noticeText.textContent + ')');
+  eq(ctx.sheetMode !== null, true, 'and the sheet stays open so the reason can be read');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {

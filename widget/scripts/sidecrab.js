@@ -949,6 +949,14 @@ function writePanelStore(next) {
 	panelSettings();
 }
 
+/* WHERE THE OPERATOR HAS TO GO, which is not the same place in both hosts. "the
+   widget settings" was iCUE's noun for a surface this panel now owns, and a
+   browser reader sent to an iCUE console has been sent nowhere. Read from the
+   host rather than guessed, so a message written once is right in both. */
+function settingsPlace() {
+	return insideIcue() ? 'the widget settings in iCUE' : 'the panel settings (gear)';
+}
+
 function getIcueProperty(name) {
 	var hosted = hostProperty(name);
 	if (hosted !== undefined) return hosted;
@@ -2762,14 +2770,20 @@ function renderSessions(sessions, status, quiet, recap) {
 	   reads this list, and a stale one would offer rows the grid no longer cuts. */
 	overflowList = [];
 	document.body.classList.toggle('empty', shown.length === 0);
-	/* The STANDALONE line. A store user installs the widget before the companion,
-	   so the first thing this panel ever renders is this state — it has to read as
-	   a finished display with one part not set up yet, not as a broken one. No URL:
-	   the store listing carries the link, and a hardcoded one goes stale on glass
-	   that nobody re-imports. */
+	/* The STANDALONE line, and it now covers two different situations. Inside iCUE
+	   a store user installs the widget before the companion, so this is the first
+	   thing the panel ever renders. Served in a browser the companion is by
+	   definition running — it served the page — so this is the gap before the first
+	   snapshot, or a poll that has not landed yet.
+	   One sentence for both, and it names the COMPANION rather than a state: what
+	   is missing is the same thing either way. STILL NO URL, for a second reason on
+	   top of the first: on glass a hardcoded address goes stale where nobody
+	   re-imports, and in a browser the reader is already AT it. (v0.30.0 — it used
+	   to send the reader to "the widget's description", which is a store listing a
+	   browser reader has never seen.) */
 	setText(ui.gridEmpty, status === 'connecting'
 		? 'Claude Code stats need the SideCrab companion ' + EMDASH +
-		  " see the widget's description for setup."
+		  ' waiting for it to answer.'
 		/* A filter that emptied the grid says SO, and names the mode it emptied it
 		   in. "No active Claude sessions" under a Waiting chip with four working
 		   sessions behind it would be the panel reporting the filter's answer as
@@ -5309,7 +5323,7 @@ function onSheetDecide(decision) {
 	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
 	   operator reads why instead of finding the card still armed after a close. */
 	if (tokenRequired() && !pairingCode()) {
-		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in widget settings', 'err');
+		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in ' + settingsPlace(), 'err');
 		logLine('decide refused locally: no pairing code');
 		return;
 	}
@@ -5323,7 +5337,7 @@ function onSheetDecide(decision) {
 	postAction(id, 'decide', null, decision, null, requestId).then(function (res) {
 		if (res.status === 204 || res.status === 200) { logLine('decision sent: ' + decision); return; }
 		logLine('decide failed (HTTP ' + res.status + ')');
-		if (res.status === 403) { showNotice(decision + ' refused ' + EMDASH + ' pairing code wrong; check widget settings', 'err'); return; }
+		if (res.status === 403) { showNotice(decision + ' refused ' + EMDASH + ' pairing code wrong; check ' + settingsPlace(), 'err'); return; }
 		if (res.status === 409) { showNotice(decision + ' not applied ' + EMDASH + ' the request changed; reopen the card', 'err'); return; }
 		if (res.status === 429) { showNotice(decision + ' refused ' + EMDASH + ' pairing locked, wait a minute', 'err'); return; }
 		showNotice(decision + ' not sent ' + EMDASH + ' decide in terminal', 'err');
