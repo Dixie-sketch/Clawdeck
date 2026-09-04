@@ -25,7 +25,10 @@ detail of every additive field and is the source of truth; this file is the shor
   panel or strands the card grid mid-drag, and a phone-sized window is a real layout rather
   than a squeezed one. The temperature row keeps only the figures the companion can measure,
   and the host view stops calling a Mac a PC. **On the Edge nothing moves**: the reference
-  size renders identically, so an iCUE re-import changes only what is listed here.
+  size renders identically (measured), and the macOS system fonts were added *behind* the
+  ones the panel was measured in rather than in front of them, so the face an Edge
+  resolves is unchanged by construction. An iCUE re-import changes only what is listed
+  here.
 - **0.31.0 crabd (2026-09-04)** - crabd listens on 9999 and serves the panel itself, so the
   panel is a page you open in a browser rather than only a widget inside iCUE. Two gates come
   with that: the Origin rule is now an allowlist of this crabd's own address (a page you merely

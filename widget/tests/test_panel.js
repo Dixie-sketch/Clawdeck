@@ -1312,11 +1312,17 @@ function cardOfState(ctx, state) {
   var ui = /--font-ui:\s*([^;]+);/.exec(css);
   ok(!!ui, 'the UI stack is declared once');
   var stack = ui ? ui[1].split(',').map(function (s) { return s.trim().replace(/^"|"$/g, ''); }) : [];
-  eq(stack[0], 'system-ui', 'system-ui leads');
-  ok(stack.indexOf('-apple-system') > 0 && stack.indexOf('-apple-system') < 3, '-apple-system is beside it');
-  var segoe = stack.indexOf('Segoe UI Variable Text');
-  ok(segoe > 0, 'Segoe is still in the stack for the Windows build  (' + stack.join(' | ') + ')');
-  ok(segoe > stack.indexOf('system-ui'), 'and it is behind the system face, not in front of it');
+  /* THE MEASURED FACE LEADS (review). Every px width comment in this stylesheet
+     was measured in Segoe on the Edge, and a stack that resolves to a different
+     face there would silently invalidate all of them. Both Segoe entries are
+     absent on macOS, so they cost nothing and change nothing here — which is why
+     the macOS measurement table does not move either way. */
+  eq(stack[0], 'Segoe UI Variable Text', 'the face the widths were measured in leads');
+  eq(stack[1], 'Segoe UI', 'with its non-variable fallback behind it');
+  var sys = stack.indexOf('system-ui');
+  ok(sys > 1, 'the system face is next, which is what macOS resolves to  (' + stack.join(' | ') + ')');
+  ok(stack.indexOf('-apple-system') === sys + 1, '-apple-system beside it');
+  eq(stack[stack.length - 1], 'sans-serif', 'and a generic last');
   var mono = /--font-mono:\s*([^;]+);/.exec(css);
   ok(!!mono && /ui-monospace/.test(mono[1]) && /Cascadia Mono/.test(mono[1]),
     'the mono stack keeps both platforms too');

@@ -104,16 +104,19 @@
 	   on the panel still follows --accent. */
 	--gauge-blue: #2E7FF2;
 
-	/* v0.30.0: the system face leads. Segoe stays, second, because the iCUE build
-	   is still packaged from this tree and every px width comment in this file was
-	   measured in it — but a stack naming a Windows face first describes the wrong
-	   platform for a panel served in a browser on a Mac.
-	   ON macOS THIS RENDERS THE SAME FONT IT ALWAYS DID, which is why no
-	   measurement moves: neither Segoe family exists there, so the old stack fell
-	   through to `system-ui` anyway. Confirmed by comparing every zone rect at
-	   2560x720 across the change — see the v0.30.0 section in DEV.md. */
-	--font-ui: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
-	--font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+	/* v0.30.0: the macOS faces JOIN the stack, behind the ones it was measured in.
+	   THE ORDER IS THE MEASUREMENT'S, not the platform's. Every px width comment
+	   in this file — the sensor cell's 49.8 px of slack, the row's 360.8, the
+	   13-glyph name clamp — was measured in Segoe on the Edge, and putting a
+	   different face in front of it there would invalidate all of them at once
+	   with nothing to show for it. Segoe leads; the system face is what a Mac
+	   resolves to, because neither Segoe family exists on one.
+	   BOTH SEGOE ENTRIES ARE INERT ON macOS, which is why the measurement table
+	   in DEV.md shows no movement across this change and why the Windows face is
+	   unchanged BY CONSTRUCTION rather than by measurement — nothing was inserted
+	   ahead of it. */
+	--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "SF Pro Text", sans-serif;
+	--font-mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
 }
 
 * { box-sizing: border-box; }
