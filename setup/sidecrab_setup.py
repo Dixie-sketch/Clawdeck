@@ -713,6 +713,81 @@ def install_settings(env: Environment, writer: Writer, python: str) -> SettingsO
     return outcome
 
 
+# ------------------------------------------------------------------ install: config.json
+
+
+#: What an operator is told before panel approvals are switched on. Three promises, each
+#: one a property of crabd's permission broker rather than a hope about this installer.
+APPROVAL_GUARANTEES = (
+    "crabd holds each permission prompt for at most 55 s and NEVER auto-allows",
+    "no tap, a timeout, or approvals off all fall back to the terminal dialog",
+    "a tap is only honoured with the pairing code - print it with install.sh --pairing-code",
+)
+
+
+@dataclass(frozen=True)
+class ApprovalsDecision:
+    """Whether panelApprovals.enabled is written, to what, and why. Pure."""
+
+    enabled: bool
+    write: bool
+    reason: str
+
+
+def approvals_decision(requested, current) -> ApprovalsDecision:
+    """``requested`` is True/False when the operator said so, None for the default.
+
+    The default writes ``false`` ONLY when the key is absent. A plain re-run must never
+    revert an operator who chose --with-approvals earlier: the switch is theirs, and a
+    silent revert would take away a control surface they believe is armed.
+    """
+    if requested is None:
+        if current is None:
+            return ApprovalsDecision(False, True, "default OFF (key absent; --with-approvals to enable)")
+        return ApprovalsDecision(bool(current), False, f"left as {bool(current)} - your choice, not a default")
+    if current is not None and bool(current) == requested:
+        return ApprovalsDecision(requested, False, f"already {requested}")
+    return ApprovalsDecision(requested, True, f"set to {requested}")
+
+
+def ask_approvals(env: Environment, args) -> bool | None:
+    """The operator's answer, or None for "take the default". Impure only in the prompt."""
+    if args.with_approvals:
+        return True
+    if args.no_approvals:
+        return False
+    if args.yes or env.ask is None:
+        return None
+    env.emit("")
+    env.emit("  Panel approvals let a tap in the browser panel allow or deny a tool call.")
+    for line in APPROVAL_GUARANTEES:
+        env.emit(f"    - {line}")
+    answer = (env.ask("  Enable panel approvals? [y/N] ") or "").strip().lower()
+    return True if answer in ("y", "yes") else None
+
+
+def install_config(env: Environment, writer: Writer, args) -> ApprovalsDecision:
+    config = read_json_object(env.config_path, "config.json")
+    current = None
+    block = config.get("panelApprovals")
+    if isinstance(block, dict) and "enabled" in block:
+        current = bool(block["enabled"])
+
+    decision = approvals_decision(ask_approvals(env, args), current)
+    if decision.write:
+        out = copy.deepcopy(config)
+        out["panelApprovals"] = {"enabled": decision.enabled}
+        backup = writer.write_json(env.config_path, out)
+        if backup:
+            env.emit(f"  backup:     {backup}")
+    env.emit(f"  approvals:  {decision.reason}")
+    if decision.enabled:
+        env.emit("  SECURITY: panel approvals are ON.")
+        for line in APPROVAL_GUARANTEES:
+            env.emit(f"    - {line}")
+    return decision
+
+
 # ------------------------------------------------------------------ commands
 
 
@@ -723,7 +798,10 @@ def command_install(env: Environment, args) -> int:
     env.emit(f"  python:     {python}")
 
     writer = Writer(env.now)
+    # Order is the safety argument: settings.json is read first, so a file this tool
+    # cannot parse aborts before anything at all has been written or loaded.
     install_settings(env, writer, python)
+    install_config(env, writer, args)
     return 0
 
 

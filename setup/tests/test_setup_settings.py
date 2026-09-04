@@ -349,5 +349,60 @@ class InstallWritesSettings(TempHome):
         self.assertEqual(self.runner.calls, [])
 
 
+class PanelApprovals(TempHome):
+    """config.json's panelApprovals.enabled - a security posture, never a silent default."""
+
+    def install(self, *args, **kwargs):
+        return setup.main(["install", *args], env=self.env(**kwargs))
+
+    def config(self):
+        return json.loads((self.home / ".sidecrab" / "config.json").read_text(encoding="utf-8"))
+
+    def write_config(self, doc):
+        path = self.home / ".sidecrab" / "config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        return path
+
+    def test_an_absent_key_is_written_false(self):
+        self.install("--yes")
+        self.assertIs(self.config()["panelApprovals"]["enabled"], False)
+
+    def test_an_operators_true_is_never_reverted_by_a_plain_re_run(self):
+        path = self.write_config({"panelApprovals": {"enabled": True}, "quiet": {"from": "22:00"}})
+        before = path.read_text(encoding="utf-8")
+        self.install("--yes")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.backups(path), [])
+
+    def test_with_approvals_turns_it_on_and_states_the_guarantees(self):
+        self.install("--yes", "--with-approvals")
+        self.assertIs(self.config()["panelApprovals"]["enabled"], True)
+        for guarantee in ("55", "never auto-allow", "pairing code"):
+            self.assertIn(guarantee, self.output.lower().replace("auto-allows", "auto-allow"))
+
+    def test_no_approvals_turns_it_off_over_an_operators_true(self):
+        self.write_config({"panelApprovals": {"enabled": True}})
+        self.install("--yes", "--no-approvals")
+        self.assertIs(self.config()["panelApprovals"]["enabled"], False)
+
+    def test_every_other_key_survives_and_the_write_is_atomic(self):
+        path = self.write_config({"quiet": {"from": "22:00"}, "toast": {"thresholdSec": 90}})
+        self.install("--yes", "--with-approvals")
+        doc = self.config()
+        self.assertEqual(doc["quiet"], {"from": "22:00"})
+        self.assertEqual(doc["toast"], {"thresholdSec": 90})
+        self.assertEqual(self.backups(path), ["config.json.sidecrab-bak-20260904-112233"])
+        self.assertEqual(list(path.parent.glob("*.sidecrab-tmp-*")), [])
+
+    def test_a_tty_that_answers_nothing_leaves_approvals_off(self):
+        self.install(ask=lambda prompt: "")
+        self.assertIs(self.config()["panelApprovals"]["enabled"], False)
+
+    def test_a_tty_that_answers_yes_turns_them_on(self):
+        self.install(ask=lambda prompt: "y")
+        self.assertIs(self.config()["panelApprovals"]["enabled"], True)
+
+
 if __name__ == "__main__":
     unittest.main()
