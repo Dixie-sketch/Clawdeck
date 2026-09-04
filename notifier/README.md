@@ -10,7 +10,7 @@ Zero pip dependencies. Python 3.13 stdlib + Windows PowerShell 5.1.
 
 ## Behavior
 
-Every 10 s the notifier GETs `http://127.0.0.1:2722/v1/state` and toasts a session when
+Every 10 s the notifier GETs `http://127.0.0.1:9999/v1/state` and toasts a session when
 **all** of these hold:
 
 | Condition | Detail |
