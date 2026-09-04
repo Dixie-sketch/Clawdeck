@@ -1,6 +1,11 @@
-/* SideCrab widget runtime — consumes /v1/state (schema 1–5) from crabd on
-   loopback. docs/STATE-CONTRACT.md is authoritative; this file must not invent
-   fields.
+/* SideCrab widget v0.30.0 — runtime, consuming /v1/state (schema 1–5) from crabd
+   on loopback. docs/STATE-CONTRACT.md is authoritative; this file must not
+   invent fields.
+
+   THE VERSION ABOVE IS PROVENANCE, NOT A MACHINE-READ VALUE: manifest.json holds
+   the only one anything reads. It is here, and in the CSS and the HTML, so a file
+   in front of you says which release it belongs to — and a test asserts all four
+   agree, because the whole value of a provenance tag is being swept together.
 
    VERSIONING (rework, v0.6.1): `schema` marks the last BREAKING shape, NOT the
    feature level. Every additive field — contextTokens, fleet, recap, byModel,

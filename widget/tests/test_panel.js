@@ -1437,10 +1437,27 @@ function cardOfState(ctx, state) {
     'and index.html does not also carry the other platform\'s command');
 
   var manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
-  ok(manifest.description.indexOf('â') === -1 && manifest.description.indexOf('â€”') === -1,
-    'the manifest description carries no mojibake em-dash');
-  ok(manifest.description.indexOf('—') !== -1, 'it carries a real one');
-  eq(manifest.version, '0.30.0', 'the manifest is the one machine-read version');
+  /* Split (review): a mojibake byte and a missing real em-dash are two different
+     defects, and an && reports one message for either. */
+  ok(manifest.description.indexOf('\u00e2') === -1, 'the manifest description carries no mojibake byte');
+  ok(manifest.description.indexOf('\u2014') !== -1, 'it carries a real em-dash');
+
+  /* THE PROVENANCE SWEEP, AS A TEST (review) rather than an exact-version pin a
+     release has to hand-edit. manifest.json is the only machine-read version;
+     the tags in the JS, CSS and HTML are comments saying which release the file
+     in front of you belongs to, and their whole value is being swept together.
+     A pin on the literal caught nothing except itself. */
+  ok(/^\d+\.\d+\.\d+$/.test(manifest.version), 'the manifest version is a version  (' + manifest.version + ')');
+  var tagged = {
+    'scripts/sidecrab.js': fs.readFileSync(harness.SRC, 'utf8'),
+    'styles/sidecrab.css': fs.readFileSync(path.join(__dirname, '..', 'styles', 'sidecrab.css'), 'utf8'),
+    'index.html': html
+  };
+  Object.keys(tagged).forEach(function (file) {
+    var tag = /SideCrab widget v(\d+\.\d+\.\d+)\b/.exec(tagged[file]);
+    ok(!!tag, file + ' carries a provenance tag');
+    eq(tag && tag[1], manifest.version, file + ' is tagged with the manifest version');
+  });
 })();
 
 /* The standalone line, reworded. It has never carried a URL and still must not:
@@ -1498,6 +1515,33 @@ function cardOfState(ctx, state) {
   ok(/the panel settings \(gear\)/.test(ctx.ui.noticeText.textContent),
     'an unpaired decide says where the code goes  (' + ctx.ui.noticeText.textContent + ')');
   eq(ctx.sheetMode !== null, true, 'and the sheet stays open so the reason can be read');
+})();
+
+/* ---------------------------------------------- the shim fails loudly (review) */
+
+/* A TEST THAT SILENTLY FINDS NOTHING REPORTS SUCCESS FOREVER — the same reason
+   test_ordering.js keeps a deliberate mutant clamp. The shim supports one
+   compound simple selector; anything else (a descendant combinator, a
+   pseudo-class) now throws with the selector in the message rather than quietly
+   matching zero elements and letting an assertion pass on an empty list. */
+(function () {
+  var ctx = settingsPanel();
+  var threw = null;
+  try { ctx.document.querySelectorAll('#cards .card'); } catch (e) { threw = e; }
+  ok(!!threw, 'a descendant combinator throws rather than matching nothing');
+  ok(threw && /unsupported selector/.test(threw.message) && /#cards \.card/.test(threw.message),
+    'and the message names it  (' + (threw && threw.message) + ')');
+
+  threw = null;
+  try { ctx.document.querySelectorAll('.card:first-child'); } catch (e) { threw = e; }
+  ok(!!threw, 'so does a pseudo-class');
+
+  /* The supported shapes still work, including the comma list focusablesIn uses. */
+  ok(ctx.ui.cards.querySelectorAll('.card').length >= 0, 'a class selector is fine');
+  ok(ctx.document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]').length > 0,
+    'and a comma-separated list of them is what the sheet trap needs');
+  ok(ctx.document.querySelectorAll('meta[name="x-icue-property"]').length > 0,
+    'as is a quoted attribute value');
 })();
 
 /* --------------------------------- the v0.27.0 blank-panel trap, as a test */

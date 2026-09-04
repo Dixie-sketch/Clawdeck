@@ -1,4 +1,5 @@
-/* SideCrab — Xeneon Edge (dashboard_lcd), designed at 2560x720 landscape.
+/* SideCrab widget v0.30.0 — Xeneon Edge (dashboard_lcd), designed at 2560x720
+   landscape, and served in a browser at any size since v0.30.0.
    QtWebEngine 6.9.3 / Chromium 130: no :has(), no container queries, no
    backdrop-filter, no subgrid. Everything below is flexbox/grid + custom props. */
 

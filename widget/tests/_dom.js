@@ -14,10 +14,27 @@
  * in the settings-sheet test the moment it lands. A hand-written list of element
  * ids would be a second copy of the markup, and a copy that can disagree.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: layout (every rect is zeros), the cascade
- * (getComputedStyle answers a fixed shape), and selector combinators beyond a
- * comma-separated list of simple compound selectors. Anything that needs a real
- * engine is measured in a real browser and recorded in widget/DEV.md.
+ * WHAT IT DELIBERATELY DOES NOT DO, and each of these is a place a test can be
+ * wrong without saying so, which is why they are listed rather than discovered:
+ *
+ *   - LAYOUT. Every getBoundingClientRect is zeros. Anything about size or
+ *     position is measured in a real browser and recorded in widget/DEV.md.
+ *   - THE CASCADE. There is no stylesheet here at all; `getComputedStyle` is a
+ *     fixed shape supplied by _harness.js (not by this file), which a suite can
+ *     override when it needs one — see the grid-capacity tests.
+ *   - COMBINATORS. A selector is a comma-separated list of simple COMPOUND
+ *     selectors (tag, #id, .class, [attr], [attr="value"], in any combination).
+ *     No descendant, child or sibling combinators, no pseudo-classes. An
+ *     unsupported selector THROWS rather than quietly matching nothing: a test
+ *     that silently finds zero elements reports success forever.
+ *   - THE CAPTURE PHASE. dispatch() walks parents once, bubbling. A listener
+ *     registered with {capture: true} is called in bubble order like any other,
+ *     so a suite that depends on capture-before-target ordering (the panel's
+ *     click swallow) is testing something this shim does not model.
+ *   - TEXT AFTER AN ELEMENT. The scanner keeps a text node only while its parent
+ *     has no element children yet, so `<p>a<b>x</b>c</p>` loses the trailing "c".
+ *     Nothing in index.html has that shape; if something does, textContent will
+ *     be short and this is the reason.
  */
 'use strict';
 
@@ -165,8 +182,12 @@ function makeEl(doc, tag) {
     if (!ev.stopPropagation) ev.stopPropagation = function () { ev._stopped = true; };
     var node = el;
     while (node) {
-      var list = (node.listeners && node.listeners[type]) || [];
-      for (var i = 0; i < list.slice().length; i++) list.slice()[i].call(node, ev);
+      /* Snapshotted ONCE per node: a handler that binds or unbinds while it runs
+         must not change the list being walked. (The old code called .slice()
+         inside the loop condition AND the body, so it re-snapshotted every
+         iteration and a handler removing itself was still called.) */
+      var list = ((node.listeners && node.listeners[type]) || []).slice();
+      for (var i = 0; i < list.length; i++) list[i].call(node, ev);
       if (ev._stopped) break;
       node = node.parentNode;
     }
@@ -194,17 +215,25 @@ function makeEl(doc, tag) {
 /* One compound simple selector: tag, #id, .class and [attr] / [attr="value"],
    in any combination. No combinators — every call site in the panel is either
    relative to the element it is searching from or a single compound. */
+/* AN UNSUPPORTED SELECTOR THROWS. Returning false would make every query for it
+   find nothing, and a test that silently finds zero elements reports success
+   forever — which is the same reason test_ordering.js keeps a deliberate mutant.
+   The message names the selector, because the fix is either to widen this
+   function or to change the call site, and you cannot tell which without it. */
 function matchesOne(el, sel) {
-  var parts = String(sel).trim().match(/^[a-zA-Z][\w-]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]/g);
-  if (!parts) return false;
-  if (parts.join('') !== String(sel).trim()) return false;
+  var text = String(sel).trim();
+  var parts = text.match(/^[a-zA-Z][\w-]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]/g);
+  if (!parts || parts.join('') !== text) {
+    throw new Error('_dom.js: unsupported selector ' + JSON.stringify(text) +
+      ' (one compound simple selector only: tag, #id, .class, [attr], [attr="value"])');
+  }
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
     if (p.charAt(0) === '#') { if (el.id !== p.slice(1)) return false; }
     else if (p.charAt(0) === '.') { if (!el.classList.contains(p.slice(1))) return false; }
     else if (p.charAt(0) === '[') {
       var m = /^\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(p);
-      if (!m) return false;
+      if (!m) throw new Error('_dom.js: unsupported attribute selector ' + JSON.stringify(p));
       if (!el.hasAttribute(m[1])) return false;
       if (m[2] !== undefined && el.getAttribute(m[1]) !== m[2]) return false;
     } else if (el.tagName !== p.toUpperCase()) return false;
