@@ -492,15 +492,22 @@ class DarwinMemoryRefusalTests(LogOnceReset):
 
     def test_a_page_size_that_is_not_a_positive_power_of_two_is_refused(self):
         """0 would multiply every page count to nothing; 12345 is not a page size any
-        machine has and would scale the whole reading by a wrong constant."""
-        for page in (0, -16384, 12345, None):
+        machine has and would scale the whole reading by a wrong constant.
+
+        `True` is the sharp one, and it is why `_positive_int` refuses bools: it IS an
+        int in Python, it is positive, and 1 is a power of two - so it passes every check
+        in this line and then scales the whole reading by 1 byte per page instead of
+        16384. A machine using 66 GiB would be reported as using 4 MB.
+        """
+        for page in (0, -16384, 12345, None, True):
             with self.subTest(page=page):
                 self.refuses(sysctl={"vm.pagesize": page})
 
     def test_an_unreadable_installed_size_is_refused(self):
         """Zero installed memory is not a machine, and it is also the denominator of
-        memPct: divided into, it is a ZeroDivisionError inside a daemon thread."""
-        for total in (0, -1, None):
+        memPct: divided into, it is a ZeroDivisionError inside a daemon thread. `True`
+        is an installed size of one byte, which every used figure exceeds."""
+        for total in (0, -1, None, True):
             with self.subTest(total=total):
                 self.refuses(sysctl={"hw.memsize": total})
 
