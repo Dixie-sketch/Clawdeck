@@ -3504,8 +3504,13 @@ class DarwinPlatform:
 
     @staticmethod
     def _no_memory(reason: str) -> None:
-        """One stderr line for the life of the process, then silence: `_log_once` keys
-        on the failure KIND, and this reader runs every two seconds."""
+        """One stderr line for the life of the process, then silence.
+
+        `_log_once` keys on THIS READER - one key for all five refusals - so the first
+        one to fire is the one that speaks and a second kind arriving later is silent.
+        That is the trade this reader wants: it runs every two seconds, and a key per
+        kind would let a machine alternating between two failures print for ever.
+        """
         _log_once(HOST_MEM_LOG_KEY, f"crabd: {reason}; serving no host memory")
         return None
 

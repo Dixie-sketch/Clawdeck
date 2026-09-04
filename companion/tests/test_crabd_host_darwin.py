@@ -458,10 +458,17 @@ class DarwinMemoryRefusalTests(LogOnceReset):
         rejecting it, so the refusal has to happen here."""
         self.refuses(pages={"internal_page_count": 10_000_000})
 
-    def test_more_purgeable_than_internal_is_refused_rather_than_served_as_empty(self):
-        """The other end of the same subtraction: app memory below zero makes `used`
-        negative, and HostSampler would then serve memPct 0.0 - a machine reported as
-        using none of its memory, which is the fabricated-zero the contract forbids."""
+    def test_a_used_below_zero_is_refused_rather_than_served_as_empty(self):
+        """The other end of the same bound, and it is on the TOTAL, not on any one term.
+
+        The check is `0 <= used <= total`, so a purgeable count a few pages past
+        internal_page_count is tolerated by design - the four counts are sampled by the
+        kernel at slightly different moments and a little skew is not a bad reading. What
+        is refused is the SUM coming out negative: here purgeable exceeds internal by
+        more than wire_count can make up, and HostSampler would serve memPct 0.0 for it -
+        a machine reported as using none of its memory, which is the fabricated zero the
+        contract forbids.
+        """
         self.refuses(pages={"purgeable_count": 5_000_000})
 
     def test_a_failed_syscall_is_refused(self):
