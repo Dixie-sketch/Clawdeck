@@ -4486,11 +4486,15 @@ class ModelCatalog:
     bar does not draw. No fallback table, no guess, no zero (see the MODELS_URL comment).
     """
 
-    def __init__(self, credentials_file: Path | None = None) -> None:
+    def __init__(self, credentials_file: Path | None = None, platform=None) -> None:
         # Injectable for the reason LimitsReader's cache_file is: a test that builds a
         # real catalog must not be one forgotten patch away from reading the operator's
         # live token and hitting the network.
         self._credentials_file = Path(credentials_file) if credentials_file else None
+        # ...and with no file injected, the credential comes from the PLATFORM, which on
+        # macOS means the login Keychain. Reading the file directly here is what took the
+        # ctx-fill bar off every card on a Mac: the file is not there at all.
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._windows: dict[str, int] | None = None
         self._fetched_at = 0.0
@@ -4499,6 +4503,27 @@ class ModelCatalog:
     @property
     def credentials_file(self) -> Path:
         return self._credentials_file or CREDENTIALS_FILE
+
+    def _credential_document(self) -> str | None:
+        """The credential text, or None. An INJECTED file is read directly - it is the
+        seam this class's own tests are built on - and otherwise the platform answers,
+        which on macOS means the login Keychain as well as the file.
+
+        A refusal (macOS: the item is there and this process may not read it) is the same
+        None as every other failure here. The catalog has exactly one failure answer - no
+        entry, so `contextWindowTokens` is null and the bar does not draw - and it runs
+        inside build(), which must never raise. The platform has already said so once on
+        stderr; a second line from here would be the same fact twice.
+        """
+        if self._credentials_file is not None:
+            try:
+                return self._credentials_file.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        try:
+            return self._platform.cli_credentials()
+        except PermissionError:
+            return None
 
     def window(self, model, now: float) -> int | None:
         """The context window for a served model string, or None when unknown.
@@ -4537,9 +4562,8 @@ class ModelCatalog:
             self._not_before = 0.0
 
     def _fetch(self) -> dict[str, int] | None:
-        try:
-            raw = self.credentials_file.read_text(encoding="utf-8")
-        except OSError:
+        raw = self._credential_document()
+        if raw is None:
             return None
         try:
             oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}

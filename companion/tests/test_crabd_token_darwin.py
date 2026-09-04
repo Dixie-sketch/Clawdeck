@@ -709,6 +709,71 @@ class NeitherSecretReachesTheWireTests(KeychainCase):
             self.assertNotIn(b"cli-token", body)
 
 
+class ModelCatalogThroughTheKeychainTests(KeychainCase):
+    """The ctx-fill bar's DENOMINATOR comes from the same credential.
+
+    ModelCatalog read `~/.claude/.credentials.json` itself, which on a Keychain-only Mac
+    is a file that is not there - so every session card lost its context bar as well as
+    the limit gauges, and for the same reason. It goes through the platform reader now.
+
+    The injected `credentials_file` still wins and is still read directly: it is the seam
+    the catalog's own tests are built on, and it is what keeps a suite that constructs a
+    real catalog from reaching the operator's token and then the network.
+    """
+
+    CATALOG = json.dumps({"data": [{"id": "claude-fable-5",
+                                    "max_input_tokens": 1_000_000}]})
+
+    def catalog_http(self, body):
+        """A urlopen stub recording the Authorization header it was handed."""
+        seen = []
+
+        class _Resp:
+            def __init__(self, payload): self._b = payload.encode()
+            def read(self): return self._b
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake(request, timeout=None):
+            seen.append(request.get_header("Authorization"))
+            return _Resp(body)
+
+        crabd.urllib.request.urlopen = fake
+        return seen
+
+    def test_the_window_is_fetched_with_the_token_from_the_keychain(self):
+        seen = self.catalog_http(self.CATALOG)
+        fake = self.with_item(CLI_SERVICE, credential_document("keychain-token"))
+        catalog = crabd.ModelCatalog(platform=self.platform(fake))
+        self.assertEqual(catalog.window("claude-fable-5", 1_800_000_000.0), 1_000_000)
+        self.assertEqual(seen, ["Bearer keychain-token"])
+
+    def test_an_injected_file_is_still_read_directly_and_the_keychain_is_not_asked(self):
+        seen = self.catalog_http(self.CATALOG)
+        self.creds.write_text(credential_document("file-token"), encoding="utf-8")
+        fake = self.with_item(CLI_SERVICE, credential_document("keychain-token"))
+        catalog = crabd.ModelCatalog(credentials_file=self.creds,
+                                     platform=self.platform(fake))
+        self.assertEqual(catalog.window("claude-fable-5", 1_800_000_000.0), 1_000_000)
+        self.assertEqual(seen, ["Bearer file-token"])
+        self.assertEqual(fake.calls, [])
+
+    def test_a_refused_keychain_is_no_window_and_one_line_not_a_crash(self):
+        """The catalog's failure rule is one answer for everything: no entry, so
+        `contextWindowTokens` is null and the bar does not draw. A PermissionError out of
+        the platform must land there too - this runs inside build(), which may not raise.
+        """
+        seen = self.catalog_http(self.CATALOG)
+        refused = FakeSecurity(answer=(36, "", "User interaction is not allowed.\n"))
+        catalog = crabd.ModelCatalog(platform=self.platform(refused))
+        out, noise = self.capture(
+            lambda: [catalog.window("claude-fable-5", 1_800_000_000.0 + n * 100_000)
+                     for n in range(3)])
+        self.assertEqual(out, [None, None, None])
+        self.assertEqual(seen, [])
+        self.assertEqual(noise.count("would not hand over"), 1, noise)
+
+
 # ------------------------------------------------------- the suite cannot reach it
 
 class EveryModuleDisablesTheKeychainTests(unittest.TestCase):
