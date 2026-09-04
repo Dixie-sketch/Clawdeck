@@ -886,6 +886,167 @@ function cardCount(ctx) { return ctx.ui.cards.querySelectorAll('.card').length; 
   eq(cardCount(ctx), had, 'the last good cards stay, dimmed, rather than being re-served as fresh');
 })();
 
+/* ------------------------------------- keyboard equivalents for the gestures (I) */
+
+/* WHY THESE EXIST NOW AND NOT AT v0.20.0. The panel shipped on a wall-mounted
+   touchscreen with no keyboard attached, and CD-15 recorded a keyboard
+   equivalent for each of the four gestures as DELIBERATELY SKIPPED: shipping an
+   interaction model that could not be exercised on the surface it was for. A
+   panel with an address in a browser is exercised from a keyboard by definition,
+   so the four are here, and each one calls THE SAME FUNCTION the gesture calls
+   rather than a second copy of it that can drift.
+
+   The two conditions that make a bare letter safe: never while a sheet is open,
+   and never while an input has focus. */
+
+function keyPanel(name) {
+  var doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-' + (name || 'rework') + '.json'), 'utf8'));
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '?mock=' + (name || 'rework') },
+    storage: fakeStorage('ok')
+  });
+  ctx.acceptDoc(doc);
+  return ctx;
+}
+
+function cardOfState(ctx, state) {
+  var cards = ctx.ui.cards.querySelectorAll('.card');
+  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('data-state') === state) return cards[i];
+  return null;
+}
+
+(function () {
+  var ctx = keyPanel();
+  var calls = [];
+  ctx.ackAllWaiting = function () { calls.push('ackAllWaiting'); return 2; };
+  ctx.forceRefresh = function () { calls.push('forceRefresh'); };
+  ctx.togglePin = function (id) { calls.push('togglePin:' + id); };
+  ctx.dismissSwiped = function (card) { calls.push('dismissSwiped:' + card.getAttribute('data-session-id')); };
+
+  ctx.document.dispatch('keydown', { key: 'a' });
+  eq(calls, ['ackAllWaiting'], 'a runs the same ack-all the two-finger tap and the crab tap run');
+
+  calls.length = 0;
+  ctx.document.dispatch('keydown', { key: 'r' });
+  eq(calls, ['forceRefresh'], 'r runs the same refresh the pull-down runs');
+
+  /* p and Delete need a card to act ON, and act on nothing without one. */
+  calls.length = 0;
+  ctx.document.dispatch('keydown', { key: 'p' });
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  eq(calls, [], 'p and Delete do nothing with no card focused');
+
+  var done = cardOfState(ctx, 'done');
+  ok(!!done, 'the rework fixture has a dismissable card');
+  ctx.document.activeElement = done;
+  calls.length = 0;
+  ctx.document.dispatch('keydown', { key: 'p' });
+  eq(calls, ['togglePin:' + done.getAttribute('data-session-id')],
+    'p on a focused card runs the same pin toggle the long press runs');
+
+  calls.length = 0;
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  eq(calls, ['dismissSwiped:' + done.getAttribute('data-session-id')],
+    'Delete on a focused dismissable card runs the same dismissal the swipe runs');
+  calls.length = 0;
+  ctx.document.dispatch('keydown', { key: 'Backspace' });
+  eq(calls, ['dismissSwiped:' + done.getAttribute('data-session-id')], 'and so does Backspace');
+
+  /* A working card has no dismissal for the key to BE, exactly as it has none
+     for the swipe: the finger travels and nothing happens. */
+  var working = cardOfState(ctx, 'working');
+  if (working) {
+    ctx.document.activeElement = working;
+    calls.length = 0;
+    ctx.document.dispatch('keydown', { key: 'Delete' });
+    eq(calls, [], 'Delete on a card that cannot be dismissed does nothing');
+  }
+  ctx.document.activeElement = ctx.document.body;
+})();
+
+/* Inert while a sheet is open: the keys would fire behind it, on a grid the
+   operator cannot see. */
+(function () {
+  var ctx = keyPanel();
+  var calls = [];
+  ctx.ackAllWaiting = function () { calls.push('ack'); return 1; };
+  ctx.forceRefresh = function () { calls.push('refresh'); };
+  ctx.openSettingsSheet();
+  ['a', 'r', 'p', 'Delete', 'Backspace'].forEach(function (k) { ctx.document.dispatch('keydown', { key: k }); });
+  eq(calls, [], 'every gesture key is inert while a sheet is open');
+  ctx.closeSheet();
+  ctx.document.dispatch('keydown', { key: 'a' });
+  eq(calls, ['ack'], 'and live again once it closes');
+})();
+
+/* Inert while an input has focus: an "a" typed into the pairing code is a
+   character. */
+(function () {
+  var ctx = keyPanel();
+  var calls = [];
+  ctx.ackAllWaiting = function () { calls.push('ack'); return 1; };
+  ctx.openSettingsSheet();
+  var token = control(ctx, 'panelToken');
+  ctx.closeSheet();
+  ctx.document.activeElement = token;
+  ['a', 'r', 's'].forEach(function (k) { ctx.document.dispatch('keydown', { key: k }); });
+  eq(calls, [], 'no gesture key fires while an input has focus');
+  eq(ctx.sheetMode, null, 'and no sheet opens either');
+  ctx.document.activeElement = ctx.document.body;
+})();
+
+/* CD-15's own rule, unchanged: a native <button> fires its own click for Enter
+   and Space, and synthesising a second one is how a single press denies a
+   permission twice. */
+(function () {
+  var ctx = keyPanel();
+  var clicks = 0;
+  var btn = ctx.document.getElementById('sheetDeny');
+  btn.addEventListener('click', function () { clicks++; });
+  ctx.document.activeElement = btn;
+  ctx.document.dispatch('keydown', { key: 'Enter' });
+  eq(clicks, 0, 'Enter on a native button is not double-activated by the panel');
+  ctx.document.activeElement = ctx.document.body;
+})();
+
+/* The p key needed its own entry point, which moved suppressClick() — so the
+   long press's own rule is pinned here. The hold has consumed the interaction
+   and the sheet must not also open when the finger lifts; a key has no click
+   coming and must swallow nothing, or the operator's next tap goes missing. */
+(function () {
+  var ctx = keyPanel();
+  eq(ctx.suppressClickUntil, 0, 'nothing is suppressed to begin with');
+  ctx.firePin(cardOfState(ctx, 'done'));
+  ok(ctx.suppressClickUntil > Date.now(), 'a long-press pin swallows the click the finger is about to make');
+
+  var ctx2 = keyPanel();
+  ctx2.document.activeElement = cardOfState(ctx2, 'done');
+  ctx2.document.dispatch('keydown', { key: 'p' });
+  eq(ctx2.suppressClickUntil, 0, 'the p key swallows nothing: there is no click coming');
+  ctx2.document.activeElement = ctx2.document.body;
+})();
+
+/* A key has no fingertip and no card flying off the glass, so each one narrates
+   itself through the same aria-live line the two gestures with no other visible
+   result already use. */
+(function () {
+  var ctx = keyPanel();
+  ctx.ackAllWaiting = function () { return 3; };
+  ctx.document.dispatch('keydown', { key: 'a' });
+  eq(ctx.ui.noticeText.textContent, 'acknowledged 3', 'the ack-all key narrates its count');
+  eq(ctx.ui.notice.getAttribute('aria-hidden'), 'false', 'and the line is readable by an accessibility API');
+  ctx.document.dispatch('keydown', { key: 'r' });
+  eq(ctx.ui.noticeText.textContent, 'refreshing', 'the refresh key narrates too');
+  var done = cardOfState(ctx, 'done');
+  ctx.document.activeElement = done;
+  ctx.document.dispatch('keydown', { key: 'p' });
+  eq(ctx.ui.noticeText.textContent, 'pinned', 'the pin key says which way it went');
+  ctx.document.dispatch('keydown', { key: 'p' });
+  eq(ctx.ui.noticeText.textContent, 'unpinned', 'both ways');
+  ctx.document.activeElement = ctx.document.body;
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {

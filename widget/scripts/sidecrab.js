@@ -5789,13 +5789,25 @@ function cancelLongPress() {
 
 function firePin(card) {
 	if (!card.isConnected) return;
-	var id = card.getAttribute('data-session-id');
-	if (!id) return;
 	/* The hold has consumed the interaction: the sheet must not also open when the
-	   finger comes up, and the finger has not come up yet. */
+	   finger comes up, and the finger has not come up yet. The KEYBOARD path calls
+	   pinCard directly for exactly this reason — there is no click coming, and
+	   swallowing the operator's next one would be a bug with no cause on the
+	   glass. */
 	suppressClick();
+	pinCard(card);
+}
+
+/* The pin itself, shared by the long press and the p key. Returns whether the
+   session is pinned AFTER the toggle, or null when there was nothing to pin. */
+function pinCard(card) {
+	if (!card || !card.isConnected) return null;
+	var id = card.getAttribute('data-session-id');
+	if (!id) return null;
 	togglePin(id);
-	firePinFlash(id, isPinned(id));
+	var on = isPinned(id);
+	firePinFlash(id, on);
+	return on;
 }
 
 /* The confirm. On a PIN the glyph animates in, which is the whole message; on an
@@ -5934,12 +5946,21 @@ function onKeyDown(ev) {
 		return;
 	}
 	if (key === 'Tab' && open) { trapTab(ev); return; }
-	/* v0.30.0: the single-letter keys. Never while a sheet is open (they would
-	   fire behind it) and never while an input has focus (an "s" typed into the
-	   pairing code is a character, not a command) — the two conditions that make a
-	   bare letter safe as a shortcut at all. */
-	if (!open && !typingInAnInput() && key.length === 1) {
+	/* v0.30.0: the gesture keys. Never while a sheet is open (they would fire
+	   behind it, on a grid the operator cannot see) and never while an input has
+	   focus (an "s" typed into the pairing code is a character, not a command) —
+	   the two conditions that make a bare letter safe as a shortcut at all.
+	   Each one calls THE SAME FUNCTION the gesture calls: a second copy of the
+	   ack-all or of the dismissal is a second one that can drift. */
+	if (!open && !typingInAnInput()) {
 		if (key === 's' || key === 'S') { openSettingsSheet(); ev.preventDefault(); return; }
+		if (key === 'a' || key === 'A') { fireTwoFingerAck(); ev.preventDefault(); return; }
+		if (key === 'r' || key === 'R') { forceRefresh(); ev.preventDefault(); return; }
+		if (key === 'p' || key === 'P') { keyboardPin(); ev.preventDefault(); return; }
+		/* Backspace as well as Delete, and preventDefault on both: an unhandled
+		   Backspace is a browser Back on some engines, which would navigate the
+		   panel away from a card the operator only meant to dismiss. */
+		if (key === 'Delete' || key === 'Backspace') { keyboardDismiss(); ev.preventDefault(); return; }
 	}
 	if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') return;
 	var el = document.activeElement;
@@ -5955,6 +5976,60 @@ function onKeyDown(ev) {
 	/* Space scrolls the page by default, and the sheet's list regions scroll. */
 	ev.preventDefault();
 	el.click();
+}
+
+/* The card a key acts ON. A card is a tab stop, so `p` and Delete need one under
+   focus for the same reason the long press and the swipe need one under a
+   finger; with none they do nothing, which is the honest equivalent of a finger
+   travelling over empty grid. */
+function focusedCard() {
+	var el = document.activeElement;
+	if (!el || !el.closest) return null;
+	var card = el.closest('.card');
+	return card && ui.cards.contains(card) ? card : null;
+}
+
+/* THE KEYBOARD NARRATES, and the gestures mostly do not. That asymmetry is
+   deliberate: a long press gives a fingertip a pin glyph animating in under it
+   and a swipe sends the card off the glass, and a key gives neither. So each key
+   says what it did on the one aria-live line this panel already has for exactly
+   the gestures that had no other visible result. */
+function keyboardPin() {
+	var card = focusedCard();
+	if (!card) return;
+	var id = card.getAttribute('data-session-id');
+	var on = pinCard(card);
+	if (on === null) return;
+	/* THE CARD UNDER FOCUS HAS JUST BEEN THROWN AWAY. A pin re-sorts the grid and
+	   the confirm flash is render state, so renderSessions rebuilds every node —
+	   and focus goes with the node, to the document. Without this a second p has
+	   nothing to act on and neither does Delete, which is the whole keyboard path
+	   dying one keystroke in. */
+	refocusCard(id);
+	showNotice(on ? 'pinned' : 'unpinned', 'ack');
+}
+
+/* By scan rather than by selector: a session id goes into a CSS attribute
+   selector unescaped, and the id is crabd's, not ours. */
+function refocusCard(id) {
+	if (!id) return;
+	var cards = ui.cards.querySelectorAll('.card');
+	for (var i = 0; i < cards.length; i++) {
+		if (cards[i].getAttribute('data-session-id') === String(id)) { safeFocus(cards[i]); return; }
+	}
+}
+
+function keyboardDismiss() {
+	var card = focusedCard();
+	if (!card) return;
+	/* Checked against the LIVE row, the belt startSwipe and dismissSwiped both
+	   wear: a needs_input or working card has no dismissal for the key to BE. */
+	var s = findSession(card.getAttribute('data-session-id'));
+	if (!s || !DISMISSABLE[s.state]) return;
+	/* Negative, so the card leaves to the left — the same direction and the same
+	   function a leftward swipe ends in. */
+	dismissSwiped(card, -1);
+	showNotice('dismissed', 'ack');
 }
 
 /* A text field, a slider or a select has the keystroke: the settings sheet is the

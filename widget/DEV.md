@@ -1717,6 +1717,51 @@ long-press pin, two-finger ack-all, pull-to-refresh), and `aria-live` narration 
 state changes. Each is a real feature, none is a defect this wave found, and all three
 would ship untested against the surface they are for.
 
+**v0.30.0 — the skipped list shrinks to one.** The ground for skipping the gesture
+equivalents was that the surface has no keyboard. A panel with an address in a browser
+is driven from one by definition, so the four are here, and each key calls **the same
+function the gesture calls** rather than a second copy of it:
+
+| key | what it does | the gesture it equals | the function both reach |
+|---|---|---|---|
+| `a` | acknowledge every waiting session | two-finger tap anywhere, **and the crab tap**, which has always been the pointer equivalent of the two-finger one | `fireTwoFingerAck` → `ackAllWaiting` |
+| `p` | pin / unpin the focused card | long press on a card | `pinCard` → `togglePin` |
+| `Delete` / `Backspace` | dismiss the focused card | swipe a done/idle card away | `dismissSwiped` |
+| `r` | refresh now | pull down from the top edge | `forceRefresh` |
+| `s` | open the panel's settings | the gear beside the filter chips | `openSettingsSheet` |
+| `Escape` | close the sheet | the backdrop or the X | `closeSheet` |
+
+Three things had to be true for a bare letter to be safe, and all three are tests:
+
+- **Never while a sheet is open.** The keys would fire behind it, on a grid the
+  operator cannot see.
+- **Never while an input has focus.** The settings sheet is the first surface on this
+  panel with text fields in it, and an `a` typed into a pairing code is a character.
+  `typingInAnInput()` is the guard.
+- **A native `<button>` is still not double-activated.** CD-15's own rule, unchanged:
+  Enter and Space are the engine's to deliver, and synthesising a second click is how
+  one press denies a permission twice.
+
+Two things that only showed up once the keys existed:
+
+- **A pin throws away the node under focus.** Pinning re-sorts the grid and the confirm
+  flash is render state, so `renderSessions` rebuilds every card — and focus goes with
+  the node, to the document. Measured: without `refocusCard(id)` a second `p` had
+  nothing to act on and neither did `Delete`, which is the whole keyboard path dying one
+  keystroke in.
+- **`suppressClick()` belongs to the long press and not to the pin.** The hold consumes
+  an interaction whose finger has not lifted yet; a key has no click coming, and
+  swallowing the operator's next one would be a bug with no cause on the glass. The pin
+  itself is `pinCard()`, shared; the suppression stays in `firePin()`. Both directions
+  are pinned by tests.
+
+**`aria-live` narration** is the last of the three, and it is now partial rather than
+skipped: each keyboard action reports on the same `#notice` line the two gestures with
+no other visible result already use — `acknowledged 3`, `refreshing`, `pinned`,
+`unpinned`, `dismissed`. The asymmetry with the gestures is deliberate: a long press
+puts a pin glyph animating in under the fingertip and a swipe sends the card off the
+glass, and a key gives neither. Arrow-key navigation of the grid is still skipped.
+
 ### 7. Quiet hours could outlive the companion — CD-42
 
 `quiet.active` is crabd's answer, and a dead companion answers nothing — so a panel
