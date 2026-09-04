@@ -817,6 +817,25 @@ python notifier\sidecrab_toast.py --version
 python notifier\sidecrab_toast.py --once --dry-run --config <temp.json> --state <temp-state.json>
 ```
 
+On macOS it is the same module and the same flags, with `python3` and forward slashes:
+
+```bash
+# one evaluation, decide only, never show  (safe against a live crabd)
+python3 notifier/sidecrab_toast.py --once --dry-run --verbose
+
+# fire one sample notification through osascript and exit
+python3 notifier/sidecrab_toast.py --test-toast
+
+# which module is this, really?  (stdout, before logging is set up)
+python3 notifier/sidecrab_toast.py --version
+```
+
+`--test-toast` is the one to run first on a Mac: the first notification a process posts can
+raise a one-time permission prompt for Script Editor, and it is better to meet that at a
+prompt than to wonder why a waiting question was silent. Nothing here starts the daemon at
+logon — `setup/install.sh --with-toast` registers the LaunchAgent that does, and it lands with
+the macOS setup lane, not with this component.
+
 Flags: `--endpoint`, `--interval`, `--config`, `--state`, `--once`, `--dry-run`,
 `--test-toast`, `--test-digest`, `--test-budget`, `--test-approval`, `--test-stale`,
 `--test-longrun`, `--version`, `--verbose`.
@@ -830,8 +849,8 @@ carries both actions.
 python -m unittest discover -s notifier\tests -t notifier\tests -v
 ```
 
-**543 tests** - 84 decision/adapter/ack-action/AUMID + 72 snooze + 53 long-run + 52 digest +
-49 approval + 43 budget + 41 macOS adapter + 38 stale-feed + 34 ack handler + 29 global mute +
+**554 tests** - 84 decision/adapter/ack-action/AUMID + 72 snooze + 53 long-run + 52 digest +
+52 macOS adapter + 49 approval + 43 budget + 38 stale-feed + 34 ack handler + 29 global mute +
 24 version/state-file + 13 emit matrix + 11 icon.
 (Counted with `loadTestsFromName().countTestCases()`, so the parts sum to the whole - the
 previous breakdown was hand-kept and summed to 446 against a stated 449.) Stdlib `unittest` only, fully headless: toast
@@ -896,15 +915,29 @@ Every gate is mutation-proven — breaking it in turn fails the suite:
 | the muted path's per-request guard dropped (v0.18.0 batch independence) | 1 |
 | **the macOS display line built with the title interpolated** | 3 |
 | **the macOS argv joined and run through a shell** | 1 |
-| one macOS argument left unstripped of control bytes | 2 |
+| the control-byte strip removed from the macOS arguments | 1 |
 | the control strip widened over tab / newline / return | 5 |
 | `MAC_TITLE_TRIM` collapsed to `TITLE_TRIM` (the label eaten) | 4 |
 | the macOS argument cap removed | 2 |
+| the subtitle emptied, or dropped on the way to argv | 1 |
+| `sound name "default"` deleted from the display line | 1 |
+| one letter deleted from the AppleScript (`osacompile` rejects it) | 1 |
 | the macOS failure line carries the request title and the untruncated stderr | 2 |
+| the two macOS failure shapes report at different levels again | 3 |
+| the repeat latch removed (every failing poll logs an ERROR) | 2 |
+| a landed notification no longer re-arms the ERROR line | 1 |
 | the macOS adapter catches `TimeoutExpired` only | 3 |
-| a non-zero `osascript` reported as shown (the spell consumed) | 2 |
-| the platform test inverted in `pick_adapter` | 4 |
+| `ValueError` dropped from the catch (a lone surrogate escapes) | 1 |
+| a non-zero `osascript` reported as shown (the spell consumed) | 4 |
+| the default timeout back at or above the poll interval | 1 |
+| the platform test inverted in `pick_adapter` | 2 |
+| an unsupported platform handed the Windows adapter | 2 |
+| the unsupported adapter's one-line latch removed | 1 |
 | `main` names `PowerShellToastAdapter` directly again | 1 |
+| `--dry-run` shows through the real adapter | 1 |
+
+> The macOS rows count **distinct failing tests**: a `subTest` that fails four times is one
+> test, not four. The rows above them predate that convention and count failure lines.
 
 > The long-run **quiet** row was `0` on the first mutation run. The obvious test (quiet poll,
 > then a loud poll on the same done row) passed with the mark deleted, because the
