@@ -1047,6 +1047,116 @@ function cardOfState(ctx, state) {
   ctx.document.activeElement = ctx.document.body;
 })();
 
+/* ------------------------------------------------------- the layout unit (H) */
+
+/* ONE BASELINE, and now a BOUNDED one. `1vmin` was calibrated for a glass panel
+   that is always 2560x720, where vmin is 7.2 px; a browser window is any size at
+   all, so the same declaration made every token in the file swing with the
+   window — 9.0 px at 1440x900 (a 25% inflation of the whole panel) and 3.89 px at
+   390x844. The clamp holds the Edge slot EXACTLY as it was (7.1875 measured at
+   2560x720, inside the ceiling, so the middle term still wins) and stops both
+   ends running away.
+   The numbers are asserted here because the alternative is a stylesheet where
+   the reference size is a comment. */
+(function () {
+  var css = fs.readFileSync(path.join(__dirname, '..', 'styles', 'sidecrab.css'), 'utf8');
+  var m = /--layout-unit:\s*clamp\(\s*([\d.]+)px\s*,\s*1vmin\s*,\s*([\d.]+)px\s*\)/.exec(css);
+  ok(!!m, 'the layout baseline is a clamped 1vmin');
+  eq(m && m[2], '7.2', 'the ceiling is the 2560x720 reference, so that slot is unchanged');
+  eq(m && m[1], '4.5', 'and the floor is the measured phone value');
+
+  /* RULE 1/2, and the reason the clamp is a one-line change rather than a sweep:
+     no component selector may use a raw viewport unit, so every size in the file
+     derives from this one declaration. */
+  /* Comments are stripped whole and replaced by their own newlines, so the line
+     numbers in a failure still point at the offending declaration — half this
+     file is prose about measurements, and most of that prose names a vmin. */
+  var code = css.replace(/\/\*[\s\S]*?\*\//g, function (c) { return c.replace(/[^\n]/g, ' '); });
+  var lines = code.split('\n');
+  var offenders = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (/[\d.]+(vmin|vmax|vw|vh)\b/.test(lines[i]) && lines[i].indexOf('--layout-unit') === -1) {
+      offenders.push((i + 1) + ': ' + lines[i].trim());
+    }
+  }
+  eq(offenders, [], 'no component selector uses a raw viewport unit');
+})();
+
+/* THE FONT STACK LEADS WITH THE SYSTEM FACE. Segoe stays, second, because the
+   iCUE build is still packaged from this tree — but a stack that names a Windows
+   face first is a stack that describes the wrong platform, and on macOS it
+   resolved to system-ui by falling through two absent families anyway. */
+(function () {
+  var css = fs.readFileSync(path.join(__dirname, '..', 'styles', 'sidecrab.css'), 'utf8');
+  var ui = /--font-ui:\s*([^;]+);/.exec(css);
+  ok(!!ui, 'the UI stack is declared once');
+  var stack = ui ? ui[1].split(',').map(function (s) { return s.trim().replace(/^"|"$/g, ''); }) : [];
+  eq(stack[0], 'system-ui', 'system-ui leads');
+  ok(stack.indexOf('-apple-system') > 0 && stack.indexOf('-apple-system') < 3, '-apple-system is beside it');
+  var segoe = stack.indexOf('Segoe UI Variable Text');
+  ok(segoe > 0, 'Segoe is still in the stack for the Windows build  (' + stack.join(' | ') + ')');
+  ok(segoe > stack.indexOf('system-ui'), 'and it is behind the system face, not in front of it');
+  var mono = /--font-mono:\s*([^;]+);/.exec(css);
+  ok(!!mono && /ui-monospace/.test(mono[1]) && /Cascadia Mono/.test(mono[1]),
+    'the mono stack keeps both platforms too');
+})();
+
+/* THE RESIZE FEEDBACK LOOP — a defect the port introduces by itself, because an
+   iCUE slot never resizes and a browser window is dragged.
+
+   gridCapacity() reads the track counts off the computed style so that JS never
+   learns the slot. But a real engine reports the IMPLICIT tracks too, and a grid
+   holding more cards than the new slot has cells has grown implicit rows to put
+   them in — so the capacity read back is the overflow's own count, and no later
+   resize can escape it. MEASURED in Chromium, ?mock=dense, 2560x720 then dragged
+   to 390x844: eight cards in a one-column grid whose first three rows were
+   7.69 px tall. Three unreadable slivers and five auto rows.
+
+   The fix is to measure an EMPTY grid: the stylesheet's own answer is the only
+   one that is about the slot rather than about what is already in it. */
+(function () {
+  var holder = {};
+  var wide = true;
+  var ctx = loadWidget({
+    dom: true,
+    location: { protocol: 'http:', host: 'localhost:9999', href: 'http://localhost:9999/', search: '?mock=dense' },
+    storage: fakeStorage('ok'),
+    getComputedStyle: function (el) {
+      return {
+        display: 'block', visibility: 'visible', opacity: '1',
+        getPropertyValue: function (prop) {
+          if (!holder.ctx || el !== holder.ctx.ui.cards) return '';
+          var n = holder.ctx.ui.cards.querySelectorAll('.card').length;
+          if (prop === 'grid-template-columns') return wide ? '1fr 1fr 1fr 1fr' : '1fr';
+          if (prop === 'grid-template-rows') {
+            var explicit = wide ? 2 : 3;
+            /* An engine reports explicit tracks PLUS one implicit track for every
+               item that did not fit — which is exactly the trap. */
+            var cells = explicit * (wide ? 4 : 1);
+            var rows = explicit + Math.max(0, n - cells);
+            return new Array(rows).join('100px ') + '100px';
+          }
+          return '';
+        }
+      };
+    }
+  });
+  holder.ctx = ctx;
+  var dense = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'mock', 'mock-state-dense.json'), 'utf8'));
+  ctx.acceptDoc(dense);
+  eq(cardCount(ctx), 8, 'the wide slot fills its eight cells (seven cards and the overflow tile)');
+
+  wide = false;
+  ctx.timers.length = 0;
+  ctx.listeners.resize[0]();
+  var queued = ctx.timers.slice();
+  ctx.timers.length = 0;
+  queued.forEach(function (t) { t.fn(); });
+
+  eq(cardCount(ctx), 3, 'the narrow slot re-measures to THREE, not to the eight it was holding');
+  ok(ctx.gridCapacity() <= 3, 'and the capacity read back is the stylesheet\'s, not the overflow\'s');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {

@@ -4,8 +4,19 @@
 
 :root {
 	/* Rule 1/2: ONE baseline; every component token derives from it and no
-	   component selector uses a raw viewport unit. */
-	--layout-unit: 1vmin;
+	   component selector uses a raw viewport unit.
+	   v0.30.0 — BOUNDED, because the panel now has a resizable window. `1vmin` was
+	   calibrated for a glass panel that is always 2560x720, where it is 7.2 px;
+	   in a browser it is whatever the window is, and every token in this file
+	   moves with it. Measured at HEAD before the clamp: 9.0 px at 1440x900 (a 25%
+	   inflation of the entire panel, clock at 135 px) and 3.89 px at 390x844 (card
+	   type down to 11.5 px).
+	   THE CEILING IS THE REFERENCE SLOT AND THE EDGE IS THEREFORE UNCHANGED: vmin
+	   at 2560x720 measures 7.1875 px, inside 7.2, so the middle term still wins
+	   there and every measurement in this file still holds. The floor is 4.5 px,
+	   which is the 390 px phone: 3.89 -> 4.5 puts card type back to 13.3 px and
+	   the fingertip floor is a max() with 48px and cannot shrink either way. */
+	--layout-unit: clamp(4.5px, 1vmin, 7.2px);
 
 	--fs-clock: calc(var(--layout-unit) * 15);
 	--fs-clock-sec: calc(var(--layout-unit) * 4.2);
@@ -93,8 +104,16 @@
 	   on the panel still follows --accent. */
 	--gauge-blue: #2E7FF2;
 
-	--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-	--font-mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+	/* v0.30.0: the system face leads. Segoe stays, second, because the iCUE build
+	   is still packaged from this tree and every px width comment in this file was
+	   measured in it — but a stack naming a Windows face first describes the wrong
+	   platform for a panel served in a browser on a Mac.
+	   ON macOS THIS RENDERS THE SAME FONT IT ALWAYS DID, which is why no
+	   measurement moves: neither Segoe family exists there, so the old stack fell
+	   through to `system-ui` anyway. Confirmed by comparing every zone rect at
+	   2560x720 across the change — see the v0.30.0 section in DEV.md. */
+	--font-ui: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+	--font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
 }
 
 * { box-sizing: border-box; }

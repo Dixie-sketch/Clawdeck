@@ -8755,7 +8755,22 @@ function init() {
 	   and render() rebuilds the cards whenever the signature moves. */
 	window.addEventListener('resize', function () {
 		if (resizeTimer) clearTimeout(resizeTimer);
-		resizeTimer = setTimeout(function () { resizeTimer = null; render(); }, 150);
+		resizeTimer = setTimeout(function () {
+			resizeTimer = null;
+			/* EMPTY THE GRID BEFORE MEASURING IT (v0.30.0). gridCapacity() reads the
+			   track counts off the computed style, and an engine reports the IMPLICIT
+			   tracks too — so a grid holding more cards than the new slot has cells
+			   has grown a row for each of them, and the capacity read back is the
+			   overflow's own count. Nothing later escapes that: the grid stays
+			   overfilled for the life of the tab. Measured in Chromium on ?mock=dense,
+			   2560x720 dragged to 390x844: eight cards in one column, the first three
+			   rows 7.69 px tall. Costs one empty frame per resize, debounced, and
+			   render() rebuilds on the next line. An iCUE slot never resizes, which is
+			   why this could not happen before the panel had a window. */
+			cardSig = '';
+			ui.cards.textContent = '';
+			render();
+		}, 150);
 	});
 
 	ui.ready = true;

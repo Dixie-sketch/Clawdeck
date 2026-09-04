@@ -189,6 +189,192 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.30.0 — the browser port: a bounded baseline, a settings sheet, and a window that resizes
+
+crabd serves this tree at `http://localhost:9999/`, so the panel now has an origin, an
+address anyone can type, a window that is dragged rather than a slot that is chosen, and
+no iCUE property bridge behind it. Everything below is what that changed and what it was
+measured at.
+
+### The layout baseline is clamped, and the Edge slot is byte-identical
+
+`--layout-unit: 1vmin` was calibrated for a panel that is always 2560x720. In a browser
+it is whatever the window is, and every token in the stylesheet moves with it — Rule 1/2
+(one baseline, no raw viewport unit in any component selector) is what makes that one
+declaration retune the whole panel, in both directions.
+
+**Measured at HEAD, Chromium 140 headless via Playwright, `?mock=question`, device
+metrics pinned, each size loaded FRESH (see the resize trap below for why that matters):**
+
+| slot | `--layout-unit` before | after | what it was doing |
+|---|---|---|---|
+| 2560x720 (the Edge) | 7.1875 px | **7.1875 px** | inside the ceiling, so the middle term still wins: unchanged |
+| 1440x900 | 9.0 px | **7.1875 px** | a 25% inflation of the entire panel — clock 135 px, card type 30.6 px |
+| 768x1024 | 7.6719 px | **7.1875 px** | 6.7% over the reference |
+| 390x844 | 3.8906 px | **4.5 px** | card question type 11.5 px, below what a phone reads |
+
+`clamp(4.5px, 1vmin, 7.2px)`. The ceiling **is** the reference slot's own vmin rounded
+up (7.1875 measured, 7.2 declared), which is what keeps every px figure elsewhere in this
+file true. The floor is the 390 px phone: 3.89 → 4.5 puts the card question back to
+13.275 px. `--touch-min` is `max(48px, 8.4 * unit)` and cannot shrink past 48 either way.
+
+**2560x720 before and after the change, every zone rect (x/y/w/h):**
+
+| element | before | after |
+|---|---|---|
+| `.zone-identity` | 0, 0, 519.67, 720 | **identical** |
+| `.zone-limits` | 519.67, 0, 619.52, 720 | **identical** |
+| `#cards` | 1167.98, 107.98, 1363.22, 583.22 | **identical** |
+| `#crab` | 28.8, 123.81, 462.08, 421.02 | **identical** |
+| `#limitsHead` | 549.47, 22.31, 559.92, 48.23 | **identical** |
+| grid tracks | 4 x 326.766 px / 2 x 282.25 px | **identical** |
+| `.card-question` | 81.52 px, 21.24 px type, clamp 3 | **identical** |
+
+**The font stack change is also byte-identical here, and that is not luck.**
+`system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI",
+sans-serif` — the system face leads, Segoe stays behind it for the iCUE build. On macOS
+neither Segoe family exists, so the old stack fell through to `system-ui` anyway and the
+rendered face never moved; the table above is the proof rather than the claim. On Windows
+Segoe is still what resolves, so every px width comment in the stylesheet keeps its
+provenance. `--font-mono` gains `"SF Mono", Menlo` ahead of Cascadia for the same reason.
+
+### The two new slots, measured
+
+**390x844 (a phone, portrait), `?mock=question`, fresh load.** The `<=3:2 / height >= 421
+/ width <= 640` portrait query already owned this shape; what it did not have was a
+readable baseline.
+
+| | measured |
+|---|---|
+| identity band | 390 x 160.36 (crab 84.84 x 123.36, clock 157.16 x 67.5) |
+| Limits zone | 390 x 72.77, the two gauges side by side at 171.2 x 50.2 with **11.69 px between them** — no overlap, and both over the 48 px floor |
+| card grid | **one column**, 354 px, 3 rows x 163.94 px |
+| question | 2 whole lines, 33.97 px, 13.275 px type, clamp 2 — the clamp finishes its lines, so the ellipsis ends it and not the box |
+| overflow | grid 0, child-out-of-card 0, document horizontal **none** |
+| `#coreLine` | `display: none` — the two zones are on the glass, so the CD-33 substitute stays off |
+
+**768x1024 (a tablet, portrait), fresh load.** The near-square query: identity band
+across the top, Limits and Sessions side by side under it.
+
+| | measured |
+|---|---|
+| identity band | 768 x 296.95 |
+| Limits zone | 284.16 x 727.03, gauges **stacked** (225.6 wide, y 381.2 and 474.7) |
+| card grid | **two columns**, 203.766 px each, 2 rows x 285.766 px |
+| question | 2 lines, 54.36 px, 21.24 px type |
+| overflow | grid 0, child 0, horizontal none |
+
+**1440x900 (a laptop window), fresh load.** Three columns, 234.72 px each, 2 rows x
+372.25 px; clock 108 px (was 135); no overflow anywhere. No new query was needed — this
+slot was only ever wrong because of the baseline.
+
+**No breakpoint was added.** The three `<=3:2` queries plus the two width queries already
+partition the space correctly; every measured failure at these sizes was the unbounded
+baseline, and the clamp is the whole fix. A breakpoint added on top of it would have been
+a second answer to a question the cascade already answers.
+
+### THE RESIZE FEEDBACK LOOP — a defect the port introduces by itself
+
+An iCUE slot is chosen once and never resizes. A browser window is dragged, and that
+turns `gridCapacity()` into a loop that cannot escape.
+
+`gridCapacity()` reads the track counts off the computed style, which is what keeps the
+breakpoints in the stylesheet and out of the JS. But **a real engine reports the IMPLICIT
+tracks too**: a grid holding more cards than the new slot has cells has grown a row for
+each of them, so the count read back is the overflow's own — and every later render
+re-reads it.
+
+**Measured, Chromium, `?mock=dense`, 2560x720 then dragged to 390x844:**
+
+| | before | after |
+|---|---|---|
+| `grid-template-columns` | 354 px (correct) | 354 px |
+| `grid-template-rows` | `7.6875 7.70312 7.6875 89.5781 89.5781 89.5781 107.172 34.3906` — 3 explicit rows crushed to slivers plus 5 implicit | `163.938 163.938 163.938` |
+| cards rendered | **8** | **3** |
+| shortest card | **7.69 px** | 163.94 px |
+
+The fix is one line in the resize handler: empty the grid *before* re-rendering, so the
+tracks measured are the stylesheet's answer about the slot and not the grid's answer
+about itself. It costs one empty frame per resize, debounced at 150 ms, and `render()`
+rebuilds on the next statement. `test_panel.js` reproduces it with a `getComputedStyle`
+stub that reports implicit tracks the way an engine does.
+
+### The settings sheet is generated from the declarations iCUE reads
+
+There is no property bridge in a browser, so the panel renders its own settings sheet —
+from the `<meta name="x-icue-property">` tags and the `<script id="x-icue-groups">` block
+in `index.html`, parsed at runtime. Those declarations were written and reviewed for the
+iCUE console; a second copy here would be a copy that can disagree with the one iCUE
+reads. Adding a setting is still one meta and one name in a group.
+
+Measured at 2560x720 with the sheet open: 3 groups, 17 rows, every control 60.5 px tall
+(the 48 px fingertip floor with room over it), region 921.8 x 540.9 scrolling 1449 px of
+content. Every control opens on the value the panel would *read* for that property, so
+the sheet cannot show one thing while the panel behaves as another.
+
+- **`panelToken` gained a group.** It was declared as a property and named by no group at
+  all, which means the iCUE console never rendered it either. It is now its own
+  **Approvals** group. The suite asserts that every declared property is claimed by
+  exactly one group, so the next one cannot go missing quietly.
+- **Not rendered outside iCUE:** `cpuTempSensor`, `gpuTempSensor`, `touchDiag`. Absent
+  rather than disabled — there is no bridge behind any of them in a browser.
+- **`crabStyle` is a real enum control** (`auto` / `plain`). `crabPlain()` has accepted
+  the words since v0.11.0 precisely so this needed no code.
+- **Built once on open, never on the poll**, and every change fires on `change` rather
+  than `input`: a 3 s rebuild would throw away a half-typed pairing code, and a slider
+  firing per pixel would POST per pixel.
+- **"Desktop Toast Alerts" → "Desktop Notifications"** in the meta, the catalogue and the
+  group info. The wire key is still `toast`: a contract key is not a label.
+
+### The standalone case, decided
+
+**The browser panel requires the companion, and there is no static fallback server.** The
+page is *served by* crabd, so a page with no crabd is a page that did not load. That
+inverts the iCUE premise — the store user who installs the widget before the companion —
+and the standalone state's own comment ("the SENSORS row stays: iCUE feeds it, not the
+companion") with it.
+
+What that means concretely, and both halves are already the shipping behaviour:
+
+- **An already-open tab survives.** crabd stopping does not reload it; the poll fails,
+  `computeStatus()` goes stale on the first failure, and the panel renders the worried
+  crab and `crabd not responding — data as of HH:MM` over the last good document. That is
+  the honest account of "the companion went away", and it is pinned by tests.
+- **A fresh navigation gets a browser connection error.** Not a SideCrab screen — there
+  is nothing to serve one. The README states that plainly (a later phase).
+
+### Packaging, decided
+
+**`manifest.json` and the strict-XML check are KEPT and kept passing.** The iCUE build is
+still packageable from this tree: it is the same files, and the browser panel is those
+files served over http rather than a fork of them. Concretely that means the uppercase
+DOCTYPE, no bare `&`, no `--` inside a comment, and the CDATA block around the inlined
+sensor wrapper all stay — the CI parse is the only check that has ever caught a
+blank-panel ship, and it costs nothing to keep.
+
+One string does change: `<title>` was `tr('SideCrab')`, and `tr()` is substituted by the
+iCUE importer and by nothing at all in a browser — so a browser tab read the macro text
+verbatim. It is now the literal `SideCrab`. `tr()` stays on the property labels, which is
+what `translation.json` is a catalogue of.
+
+### The sensors row keeps only the half a browser can fill
+
+No `window.plugins` exists in a browser and no page can read a die temperature, so
+`sensorsPlugin()` returns null and the two temperature cells never render. Both iCUE
+hints go with them — `pick sensors in settings` and `same sensor` were already gated on a
+bound bridge, and that is now pinned rather than incidental. What is left is the
+companion's `host` block; an absent or all-null block takes the whole row off the glass,
+never a row of zeros. The host sheet says **This Mac** when `navigator.platform` starts
+with `Mac` and **This machine** otherwise, and its temperatures block is omitted where no
+cell has ever rendered one — "no hardware sensor reading" is a useful sentence about a
+quiet bridge and a fault report about a platform that has none.
+
+### Where the pairing code lives now
+
+`localStorage` on `http://localhost:9999`, inside the one namespaced object the panel
+keeps its settings and display state in. The guarantee is weaker than the iCUE property's
+and `SECURITY.md` says so outright. The full argument is there, not here.
+
 ## v0.28.2 — the cards get readable: +17% type, two-line titles, and what paid for it
 
 Operator's ask: "make the font slightly larger on the agent cards or easier to read".
