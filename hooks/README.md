@@ -1,20 +1,27 @@
 # SideCrab hooks
 
-`settings-hooks-fragment.json` (Windows) and `settings-hooks-fragment-macos.json` (macOS)
-are the `hooks` object merged into `~/.claude/settings.json` by the installer. They carry
-two kinds of entry, and are identical apart from the curl invocation —
+Two fragments, each the `hooks` object merged into `~/.claude/settings.json`:
+
+- **`settings-hooks-fragment.json`** — Windows, merged by `setup/Install-SideCrab.ps1`.
+- **`settings-hooks-fragment-macos.json`** — macOS. **Nothing installs it yet.** The
+  PowerShell installer does not read it and must not be pointed at it; the macOS installer
+  that applies it arrives in a later phase of the port. Until then it is merged by hand.
+
+They carry two kinds of entry and are identical apart from the curl invocation —
 `hooks/tests/test_hooks_fragment.py` compares them with that one difference normalised
 away, so a fix to one is a fix to both or a failing test.
 
 ## crabd's two gates
 
-crabd listens on **`127.0.0.1:9999`**, loopback only, and refuses two things:
+crabd 0.31.0 and later listens on **`127.0.0.1:9999`**, loopback only, and refuses two
+things:
 
 - **Origin.** An `Origin` header that is absent, `null`, a non-web scheme, or crabd's own
   origin is allowed; any other `http(s)` origin is 403. Hooks send no `Origin` at all.
 - **`X-SideCrab-Panel`.** EVERY POST must carry it, with any non-empty value; SideCrab
   sends `1`. Without it crabd answers 403 `{"error":"panel header required"}` and the hook
-  is silently lost. GETs never need it.
+  is silently lost. GETs never need it. A crabd older than 0.31.0 ignores the header, so
+  sending it always is safe in both directions.
 
 Both fragments therefore carry the header on every entry — on the curl line for a `command`
 hook, in the `headers` map for an `http` one.
@@ -85,7 +92,7 @@ down can wedge a session.
 ## Verified against the shipped Claude Code (claude.exe v2.1.246, 2026-08-26)
 
 Confirmed by inspecting the shipped binary (a Bun-compiled `claude.exe`) and
-docs.claude.com/en/docs/claude-code/hooks:
+code.claude.com/docs/en/hooks:
 
 - Hook handler `type` accepts `command`, **`http`**, `mcp_tool`, `prompt`, `agent`. The
   `http` handler config carries `url` (not `command`) and a `timeout` in **seconds**
@@ -103,9 +110,26 @@ docs.claude.com/en/docs/claude-code/hooks:
   docs-based note here read `permissionDecision:allow|deny|ask`; corrected against the binary.
 - Optional `allowedHttpHookUrls` setting: if the operator has configured it, it must include
   `http://127.0.0.1:9999/*` or these two hooks are blocked ("HTTP hook blocked: … does not
-  match any pattern in allowedHttpHookUrls"). Unset (the default) allows all URLs. Arrays
-  merge across settings files rather than overriding, so listing `http://localhost:9999/*`
-  alongside it costs nothing and covers an operator who reaches crabd by that name.
+  match any pattern in allowedHttpHookUrls"). Unset — the default, measured against the
+  binary — allows all URLs.
+
+  **List both host forms.** Patterns are matched against the URL as written, and
+  `127.0.0.1` and `localhost` are different strings, so `http://127.0.0.1:9999/*` does not
+  cover a hook wired to `http://localhost:9999/…` or the other way round. Our own fragments
+  use `127.0.0.1` throughout, but crabd serves the panel at `localhost:9999`, and an
+  operator who edits a URL to match what they see in the browser gets a silently blocked
+  hook. `setup/tests/SideCrab.Setup.Tests.ps1` pins exactly that asymmetry against
+  `Test-SideCrabHookUrlAllowed`. Listing both costs nothing:
+
+  ```json
+  "allowedHttpHookUrls": ["http://127.0.0.1:9999/*", "http://localhost:9999/*"]
+  ```
+
+  Adding them in one settings file does not remove another file's entries: the allowlist
+  is the **merged** one across every settings level
+  (code.claude.com/docs/en/hooks, "Hook locations": Claude Code runs an HTTP hook handler
+  only if its URL matches the merged allowlist; the general rule is
+  code.claude.com/docs/en/settings, "Lists merge instead of overriding").
 
 ## The status-line command (v0.12.0)
 
