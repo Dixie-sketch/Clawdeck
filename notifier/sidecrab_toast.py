@@ -58,8 +58,14 @@ macOS route — measured on macOS 26.6 with /usr/bin/osascript, 2026-09-04:
   with nothing substituted or executed. So the notification text never has to be interpolated
   into AppleScript source — the script is three constant strings and the text rides in argv,
   which is the same boundary PowerShell's base64 payload buys on the Windows side.
-  `display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv)
-  sound name "default"` compiles clean (osacompile, exit 0).
+  The display line compiles (osacompile, exit 0) and one live `--test-toast` posted with it,
+  exit 0 and empty stderr.
+
+  THE SOUND NAME IS NOT A FILE. `sound name "default"` names nothing under
+  /System/Library/Sounds, whose 14 entries are Basso…Tink (measured). AppleScript accepts any
+  name — an invented `"no-such-sound"` compiles too — and macOS falls back to the user's alert
+  sound rather than erroring, which is why the clause survives here: it asks for the default
+  and cannot fail. What was NOT verified from this session: that a sound was audible.
 
   Nothing here reads a registry, an AUMID or an icon: there is no identity to register.
 

@@ -139,6 +139,55 @@ class ArgvShapeTests(unittest.TestCase):
         self.assertLess(MacNotificationAdapter().timeout, DEFAULT_INTERVAL_SEC)
 
 
+#: The AppleScript compiler, beside the interpreter the adapter runs. Test-only: the shipping
+#: code never compiles anything.
+OSACOMPILE = "/usr/bin/osacompile"
+
+
+class AppleScriptGrammarTests(unittest.TestCase):
+    """The three constants are AppleScript, and nothing in a Python test suite reads
+    AppleScript. `osacompile` does, and it judges them without posting anything — the one
+    check that would have caught a typo in a string literal before an operator did."""
+
+    def compile(self, display_line: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmp:
+            return subprocess.run(
+                [OSACOMPILE, "-o", str(Path(tmp) / "probe.scpt"), "-e", MAC_SCRIPT_ON_RUN,
+                 "-e", display_line, "-e", MAC_SCRIPT_END_RUN],
+                capture_output=True, text=True, timeout=30,
+            )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path(OSACOMPILE).exists(),
+        "needs macOS and /usr/bin/osacompile",
+    )
+    def test_the_three_constants_are_valid_applescript(self) -> None:
+        proc = self.compile(MAC_SCRIPT_DISPLAY_LINE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path(OSACOMPILE).exists(),
+        "needs macOS and /usr/bin/osacompile",
+    )
+    def test_one_deleted_letter_no_longer_compiles(self) -> None:
+        """Vacuity guard: osacompile has to be JUDGING this, not shrugging at it.
+
+        What it judges is grammar and not names — measured: renaming `argv` to `arg` still
+        compiles, because that is an undefined variable resolved at run time. Hence the
+        separate textual test that all three `item N of argv` reads are present."""
+        typo = MAC_SCRIPT_DISPLAY_LINE.replace("display notification", "display notifcation")
+        self.assertNotEqual(typo, MAC_SCRIPT_DISPLAY_LINE, "the mutation did not apply")
+        proc = self.compile(typo)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("compilation error", proc.stderr)
+
+    def test_the_display_line_asks_for_a_sound(self) -> None:
+        """A notification about a waiting question that arrives silently is a notification the
+        operator finds later. `sound name "default"` is not decoration, and no compile check
+        can catch its deletion — the line is valid AppleScript without it."""
+        self.assertIn('sound name "default"', MAC_SCRIPT_DISPLAY_LINE)
+
+
 #: Every metacharacter that means something to AppleScript, to `sh`, or to both. A question,
 #: a session title and a tool summary are all arbitrary operator/model text, so each of these
 #: WILL arrive one day.
