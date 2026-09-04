@@ -356,6 +356,46 @@ class FailureTests(unittest.TestCase):
         self.assertIn("rc=2", joined)
         self.assertIn("-1743", joined)
 
+    def test_both_failure_shapes_report_at_the_same_level(self) -> None:
+        """"The notification did not land" is one event with two causes. Splitting it across
+        WARNING and ERROR means an operator filtering the log by level sees half of them —
+        and the Windows adapter reports both at ERROR."""
+        levels = []
+        for runner in (RecordingRunner(returncode=1, stderr="boom"),
+                       RaisingRunner(FileNotFoundError(2, "no osascript"))):
+            with self.assertLogs("sidecrab.notifier", level="DEBUG") as captured:
+                self.show(runner)
+            levels.append([record.levelname for record in captured.records])
+        self.assertEqual(levels, [["ERROR"], ["ERROR"]])
+
+    def test_a_failure_that_repeats_is_logged_once_at_error_then_at_debug(self) -> None:
+        """A first-run permission denial with a question already waiting fails on EVERY 10 s
+        poll. At one ERROR a poll that is 8,640 lines a day into a 512 KB rotating log, and
+        the line it rotates away is the FIRST one — the one that says what went wrong. Same
+        latch idiom as PowerShellToastAdapter's borrow line."""
+        adapter = MacNotificationAdapter(runner=RecordingRunner(returncode=1, stderr="boom"))
+        with self.assertLogs("sidecrab.notifier", level="DEBUG") as captured:
+            for _ in range(3):
+                self.assertFalse(adapter.show(request()))
+        self.assertEqual([record.levelname for record in captured.records],
+                         ["ERROR", "DEBUG", "DEBUG"])
+        self.assertIn("rc=1", captured.output[-1], "the repeats still carry the detail")
+
+    def test_a_notification_that_lands_re_arms_the_error_line(self) -> None:
+        """The latch describes ONE outage. A new one, after the operator fixed the first, is
+        news again — otherwise the second breakage is invisible for the life of the process."""
+        runner = RecordingRunner(returncode=1, stderr="boom")
+        adapter = MacNotificationAdapter(runner=runner)
+        with self.assertLogs("sidecrab.notifier", level="DEBUG") as captured:
+            adapter.show(request())
+            adapter.show(request())
+            runner.returncode = 0
+            self.assertTrue(adapter.show(request()))
+            runner.returncode = 1
+            adapter.show(request())
+        self.assertEqual([record.levelname for record in captured.records],
+                         ["ERROR", "DEBUG", "ERROR"])
+
     def test_the_failure_line_never_carries_the_notification_text(self) -> None:
         """The log is a file on disk that outlives the notification. A question the operator
         asked in private does not belong in it — the exit code and osascript's own complaint

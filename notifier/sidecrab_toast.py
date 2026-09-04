@@ -2092,6 +2092,23 @@ class MacNotificationAdapter:
         self.osascript = osascript
         self.timeout = timeout
         self.runner = runner or run_osascript
+        #: One outage, one ERROR. See _log_failure.
+        self._failure_logged = False
+
+    def _log_failure(self, message: str, *args: Any) -> None:
+        """The first failure at ERROR, every repeat at DEBUG until one lands.
+
+        Same latch idiom as PowerShellToastAdapter's borrow line, and a sharper reason for it:
+        a first-run permission denial with a question already waiting fails on EVERY 10 s
+        poll. Unlatched that is 8,640 lines a day into a 512 KB rotating log, and the line it
+        rotates away is the FIRST one — the one that says what went wrong. A notification that
+        lands re-arms it, so a second, later outage is news again.
+        """
+        if self._failure_logged:
+            log.debug(message, *args)
+            return
+        self._failure_logged = True
+        log.error(message, *args)
 
     def build_argv(self, request: ToastRequest) -> list[str]:
         """Pure: the whole command line. Three -e script constants, `--`, three arguments."""
@@ -2125,15 +2142,27 @@ class MacNotificationAdapter:
             # JSON "\ud800" escape decodes to one, it is legal in a Python str, and crabd
             # serves whatever the transcript held. Without this clause that request reaches
             # the daemon as a raise where the contract promises a bool.
-            log.error("notification subprocess failed: %s", exc)
+            self._log_failure("notification subprocess failed: %s", exc)
             return False
 
         if returncode != 0:
             # The code and osascript's own complaint, and NOT the notification text: this log
             # is a file on disk that outlives the notification, and the question the operator
             # asked belongs on his screen rather than in it.
-            log.warning("notification failed rc=%s: %s", returncode, (stderr or "").strip()[:120])
+            #
+            # 120 characters: osascript's own errors are ONE line of 65-72 characters, measured
+            # here across a syntax error (-2740), a runtime error and an unknown application
+            # (both -1728), each ending in the OSA error number that identifies it. 120 keeps a
+            # whole message with room to spare and still bounds a runaway one. (The Windows
+            # adapter cuts at 400 because PowerShell exception text is multi-line.)
+            self._log_failure(
+                "notification failed rc=%s: %s", returncode, (stderr or "").strip()[:120]
+            )
             return False
+
+        # A landed notification re-arms the ERROR line: the latch describes one outage, and
+        # the next one is news again.
+        self._failure_logged = False
         return True
 
 
