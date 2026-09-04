@@ -3463,8 +3463,9 @@ class DarwinPlatform:
         which is (internal_page_count - purgeable_count) + wire_count +
         compressor_page_count. The contract's promise for this row is that it matches
         what the machine's own monitor shows, and on a Mac there are two other plausible
-        answers that do not: `top`'s used is total - free, which read 98.3 GiB on the
-        128 GiB machine measured here against Activity Monitor's 66.0, and counting
+        answers that do not: `top`'s used is total - free, which is 99.3 GiB from the
+        page counts recorded in the test fixture (`top` itself rounded it to "98G") on
+        the 128 GiB machine measured here, against Activity Monitor's 66.0, and counting
         free + inactive + speculative as available reads differently again. Available is
         then total - used, so the served memPct is the one the user can check.
 

@@ -158,8 +158,9 @@ available = total - used
 That is app memory + wired + compressed, which is the headline figure Activity Monitor shows —
 66.0 GiB of 128.0 on the machine measured here. The contract's promise for this row has always
 been that it matches what the OS's own monitor shows, and on a Mac there are two other
-plausible answers that do not: `top`'s used is `total - free`, which reads **98.3 GiB** on the
-same machine, and counting free + inactive + speculative as available reads differently again.
+plausible answers that do not: `top`'s used is `total - free`, which is **99.3 GiB** from the
+page counts recorded on that machine (`top` itself printed the rounded "98G"), and counting
+free + inactive + speculative as available reads differently again.
 `free_count` and `inactive_count` therefore do **not** enter the formula.
 
 ### 5. Failure is unchanged, and it is honest

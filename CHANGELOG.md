@@ -28,7 +28,8 @@ detail of every additive field and is the source of truth; this file is the shor
   showed nothing where they go, because the only readers crabd had were Win32 ones; it now reads
   the same two figures from mach and answers in exactly the same shape, so an existing widget or
   panel lights them up with no update. `memUsedGB` is the number Activity Monitor calls "Memory
-  Used", deliberately - `top` would say 98.3 GiB where Activity Monitor says 66.0 on the machine
+  Used", deliberately - `top`'s total-minus-free is 99.3 GiB from the same page counts (`top`
+  itself printed the rounded "98G") where Activity Monitor says 66.0 on the machine
   this was measured on, and the figure you can check against an app you already have open is the
   useful one. Two things that would have gone quietly wrong are handled: the mach tick counters
   are 32 bits and wrap after about a month of uptime, so they are unwrapped before anything sees

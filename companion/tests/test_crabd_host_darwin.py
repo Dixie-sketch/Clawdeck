@@ -394,9 +394,10 @@ class DarwinMemoryFormulaTests(LogOnceReset):
     which is (internal_page_count - purgeable_count) + wire_count +
     compressor_page_count, in pages. The contract's promise for this row has always
     been that it matches what the OS's own monitor shows, and on a Mac there are two
-    other plausible answers that do not: `top`'s used (total - free) reads 98.3 GiB on
-    the machine measured here, and free + inactive + speculative counted as available
-    reads differently again. Neither is what the user sees when they look.
+    other plausible answers that do not: `top`'s used (total - free) is 99.3 GiB from the
+    page counts recorded above - `top` itself printed the rounded "98G" - and
+    free + inactive + speculative counted as available reads differently again. Neither
+    is what the user sees when they look.
     """
 
     def test_the_reading_is_total_and_what_is_left_after_activity_monitors_used(self):
@@ -411,8 +412,9 @@ class DarwinMemoryFormulaTests(LogOnceReset):
         self.assertEqual(block["memTotalGB"], 128.0)
         self.assertEqual(block["memUsedGB"], 66.0)
         self.assertEqual(block["memPct"], 51.5)
-        # The plausible wrong answer, named: `top`'s used is total - free, which on this
-        # machine is 106_653_417_472 bytes - 99.3 GiB, half the machine again.
+        # The plausible wrong answer, named: `top`'s used is total - free, which from the
+        # page counts above is 106_653_417_472 bytes - 99.3 GiB, half the machine again.
+        # (`top` printed "98G" for it; the two agree, one of them rounded.)
         self.assertNotEqual(block["memUsedGB"], 99.3)
 
 
