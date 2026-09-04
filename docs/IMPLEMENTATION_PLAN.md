@@ -23,7 +23,7 @@ mutation-proven; port collision fails loudly; traversal is 404; static reads nev
 **Tests**: `companion/tests/test_crabd_panel.py` (origin matrix, header gate, static serving,
 traversal, bind address, collision); `hooks/tests/test_hooks_fragment.py`;
 `widget/tests/test_panel.js` (transport half).
-**Status**: In Progress (client half merged; crabd half under way)
+**Status**: Complete (2026-09-04; three gates mutation-proven independently; companion 1278 tests; reviewed twice)
 
 ## Stage 2: host metrics on macOS
 **Goal**: `HostSampler` reads `host_statistics` / `host_statistics64` / `hw.memsize` through
@@ -32,7 +32,7 @@ ctypes on macOS with the delta arithmetic and the three failure tiers unchanged.
 decision is written and pinned; Windows reader intact.
 **Tests**: HostSampler tests against a fake tick reader, one live read-only bounds test on
 darwin.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 3: fleet state on launchd
 **Goal**: `FleetReader` reads `launchctl` on macOS; `fleet.glow` decision documented.
@@ -54,8 +54,8 @@ user-facing strings name the macOS command.
 plist; hooks at 9999.
 **Success Criteria**: idempotent hook merge with backup, chained status line, plist shape,
 Python detection.
-**Tests**: `setup/tests/test_install.py` driven against a temporary HOME.
-**Status**: Not Started
+**Tests**: `setup/tests/test_setup_*.py` driven against a temporary HOME (172 tests).
+**Status**: Complete (2026-09-04; merged; reviewed twice)
 
 ## Stage 6: the panel in a browser
 **Goal**: localStorage settings adapter, pairing code in the settings sheet, sensors row
@@ -63,16 +63,16 @@ without temperatures, phone-width breakpoints, keyboard and pointer equivalents 
 gesture, dev flags still mock-gated.
 **Success Criteria**: `widget/tests/test_panel.js` green; every `?mock=` fixture renders as
 documented from port 9999.
-**Tests**: `widget/tests/test_panel.js`.
-**Status**: Not Started
+**Tests**: `widget/tests/test_panel.js` (383 checks against a DOM shim of the shipping index.html).
+**Status**: Complete (2026-09-04; merged; reviewed twice; layouts measured in Chromium)
 
 ## Stage 7: the notifier
 **Goal**: macOS user notifications through an injection-safe emitter; same deciders, ledgers,
 quiet hours and snooze.
 **Success Criteria**: emit matrix ported; a quote, backslash or newline in a title cannot break
 out of the emitter; no Approve/Deny action.
-**Tests**: notifier tests for the macOS adapter.
-**Status**: Not Started
+**Tests**: `notifier/tests/test_mac_adapter.py` (554 notifier tests in all).
+**Status**: Complete (2026-09-04; merged; reviewed twice; one live test notification seen by the operator)
 
 ## Stage 8: documentation and release
 **Goal**: README, GETTING-STARTED, CHANGELOG, STATE-CONTRACT, SECURITY, CONTRIBUTING, CLAUDE.md
