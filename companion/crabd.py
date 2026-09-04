@@ -2940,9 +2940,24 @@ class HookTracker:
 # this section exists to prevent - it is unreachable, and therefore untested, on the
 # host most of this suite runs on.
 #
-# The three classes are INTERCHANGEABLE by contract, pinned by a test that compares
-# their public method sets. Adding a method to one alone ships an AttributeError to
-# every other OS, in a daemon whose one promise is to keep serving.
+# The three classes are INTERCHANGEABLE by contract, pinned by tests that compare their
+# public method sets, signatures and binding. Adding a method to one alone ships an
+# AttributeError to every other OS, in a daemon whose one promise is to keep serving.
+
+
+def _read_cli_credentials() -> str | None:
+    """The CLI credential document's raw text, or None when there is no file. Portable,
+    so all three platforms delegate here rather than carrying a copy each.
+
+    CREDENTIALS_FILE is read off the MODULE per call, never bound at import: every test
+    module repoints it, and a binding taken at import would send the suite at the
+    operator's live OAuth token and then at the network.
+    """
+    try:
+        return CREDENTIALS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
 
 class WindowsPlatform:
     """GetSystemTimes / GlobalMemoryStatusEx, schtasks, DPAPI."""
@@ -3008,12 +3023,12 @@ class WindowsPlatform:
                 proc.stdout.decode("utf-8", errors="replace"),
                 proc.stderr.decode("utf-8", errors="replace"))
 
-    @classmethod
-    def service_status(cls, code, out, err) -> str:
+    @staticmethod
+    def service_status(code, out, err) -> str:
         if code != 0:
             blob = f"{out or ''}\n{err or ''}".lower()
             return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
-        return FLEET_STATUS_MAP.get(cls._status_field(out), "unknown")
+        return FLEET_STATUS_MAP.get(WindowsPlatform._status_field(out), "unknown")
 
     @staticmethod
     def _status_field(out) -> str:
@@ -3048,12 +3063,7 @@ class WindowsPlatform:
 
     @staticmethod
     def cli_credentials() -> str | None:
-        """The CLI credential document's raw text, or None when there is no file.
-        CREDENTIALS_FILE is read off the module per call: the suites repoint it."""
-        try:
-            return CREDENTIALS_FILE.read_text(encoding="utf-8")
-        except OSError:
-            return None
+        return _read_cli_credentials()
 
 
 class DarwinPlatform:
@@ -3089,10 +3099,7 @@ class DarwinPlatform:
 
     @staticmethod
     def cli_credentials() -> str | None:
-        try:
-            return CREDENTIALS_FILE.read_text(encoding="utf-8")
-        except OSError:
-            return None
+        return _read_cli_credentials()
 
 
 class NullPlatform:
@@ -3130,10 +3137,7 @@ class NullPlatform:
 
     @staticmethod
     def cli_credentials() -> str | None:
-        try:
-            return CREDENTIALS_FILE.read_text(encoding="utf-8")
-        except OSError:
-            return None
+        return _read_cli_credentials()
 
 
 def select_platform(sys_platform: str):

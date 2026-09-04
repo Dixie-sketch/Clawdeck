@@ -6,6 +6,7 @@ reaches: three classes with one public surface, chosen by `select_platform`, and
 rule that INJECTION still beats the platform so every reader stays testable on any host.
 """
 
+import inspect
 import io
 import sys
 import tempfile
@@ -77,6 +78,7 @@ class PlatformSurfaceTests(unittest.TestCase):
 
     SURFACE = {"cpu_times", "memory", "fleet_targets", "service_query",
                "service_status", "read_limits_token", "cli_credentials"}
+    PLATFORMS = (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform)
 
     @staticmethod
     def surface(cls):
@@ -84,9 +86,43 @@ class PlatformSurfaceTests(unittest.TestCase):
                 if not n.startswith("_") and callable(getattr(cls, n))}
 
     def test_all_three_platforms_expose_exactly_the_same_methods(self):
-        for cls in (crabd.WindowsPlatform, crabd.DarwinPlatform, crabd.NullPlatform):
+        for cls in self.PLATFORMS:
             with self.subTest(platform=cls.__name__):
                 self.assertEqual(self.surface(cls), self.SURFACE)
+
+    def test_every_method_takes_the_same_arguments_on_all_three(self):
+        """Matching NAMES are not a seam. A reader calls one of these with positional
+        arguments it chose once; a platform that renamed or reordered a parameter would
+        pass every name test here and fail at the call, on one OS only."""
+        for name in sorted(self.SURFACE):
+            with self.subTest(method=name):
+                signatures = {cls.__name__: str(inspect.signature(getattr(cls, name)))
+                              for cls in self.PLATFORMS}
+                self.assertEqual(len(set(signatures.values())), 1, signatures)
+
+    def test_every_method_is_bound_the_same_way_on_all_three(self):
+        """staticmethod on two and classmethod on the third is the same call today and
+        stops being one the moment anything subclasses or rebinds. The promise is that
+        the three are INTERCHANGEABLE, not that they merely answer alike right now."""
+        for name in sorted(self.SURFACE):
+            with self.subTest(method=name):
+                kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
+                         for cls in self.PLATFORMS}
+                self.assertEqual(len(set(kinds.values())), 1, kinds)
+
+
+class CliCredentialsAreOneReaderTests(unittest.TestCase):
+    """All three platforms read the CLI credential document, identically. One body,
+    delegated to - three copies is three places for the per-call CREDENTIALS_FILE
+    lookup to be quietly bound at import in a later edit."""
+
+    def test_all_three_delegate_to_the_one_module_level_reader(self):
+        original = crabd._read_cli_credentials
+        self.addCleanup(lambda: setattr(crabd, "_read_cli_credentials", original))
+        crabd._read_cli_credentials = lambda: "sentinel"
+        for cls in PlatformSurfaceTests.PLATFORMS:
+            with self.subTest(platform=cls.__name__):
+                self.assertEqual(cls.cli_credentials(), "sentinel")
 
 
 class OnePlatformDecisionTests(unittest.TestCase):
