@@ -81,7 +81,7 @@ class ParseTests(unittest.TestCase):
             "sidecrab_ack:abc",
             "sidecraback:abc",
             "xsidecrab-ack:abc",
-            "http://127.0.0.1:2722/v1/action",
+            "http://127.0.0.1:9999/v1/action",
             "file:///C:/Windows/System32/calc.exe",
             "sidecrab-ack",
             "abc",
@@ -171,11 +171,23 @@ class PostTests(unittest.TestCase):
         status = handler.post_ack(VALID_ID, opener=opener)
         request, timeout = seen[0]
         self.assertEqual(status, 204)
-        self.assertEqual(request.full_url, "http://127.0.0.1:2722/v1/action")
+        self.assertEqual(request.full_url, "http://127.0.0.1:9999/v1/action")
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.headers.get("Content-type"), "application/json")
         self.assertEqual(json.loads(request.data.decode("utf-8")), {"sessionId": VALID_ID, "action": "ack"})
         self.assertEqual(timeout, 5.0)
+
+    def test_the_post_carries_the_panel_header(self) -> None:
+        """crabd 403s any POST without X-SideCrab-Panel. Losing it here would turn every
+        Acknowledge press into a silent 403 line in ack-handler.log."""
+        seen: list = []
+
+        def opener(request, timeout=None):
+            seen.append({k.lower(): v for k, v in request.headers.items()})
+            return FakeResponse(204)
+
+        handler.post_ack(VALID_ID, opener=opener)
+        self.assertEqual(seen[0].get("x-sidecrab-panel"), "1")
 
     def test_timeout_is_five_seconds(self) -> None:
         self.assertEqual(handler.POST_TIMEOUT_SEC, 5.0)
@@ -232,7 +244,7 @@ class MainTests(unittest.TestCase):
         self.assertIn("URLError", self.log_text())
 
     def test_an_unknown_session_404s_quietly(self) -> None:
-        err = urllib.error.HTTPError("http://127.0.0.1:2722/v1/action", 404, "unknown session", {}, None)
+        err = urllib.error.HTTPError("http://127.0.0.1:9999/v1/action", 404, "unknown session", {}, None)
         with mock.patch.object(handler, "post_ack", side_effect=err):
             code = handler.main([f"sidecrab-ack:{VALID_ID}"])
         self.assertEqual(code, handler.EXIT_FAILED)
@@ -298,7 +310,7 @@ class ContractTests(unittest.TestCase):
     def test_the_endpoint_is_the_contract_action_endpoint(self) -> None:
         contract = (REPO_ROOT / "docs" / "STATE-CONTRACT.md").read_text(encoding="utf-8")
         self.assertIn("/v1/action", contract)
-        self.assertEqual(handler.ACTION_ENDPOINT, "http://127.0.0.1:2722/v1/action")
+        self.assertEqual(handler.ACTION_ENDPOINT, "http://127.0.0.1:9999/v1/action")
 
     def test_the_contract_declares_this_scheme_and_charset(self) -> None:
         contract = (REPO_ROOT / "docs" / "STATE-CONTRACT.md").read_text(encoding="utf-8")

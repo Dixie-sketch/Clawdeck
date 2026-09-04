@@ -58,8 +58,12 @@ _ACK_SCHEME_RE = re.compile(re.escape(ACK_SCHEME) + ":", re.IGNORECASE | re.ASCI
 SESSION_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 _SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 
-ACTION_ENDPOINT = "http://127.0.0.1:2722/v1/action"
+ACTION_ENDPOINT = "http://127.0.0.1:9999/v1/action"
 POST_TIMEOUT_SEC = 5.0
+
+#: crabd refuses any POST that does not carry this header with 403 "panel header required".
+#: Any non-empty value passes; "1" is what every SideCrab client sends.
+PANEL_HEADER = "X-SideCrab-Panel"
 
 LOG_PATH = Path.home() / ".sidecrab" / "logs" / "ack-handler.log"
 LOG_MAX_BYTES = 256_000
@@ -138,7 +142,10 @@ def post_ack(
     ``main`` is the one place that decides failures are silent."""
     body = json.dumps({"sessionId": session_id, "action": "ack"}).encode("utf-8")
     request = urllib.request.Request(
-        endpoint, data=body, method="POST", headers={"Content-Type": "application/json"}
+        endpoint,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", PANEL_HEADER: "1"},
     )
     open_url = opener or urllib.request.urlopen
     with open_url(request, timeout=timeout) as resp:  # noqa: S310 - fixed localhost endpoint
