@@ -14,6 +14,110 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.34.0 (2026-09-04 — BEHAVIOUR on macOS: the limits token and the CLI credential come from the login Keychain; schema stays 5)
+
+crabd `VERSION` → `0.34.0`. **No shape change.** No field is added, moved, renamed or
+removed on `/v1/state`, `/v1/action` or `/v1/config`; `schema` stays **5**. What changed is
+where two SECRETS are read from on macOS, and the wording of four `limits.note` strings.
+Windows is untouched: the same file, the same DPAPI, the same notes.
+
+### 1. The two Keychain items
+
+Both are generic-password items in the **login** Keychain, and the account half of both is
+the login user name (`pwd.getpwuid(os.getuid()).pw_name`, not `$USER` — a LaunchAgent's
+environment is not a terminal's).
+
+| service | what it is | who writes it |
+|---|---|---|
+| `Claude Code-credentials` | the CLI's OWN credential, the macOS equivalent of `~/.claude/.credentials.json` | Claude Code |
+| `SideCrab limits token` | the long-lived `claude setup-token` value, the macOS equivalent of `~/.sidecrab/limits-token.dpapi` | `setup/install.sh --limits-token` |
+
+**MEASURED 2026-09-04** (macOS 26.6, Claude Code 2.1.260): `~/.claude/.credentials.json`
+does not exist on that machine at all and the `Claude Code-credentials` item does. A crabd
+that only knows about the file therefore served *"no Claude credentials on this machine -
+run /login"* for ever, on an account that was perfectly logged in — and `/login` was not
+even the fix. Also measured: `security find-generic-password ... -w` exits **44** for an
+item that is not there, on the argv form and inside `security -i` alike; `security -i`
+honours double quotes (the service name has spaces in it).
+
+**NOT measured, and stated as such:** the *payload* of the credentials item was never read
+while this was written — it is the operator's live OAuth token. crabd parses it as the
+FILE's shape (`claudeAiOauth.accessToken` / `expiresAt` / …) and **guesses nothing**: a
+payload that does not parse that way lands on the existing *"Claude credentials file is
+unreadable"* note, and one without a token on the existing *"no Claude access token"* note.
+
+### 2. Which source wins
+
+`~/.claude/.credentials.json` **first**, the Keychain second. The documentation says the
+file is written only when the Keychain write FAILS, which makes it the CLI's own fallback;
+and asking the Keychain for an answer crabd already has would raise a dialog on the
+operator's desktop for nothing.
+
+The Keychain is not consulted at all when **`CRABD_CLAUDE_HOME` is set**. A custom config
+dir keys a DIFFERENT Keychain entry, whose name crabd cannot compose, so asking about the
+default item would answer confidently about a login the operator is not running.
+
+Token precedence inside `limits` is **unchanged** from v0.30.0: the CLI token while it is
+unexpired, else the long-lived one, and `limits.tokenSource` still says which answered.
+
+### 3. Storing the long-lived token, and why it goes in on stdin
+
+```
+security -i     <- argv is exactly ["-i"]
+   stdin: add-generic-password -a "<login>" -s "SideCrab limits token" -X <hex> -U
+```
+
+`ps` is world-readable on macOS: a secret in an argument list is handed to every user on
+the machine, and to anything sampling `ps` afterwards. So the value travels on **stdin**,
+hex-encoded by `-X` (which also removes every question about quoting it), and `-U` updates
+an item that already exists rather than failing on it — storing a second token is what an
+operator does after minting one, and without `-U` the old, rejected token would stay.
+
+The READ is the other direction and needs no secret in either place: the argv names the
+item, the value comes back on stdout. Items created through this tool carry the tool in
+their access list, so crabd's own later reads do not prompt.
+
+A value that is not `^[A-Za-z0-9_-]{20,512}$` is refused **before** anything is spawned and
+is never named in a log line. That is not only a typo catcher: a value carrying a newline
+would otherwise become a second command inside a tool that writes the Keychain.
+
+### 4. The notes
+
+Three of them named `Install-SideCrab.ps1 -LimitsToken` as a literal, which on a Mac is an
+instruction to run something that is not there. The command is now the platform's:
+
+| where | the note ends with |
+|---|---|
+| Windows | `Install-SideCrab.ps1 -LimitsToken` (**unchanged**) |
+| macOS | `setup/install.sh --limits-token` |
+| anything else | `(no long-lived token store on this platform)` |
+
+- *"no Claude access token - run claude in a terminal, or store a long-lived one: <hint>"*
+- *"Claude token expired - run claude in a terminal to refresh it, or store a long-lived one: <hint>"*
+- *"SideCrab limits token rejected - mint a new one with claude setup-token and store it again: <hint>"*
+
+And one new note, macOS only, for a case that has no equivalent on Windows:
+
+> *"Claude credential is in the Keychain and crabd could not read it - approve the Keychain
+> prompt (Always Allow) or run claude in a terminal"* — `available: false`.
+
+It is DISTINCT from *"no Claude credentials on this machine - run /login"* on purpose. The
+item exists and this process was not allowed to see it: a LaunchAgent meets a Keychain
+dialog the first time it reads (one "Always Allow" ends it), and in a session with no UI
+the read fails outright ("User interaction is not allowed"). The two failures have
+different actions attached, and an operator told to log in for a Keychain crabd could not
+open would do it, watch nothing change, and have no next move. One stderr line per process
+names the exit code — never the tool's output, which in this direction is the secret.
+
+### 5. What is unchanged
+
+`limits` keeps its shape and its failure rules; the tokens are still read, used as a
+request header and dropped — never logged, never cached, never in `/v1/state` or
+`/v1/health`, which is asserted on the served bytes. The models catalog now reads its
+credential through the same platform reader, so `sessions[].contextWindowTokens` is
+populated on a Keychain-only Mac too; its failure answer is unchanged (no entry, so the
+field is null and the panel draws no ctx bar).
+
 ## v0.33.0 (2026-09-04 — BEHAVIOUR on macOS: fleet reads launchd; glow is absent; schema stays 5)
 
 crabd `VERSION` → `0.33.0`. **No shape change.** `fleet` keeps exactly the two keys it has
@@ -421,6 +525,11 @@ would settle it.
 
 crabd `VERSION` → `0.30.0`. One additive member, one new optional file, no wire change on any
 write path.
+
+> **Superseded in part by v0.34.0.** Every `Install-SideCrab.ps1 -LimitsToken` below is the
+> WINDOWS answer and is unchanged there; on macOS the store is a login Keychain item and the
+> command in those notes is `setup/install.sh --limits-token`. The precedence rule and
+> `tokenSource` are unchanged on both.
 
 **`limits.tokenSource`** — `"cli"` | `"sidecrab"`, present only when `limits.available` is true.
 Which token answered the usage endpoint: the CLI's own access token from

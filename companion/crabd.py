@@ -88,7 +88,7 @@ except ImportError:                     # pragma: no cover - Windows
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.33.0"
+VERSION = "0.34.0"
 
 HOST = "127.0.0.1"
 # The production port, and the one the service registration owns. It was 2722 (C-R-A-B on
