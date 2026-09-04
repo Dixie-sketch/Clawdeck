@@ -950,7 +950,13 @@
 				     coordinates. -->
 				<button type="button" id="settingsChip" class="head-chip head-chip-gear" aria-label="Panel settings">&#9881;</button>
 			</div>
-			<div id="cards" class="cards"></div>
+			<!-- tabindex="-1" (v0.30.0): programmatically focusable, never a tab stop.
+			     It is where focus lands when the keyboard dismisses the last card on
+			     the grid - a div with no tabindex cannot take focus at all, so
+			     focus() would silently drop to the document and the next key would
+			     act on nothing. focusablesIn() skips tabindex="-1", so this does not
+			     join the sheet's Tab trap. -->
+			<div id="cards" class="cards" tabindex="-1"></div>
 			<div id="gridEmpty" class="grid-empty">No active Claude sessions</div>
 		</section>
 

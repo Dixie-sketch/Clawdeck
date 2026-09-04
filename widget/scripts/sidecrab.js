@@ -2894,6 +2894,12 @@ function renderSessions(sessions, status, quiet, recap) {
 			chip.textContent = chipText;
 			ui.cards.appendChild(chip);
 		}
+		/* A KEYBOARD HAND-OFF SURVIVES THE REBUILD (v0.30.0). Every card node is
+		   thrown away here, and focus goes with the node — so a key that removed or
+		   re-sorted the card under focus has to say where focus lands NEXT, and be
+		   answered after the new nodes exist rather than before. A fingertip needs
+		   none of this, which is why it took a keyboard to find it. */
+		flushPendingFocus();
 	}
 
 	/* Ages move without the signature changing, so refresh the anchors every
@@ -6013,11 +6019,18 @@ function hideNotice() {
      - Enter / Space activate anything already carrying role="button". Native
        <button> elements do this themselves, so they are excluded here rather
        than being clicked twice.
-   Recorded as deliberately skipped: arrow-key navigation of the card grid, any
-   keyboard equivalent for the four gestures (swipe-dismiss, long-press pin,
-   two-finger ack-all, pull-to-refresh), and aria-live narration of state
-   changes. Each is a real feature, none is a defect this wave found, and all
-   three would be shipped untested against the surface they are for. */
+
+   v0.30.0 ADDED THE REST OF IT, because a panel with an address in a browser is
+   driven from a keyboard by definition: `a` ack-all, `p` pin, Delete/Backspace
+   dismiss, `r` refresh, `s` settings — each calling the same function its
+   gesture calls, each narrating itself on the notice line, and each inert
+   behind a modifier, an autorepeat, an open sheet or a focused input.
+
+   Still deliberately skipped, and named so nobody has to re-derive why:
+   arrow-key navigation of the card grid. Tab already reaches every card in
+   order, so arrows would be a second traversal of the same set with its own
+   wrap, edge and column rules to get wrong on a grid whose column count is a
+   media query. */
 function onKeyDown(ev) {
 	var key = ev.key;
 	if (!key) return;
@@ -6033,6 +6046,15 @@ function onKeyDown(ev) {
 	   the two conditions that make a bare letter safe as a shortcut at all.
 	   Each one calls THE SAME FUNCTION the gesture calls: a second copy of the
 	   ack-all or of the dismissal is a second one that can drift. */
+	/* A MODIFIER MEANS THE BROWSER'S SHORTCUT AND NOT OURS. Every one of the four
+	   letters this panel claims is a browser command with a modifier on it —
+	   Cmd/Ctrl-R reload, Cmd-P print, Cmd-A select-all, Cmd-S save — and a page
+	   somebody lives in must not take those away. Checked before anything else so
+	   no branch below can claim one.
+	   ev.repeat is autorepeat: a held `a` would have made an ack-all POST per OS
+	   repeat and a held `p` would have toggled a pin back and forth until the
+	   finger lifted. One press, one command. */
+	if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
 	if (!open && !typingInAnInput()) {
 		if (key === 's' || key === 'S') { openSettingsSheet(); ev.preventDefault(); return; }
 		if (key === 'a' || key === 'A') { fireTwoFingerAck(); ev.preventDefault(); return; }
@@ -6107,10 +6129,71 @@ function keyboardDismiss() {
 	   wear: a needs_input or working card has no dismissal for the key to BE. */
 	var s = findSession(card.getAttribute('data-session-id'));
 	if (!s || !DISMISSABLE[s.state]) return;
+	/* WHERE FOCUS GOES NEXT, decided BEFORE the card leaves. Without this the
+	   keyboard path ends here: the node under focus is removed, focus falls to the
+	   document, and the next key acts on nothing. The next card along, or the one
+	   before it at the end of the grid, or the grid itself when that was the last
+	   one — the same place a person's eye goes. */
+	var neighbour = neighbourCardId(card);
+	queueCardFocus(neighbour);
 	/* Negative, so the card leaves to the left — the same direction and the same
 	   function a leftward swipe ends in. */
 	dismissSwiped(card, -1);
 	showNotice('dismissed', 'ack');
+	/* TWO MOVES, NOT ONE, and the order is the point. dismissSwiped renders
+	   immediately only under reduced motion; otherwise the rebuild is on the
+	   fly-out timer, several hundred ms away. So focus is moved off the departing
+	   card NOW — it is sliding off the glass — and the QUEUE IS LEFT ALONE, because
+	   the node focused here is one the rebuild is about to throw away and only the
+	   rebuild can hand focus to its replacement. Consuming the queue here instead
+	   was the ordering bug: the animated path then landed focus on a detached
+	   node and the keyboard died one dismissal in. */
+	focusCardNow(neighbour);
+}
+
+/* The id of the card after this one, or the one before it when this is the last.
+   Null when it is the only card, which is the grid's own turn to hold focus. */
+function neighbourCardId(card) {
+	var cards = ui.cards.querySelectorAll('.card');
+	for (var i = 0; i < cards.length; i++) {
+		if (cards[i] !== card) continue;
+		var next = cards[i + 1] || cards[i - 1] || null;
+		return next ? next.getAttribute('data-session-id') : null;
+	}
+	return null;
+}
+
+var pendingFocusId = null;      /* a card to focus once the grid has been rebuilt */
+var pendingFocusGrid = false;   /* ...or the grid itself, when no card is left */
+
+function queueCardFocus(id) {
+	pendingFocusId = id;
+	pendingFocusGrid = !id;
+}
+
+/* Answered wherever new card nodes have just appeared: the rebuild in
+   renderSessions, and the immediate path in keyboardDismiss. Clears itself, so a
+   later poll's rebuild does not steal focus back from wherever the operator has
+   since moved it. */
+function flushPendingFocus() {
+	if (!pendingFocusId && !pendingFocusGrid) return;
+	var id = pendingFocusId;
+	pendingFocusId = null;
+	pendingFocusGrid = false;
+	focusCardNow(id);
+}
+
+/* Focus a card by id against the CURRENT DOM, without touching the queue. The
+   grid takes it when that card is not there — no card left to hold focus is
+   still somewhere for the next Tab to start from, and it is never the document. */
+function focusCardNow(id) {
+	if (id) {
+		var cards = ui.cards.querySelectorAll('.card');
+		for (var i = 0; i < cards.length; i++) {
+			if (cards[i].getAttribute('data-session-id') === String(id)) { safeFocus(cards[i]); return; }
+		}
+	}
+	safeFocus(ui.cards);
 }
 
 /* A text field, a slider or a select has the keystroke: the settings sheet is the

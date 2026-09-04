@@ -1027,6 +1027,11 @@ function cardOfState(ctx, state) {
   ctx.document.dispatch('keydown', { key: 'Delete' });
   eq(calls, ['dismissSwiped:' + done.getAttribute('data-session-id')],
     'Delete on a focused dismissable card runs the same dismissal the swipe runs');
+  /* Focus has already moved to the neighbour — that hand-off is its own test
+     below — so put it back to assert Backspace is the same key as Delete. Looked
+     up again rather than reusing the reference: the pin above rebuilt the grid,
+     so the node this test started with is detached. */
+  ctx.document.activeElement = cardOfState(ctx, 'done');
   calls.length = 0;
   ctx.document.dispatch('keydown', { key: 'Backspace' });
   eq(calls, ['dismissSwiped:' + done.getAttribute('data-session-id')], 'and so does Backspace');
@@ -1041,6 +1046,46 @@ function cardOfState(ctx, state) {
     eq(calls, [], 'Delete on a card that cannot be dismissed does nothing');
   }
   ctx.document.activeElement = ctx.document.body;
+})();
+
+/* A MODIFIER MEANS THE BROWSER'S SHORTCUT, NOT OURS (review). Cmd-R and Ctrl-R
+   are reload, Cmd-P is print, Cmd-A is select-all, Cmd-S is save — every one of
+   the four letters this panel claimed is a browser shortcut with a modifier on
+   it, and swallowing those on a page an operator lives in is the panel taking
+   the browser away from them. */
+(function () {
+  var ctx = keyPanel();
+  var calls = [];
+  ctx.ackAllWaiting = function () { calls.push('ack'); return 1; };
+  ctx.forceRefresh = function () { calls.push('refresh'); };
+  ['metaKey', 'ctrlKey', 'altKey'].forEach(function (mod) {
+    ['a', 'r', 's', 'p'].forEach(function (key) {
+      var ev = { key: key };
+      ev[mod] = true;
+      var out = ctx.document.dispatch('keydown', ev);
+      ok(!out.defaultPrevented, mod + '+' + key + ' is left to the browser');
+    });
+  });
+  eq(calls, [], 'and nothing on the panel fired');
+  eq(ctx.sheetMode, null, 'including the settings sheet');
+  /* Without a modifier the same keys are still the panel's. */
+  ctx.document.dispatch('keydown', { key: 'r' });
+  eq(calls, ['refresh'], 'a bare r is still ours');
+})();
+
+/* A HELD KEY IS ONE COMMAND, NOT FORTY (review). Autorepeat fires keydown at the
+   OS repeat rate; `a` held down would have made an ack-all POST per repeat, and
+   `p` held would have toggled a pin back and forth until the finger lifted. */
+(function () {
+  var ctx = keyPanel();
+  var calls = [];
+  ctx.ackAllWaiting = function () { calls.push('ack'); return 1; };
+  ctx.document.dispatch('keydown', { key: 'a' });
+  ctx.document.dispatch('keydown', { key: 'a', repeat: true });
+  ctx.document.dispatch('keydown', { key: 'a', repeat: true });
+  eq(calls, ['ack'], 'a held key acts once');
+  ctx.document.dispatch('keydown', { key: 'a' });
+  eq(calls.length, 2, 'and a fresh press acts again');
 })();
 
 /* Inert while a sheet is open: the keys would fire behind it, on a grid the
@@ -1088,6 +1133,65 @@ function cardOfState(ctx, state) {
   ctx.document.activeElement = ctx.document.body;
 })();
 
+/* THE HAND-OFF HAS TO SURVIVE THE REBUILD, not just the keystroke. A real
+   dismissal removes the row and renderSessions throws every card node away, so
+   the node focused at the moment of the key is gone a frame later — which is why
+   the queue is answered where the new nodes appear and not only where it is
+   set. Driven through the real dismissal with reduced motion on, which is the
+   branch that renders immediately instead of on the fly-out timer. */
+(function () {
+  var ctx = keyPanel();
+  ctx.reducedMotion = function () { return true; };
+  var target = cardOfState(ctx, 'done');
+  var goingId = target.getAttribute('data-session-id');
+  var before = cardCount(ctx);
+  ctx.document.activeElement = target;
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  eq(cardCount(ctx), before - 1, 'the card really left the grid');
+  var now = ctx.document.activeElement;
+  ok(now && now.getAttribute && now.getAttribute('data-session-id') !== goingId,
+    'focus is not on the row that went');
+  ok(now === ctx.ui.cards || (now.classList && now.classList.contains('card')),
+    'it is on a card the rebuild produced, or on the grid  (' + (now && now.className) + ')');
+  ok(ctx.ui.cards.contains(now) || now === ctx.ui.cards, 'and on a node that is actually in the document');
+  /* So the next key still has something to act on, which is the whole point. */
+  var calls = [];
+  ctx.dismissSwiped = function (c) { calls.push(c.getAttribute('data-session-id')); };
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  ok(calls.length === 1 || now === ctx.ui.cards, 'and the keyboard path continues from there');
+})();
+
+/* THE ANIMATED PATH IS THE ONE THAT ORDERS WRONG. Without reduced motion the
+   card flies out and the rebuild is on a timer several hundred ms later, so
+   focus has to move TWICE: off the departing card now, and onto its replacement
+   once the rebuild has produced one. An earlier version consumed the queue on
+   the first move, which left focus on a node the rebuild then threw away — the
+   keyboard dying one dismissal in, on the path an operator actually takes. */
+(function () {
+  var ctx = keyPanel();
+  var target = cardOfState(ctx, 'done');
+  var goingId = target.getAttribute('data-session-id');
+  ctx.document.activeElement = target;
+  ctx.timers.length = 0;
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  ok(ctx.document.activeElement !== target, 'focus leaves the departing card straight away');
+
+  /* Now let the fly-out timer land, which is what rebuilds the grid. */
+  var queued = ctx.timers.slice();
+  ctx.timers.length = 0;
+  queued.forEach(function (t) { t.fn(); });
+
+  var now = ctx.document.activeElement;
+  ok(ctx.ui.cards.contains(now) || now === ctx.ui.cards,
+    'and after the rebuild it is on a node still in the document');
+  ok(!now.getAttribute || now.getAttribute('data-session-id') !== goingId,
+    'never back on the row that went');
+  var ids = [];
+  var cards = ctx.ui.cards.querySelectorAll('.card');
+  for (var i = 0; i < cards.length; i++) ids.push(cards[i].getAttribute('data-session-id'));
+  ok(ids.indexOf(goingId) === -1, 'the dismissed row really is off the grid  (' + ids.length + ' left)');
+})();
+
 /* The p key needed its own entry point, which moved suppressClick() — so the
    long press's own rule is pinned here. The hold has consumed the interaction
    and the sheet must not also open when the finger lifts; a key has no click
@@ -1122,6 +1226,21 @@ function cardOfState(ctx, state) {
   eq(ctx.ui.noticeText.textContent, 'pinned', 'the pin key says which way it went');
   ctx.document.dispatch('keydown', { key: 'p' });
   eq(ctx.ui.noticeText.textContent, 'unpinned', 'both ways');
+
+  /* The dismissal narrates too, and it is the one that most needs to: the card
+     the operator was reading has left the glass. */
+  var target = cardOfState(ctx, 'done');
+  ctx.document.activeElement = target;
+  ctx.document.dispatch('keydown', { key: 'Delete' });
+  eq(ctx.ui.noticeText.textContent, 'dismissed', 'the dismiss key says what happened');
+
+  /* AND FOCUS DOES NOT DIE WITH THE CARD (review). The node under focus has just
+     been thrown away, so without a hand-off the keyboard path ends on the
+     document and the next key acts on nothing. */
+  var still = ctx.document.activeElement;
+  ok(still !== target, 'focus has left the card that went');
+  ok(still === ctx.ui.cards || (still.closest && still.closest('.card')),
+    'and landed on another card, or on the grid itself');
   ctx.document.activeElement = ctx.document.body;
 })();
 
