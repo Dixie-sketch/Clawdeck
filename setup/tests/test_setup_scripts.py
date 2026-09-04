@@ -119,6 +119,21 @@ class ShellWrapper(TempHome):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No usable Python", result.stdout + result.stderr)
 
+    def test_the_help_lists_the_four_mapped_flags(self):
+        # The four are handled in the shell, so argparse's own help cannot mention them:
+        # without this the only documentation of --status is the README.
+        log = str(self.home.parent / "argv-help.log")
+        bindir = self._fake_python("3.13", argv_log=log)
+        result = self._run("install.sh", "--help", bindir=bindir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for flag in ("--status", "--doctor", "--pairing-code", "--limits-token"):
+            self.assertIn(flag, result.stdout)
+        # ...and argparse's own install help still follows it.
+        self.assertEqual(
+            Path(log).read_text(encoding="utf-8").split(),
+            [str(SETUP_DIR / "sidecrab_setup.py"), "install", "--help"],
+        )
+
     def test_sidecrab_python_overrides_the_search(self):
         log = str(self.home.parent / "argv-override.log")
         bindir = self._fake_python("3.13", argv_log=log)

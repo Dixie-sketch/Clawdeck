@@ -112,9 +112,11 @@ battery — the second is where a throttle would show. Record the number in
 
 ## TCC (the "would like to access your Documents folder" dialogs)
 
-The LaunchAgent reads `~/.claude` (transcripts and settings) and `~/.sidecrab` (its own
-config, logs and pairing code), and writes only inside `~/.sidecrab` and `~/.claude`. None
-of those is a TCC-protected location, so no folder-access dialog is expected. If a future
+crabd **reads** `~/.claude` (transcripts and settings) and **writes only** `~/.sidecrab`
+(its own config, history, logs and pairing code). The installer is the thing that writes
+`~/.claude/settings.json`, and it does so once, with a backup, when you run it — not from
+the agent. None of those is a TCC-protected location, so no folder-access dialog is
+expected. If a future
 change makes crabd read `~/Documents`, `~/Desktop`, `~/Downloads` or an iCloud folder, macOS
 will prompt — under a LaunchAgent that prompt can appear detached from any window, and a
 denial is permanent until it is reset in System Settings. Treat "the daemon needs a new

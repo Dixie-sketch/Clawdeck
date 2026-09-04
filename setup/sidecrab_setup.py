@@ -29,9 +29,11 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # ------------------------------------------------------------------ constants
 
@@ -101,6 +103,10 @@ HEADER_PROBE_SESSION_ID = "sidecrab-header-probe"
 HEALTH_RETRY_SEC = 3
 HOOK_WAIT_POLLS = 20
 HOOK_POLL_SEC = 0.7
+
+#: No subprocess this tool runs may hang the run. launchctl, lsof and security all
+#: answer in milliseconds; a minute is a wedged system, not a slow one.
+DEFAULT_RUN_TIMEOUT_SEC = 60
 
 #: The floor. 3.13 is what the project targets; below it the LaunchAgent would run an
 #: interpreter this code has never been exercised on.
@@ -550,7 +556,7 @@ class SetupError(Exception):
     """A refusal an operator is meant to read. Never a traceback."""
 
 
-def _default_run(argv, stdin=None, timeout=None):
+def _default_run(argv, stdin=None, timeout=DEFAULT_RUN_TIMEOUT_SEC):
     proc = subprocess.run(
         list(argv),
         input=stdin,
@@ -612,25 +618,25 @@ class Environment:
     repo_root: Path
     uid: int
     user: str
-    now: callable
-    run: callable
-    http_get: callable
-    http_post: callable
-    python_probe: callable
+    now: Callable[..., Any]
+    run: Callable[..., Any]
+    http_get: Callable[..., Any]
+    http_post: Callable[..., Any]
+    python_probe: Callable[..., Any]
     python_override: str | None = None
-    is_file: callable = staticmethod(_is_executable_file)
+    is_file: Callable[[str], bool] = staticmethod(_is_executable_file)
     path_dirs: tuple = ()
-    sleep: callable = staticmethod(time.sleep)
-    emit: callable = staticmethod(print)
+    sleep: Callable[[float], None] = staticmethod(time.sleep)
+    emit: Callable[[str], None] = staticmethod(print)
     #: None means "not a TTY": every prompt takes its documented default instead.
-    ask: callable | None = None
-    read_secret: callable = staticmethod(_default_read_secret)
+    ask: Callable[[str], str] | None = None
+    read_secret: Callable[[str], str] = staticmethod(_default_read_secret)
     #: None means "use the lazy crabd import"; the suite injects a recorder instead so
     #: no test ever writes to the developer's Keychain.
-    store_token: callable | None = None
+    store_token: Callable[[str], bool] | None = None
     #: "Does this crabd carry a Keychain store at all?" - asked BEFORE the token is
     #: handed over, so an older crabd is reported rather than discovered by an exception.
-    store_capable: callable | None = None
+    store_capable: Callable[[], bool] | None = None
 
     @classmethod
     def default(cls, repo_root=None) -> "Environment":
@@ -807,6 +813,20 @@ def read_json_object(path: Path, what: str) -> dict:
             f"written. {what} was not changed."
         )
     return document
+
+
+def fragment_entry_count(fragment_hooks) -> int:
+    """How many hook ENTRIES the fragment carries. Pure.
+
+    Not len(fragment): that counts EVENTS. Both are 7 today, which is exactly why the
+    mismatch of units would go unnoticed until one event grew a second entry.
+    """
+    return sum(
+        len(matcher.get("hooks") or [])
+        for matchers in (fragment_hooks or {}).values()
+        for matcher in (matchers or [])
+        if isinstance(matcher, dict)
+    )
 
 
 def read_hook_fragment(repo_root: Path) -> dict:
@@ -1478,7 +1498,13 @@ def command_status(env: Environment, args) -> int:
         env.emit(f"  hooks:       {env.settings_path} is unreadable")
     else:
         present = sum(count for _event, count in hook_events(settings))
-        env.emit(f"  hooks:       {present} of {len(read_hook_fragment(env.repo_root))} present")
+        try:
+            # A checkout missing its fragment is a row, not the end of a read-only run:
+            # every line after this one still tells the operator something.
+            expected = fragment_entry_count(read_hook_fragment(env.repo_root))
+            env.emit(f"  hooks:       {present} of {expected} present")
+        except SetupError as exc:
+            env.emit(f"  hooks:       {present} present; {str(exc).splitlines()[0]}")
     env.emit(f"  statusline:  {statusline_row(env, settings)}")
     env.emit(f"  allowlist:   {allowlist_row(settings)}")
     env.emit(f"  approvals:   {approvals_row(env, settings)}")
@@ -1747,8 +1773,11 @@ def run_doctor(env: Environment, session_id: str = SMOKE_SESSION_ID) -> list[Row
         for check in ("hook SessionStart", "hook Notification", "hook SessionEnd"):
             add(check, True, f"session id {session_id!r} is already live", skip=True)
     else:
+        # Built BEFORE the try: the finally reads it, and a raise on the very first post
+        # would otherwise be masked by an UnboundLocalError - taking the SessionEnd with it.
+        posted = []
         try:
-            posted = [f"SessionStart={post_hook(env, 'SessionStart', session_id)}"]
+            posted.append(f"SessionStart={post_hook(env, 'SessionStart', session_id)}")
             appeared, seen = wait_for_state(
                 env, lambda s: state_session(s, session_id) is not None
             )

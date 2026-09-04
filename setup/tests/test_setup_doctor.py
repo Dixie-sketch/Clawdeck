@@ -147,6 +147,21 @@ class Status(TempHome):
         self.status()
         self.assertIn("7 of 7", self.output)
 
+    def test_both_sides_of_the_hook_row_count_entries_not_events(self):
+        # They are both 7 in the shipping fragment, which is exactly why a mismatch of
+        # UNITS would go unnoticed until an event grew a second entry.
+        fragment = {"SessionStart": [{"hooks": [{"command": "a"}, {"command": "b"}]}],
+                    "Stop": [{"hooks": [{"url": "c"}]}]}
+        self.assertEqual(setup.fragment_entry_count(fragment), 3)
+        self.assertEqual(setup.fragment_entry_count(setup.read_hook_fragment(self.repo)), 7)
+
+    def test_a_missing_fragment_is_a_row_not_the_end_of_the_run(self):
+        (self.repo / "hooks" / "settings-hooks-fragment-macos.json").unlink()
+        self.assertEqual(self.status(), 0)
+        self.assertIn("fragment", self.output)
+        # The rows after it still printed.
+        self.assertIn(setup.PANEL_URL, self.output)
+
     def test_the_status_line_row_names_what_it_chains_to(self):
         (self.home / ".claude").mkdir(parents=True)
         (self.home / ".claude" / "settings.json").write_text(
@@ -564,6 +579,27 @@ class Doctor(TempHome):
         self.assertEqual(self.doctor(), 1)
         self.assertEqual(self.rows["hook SessionEnd"].verdict, "FAIL")
         self.assertIn("still served", self.rows["hook SessionEnd"].detail)
+
+    def test_session_end_is_still_posted_when_the_very_first_post_raises(self):
+        # posted = [] was built by the SessionStart line itself, so a raise there left
+        # the finally referencing a name that did not exist - an UnboundLocalError that
+        # masked the real failure AND skipped the SessionEnd.
+        posted = []
+        original = self.crabd.post
+
+        def post(url, body=None, headers=None, timeout=None):
+            payload = json.loads(body) if body else {}
+            event = payload.get("hook_event_name")
+            posted.append(event)
+            if event == "SessionStart":
+                raise RuntimeError("connection reset on the first post")
+            return original(url, body, headers, timeout)
+
+        self.crabd.post = post
+        with self.assertRaises(RuntimeError) as caught:
+            self.doctor()
+        self.assertIn("connection reset", str(caught.exception))
+        self.assertEqual(posted[-1], "SessionEnd")
 
     def test_the_limits_row_is_reported_and_never_judged(self):
         self.doctor(RecordingRunner({"print gui": RUNNING, "find-generic-password": (44, "", "")}))
