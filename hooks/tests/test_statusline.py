@@ -77,6 +77,27 @@ class MinimalStatus(unittest.TestCase):
 
 
 class PostStatusline(unittest.TestCase):
+    def test_endpoint_is_crabd_on_9999(self):
+        self.assertEqual(sl.STATUSLINE_ENDPOINT, "http://127.0.0.1:9999/v1/statusline")
+
+    def test_carries_the_panel_header(self):
+        # crabd 0.31.0 and later refuses a POST without X-SideCrab-Panel with 403; without it
+        # the status line would still render, but crabd would lose limits and per-session
+        # context entirely. The content type is pinned by the verbatim-POST test below.
+        seen = {}
+
+        class _Resp:
+            def read(self): return b""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def opener(request, timeout=None):
+            seen.update({k.lower(): v for k, v in request.headers.items()})
+            return _Resp()
+
+        sl.post_statusline(b"{}", opener=opener)
+        self.assertEqual(seen.get("x-sidecrab-panel"), "1")
+
     def test_posts_the_document_verbatim(self):
         seen = {}
 

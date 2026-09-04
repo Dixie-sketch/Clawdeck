@@ -8,13 +8,23 @@ detail of every additive field and is the source of truth; this file is the shor
 
 | Component | Version | Notes |
 |---|---|---|
-| widget (`widget/manifest.json`) | 0.28.2 | card type +17% (title 24.5 px, meta 18.4 px at 2560x720), titles wrap to two lines; question pinned at three whole lines; at most two subagent rows; badges keep their chip size. Plus 0.28.1: | idle blink every 8–10 s (was 60–180 s). Plus 0.28.0: | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
+| widget (`widget/manifest.json`) | 0.29.0 | **crabd moved to port 9999, and the panel can be served by crabd itself**: same-origin relative paths over http(s), the `crabd Port` property (default 9999) only when loaded from `file:` as iCUE does; every POST carries `X-SideCrab-Panel`. Plus 0.28.2: | card type +17% (title 24.5 px, meta 18.4 px at 2560x720), titles wrap to two lines; question pinned at three whole lines; at most two subagent rows; badges keep their chip size. Plus 0.28.1: | idle blink every 8–10 s (was 60–180 s). Plus 0.28.0: | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
 | crabd (`companion/crabd.py`) | 0.30.0 | **the gauges stop dying every morning**: an optional long-lived token (`claude setup-token`, stored DPAPI-protected by `Install-SideCrab.ps1 -LimitsToken`) is used whenever the CLI token has expired; `limits.tokenSource` says which answered. Plus 0.29.0: | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
-| notifier (`notifier/sidecrab_toast.py`) | 0.20.0 | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
+| notifier (`notifier/sidecrab_toast.py`) | 0.21.0 | polls crabd on port 9999; the toast's Acknowledge button POSTs with `X-SideCrab-Panel`. Plus 0.20.0: | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
 | lighting (`lighting/sidecrab_glow.py`) | parked | ships disabled: the Corsair SDK crashes in every non-interactive console context tested |
 | schema (`/v1/state`) | 5 | marks the last breaking shape; additive fields are feature-detected by presence |
 
 ## Highlights by wave (newest first)
+
+- **0.29.0 widget (2026-09-04)** - the panel follows crabd to port 9999, and can now be
+  opened in a browser: when crabd serves it, every request is same-origin and relative, so
+  nothing has to be configured. The `crabd Port` property stays for the iCUE case, where the
+  panel is loaded from disk and has to name crabd outright; its default is 9999. Every POST
+  carries the `X-SideCrab-Panel` header crabd 0.31.0 requires. **Re-import the widget at the
+  iCUE console** - an installed 0.28.x keeps polling 2722 and shows the standalone state.
+- **0.21.0 notifier (2026-09-04)** - polls crabd on 9999, and the Acknowledge button on a
+  toast sends the panel header, so acks keep landing. Nothing else changed; if the notifier
+  and crabd are updated together there is nothing to do.
 
 - **0.30.0 crabd (2026-09-04)** - "token expired" every morning, fixed. The CLI's token lives
   ~6 h and only a terminal `claude` refreshes the file, so `claude setup-token` +

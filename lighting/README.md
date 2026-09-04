@@ -5,7 +5,7 @@ When a Claude session is waiting on you, your Corsair lighting breathes terracot
 start — the lights go straight back to your normal iCUE profile.
 
 `sidecrab-glow` is a **standalone, read-only consumer** of the crabd feed. It polls
-`GET http://127.0.0.1:2722/v1/state` every 3 s and nothing else: it never writes to
+`GET http://127.0.0.1:9999/v1/state` every 3 s and nothing else: it never writes to
 crabd, never changes an iCUE setting, and holds the lights only while an alert is
 actually up.
 

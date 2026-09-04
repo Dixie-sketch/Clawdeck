@@ -97,7 +97,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
 
-$HookUrlMarker = '127.0.0.1:2722/v1/hook'
+$HookUrlMarker = '127.0.0.1:9999/v1/hook'
 
 function Write-Step { param([string] $Message) Write-Host "  $Message" }
 

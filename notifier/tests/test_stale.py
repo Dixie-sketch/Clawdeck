@@ -92,11 +92,29 @@ class FeedHealthTests(unittest.TestCase):
         self.assertTrue(read_feed_health(healthy(at=3600), utc()).healthy)
 
     def test_the_detail_names_no_host_or_port(self) -> None:
-        """Public-facing string: an operator reads it on a toast, not in a log."""
+        """Public-facing string: an operator reads it on a toast, not in a log.
+
+        The age is 7200 s, not 9999, so the port digits can only get into the detail
+        from the endpoint - never from the number of seconds this case happens to use.
+        """
         for state in (None, healthy()):
-            detail = read_feed_health(state, utc(9999)).detail
+            detail = read_feed_health(state, utc(7200)).detail
             self.assertNotIn("127.0.0.1", detail)
-            self.assertNotIn("2722", detail)
+            self.assertNotIn("9999", detail)
+
+
+class FeedEndpointTests(unittest.TestCase):
+    """Where the notifier looks, as opposed to what it makes of what it finds.
+
+    Its own class because it is a module constant, not a read_feed_health case: it needs
+    none of that class's fixtures and would be the only test there that never calls it.
+    """
+
+    def test_the_default_endpoint_is_crabds_state_url(self) -> None:
+        """A GET, so no panel header - the gate crabd 0.31.0 added guards POSTs only. But
+        the port moved, and a stale default here is a notifier that reports the companion
+        down while it is answering next door."""
+        self.assertEqual(sidecrab_toast.DEFAULT_ENDPOINT, "http://127.0.0.1:9999/v1/state")
 
 
 class ActiveSessionTests(unittest.TestCase):

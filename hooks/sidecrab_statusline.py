@@ -46,7 +46,12 @@ from typing import Any
 
 #: crabd's status-line ingest. Fire-and-forget: crabd answers 204 and never sends a body
 #: this cares about. Fixed localhost endpoint, same as every other SideCrab client.
-STATUSLINE_ENDPOINT = "http://127.0.0.1:2722/v1/statusline"
+STATUSLINE_ENDPOINT = "http://127.0.0.1:9999/v1/statusline"
+
+#: crabd 0.31.0 and later refuses any POST that does not carry this header, with 403
+#: "panel header required". Any non-empty value passes; "1" is what every SideCrab client
+#: sends. An older crabd ignores it, so sending it always is safe in both directions.
+PANEL_HEADER = "X-SideCrab-Panel"
 
 #: Hard cap on the POST. The status line re-renders often and blocks the prompt while this
 #: process runs, so a stopped-but-listening crabd (or a firewall black-hole) must not cost
@@ -141,7 +146,7 @@ def post_statusline(
             endpoint,
             data=document,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", PANEL_HEADER: "1"},
         )
         open_url = opener or urllib.request.urlopen
         with open_url(request, timeout=timeout) as resp:  # noqa: S310 - fixed localhost

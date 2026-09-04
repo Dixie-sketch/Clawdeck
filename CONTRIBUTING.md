@@ -42,6 +42,7 @@ python -m unittest discover -s notifier\tests  -t notifier\tests
 python -m unittest discover lighting\tests
 python -m unittest discover -s hooks\tests -t hooks\tests
 node widget\tests\test_ordering.js
+node widget\tests\test_panel.js
 pwsh -File .\setup\tests\RunTests.ps1
 ```
 

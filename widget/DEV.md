@@ -1,5 +1,10 @@
 # SideCrab widget — dev notes
 
+**2026-09-04, widget 0.29.0 — crabd moved from 2722 to 9999, and the panel gained a second
+origin.** Every `2722` still written below this line is inside a dated measured-evidence
+section and is left as measured; it is not a live address. What the panel does today is the
+two-origin rule under **Preview**.
+
 **Preview:** `python -m http.server 8765` from this folder, then open
 `http://localhost:8765/` in a Chromium browser sized to **2560x720** (DevTools device
 toolbar → Responsive → 2560 x 720). File:// also works but blocks the mock fetches.
@@ -11,8 +16,25 @@ toolbar → Responsive → 2560 x 720). File:// also works but blocks the mock f
 Leave the query string OFF (with no companion running) for the **standalone**
 state, which is the first thing a store user ever sees.
 Fixtures live in `mock/`; the loader rebases every timestamp so everything but
-`stale` renders fresh (`stale` renders ~3 min old). With no `?mock=`, the widget
-polls `http://127.0.0.1:2722/v1/state` every 3 s.
+`stale` renders fresh (`stale` renders ~3 min old).
+
+**Where the widget polls, since 0.29.0, is decided by the ORIGIN and not by a setting.**
+`baseUrl()` reads `location.protocol`:
+
+- **Served over `http:` / `https:`** — which is how crabd itself serves the panel, at
+  `http://localhost:9999/` — every path is **same-origin and relative**: `/v1/state`,
+  `/v1/history?day=…`, `/v1/action`. An absolute address here would be cross-origin and
+  crabd's Origin gate would answer 403.
+- **Opened from `file:`** — the iCUE webview, and a location that reports no protocol at
+  all — the panel names crabd outright, at the port in the `crabdPort` widget property,
+  **default 9999**.
+
+**So the `python -m http.server 8765` preview is MOCK-ONLY for anything that talks to
+crabd.** Served from 8765 the panel is same-origin with the static server, so `/v1/state`,
+the history fetches and every POST go to 8765, which does not implement them — the panel
+renders the standalone/disconnected state, whatever crabd is doing on 9999. Use `?mock=` for
+panel content, and drive the real wire either from crabd's own `http://localhost:9999/` or
+by opening `index.html` as a `file:` URL.
 
 | fixture | schema | what it is for |
 |---|---|---|

@@ -210,8 +210,8 @@ the description and are not depicted in the gallery.** A gallery video (1920 × 
 toward the 10) is the format that could show them; none was made.
 
 **The standalone shot needs an isolated copy.** With no `?mock=`, the widget polls
-`http://127.0.0.1:2722` — and on a development machine a live `crabd` answers it (confirmed again
-this pass: `2722` returned 200), so the panel renders the connected state instead of the
+`http://127.0.0.1:9999` — and on a development machine a live `crabd` answers it (confirmed again
+this pass: `9999` returned 200), so the panel renders the connected state instead of the
 standalone one. Copy the widget somewhere temporary, point its default port at a dead one, shoot
 there, and delete the copy:
 
@@ -220,15 +220,25 @@ $tmp = "$env:TEMP\sc-standalone"
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item C:\Dev\sidecrab\widget $tmp -Recurse
 $js = [IO.File]::ReadAllText("$tmp\scripts\sidecrab.js")
-[IO.File]::WriteAllText("$tmp\scripts\sidecrab.js", $js.Replace('2722', '2799'))   # 2 occurrences
+# Replace the QUOTED literal, not the bare digits: '9999' is the port twice, but 9999 on its
+# own appears 6 times - inside 999999 in the fmtNum comment and in DIAG_COUNT_SHOWN_MAX, which
+# test_ordering.js pins, so a bare replace would silently ship a corrupted copy.
+[IO.File]::WriteAllText("$tmp\scripts\sidecrab.js", $js.Replace("'9999'", "'9998'"))   # 2 occurrences
 # serve $tmp on another fresh port (8798), then shoot TWICE and keep the second (trap 1):
 Get-Shot "$shots\09-standalone.png" 'http://127.0.0.1:8798/index.html'
 Get-Shot "$shots\09-standalone.png" 'http://127.0.0.1:8798/index.html'
 Remove-Item $tmp -Recurse -Force
 ```
 
-Verify the dead port really is dead first — a request to `http://127.0.0.1:2799/v1/state` must
-fail, and `http://127.0.0.1:2722/v1/state` returning 200 is exactly why the copy is needed.
+Verify the dead port really is dead first — a request to `http://127.0.0.1:9998/v1/state` must
+fail, and `http://127.0.0.1:9999/v1/state` returning 200 is exactly why the copy is needed.
+
+**Since widget 0.29.0 the port edit is belt and braces, not the mechanism.** `baseUrl()` returns
+`''` whenever the page is served over `http:`/`https:`, so a widget shot from
+`http://127.0.0.1:8798/index.html` polls `/v1/state` on the STATIC SERVER, which 404s — the
+standalone state, with or without the edit. The copy and the edit are kept because they are also
+what makes the shot correct if it is ever taken off the filesystem (`file:`), where the panel does
+name crabd outright.
 
 Downscale to the store's 1920 × 960 with `System.Drawing`, letterboxed on the panel's own
 background so the bars are not a visible frame:

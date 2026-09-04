@@ -166,9 +166,11 @@ def xml_attr_escape(value: Any) -> str:
 #: printed by --version, and written into STATE_PATH, so "what is on disk" and "what the
 #: Scheduled Task is actually executing" stop being the same unanswerable question. Bump it in
 #: the same commit as any behaviour change; setup/Test-SideCrab.ps1 reads it off both sides.
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
-DEFAULT_ENDPOINT = "http://127.0.0.1:2722/v1/state"
+#: A GET, so the X-SideCrab-Panel gate crabd 0.31.0 added does not apply here: it guards
+#: POSTs only. The ack handler, which does POST, sends the header.
+DEFAULT_ENDPOINT = "http://127.0.0.1:9999/v1/state"
 DEFAULT_INTERVAL_SEC = 10.0
 DEFAULT_THRESHOLD_SEC = 120
 FETCH_TIMEOUT_SEC = 5.0

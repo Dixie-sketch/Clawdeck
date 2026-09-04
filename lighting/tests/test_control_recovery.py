@@ -524,5 +524,16 @@ class AcquisitionVerdict(unittest.TestCase):
         )
 
 
+class FeedEndpointTests(unittest.TestCase):
+    """The glow's one link to crabd. Lives here because this is the lighting module that
+    already loads sidecrab_glow, and an unpinned port is exactly how this parked component
+    would go dark without anyone noticing."""
+
+    def test_the_default_url_is_crabds_state_feed(self):
+        # A GET: the X-SideCrab-Panel gate crabd 0.31.0 added guards POSTs only, and the
+        # glow never writes.
+        self.assertEqual(sidecrab_glow.DEFAULT_URL, "http://127.0.0.1:9999/v1/state")
+
+
 if __name__ == "__main__":
     unittest.main()

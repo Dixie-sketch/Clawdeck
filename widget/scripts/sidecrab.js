@@ -1014,9 +1014,26 @@ function logLine(msg) {
 
 /* ------------------------------------------------------------------- polling */
 
+/* The panel runs in two places and the base differs by ORIGIN, not by setting.
+
+   Served BY crabd (http:/https:) every path must be RELATIVE. An absolute
+   http://127.0.0.1:9999 issued from a page served as http://localhost:9999 is a
+   cross-origin request — different host string, same machine — so the browser
+   sends an Origin header, and crabd's Origin gate answers a foreign http origin
+   with 403. Relative paths carry no Origin at all and are never preflighted.
+
+   Loaded off the filesystem (the iCUE webview, protocol file:) there is no
+   origin to be same as, so crabd has to be named outright; crabdPort stays for
+   the operator who moved it. A location that reports NO protocol reads as the
+   iCUE case for the same reason: an embedded webview that answers with nothing
+   still needs a reachable crabd, and '' would make every request relative to a
+   page that is not served by anyone. */
 function baseUrl() {
-	var port = strProp('crabdPort', '2722').replace(/[^0-9]/g, '');
-	if (!port) port = '2722';
+	var proto = '';
+	try { proto = String((window.location && window.location.protocol) || ''); } catch (e) { proto = ''; }
+	if (proto === 'http:' || proto === 'https:') return '';
+	var port = strProp('crabdPort', '9999').replace(/[^0-9]/g, '');
+	if (!port) port = '9999';
 	return 'http://127.0.0.1:' + port;
 }
 
@@ -4991,7 +5008,18 @@ function postJson(path, payload) {
 	});
 
 	function send(ctype) {
-		var opts = { method: 'POST', headers: { 'Content-Type': ctype }, body: payload, cache: 'no-store' };
+		/* The panel header is on BOTH attempts, not just the JSON one. crabd 0.31.0
+		   and later answers a POST without it 403 "panel header required" — and the
+		   panel reads a 403 on decide as a wrong pairing code, so dropping it on the
+		   text/plain retry would surface as a lie about the operator's code rather
+		   than as an outage. An older crabd ignores the header, so sending it always
+		   is safe in both directions. */
+		var opts = {
+			method: 'POST',
+			headers: { 'Content-Type': ctype, 'X-SideCrab-Panel': '1' },
+			body: payload,
+			cache: 'no-store'
+		};
 		var ctl = null, timer = null;
 		if (typeof AbortController !== 'undefined') {
 			ctl = new AbortController();
