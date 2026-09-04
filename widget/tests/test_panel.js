@@ -1237,6 +1237,43 @@ function cardOfState(ctx, state) {
   eq(ctx.sheetMode !== null, true, 'and the sheet stays open so the reason can be read');
 })();
 
+/* --------------------------------- the v0.27.0 blank-panel trap, as a test */
+
+/* WIDGET 0.27.0 SHIPPED BLANK ON THE EDGE. iCUE injects every widget property as
+   a same-named `let` global, so a top-level declaration with a property's name is
+   a redeclaration — a whole-script SyntaxError, no panel at all, and nothing on
+   the glass to say why. It was found by a person standing at the display.
+   The reader was renamed to pairingCode() and the rule written into three
+   comments; this makes it a test, because the settings sheet has just added a
+   dozen new functions to a file where that mistake costs a release. The property
+   list is read from index.html, so a property added tomorrow is covered by it. */
+(function () {
+  var html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  var js = fs.readFileSync(harness.SRC, 'utf8');
+  var props = {};
+  var re = /name="x-icue-property"\s+content="(\w+)"/g, m;
+  while ((m = re.exec(html))) props[m[1]] = true;
+  /* The three the bridge injects or looks for that are not declared as
+     properties: uniqueId is the host's own, and the two event objects must stay
+     BARE assignments or the bridge cannot find them. */
+  props.uniqueId = props.icueEvents = props.pluginSensorsdataproviderEvents = true;
+  eq(Object.keys(props).length, 23, 'twenty properties plus the three the bridge owns');
+
+  var declared = {};
+  js.split('\n').forEach(function (line) {
+    var d = /^(?:function\s+(\w+)|var\s+(\w+)|let\s+(\w+)|const\s+(\w+))/.exec(line);
+    if (d) declared[d[1] || d[2] || d[3] || d[4]] = true;
+  });
+  var collisions = Object.keys(props).filter(function (p) { return declared[p]; });
+  eq(collisions, [], 'no top-level declaration shares a name with an injected global');
+
+  ok(/^icueEvents = /m.test(js), 'icueEvents is a bare assignment, so the bridge finds it');
+  ok(/^pluginSensorsdataproviderEvents = /m.test(js), 'and so is the sensors one');
+  /* Not a module and not strict: both bare assignments become a ReferenceError
+     under either. */
+  ok(!/^\s*['"]use strict['"]/m.test(js), 'the file is not in strict mode, which those two require');
+})();
+
 /* ---------------------------------------------------------------------- done */
 
 Promise.all(pending).then(function () {
