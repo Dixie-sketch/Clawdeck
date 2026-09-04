@@ -12,9 +12,11 @@ the two at the bottom that are the healthy-night check against a real Mac.
 """
 
 import io
-import os
+import json
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -441,6 +443,97 @@ class DarwinVmStructTests(unittest.TestCase):
     def test_every_field_the_formula_reads_is_declared(self):
         declared = {name for name, _type in crabd._VM_STATISTICS64._fields_}
         self.assertLessEqual(set(crabd.HOST_VM_FIELDS), declared)
+
+
+# ------------------------------------------------- what this Mac actually serves
+
+class StubLimits:
+    def get(self, now, force=False):
+        return {"available": False, "note": "stub", "fiveHour": None, "weekly": None,
+                "extra": [], "subscriptionType": None, "rateLimitTier": None}
+
+
+@unittest.skipUnless(sys.platform == "darwin",
+                     "mach host_statistics / host_statistics64 / sysctlbyname")
+class DarwinHostLiveReadTests(unittest.TestCase):
+    """A read-only measurement of THIS Mac, bounds-checked. Everything above proves the
+    arithmetic against numbers this file invented; this is the one place it meets a real
+    kernel, and it is the healthy-night check for the whole reader."""
+
+    def sampler(self):
+        return crabd.HostSampler(platform=crabd.DarwinPlatform())
+
+    def test_the_real_counters_produce_a_sane_block(self):
+        sampler = self.sampler()
+        block = sampler.sample()
+        self.assertIsNotNone(block, "the mach counters should be readable here")
+        self.assertIsNone(block["cpuPct"])          # first sample, by construction
+        self.assertGreater(block["memTotalGB"], 0.5)
+        self.assertGreaterEqual(block["memPct"], 0.0)
+        self.assertLessEqual(block["memPct"], 100.0)
+        self.assertLessEqual(block["memUsedGB"], block["memTotalGB"])
+
+        # Burn a little CPU so the counters definitely move past CPU_MIN_TOTAL_TICKS,
+        # then take the second sample the delta needs. Retried rather than slept on: a
+        # fixed sleep would be either flaky or slow.
+        cpu = None
+        for _ in range(20):
+            deadline = time.perf_counter() + 0.05
+            while time.perf_counter() < deadline:
+                pass
+            cpu = sampler.sample()["cpuPct"]
+            if cpu is not None:
+                break
+        self.assertIsNotNone(cpu, "two samples 50 ms+ apart should yield a percentage")
+        self.assertIsInstance(cpu, float)
+        self.assertGreaterEqual(cpu, 0.0)
+        self.assertLessEqual(cpu, 100.0)
+
+    def test_the_installed_size_agrees_with_the_sysctl_command(self):
+        """A SECOND OPINION, not the same number twice: `sysctl -n hw.memsize` is a
+        different code path to the same fact, so this catches a reader that is
+        self-consistently wrong (a mis-sized buffer, the low half of a 64-bit value)."""
+        reported = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.memsize"],
+                                  capture_output=True, text=True, timeout=10,
+                                  check=True).stdout.strip()
+        self.assertEqual(self.sampler().sample()["memTotalGB"],
+                         round(int(reported) / 1024 ** 3, 1))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "what a default crabd serves on a Mac")
+class DarwinDefaultBuilderTests(unittest.TestCase):
+    """The phase's behaviour claim, taken off a real document.
+
+    The widget feature-detects `host` by PRESENCE, so a Mac gaining the block is the
+    whole user-visible change: until now a default builder here served no `host` key at
+    all and the panel rendered nothing where the gauges go.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        (root / "projects").mkdir()
+        original = crabd.USER_CONFIG_FILE
+        crabd.USER_CONFIG_FILE = root / "config.json"
+        self.addCleanup(lambda: setattr(crabd, "USER_CONFIG_FILE", original))
+        self.builder = crabd.StateBuilder(
+            crabd.TranscriptStore(root / "projects"), crabd.HookTracker(),
+            StubLimits(), 0.0)
+
+    def test_the_first_build_carries_memory_and_a_null_cpu(self):
+        state = self.builder.build()
+        self.assertIn("host", state)
+        self.assertIsNone(state["host"]["cpuPct"])      # no predecessor reading yet
+        self.assertIsInstance(state["host"]["memTotalGB"], float)
+        self.assertGreater(state["host"]["memTotalGB"], 0.5)
+        self.assertEqual(state["schema"], 5)            # nothing else moved
+
+    def test_the_block_survives_json(self):
+        """dump_state refuses non-finite floats and takes the WHOLE document down the
+        sanitising path when it meets one, so a live reading is checked through it."""
+        parsed = json.loads(crabd.dump_state(self.builder.build()))
+        self.assertGreater(parsed["host"]["memTotalGB"], 0.5)
 
 
 if __name__ == "__main__":

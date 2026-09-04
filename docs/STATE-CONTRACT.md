@@ -14,6 +14,109 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.32.0 (2026-09-04 — BEHAVIOUR on macOS: the host block is served; schema stays 5)
+
+crabd `VERSION` → `0.32.0`. **No shape change.** `host` keeps exactly the four fields it has
+had since v0.22.0 (`cpuPct`, `memPct`, `memUsedGB`, `memTotalGB`), the same units, the same
+rounding and the same three failure tiers. `schema` stays **5**. What changed is that on
+**macOS** the block is now PRESENT, where a Mac used to serve no `host` key at all. The widget
+feature-detects `host` by presence, so this is the whole user-visible difference: the gauges
+render on a Mac.
+
+Windows is untouched — same counters, same numbers, same code path.
+
+### 1. Where the numbers come from on macOS
+
+| field | source |
+|---|---|
+| `cpuPct` | `host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, …)` from libSystem |
+| `memTotalGB` | `sysctlbyname("hw.memsize")` |
+| `memUsedGB`, `memPct` | `host_statistics64(mach_host_self(), HOST_VM_INFO64, …)` page counts × `sysctlbyname("vm.pagesize")` |
+
+MEASURED 2026-09-04 on an Apple-silicon Mac, 16 cores, macOS 26.6: the CPU call returns
+`kr == 0`, `count == 4` and four `uint32` ticks in CPU_STATE order — `user, system, idle,
+nice` — cumulative since boot, summed across cores, in 1/`CLK_TCK` s where
+`os.sysconf("SC_CLK_TCK")` is 100. One second of wall clock moved them by
+`[213, 103, 1280, 0]`, sum 1596, which is about 16 cores × 100 Hz. The VM call returns
+`kr == 0` and `count == 38` (the struct is 38 × 32-bit words); `vm.pagesize` is 16384 and
+`hw.memsize` 137438953472 (128.0 GiB).
+
+### 2. The tuple convention, and the two decisions inside it
+
+`HostSampler` is unchanged and was written against Win32 `GetSystemTimes`, whose unit is the
+FILETIME's 100 ns tick and whose **kernel time includes idle time**. The macOS reader adapts
+to it rather than the other way round, so `CPU_MIN_TOTAL_TICKS` keeps meaning 100 ms of
+aggregate core-time and every A-07/A-08/A-09 branch keeps its measured provenance:
+
+```
+scale  = 10_000_000 // CLK_TCK          (100_000 at the measured CLK_TCK 100)
+idle   =  idle                  * scale
+kernel = (system + idle)        * scale
+user   = (user   + nice)        * scale
+```
+
+**Idle is folded into kernel.** Unfolded, `idle` exceeds `(kernel + user)` on any mostly-idle
+machine, the sampler takes its A-08 branch, and `cpuPct` is null — not once, but on every
+pass, on a perfectly healthy Mac. A dead gauge rather than a wrong one, which is exactly the
+failure nobody reports.
+
+**`nice` is busy time.** It counts user-priority-lowered processes actually running, so it
+belongs with `user`. Left out, a machine doing background work at nice priority under-reports:
+the worked example in the tests is a delta of `(user 100, system 100, idle 300, nice 100)`,
+which is 50.0% with nice and 40.0% without.
+
+### 3. The counters are 32-bit and they wrap
+
+The mach tick counters are `natural_t` — **32 bits** — and cumulative since boot. At the
+measured ~1600 ticks/s a bucket crosses 2^32 after roughly **31 days of uptime**, so a reader
+that passes them on raw produces one backwards jump per bucket per month, and the sampler
+answers a backwards counter by re-baselining and serving null.
+
+crabd unwraps them into 64-bit monotonic values inside the platform reader: the last raw value
+and a lap count are kept **per bucket**, and a value smaller than the last adds one 2^32 lap.
+The sampler never sees the jump. A genuine backwards movement of any other kind is
+indistinguishable from a wrap here and is treated as one — the honest trade, because the worst
+case is a single over-large window served as a percentage (and the sampler still refuses it
+if idle then exceeds the total), while the alternative is a null gauge on every long-uptime
+machine.
+
+`CLK_TCK` is read once via `os.sysconf("SC_CLK_TCK")` and must be a positive integer that
+divides 10_000_000 evenly; anything else (0, negative, `True`, 3, 7, missing) serves **no
+`cpuPct`** with one stderr line, because the scaling is an integer division.
+
+### 4. `memUsedGB` is Activity Monitor's "Memory Used"
+
+```
+used      = (internal_page_count - purgeable_count + wire_count + compressor_page_count)
+            × page_size
+available = total - used
+```
+
+That is app memory + wired + compressed, which is the headline figure Activity Monitor shows —
+66.0 GiB of 128.0 on the machine measured here. The contract's promise for this row has always
+been that it matches what the OS's own monitor shows, and on a Mac there are two other
+plausible answers that do not: `top`'s used is `total - free`, which reads **98.3 GiB** on the
+same machine, and counting free + inactive + speculative as available reads differently again.
+`free_count` and `inactive_count` therefore do **not** enter the formula.
+
+### 5. Failure is unchanged, and it is honest
+
+The three tiers are exactly the v0.22.0 ones: both readings failing → **no `host` key at all**
+(the widget renders nothing rather than a row of em-dashes); one failing → that reading's
+fields `null` and the other's intact; an unusable number → `null` via `_pct` / `_gb`. There is
+still no last-good cache anywhere, which is why `cpuPct` is `null` on the first pass after a
+crabd start and stays `null` rather than repeating a stale figure.
+
+The macOS memory reader refuses, with one stderr line each and never a figure, when:
+`host_statistics64` fails; the returned `count` is not the 38 words the declared struct is (a
+different layout means the fields are not at the offsets the names were resolved from, and
+nothing is read past that check); `vm.pagesize` is not a positive power of two; `hw.memsize`
+is unreadable or not positive; or the computed `used` falls outside `0..total`. The last one
+earns its place because `HostSampler` clamps an out-of-range availability back into range — an
+unrefused negative `used` would reach the document as a confident `memPct: 0.0`.
+
+---
+
 ## v0.31.0 (2026-09-04 — TRANSPORT: the panel is served by crabd on 9999; the Host and Origin allowlists; the panel header; schema stays 5)
 
 crabd `VERSION` → `0.31.0`. **Nothing in the DOCUMENT changed.** No field was added, moved,

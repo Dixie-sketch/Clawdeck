@@ -23,7 +23,9 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               in the picture; PREFERRED over source 3
   9. OTLP http/json on /v1/metrics + /v1/logs (v0.12.0) -> burn.costUSD in real dollars,
                                               api_error events onto the session rings
- 10. GetSystemTimes / GlobalMemoryStatusEx (v0.22.0) -> `host`: this machine's CPU
+ 10. GetSystemTimes / GlobalMemoryStatusEx on Windows, mach host_statistics /
+     host_statistics64 / sysctlbyname on macOS (v0.22.0, v0.32.0)
+                                           -> `host`: this machine's CPU
                                               utilization and memory, for the panel
                                               beside the iCUE temperature sensors
  11. GET /v1/models on the same OAuth token (v0.28.0) -> the context WINDOW size behind
@@ -76,7 +78,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.31.0"
+VERSION = "0.32.0"
 
 HOST = "127.0.0.1"
 # The production port, and the one the service registration owns. It was 2722 (C-R-A-B on

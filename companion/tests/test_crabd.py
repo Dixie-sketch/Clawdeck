@@ -3199,7 +3199,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.31.0")
+        self.assertEqual(crabd.VERSION, "0.32.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5970,7 +5970,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.31.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.32.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -9904,11 +9904,14 @@ class HostBlockThroughTheBuilderTests(TempProjects):
         self.assertIsNone(parsed["host"]["cpuPct"])
 
 
-@unittest.skipUnless(sys.platform == "win32", "GetSystemTimes / GlobalMemoryStatusEx")
+@unittest.skipUnless(sys.platform == "win32", "the WINDOWS live read: GetSystemTimes / "
+                                              "GlobalMemoryStatusEx")
 class HostSamplerLiveReadTests(unittest.TestCase):
-    """A read-only measurement of THIS host, bounds-checked. The healthy-night test:
-    the arithmetic above is proven against numbers this file invented, and this is the
-    one place it meets a real kernel."""
+    """A read-only measurement of THIS host on WINDOWS, bounds-checked. The
+    healthy-night test: the arithmetic above is proven against numbers this file
+    invented, and this is the one place it meets a real Win32 kernel. The macOS half of
+    the same promise - mach host_statistics against a real Mac - is
+    DarwinHostLiveReadTests in test_crabd_host_darwin.py."""
 
     def test_the_real_counters_produce_a_sane_block(self):
         sampler = crabd.HostSampler()
