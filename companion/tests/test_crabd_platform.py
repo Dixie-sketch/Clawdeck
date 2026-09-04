@@ -26,25 +26,44 @@ _MODULE_TMP = None
 
 def setUpModule():
     """The same hard isolation test_crabd.py takes, and for the same measured reason:
-    these four module globals name REAL files under ~, and a reader built without an
-    explicit path would otherwise reach the operator's live store (the limits cache was
-    poisoned exactly this way on 2026-08-26)."""
+    these globals name REAL files under ~, and a reader built without an explicit path
+    would otherwise reach the operator's live store (the limits cache was poisoned
+    exactly this way on 2026-08-26).
+
+    LIMITS_TOKEN_FILE is here for a sharper reason than the other four: it is the
+    operator's long-lived usage token, and this module builds real LimitsReaders whose
+    fallback path reads it by default.
+    """
     global _MODULE_TMP
     _MODULE_TMP = tempfile.TemporaryDirectory()
     root = Path(_MODULE_TMP.name)
     setUpModule.originals = (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-                             crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE)
+                             crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE,
+                             crabd.LIMITS_TOKEN_FILE)
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
+    crabd.LIMITS_TOKEN_FILE = root / "no-such-limits-token.dpapi"
 
 
 def tearDownModule():
-    (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-     crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE) = setUpModule.originals
-    crabd.Handler.builder = None
+    (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE, crabd.HISTORY_FILE,
+     crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE) = setUpModule.originals
     _MODULE_TMP.cleanup()
+
+
+class ModuleIsolationTests(unittest.TestCase):
+    """Asserted, not assumed. Every global below names a real file under ~, and this
+    module builds real LimitsReaders; the limits cache was poisoned by exactly this
+    oversight on 2026-08-26, and LIMITS_TOKEN_FILE names the operator's token store."""
+
+    def test_every_global_naming_a_real_file_points_into_the_sandbox(self):
+        sandbox = Path(_MODULE_TMP.name)
+        for name in ("LIMITS_CACHE_FILE", "USER_CONFIG_FILE", "HISTORY_FILE",
+                     "CREDENTIALS_FILE", "LIMITS_TOKEN_FILE"):
+            with self.subTest(global_name=name):
+                self.assertEqual(getattr(crabd, name).parent, sandbox)
 
 
 # ------------------------------------------------------------------- the selector

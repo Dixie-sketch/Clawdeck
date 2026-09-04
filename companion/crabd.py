@@ -2943,6 +2943,10 @@ class HookTracker:
 # The three classes are INTERCHANGEABLE by contract, pinned by tests that compare their
 # public method sets, signatures and binding. Adding a method to one alone ships an
 # AttributeError to every other OS, in a daemon whose one promise is to keep serving.
+#
+# A platform with no service manager RAISES out of service_query rather than returning
+# None: the caller unpacks the result, so a None would be a TypeError past FleetReader's
+# catch list - a crash where an `unknown` belongs.
 
 
 def _read_cli_credentials() -> str | None:
@@ -2967,8 +2971,9 @@ class WindowsPlatform:
     @staticmethod
     def cpu_times() -> tuple[int, int, int] | None:
         """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
+        Cumulative counters, raw; every rule for turning them into a percentage - the
+        kernel-includes-idle trap among them - is HostSampler's.
 
-        KERNEL TIME INCLUDES IDLE TIME here; the busy fraction is HostSampler's job.
         `ctypes.windll` does not exist off Windows, so the AttributeError below is the
         error path for a host that selected this platform anyway (a test does) as well
         as for a real syscall failure.
@@ -3083,6 +3088,10 @@ class DarwinPlatform:
 
     @staticmethod
     def fleet_targets() -> tuple[tuple[str, str], ...]:
+        # PROVISIONAL. Stage 3 (fleet state on launchd) is what installs the agents and
+        # pins these labels against a measured `launchctl print`; until then nothing
+        # reads them, because service_query below refuses before they are used. The
+        # SERVED keys - glow, toast - are contract and do not move with them.
         return (("glow", "com.sidecrab.glow"), ("toast", "com.sidecrab.toast"))
 
     @staticmethod
@@ -3123,8 +3132,6 @@ class NullPlatform:
 
     @staticmethod
     def service_query(target: str, timeout: float):
-        # RAISES rather than returning None: the caller unpacks the result, and a None
-        # would be a TypeError past FleetReader's catch list - a crash, not an unknown.
         raise OSError("no service manager on this platform")
 
     @staticmethod
@@ -3192,9 +3199,11 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
 
 
 def read_limits_token(path: Path = None, platform=None) -> str | None:
-    """The long-lived usage token, or None. The store is a DPAPI blob, so the reading is
-    the platform's; this stays a module function because it is the name LimitsReader and
-    the suites call."""
+    """The long-lived usage token, or None. Reading it is the platform's job - the store
+    is a DPAPI blob on Windows and does not exist elsewhere yet - but this stays a module
+    function because it is pre-existing public API. Its name, signature and `path=`
+    override predate the platform seam and are pinned for the macOS store (Stage 4);
+    adding a seam under a name is not a reason to change the name."""
     return (platform or PLATFORM).read_limits_token(path or LIMITS_TOKEN_FILE)
 
 
@@ -4382,19 +4391,20 @@ class RecapReader:
 # -------------------------------------------------------------------------- fleet
 
 class FleetReader:
-    """`fleet` - SideCrab observing its own Scheduled Tasks (glow, toast).
+    """`fleet` - SideCrab observing its own background services (glow, toast).
 
-    Four outcomes, and the difference between the last two is the whole point:
-      running  - schtasks reports Running
-      stopped  - Ready / Queued / Disabled: the task exists and is not executing
-      absent   - the query failed BECAUSE there is no such task
-      unknown  - anything else: schtasks missing, timed out, an unrecognised status,
-                 a non-zero exit with no not-found wording
+    Which services exist, how to query one and how to read its answer are the
+    PLATFORM's; the four served outcomes are this class's, and they are the contract:
+      running  - the platform's service query reports it executing
+      stopped  - it exists and is not executing
+      absent   - the query failed BECAUSE there is no such service
+      unknown  - anything else: the query is missing, timed out, returned a status this
+                 platform does not recognise, or failed with no not-found wording
 
-    A task whose state cannot be read is never folded into `stopped`. "the notifier is
-    not running" and "I could not find out" are different claims, and a widget dot that
-    guesses the first when it means the second is exactly the silent-all-green failure
-    the contract's stale rules exist to prevent.
+    A service whose state cannot be read is never folded into `stopped`. "the notifier
+    is not running" and "I could not find out" are different claims, and a widget dot
+    that guesses the first when it means the second is exactly the silent-all-green
+    failure the contract's stale rules exist to prevent.
 
     Cached FLEET_REFRESH_SEC and computed on its own thread for the same reason recap
     is: two subprocesses on the builder thread would freeze `generatedAt`.
@@ -4403,7 +4413,7 @@ class FleetReader:
     def __init__(self, runner=None, platform=None) -> None:
         # The reader owns the CACHING and the four-outcome rule; the platform owns the
         # service manager - which targets exist, how to query one, and how to read its
-        # answer. Splitting them is what lets the schtasks mapping keep being proven on
+        # answer. Splitting them is what lets the Windows mapping keep being proven on
         # a host that has no schtasks: `runner=` injects the query, `platform=` the
         # parse, and neither is a test of what OS this is.
         self._runner = runner
