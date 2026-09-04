@@ -3878,6 +3878,11 @@ class DarwinPlatform:
         """
         if not _usable_limits_token(token):
             return False                # nothing stored, and the value never named
+        if not KEYCHAIN_CREDENTIALS_ENABLED:
+            # The same kill switch the reads honour, and it guards the WRITE for a
+            # sharper reason: a suite that could reach this would be modifying the
+            # operator's login Keychain, not merely reading it.
+            return False
         account = _login_account()
         if account is None:
             _log_once(LIMITS_TOKEN_LOG_KEY,

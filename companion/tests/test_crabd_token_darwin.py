@@ -838,5 +838,53 @@ class NoTestReachesTheRealSecurityBinaryTests(KeychainCase):
             crabd.DarwinPlatform(custom_claude_home=False).cli_credentials()
 
 
+# ------------------------------------------------------------- the live half, opt-in
+
+#: The item the live test writes. NOT the production service name: this test really does
+#: modify the operator's login Keychain, and it must not be able to touch the item their
+#: crabd reads - not to overwrite it, and not to delete it on the way out.
+LIVE_TEST_SERVICE = "SideCrab limits token (test)"
+
+
+@unittest.skipUnless(sys.platform == "darwin"
+                     and os.environ.get("SIDECRAB_TEST_KEYCHAIN") == "1",
+                     "writes the operator's login Keychain: set SIDECRAB_TEST_KEYCHAIN=1")
+class LiveKeychainRoundTripTests(unittest.TestCase):
+    """The one test that meets a real `/usr/bin/security`, and it is OPT-IN because it
+    WRITES: everything above proves the commands against a fake that answers the way the
+    real tool was measured answering, and this is the only place that would catch the
+    real tool changing under us - a different exit code for a missing item, a `-X` that
+    stopped taking hex, an `-i` that stopped honouring quotes.
+
+    It is off by default because a test that adds an item to a person's login Keychain
+    is not something a suite may do without being asked, and because on a machine where
+    the tool prompts it would hang waiting for a dialog nobody is watching. It writes its
+    OWN service name, never the production one, and deletes it again in a cleanup that
+    runs even when the assertions fail.
+    """
+
+    TOKEN = "sk-ant-oat01-" + "live" * 10
+
+    def setUp(self):
+        original = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+        self.addCleanup(
+            lambda: setattr(crabd, "KEYCHAIN_CREDENTIALS_ENABLED", original))
+        crabd.KEYCHAIN_CREDENTIALS_ENABLED = True
+        self.addCleanup(self.delete_item)
+        self.platform = crabd.DarwinPlatform(limits_service=LIVE_TEST_SERVICE)
+
+    def delete_item(self):
+        crabd._run_security(
+            ["delete-generic-password", "-s", LIVE_TEST_SERVICE,
+             "-a", crabd._login_account()], None, crabd.KEYCHAIN_TIMEOUT_SEC)
+
+    def test_the_real_tool_stores_it_and_hands_it_back(self):
+        self.assertIsNone(self.platform.read_limits_token(None))   # not there yet
+        self.assertIs(self.platform.store_limits_token(self.TOKEN), True)
+        self.assertEqual(self.platform.read_limits_token(None), self.TOKEN)
+        self.delete_item()
+        self.assertIsNone(self.platform.read_limits_token(None))   # and gone again
+
+
 if __name__ == "__main__":
     unittest.main()
