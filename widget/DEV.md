@@ -12,7 +12,7 @@ Leave the query string OFF (with no companion running) for the **standalone**
 state, which is the first thing a store user ever sees.
 Fixtures live in `mock/`; the loader rebases every timestamp so everything but
 `stale` renders fresh (`stale` renders ~3 min old). With no `?mock=`, the widget
-polls `http://127.0.0.1:2722/v1/state` every 3 s.
+polls `http://127.0.0.1:9999/v1/state` every 3 s.
 
 | fixture | schema | what it is for |
 |---|---|---|
@@ -611,7 +611,7 @@ pinned, served from this folder over `http://127.0.0.1`:
   table above); non-tappable rows unchanged at 32.00.
 
 **Not measured, and deliberately: the live standalone state.** Reaching it means letting the
-panel poll `127.0.0.1:2722`, which this lane is barred from contacting. In that state the
+panel poll `127.0.0.1:9999`, which this lane is barred from contacting. In that state the
 feed serves no host block, so the row is not `.tappable` and F3's rule does not reach it.
 
 ## v0.25.0 — the narrow slots get real layouts (CD-33 closed)
@@ -802,7 +802,7 @@ gesture run, device metrics pinned to the slot:
 - **Tap targets:** nothing under the 48 px floor at either new slot after the gauge fix.
 
 **Not measured, and deliberately: the live standalone state.** Reaching it means letting
-the panel poll `127.0.0.1:2722`, which this lane is barred from contacting. The layout
+the panel poll `127.0.0.1:9999`, which this lane is barred from contacting. The layout
 half was verified with the `connecting` / `connecting has-sensors` classes forced over
 CDP, and the `future` fixture reaches the same zone arrangement from a real document.
 
@@ -868,7 +868,7 @@ device metrics pinned to the slot:
   measured against its own box, descent stopped at scroll containers. Zero offenders.
 
 **Not measured, and deliberately: the standalone state.** Reaching it means letting the
-panel poll `127.0.0.1:2722`, which this lane is barred from contacting. The sensor row and
+panel poll `127.0.0.1:9999`, which this lane is barred from contacting. The sensor row and
 its labels were verified on the mock-fed host fixture, which is the row-with-readings
 rendering reachable without the companion.
 
@@ -1113,7 +1113,7 @@ Headless Edge, `--force-prefers-no-reduced-motion`, DOM read over CDP:
   of the 25**.
 
 **Not measured, and deliberately: the standalone state.** Reaching it means letting
-the panel poll `127.0.0.1:2722`, which this lane is barred from contacting. The
+the panel poll `127.0.0.1:9999`, which this lane is barred from contacting. The
 indicator is gated on `diagOn` alone and on nothing about the feed, and it was
 verified on the `stale` and `future` (dead-feed) fixtures, which are the feed-failure
 renderings reachable without touching the companion.

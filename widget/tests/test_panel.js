@@ -125,6 +125,20 @@ eq(served({ crabdPort: '1234' }).baseUrl(), '',
 eq(served().endpointUrl(), '/v1/state', 'the served state feed is a relative path');
 eq(loadWidget().endpointUrl(), 'http://127.0.0.1:9999/v1/state', 'the iCUE state feed is absolute');
 
+/* ------------------------------------------- the crabdPort default, stated twice */
+
+/* index.html's meta and the strProp fallback in baseUrl() both state it, and iCUE
+   uses the meta while a plain browser uses the fallback — so a disagreement is a
+   panel that reaches a different port depending on where it is running. */
+(function () {
+  var html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  var m = /name="x-icue-property"\s+content="crabdPort"[^>]*data-default="'(\d+)'"/.exec(html);
+  ok(!!m, 'index.html declares a crabdPort default');
+  eq(m && m[1], '9999', 'the declared crabdPort default is crabd\'s port');
+  eq(loadWidget().baseUrl(), 'http://127.0.0.1:' + (m && m[1]),
+    'the JS fallback and the meta default name the same port');
+})();
+
 /* ------------------------------------------------------ postJson (async) */
 
 var pending = [];
