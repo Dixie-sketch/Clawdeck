@@ -225,8 +225,9 @@ FLEET_ABSENT_MARKERS = ("cannot find", "does not exist")
 # Measured 2026-09-04 on macOS 26.6 (uid 502). `launchctl print gui/<uid>/<label>` exits 0
 # for a loaded agent and prints a block whose FIRST-LEVEL lines carry ONE tab: a running
 # agent has '\tstate = running' and a '\tpid = ' line, a loaded idle one '\tstate = not
-# running', '\truns = 0' and no pid at all. Sub-objects are indented deeper and carry their
-# own '\t\tstate = active' lines, which is why the parse reads the first-level line only.
+# running', '\truns = 0' and no pid at all. Sub-objects are indented deeper and carry
+# their own '\t\tstate = active' lines, which is why the parse reads the first-level
+# line only.
 # `waiting` and `spawn scheduled` are the other words launchd uses for not executing.
 # An unrecognised word is `unknown`, never `stopped` - same rule as the Windows map.
 LAUNCHD_STATUS_MAP = {"running": "running", "not running": "stopped",
@@ -3057,8 +3058,15 @@ class HookTracker:
 # the process; a reader that built a fresh DarwinPlatform per sample would lose them.
 #
 # A platform with no service manager RAISES out of service_query rather than returning
-# None: the caller unpacks the result, so a None would be a TypeError past FleetReader's
-# catch list - a crash where an `unknown` belongs.
+# None: the caller unpacks the result, so a bare None would be a TypeError past
+# FleetReader's catch list - a crash where an `unknown` belongs.
+#
+# The one deliberate non-raise is FLEET_NO_SERVICE, `(None, "", "")`: a component the
+# platform NAMES but has no service for at all (macOS glow, since there is no lighting
+# component there). It unpacks like any other answer, and the None CODE - which no
+# process can exit with - is what service_status reads as `absent`. FleetReader
+# short-circuits an empty target onto that sentinel before any runner is called, so a
+# platform whose targets are ALL empty never reaches its own service_query at all.
 
 
 def _read_cli_credentials() -> str | None:
