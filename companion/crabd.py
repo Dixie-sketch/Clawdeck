@@ -719,6 +719,7 @@ TRANSCRIPT_FILE_LOG_KEY = "transcript-file"
 STATE_SERIALIZE_LOG_KEY = "state-serialize"
 STATE_BUILD_LOG_KEY = "state-build"
 GET_HANGUP_LOG_KEY = "get-hangup"
+PANEL_READ_LOG_KEY = "panel-read"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -787,6 +788,26 @@ PANEL_HEADER_REQUIRED = b'{"error":"panel header required"}'
 # running the daemon against a panel build that is not the one beside it.
 PANEL_DIR = Path(os.environ.get("CRABD_PANEL_DIR")
                  or Path(__file__).resolve().parent.parent / "widget")
+# By SUFFIX, never by sniffing the bytes - and every static reply carries
+# X-Content-Type-Options: nosniff, so what is declared here is what the browser uses. An
+# unrecognised suffix is a download, not a guess: crabd serves a directory whose contents
+# it does not enumerate, and a wrong `text/html` on a file somebody dropped in there is
+# the one mistake that turns a static server into a scripting hole.
+PANEL_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
+}
+PANEL_CONTENT_TYPE_DEFAULT = "application/octet-stream"
+# One 404 body for a mistyped endpoint and for a file that is not the panel's to serve.
+# Shared so the two cannot drift into telling a prober which of them it hit.
+NOT_FOUND = b'{"error":"not found"}'
 # A session id long enough to be a memory-growth vector rather than an identifier. Real
 # ones are 36-char UUIDs; this is generous enough that no legitimate id is refused.
 SESSION_ID_MAX = 200
@@ -6138,13 +6159,16 @@ class Handler(BaseHTTPRequestHandler):
     # unreadable reply) instead of open.
     _acao: str | None = None
 
-    def _send(self, code: int, body: bytes | None, ctype: str = "application/json") -> None:
+    def _send(self, code: int, body: bytes | None, ctype: str = "application/json",
+              nosniff: bool = False) -> None:
         self.send_response(code)
         if body is None:
             self.send_header("Content-Length", "0")
         else:
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+        if nosniff:
+            self.send_header("X-Content-Type-Options", "nosniff")
         acao = self._acao
         if acao is not None:
             self.send_header("Access-Control-Allow-Origin", acao)
@@ -6243,8 +6267,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._do_history(split.query)
             elif path == "/v1/panel-log":
                 self._do_panel_log_read()
+            elif path == "/v1" or path.startswith("/v1/"):
+                # STRICTLY ABOVE the panel routes. A mistyped endpoint keeps the JSON 404
+                # it has always had; nothing about serving files may turn /v1/stat into a
+                # page, or let a file under the panel root shadow an API path.
+                self._send(404, NOT_FOUND)
             else:
-                self._send(404, b'{"error":"not found"}')
+                self._do_panel_file(path)
         except OSError as exc:      # noqa: BLE001 - narrowed on purpose, see below
             # The reader hung up before crabd finished answering. ORDINARY on this host
             # (loopback drops SYN-ACKs) and doubly so on a feed the widget polls every
@@ -6374,6 +6403,86 @@ class Handler(BaseHTTPRequestHandler):
         # other served document already goes through the one serializer; this was the
         # last that did not.
         self._send(200, dump_state(body))
+
+    #: The only directories the panel is served out of. `index.html` is routed by NAME;
+    #: everything else has to sit under one of these. An allowlist rather than a
+    #: denylist because the alternative is "everything in the folder", and the folder
+    #: also holds DEV.md (a quarter of a megabyte of internal measurement notes), the
+    #: iCUE packaging manifest and the test harness. None of those is the panel.
+    PANEL_ROOTS = frozenset(("styles", "scripts", "resources", "mock"))
+
+    def _do_panel_file(self, path: str) -> None:
+        """GET a file from PANEL_DIR - or 404. Never a traceback, never a read outside.
+
+        Deliberately touches NOTHING else in this daemon: no builder, no lock, no
+        reader. A wedged state build must not stop the panel loading (the operator would
+        see a dead browser tab and no way to find out why), and a large file must not
+        stall a hook (a hook with no answer is a session waiting for one).
+
+        The files are small - the whole shipped panel is under a megabyte - so they are
+        read whole and handed to _send. There is no cache and no conditional-GET
+        handling: Cache-Control: no-store is the daemon's one caching rule, and it is
+        what stops a script surviving an update that the crabd it talks to did not.
+        """
+        target = self._panel_target(path)
+        if target is None:
+            self._send(404, NOT_FOUND)
+            return
+        # RESOLVE, then check containment. The text rules above cannot see a symlink:
+        # `styles/escape.css` passes every one of them and can still point at ~/.ssh.
+        root = PANEL_DIR.resolve()
+        candidate = (root / target).resolve()
+        if root not in candidate.parents or not candidate.is_file():
+            self._send(404, NOT_FOUND)
+            return
+        try:
+            body = candidate.read_bytes()
+        except OSError as exc:
+            # A file that resolved, is a file, and still cannot be read (permissions, a
+            # racing delete). 404 rather than 500: a page crabd cannot serve is missing
+            # as far as the browser is concerned, and the reason belongs in the log.
+            _log_once(PANEL_READ_LOG_KEY,
+                      f"crabd: a panel file could not be read ({type(exc).__name__}); "
+                      f"serving 404; this is logged once")
+            self._send(404, NOT_FOUND)
+            return
+        self._send(200, body,
+                   PANEL_CONTENT_TYPES.get(candidate.suffix.lower(),
+                                           PANEL_CONTENT_TYPE_DEFAULT),
+                   nosniff=True)
+
+    @classmethod
+    def _panel_target(cls, path: str) -> str | None:
+        """The panel-relative path this URL may read, or None to refuse it.
+
+        ONE percent-decode, then the refusals. One decode and not a loop: decoding twice
+        is how `%252e%252e` becomes `..` in a server that thought it was being thorough,
+        so a `%` that SURVIVES the single decode is itself a refusal rather than an
+        invitation to decode again.
+
+        Every rule here is a shape, not a guess about the filesystem:
+          - a backslash: a separator on Windows and a legal filename character on POSIX,
+            so `styles\\..\\x` is harmless on the host it was tested on and a traversal
+            on the other
+          - a NUL: truncates the path in any C library underneath
+          - an empty segment (`//`): on some path implementations a leading `//` is an
+            absolute path all of its own
+          - a segment starting with `.`: covers `..`, `.` and every dotfile in one rule -
+            `.git/config` is not a shape this needs a second test for
+        """
+        decoded = urllib.parse.unquote(path)
+        if "%" in decoded or "\\" in decoded or "\x00" in decoded:
+            return None
+        if decoded in ("/", "/index.html"):
+            return "index.html"
+        if not decoded.startswith("/"):
+            return None
+        segments = decoded[1:].split("/")
+        if any(not segment or segment.startswith(".") for segment in segments):
+            return None
+        if segments[0] not in cls.PANEL_ROOTS:
+            return None
+        return "/".join(segments)
 
     def _do_panel_log_read(self) -> None:
         """GET /v1/panel-log - the diagnostics ring, oldest first (contract v0.24.0).
@@ -6615,7 +6724,7 @@ class Handler(BaseHTTPRequestHandler):
             # garbage, or the connection dies. The test client's connect-retry hid this;
             # framing is not something a retry may be relied on to paper over.
             self._read_body()
-            self._send(404, b'{"error":"not found"}')
+            self._send(404, NOT_FOUND)
 
     @staticmethod
     def _json_body(raw: bytes):

@@ -424,5 +424,324 @@ class PanelHealthTests(PanelServed):
         self.assertNotIn("panel", self.client.get("/v1/state").json())
 
 
+# --------------------------------------------------------- D: serving the panel
+
+class PanelTree(PanelServed):
+    """A crabd whose PANEL_DIR is a temp tree, so the served bytes are known exactly.
+
+    The tree mirrors the real one: index.html at the root, the four served directories,
+    and - deliberately - three files that EXIST and must still be 404, because "it is in
+    the folder" is not the rule.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.panel = Path(self._tmp.name) / "panel"
+        (self.panel / "styles").mkdir(parents=True)
+        (self.panel / "scripts").mkdir()
+        (self.panel / "resources").mkdir()
+        (self.panel / "mock").mkdir()
+        (self.panel / "tests").mkdir()
+        self.write("index.html", "<!DOCTYPE html><html><body>panel</body></html>")
+        self.write("styles/sidecrab.css", "body { color: red }")
+        self.write("scripts/sidecrab.js", "const POLL_MS = 3000;")
+        self.write("mock/mock-state-normal.json", '{"schema":5}')
+        self.write("resources/icon.svg", "<svg/>")
+        # Present, and never served.
+        self.write("DEV.md", "measured evidence")
+        self.write("manifest.json", '{"version":"0.29.0"}')
+        self.write("translation.json", '{"en":{}}')
+        self.write("tests/test_ordering.js", "// harness")
+        original = crabd.PANEL_DIR
+        crabd.PANEL_DIR = self.panel
+        self.addCleanup(lambda: setattr(crabd, "PANEL_DIR", original))
+
+    def write(self, rel, text):
+        path = self.panel / rel
+        path.write_text(text, encoding="utf-8")
+        return path
+
+
+class PanelRoutesTests(PanelTree):
+    """What is served, and what is in the folder but is not."""
+
+    def test_the_root_serves_the_panel_index(self):
+        reply = self.client.get("/")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, (self.panel / "index.html").read_bytes())
+
+    def test_index_html_by_name_serves_the_same_bytes(self):
+        self.assertEqual(self.client.get("/index.html").body,
+                         (self.panel / "index.html").read_bytes())
+
+    def test_each_served_directory_hands_back_its_file(self):
+        for rel in ("styles/sidecrab.css", "scripts/sidecrab.js",
+                    "mock/mock-state-normal.json", "resources/icon.svg"):
+            with self.subTest(rel=rel):
+                reply = self.client.get("/" + rel)
+                self.assertEqual(reply.status, 200, rel)
+                self.assertEqual(reply.body, (self.panel / rel).read_bytes(), rel)
+
+    def test_a_query_string_never_reaches_the_path(self):
+        """`?mock=normal` is how the panel is previewed. It selects a fixture in the
+        page, and it is not part of the file name."""
+        reply = self.client.get("/index.html?mock=normal&flag=dense")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, (self.panel / "index.html").read_bytes())
+
+    def test_files_that_exist_outside_the_served_directories_are_404(self):
+        """"It is in the folder" is not the rule. DEV.md is 240 kB of internal
+        measurement notes, the manifest and the translations are iCUE packaging, and
+        tests/ is a harness - none of them is the panel."""
+        for path in ("/DEV.md", "/manifest.json", "/translation.json",
+                     "/tests/test_ordering.js"):
+            with self.subTest(path=path):
+                reply = self.client.get(path)
+                self.assertEqual(reply.status, 404, path)
+                self.assertEqual(json.loads(reply.body), {"error": "not found"}, path)
+
+    def test_an_unknown_api_path_is_still_the_json_404(self):
+        """The static routes sit strictly BELOW /v1/*, so nothing about them can turn a
+        mistyped endpoint into a page."""
+        for path in ("/v1/nope", "/v1/state/extra", "/v1"):
+            with self.subTest(path=path):
+                reply = self.client.get(path)
+                self.assertEqual(reply.status, 404, path)
+                self.assertEqual(json.loads(reply.body), {"error": "not found"}, path)
+
+    def test_a_missing_file_inside_a_served_directory_is_404(self):
+        self.assertEqual(self.client.get("/scripts/nothing.js").status, 404)
+
+    def test_a_directory_is_never_listed_or_served(self):
+        for path in ("/styles", "/styles/", "/resources"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status, 404, path)
+
+
+class PanelPathSafetyTests(PanelTree):
+    """One case per test, because each is a different way in.
+
+    The rule: percent-decode ONCE, refuse the shapes below outright, then RESOLVE the
+    candidate and require the resolved panel directory to be one of its parents. The
+    second half is what catches a symlink - a name that passes every text check and
+    still points out of the tree.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.secret = Path(self._tmp.name) / "outside.txt"
+        self.secret.write_text("not yours", encoding="utf-8")
+
+    def assertRefused(self, path):
+        reply = self.client.get(path)
+        self.assertEqual(reply.status, 404, path)
+        self.assertNotIn(b"not yours", reply.body, path)
+        # ...and crabd is still answering, so nothing raised out of the handler.
+        self.assertEqual(self.client.get("/v1/health").status, 200, path)
+
+    def test_a_parent_segment_from_the_root(self):
+        self.assertRefused("/../../etc/passwd")
+
+    def test_a_parent_segment_inside_a_served_directory(self):
+        self.assertRefused("/styles/../../x")
+
+    def test_percent_encoded_parent_segments(self):
+        self.assertRefused("/%2e%2e/%2e%2e/etc/passwd")
+
+    def test_a_parent_segment_hidden_in_an_encoded_separator(self):
+        self.assertRefused("/styles/..%2f..%2fx")
+
+    def test_a_nul_byte(self):
+        self.assertRefused("/styles/%00.css")
+
+    def test_a_backslash_separator(self):
+        """Windows accepts `\\` as a separator and POSIX does not, so a path that is
+        harmless on the host it was tested on is a traversal on the other."""
+        self.assertRefused("/styles\\..\\x")
+
+    def test_a_dot_directory(self):
+        self.assertRefused("/.git/config")
+
+    def test_an_empty_segment(self):
+        self.assertRefused("//etc/passwd")
+
+    def test_a_current_directory_segment(self):
+        self.assertRefused("/styles/./sidecrab.css")
+
+    def test_a_percent_that_survives_decoding(self):
+        self.assertRefused("/styles/50%.css")
+
+    def test_a_symlink_inside_the_tree_that_points_outside_it(self):
+        """Every text rule above passes this one. `Path.resolve()` is what refuses it."""
+        link = self.panel / "styles" / "escape.css"
+        link.symlink_to(self.secret)
+        self.assertTrue(link.exists())
+        self.assertRefused("/styles/escape.css")
+
+    def test_a_symlink_that_stays_inside_the_tree_is_served(self):
+        """The negative that makes the positive above mean something: the rule is where
+        the target IS, not that a symlink was involved."""
+        link = self.panel / "styles" / "alias.css"
+        link.symlink_to(self.panel / "styles" / "sidecrab.css")
+        self.assertEqual(self.client.get("/styles/alias.css").status, 200)
+
+
+class PanelContentTypeTests(PanelTree):
+    """The suffix decides, and an unknown one is a download rather than a guess."""
+
+    CASES = (("index.html", "text/html; charset=utf-8"),
+             ("styles/a.css", "text/css; charset=utf-8"),
+             ("scripts/a.js", "text/javascript; charset=utf-8"),
+             ("mock/a.json", "application/json"),
+             ("resources/a.svg", "image/svg+xml"),
+             ("resources/a.png", "image/png"),
+             ("resources/a.ico", "image/x-icon"),
+             ("resources/a.woff2", "font/woff2"),
+             ("resources/a.txt", "text/plain; charset=utf-8"),
+             ("resources/a.bin", "application/octet-stream"),
+             ("resources/noextension", "application/octet-stream"))
+
+    def test_each_suffix_gets_its_type(self):
+        for rel, ctype in self.CASES:
+            with self.subTest(rel=rel):
+                if rel != "index.html":
+                    self.write(rel, "x")
+                reply = self.client.get("/" + rel)
+                self.assertEqual(reply.status, 200, rel)
+                self.assertEqual(reply.headers.get("Content-Type"), ctype, rel)
+
+    def test_every_static_reply_refuses_sniffing_and_caching(self):
+        """no-store because the panel now ships WITH crabd: a script cached past an
+        update is a panel running half of one version and half of another. nosniff
+        because the type above is the answer, not a hint."""
+        for path in ("/", "/index.html", "/styles/sidecrab.css",
+                     "/scripts/sidecrab.js"):
+            with self.subTest(path=path):
+                reply = self.client.get(path)
+                self.assertEqual(reply.headers.get("Cache-Control"), "no-store", path)
+                self.assertEqual(reply.headers.get("X-Content-Type-Options"),
+                                 "nosniff", path)
+
+
+class PanelOriginGateTests(PanelTree):
+    """The static routes are gated exactly like the API - they are reads of the same
+    daemon, and the panel's own script is not something a visited page may fetch."""
+
+    def test_a_foreign_origin_cannot_fetch_the_panel_script(self):
+        reply = self.client.get("/scripts/sidecrab.js",
+                                headers={"Origin": "http://evil.example"})
+        self.assertEqual(reply.status, 403)
+        self.assertEqual(reply.body, crabd.CROSS_SITE_REFUSED)
+
+    def test_a_plain_navigation_sends_no_origin_and_is_served(self):
+        """What a browser actually does when the operator opens the page: a top-level
+        navigation carries no Origin at all."""
+        reply = self.client.get("/")
+        self.assertEqual(reply.status, 200)
+        self.assertIsNone(reply.headers.get(ACAO))
+
+    def test_the_panels_own_origin_may_fetch_its_own_files(self):
+        reply = self.client.get("/scripts/sidecrab.js",
+                                headers={"Origin": self.panel_origin()})
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.headers.get(ACAO), self.panel_origin())
+
+
+class PanelNeverBlocksTheFeedTests(PanelTree):
+    """A static read touches no lock the state build holds, and holds none itself.
+
+    Both halves matter and they are different failures. If the read took the builder's
+    lock, a wedged build would stop the panel loading at all - the operator would see a
+    dead browser tab and no way to find out why. If it HELD anything, a large file would
+    stall the hooks, and a hook that gets no answer is a session that waits for one.
+    """
+
+    def get_on_a_thread(self, path, out, key, timeout=10):
+        def run():
+            started = time.time()
+            client = KeepAliveClient(self.port, timeout=timeout)
+            try:
+                reply = client.get(path, timeout=timeout)
+                out[key] = (reply.status, time.time() - started, len(reply.body))
+            except Exception as exc:            # noqa: BLE001 - recorded, not swallowed
+                out[key] = ("error", repr(exc), 0)
+            finally:
+                client.close()
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def test_a_wedged_builder_does_not_stop_the_panel_loading(self):
+        out = {}
+        with self.builder._lock:
+            thread = self.get_on_a_thread("/", out, "index")
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(), "the static read waited on the builder lock")
+        self.assertEqual(out["index"][0], 200)
+        self.assertLess(out["index"][1], 2.0, out["index"])
+
+    def test_a_large_file_does_not_stall_the_state_feed_or_a_hook(self):
+        """24 MB, which is larger than anything the panel ships, requested beside ten
+        polls and a hook. Every /v1/state keeps its own 2 s budget."""
+        big = self.panel / "resources" / "big.bin"
+        big.write_bytes(b"\xa5" * (24 * 1024 * 1024))
+        out = {}
+        threads = [self.get_on_a_thread("/resources/big.bin", out, "big", timeout=30)]
+        for i in range(10):
+            threads.append(self.get_on_a_thread("/v1/state", out, f"state{i}"))
+        hook = {}
+
+        def post_hook():
+            client = KeepAliveClient(self.port, timeout=10)
+            try:
+                hook["status"] = client.post(
+                    "/v1/hook",
+                    json.dumps({"session_id": self.SID,
+                                "hook_event_name": "Stop"}).encode()).status
+            finally:
+                client.close()
+
+        hook_thread = threading.Thread(target=post_hook, daemon=True)
+        hook_thread.start()
+        for thread in threads:
+            thread.join(timeout=40)
+        hook_thread.join(timeout=20)
+        self.assertEqual(out["big"][0], 200, out["big"])
+        self.assertEqual(out["big"][2], 24 * 1024 * 1024)
+        for i in range(10):
+            status, elapsed, _ = out[f"state{i}"]
+            self.assertEqual(status, 200, out[f"state{i}"])
+            self.assertLess(elapsed, 2.0, out[f"state{i}"])
+        self.assertEqual(hook.get("status"), 204)
+
+
+class TheRealPanelTreeTests(PanelServed):
+    """PANEL_DIR at its DEFAULT, serving the tree that actually ships.
+
+    Everything above runs against a temp tree, which proves the routing and proves
+    nothing about whether the default points anywhere real. This is the test that fails
+    if the panel is moved, renamed, or the default is written relative to the process's
+    working directory instead of the module's own location.
+    """
+
+    def test_the_default_directory_is_the_widget_tree_beside_crabd(self):
+        self.assertEqual(crabd.PANEL_DIR,
+                         Path(crabd.__file__).resolve().parent.parent / "widget")
+
+    def test_the_root_serves_the_real_index(self):
+        reply = self.client.get("/")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body, (crabd.PANEL_DIR / "index.html").read_bytes())
+        self.assertEqual(reply.headers.get("Content-Type"), "text/html; charset=utf-8")
+
+    def test_the_real_panel_script_is_served(self):
+        reply = self.client.get("/scripts/sidecrab.js")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.body,
+                         (crabd.PANEL_DIR / "scripts" / "sidecrab.js").read_bytes())
+        self.assertEqual(reply.headers.get("Content-Type"),
+                         "text/javascript; charset=utf-8")
+
+
 if __name__ == "__main__":
     unittest.main()
