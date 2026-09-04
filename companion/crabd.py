@@ -6658,9 +6658,11 @@ class Handler(BaseHTTPRequestHandler):
         return f"Content-Type, {PANEL_HEADER}"
 
     def _record_origin(self, origin) -> None:
-        """Feed the diagnostic origin recorder (ORIGIN-REC), before the origin gate so
-        REFUSED web origins are counted too. Defensive: never let a diagnostic write
-        break a request - a builder without a recorder (an old test double) is a no-op."""
+        """Feed the diagnostic origin recorder (ORIGIN-REC), ABOVE EVERY GATE so refused
+        callers are counted too - the Host gate included, since a rebound page's origin
+        is precisely the reading this recorder exists for. It decides nothing, which is
+        what makes running it first safe. Defensive: never let a diagnostic write break a
+        request - a builder without a recorder (an old test double) is a no-op."""
         builder = getattr(self, "builder", None)
         recorder = getattr(builder, "origins", None) if builder else None
         if recorder is not None:
@@ -6682,28 +6684,39 @@ class Handler(BaseHTTPRequestHandler):
         # refused; the panel's own origin (v0.31.0), absent, "null" and non-web origins
         # (the QtWebEngine widget, curl, local tools) are allowed and get their own
         # origin reflected back.
-        # The Host gate runs FIRST, and on the reads especially: a DNS-rebound page is
-        # SAME-ORIGIN with crabd as far as the browser is concerned, so its GET carries
-        # no Origin at all and the allowlist below has nothing to refuse it with.
+        # The Host gate runs first of the GATES, and on the reads especially: a
+        # DNS-rebound page is SAME-ORIGIN with crabd as far as the browser is concerned,
+        # so its GET carries no Origin at all and the allowlist below has nothing to
+        # refuse it with. The recorder above it is not a gate - see _record_origin.
+        origin = self.headers.get("Origin")
+        self._record_origin(origin)
         if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
             self._acao = None
             self._send(403, HOST_NOT_ALLOWED)
             return
-        origin = self.headers.get("Origin")
-        self._record_origin(origin)
         if self._is_cross_site(origin, self.server.server_port):
             self._acao = None
             self._send(403, CROSS_SITE_REFUSED)
             return
         self._acao = origin if origin else None
+        # THE SPLIT ONLY, and the narrowness is the point. `GET http://[::1/ HTTP/1.1` is
+        # a legal request LINE - absolute-form is what a proxy sends, and
+        # BaseHTTPRequestHandler accepts it - carrying an authority urlsplit refuses with
+        # ValueError("Invalid IPv6 URL"); unguarded, that walked out of the handler into
+        # socketserver's handle_error and printed a traceback for a request a scanner
+        # sends by accident. A request target crabd cannot parse names nothing crabd
+        # serves, so 404 is the honest answer and it is the one every other unroutable
+        # path gets.
+        #
+        # The routing below is deliberately OUTSIDE it: wrapped, a ValueError from any
+        # reader would answer this same 404, so a real bug would read exactly like a
+        # mistyped path - silence, in the daemon that forbids it.
         try:
-            # INSIDE the try. `GET http://[::1/ HTTP/1.1` is a legal request LINE -
-            # absolute-form is what a proxy sends, and BaseHTTPRequestHandler accepts it -
-            # carrying an authority urlsplit refuses with ValueError("Invalid IPv6 URL").
-            # Split outside the try, that walked out of the handler into socketserver's
-            # handle_error and printed a traceback for a request a scanner sends by
-            # accident.
             split = urllib.parse.urlsplit(self.path)
+        except ValueError:
+            self._send(404, NOT_FOUND)
+            return
+        try:
             path = split.path.rstrip("/") or "/"
             if path == "/v1/health":
                 self._send(200, dump_state(self._health()))
@@ -6720,10 +6733,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, NOT_FOUND)
             else:
                 self._do_panel_file(path)
-        except ValueError:
-            # A request target crabd cannot parse names nothing crabd serves. 404 is the
-            # honest answer and it is the same one every other unroutable path gets.
-            self._send(404, NOT_FOUND)
         except OSError as exc:      # noqa: BLE001 - narrowed on purpose, see below
             # The reader hung up before crabd finished answering. ORDINARY on this host
             # (loopback drops SYN-ACKs) and doubly so on a feed the widget polls every
@@ -6888,11 +6897,13 @@ class Handler(BaseHTTPRequestHandler):
         if root not in candidate.parents or not candidate.is_file():
             self._panel_not_found()
             return
+        # A file that raced away between is_file() and here reads as size 0, and the read
+        # below then answers 404 on its own.
         try:
             size = candidate.stat().st_size
         except OSError:
-            size = 0                    # raced away between is_file() and here; the
-        if size > PANEL_MAX_BYTES:      # read below then answers 404 on its own
+            size = 0
+        if size > PANEL_MAX_BYTES:
             _log_once(PANEL_TOO_BIG_LOG_KEY,
                       f"crabd: {candidate} is too big to serve "
                       f"({size} bytes, the bound is {PANEL_MAX_BYTES}); serving 404; "
@@ -7208,14 +7219,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        origin = self.headers.get("Origin")
+        self._record_origin(origin)
         if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
             # Same order and the same drain as the two gates below it.
             self._acao = None
             self._read_body()
             self._send(403, HOST_NOT_ALLOWED)
             return
-        origin = self.headers.get("Origin")
-        self._record_origin(origin)
         if self._is_cross_site(origin, self.server.server_port):
             # Drain the body first so keep-alive framing survives, then refuse. Drained
             # on EVERY path, not just the mutating ones: a refused POST to an unknown

@@ -357,6 +357,20 @@ class HostAllowlistTests(PanelServed):
         exactly why it is a bypass: it is not the string on the allowlist."""
         self.assertRefused(f"localhost.:{self.port}")
 
+    def test_a_host_it_cannot_parse_is_refused(self):
+        """A Host crabd cannot READ is a Host it cannot CHECK, and the whole gate rests
+        on the header being the one thing that names where the page thinks it is.
+
+        The two IPv6 shapes are the ones that matter: guessing which colon in
+        `::1:9999` separates the port, or reading past an unclosed `[`, is exactly how a
+        parser gets walked past - and a parser that answered "allowed" on a shape it did
+        not understand would hand a rebound page every read. `:9999` is the third: an
+        empty host is not one of the three names, whichever way it is read.
+        """
+        for host in ("::1:9999", f"[::1:{self.port}", ":9999"):
+            with self.subTest(host=host):
+                self.assertRefused(host)
+
     # -- order, and the things a refusal must still do
 
     def test_the_host_gate_answers_before_the_origin_gate(self):
@@ -375,6 +389,25 @@ class HostAllowlistTests(PanelServed):
         self.assertFalse(self.acked())
         self.probe("evil.example")
         self.assertFalse(self.acked())
+
+    def test_a_refused_host_still_records_the_origin_it_carried(self):
+        """ORIGIN-REC is a DIAGNOSTIC and it never decides anything, so it belongs above
+        every gate - including this one, which is the newest and the first to run.
+
+        The reading it exists for is exactly this request: a rebound page's Origin is the
+        one an operator would want to see in `/v1/health` after something went wrong, and
+        a recorder that runs below the Host gate records every origin except the ones
+        worth reading about.
+        """
+        self.client.get("/v1/state", headers={"Host": f"evil.example:{self.port}",
+                                              "Origin": "http://evil.example"})
+        self.client.request("POST", "/v1/action", body=b'{"action":"ack-all"}',
+                            headers={"Content-Type": JSON, HEADER: "1",
+                                     "Host": f"evil.example:{self.port}",
+                                     "Origin": "http://evil.write.example"})
+        seen = {row["origin"] for row in self.client.get("/v1/health").json()["originsSeen"]}
+        self.assertIn("http://evil.example", seen)
+        self.assertIn("http://evil.write.example", seen)
 
     def test_a_preflight_is_gated_too(self):
         """Otherwise a rebound page could still learn which origins and headers crabd
@@ -753,10 +786,11 @@ class PanelPathSafetyTests(PanelTree):
         the stylesheet three tests above serve happily, so the empty-segment rule is the
         only thing refusing it.
 
-        A LEADING `//` never reaches this branch and is not what this pins:
-        `urlsplit("//etc/passwd")` reads `etc` as the NETLOC and hands back
-        `path="/passwd"`, so do_GET is already looking at a single-segment path by the
-        time _panel_target sees it.
+        A LEADING `//` never reaches this branch and is not what this pins - and the
+        mechanism is not urlsplit's. `BaseHTTPRequestHandler.parse_request` collapses a
+        leading `//` to a single `/` before do_GET runs at all (CPython gh-87389, against
+        open redirection: a client reads `//path` as an authority-relative URI), so the
+        path _panel_target sees never has one.
         """
         self.assertRefused("/styles//sidecrab.css", leak=b"body { color: red }")
 
@@ -834,6 +868,36 @@ class MalformedRequestTargetTests(PanelServed):
         self.assertEqual(self.client.get("/v1/health").status, 200)
         self.assertEqual(self.client.get("/v1/state").status, 200)
 
+    def test_a_valueerror_from_a_handler_is_not_disguised_as_that_404(self):
+        """The catch belongs to the SPLIT, not to the routed body underneath it.
+
+        Wrapped around the whole of do_GET's routing, `except ValueError` answers
+        `{"error":"not found"}` for a ValueError raised anywhere in any reader - so a
+        real bug in one of them reads exactly like a mistyped path, in the daemon whose
+        forbidden failure mode is silence. Narrowed, it stays what it is: it reaches
+        socketserver's handle_error and prints, which is the loud answer.
+
+        The traceback is captured rather than allowed onto the suite's own stderr; the
+        assertion is that it HAPPENED, which is the whole point.
+        """
+        original = crabd.Handler._do_panel_log_read
+
+        def boom(_self):
+            raise ValueError("a reader that went wrong")
+
+        crabd.Handler._do_panel_log_read = boom
+        self.addCleanup(lambda: setattr(crabd.Handler, "_do_panel_log_read", original))
+        saved, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            answer = self.raw_get("/v1/panel-log")
+            noise = sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved
+        self.assertNotIn(b'{"error":"not found"}', answer)
+        self.assertIn("ValueError: a reader that went wrong", noise)
+        # ...and the daemon is still serving everything else.
+        self.assertEqual(self.client.get("/v1/health").status, 200)
+
 
 class PanelContentTypeTests(PanelTree):
     """The suffix decides, and an unknown one is a download rather than a guess."""
@@ -909,21 +973,51 @@ class PanelSizeBoundTests(PanelTree):
         finally:
             sys.stderr = saved
 
+    def spy_reads(self) -> list:
+        """The name of every file Path.read_bytes is called on, in order.
+
+        Patched the way PanelSaysWhyItServedNothingTests patches it, and for the same
+        reason: this is the only way to see whether the read HAPPENED. The handler runs
+        on the server's own thread, but a reply cannot be returned before the request is
+        finished with, so the list is complete by the time an assertion reads it.
+        """
+        names = []
+        original = Path.read_bytes
+
+        def recording(path):
+            names.append(path.name)
+            return original(path)
+
+        Path.read_bytes = recording
+        self.addCleanup(lambda: setattr(Path, "read_bytes", original))
+        return names
+
     def test_the_bound_is_a_named_constant(self):
         self.assertEqual(crabd.PANEL_MAX_BYTES, 64 * 1024 * 1024)
 
     def test_a_file_over_the_bound_is_refused_and_never_read(self):
         """SPARSE, via os.truncate: 65 MB of nothing, allocated instantly, and the
-        assertion is that crabd never turns it into 65 MB of bytes."""
+        assertion is that crabd never turns it into 65 MB of bytes.
+
+        THE STAT IS ONLY WORTH ITS SYSCALL IF IT RUNS FIRST. A size checked after the
+        read is a check on a MemoryError that already happened - the exact failure this
+        bound exists to prevent - so the refusal is asserted against the reads
+        themselves, not against the reply. The stylesheet at the end is what makes that
+        negative mean anything: the spy does see an ordinary served file.
+        """
         huge = self.panel / "resources" / "huge.bin"
         huge.write_bytes(b"")
         os.truncate(huge, crabd.PANEL_MAX_BYTES + 1)
         self.assertEqual(huge.stat().st_size, crabd.PANEL_MAX_BYTES + 1)
+        reads = self.spy_reads()
         reply, noise = self.stderr_of(lambda: self.client.get("/resources/huge.bin"))
         self.assertEqual(reply.status, 404)
         self.assertEqual(reply.body, crabd.NOT_FOUND)
         self.assertIn("too big", noise)
         self.assertIn("huge.bin", noise)
+        self.assertNotIn("huge.bin", reads)
+        self.assertEqual(self.client.get("/styles/sidecrab.css").status, 200)
+        self.assertIn("sidecrab.css", reads)
 
     def test_the_reason_is_logged_once_not_per_request(self):
         huge = self.panel / "resources" / "huge.bin"
