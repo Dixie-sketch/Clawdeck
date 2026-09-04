@@ -281,5 +281,167 @@ class DarwinClockGuardTests(LogOnceReset):
         self.assertEqual(noise.count("SC_CLK_TCK unreadable (OSError)"), 1, noise)
 
 
+# ------------------------------------------------------------------------- memory
+
+#: MEASURED 2026-09-04 on a 128 GiB Apple-silicon Mac, page size 16384. The counts here
+#: are the measured GiB figures turned back into pages, so every number below is one a
+#: real machine produced: free 28.67, active 48.19, inactive 44.70, wired 5.54,
+#: speculative 4.03, compressor 0.00, app (internal - purgeable) 60.42.
+MEASURED_PAGES = {
+    "count": 38,
+    "free_count": 1_879_000,
+    "active_count": 3_158_000,
+    "inactive_count": 2_929_000,
+    "wire_count": 363_000,
+    "purgeable_count": 0,
+    "speculative_count": 264_000,
+    "compressor_page_count": 0,
+    "external_page_count": 2_245_000,
+    "internal_page_count": 3_960_000,
+}
+MEASURED_SYSCTL = {"hw.memsize": 137_438_953_472, "vm.pagesize": 16384}
+#: (internal - purgeable + wire + compressor) x page size, from the counts above.
+MEASURED_USED = 4_323_000 * 16384
+
+
+def darwin_memory(pages=None, sysctl=None):
+    """A DarwinPlatform whose memory seams answer the measured Mac, with overrides."""
+    values = dict(MEASURED_SYSCTL, **(sysctl or {}))
+    counts = dict(MEASURED_PAGES, **(pages or {}))
+    return crabd.DarwinPlatform(vm_stats=lambda: counts,
+                                sysctl=lambda name: values[name])
+
+
+class DarwinMemoryFormulaTests(LogOnceReset):
+    """`used` is ACTIVITY MONITOR's "Memory Used": app memory + wired + compressed,
+    which is (internal_page_count - purgeable_count) + wire_count +
+    compressor_page_count, in pages. The contract's promise for this row has always
+    been that it matches what the OS's own monitor shows, and on a Mac there are two
+    other plausible answers that do not: `top`'s used (total - free) reads 98.3 GiB on
+    the machine measured here, and free + inactive + speculative counted as available
+    reads differently again. Neither is what the user sees when they look.
+    """
+
+    def test_the_reading_is_total_and_what_is_left_after_activity_monitors_used(self):
+        self.assertEqual(darwin_memory().memory(),
+                         (137_438_953_472, 137_438_953_472 - MEASURED_USED))
+
+    def test_the_served_block_carries_the_measured_numbers(self):
+        sampler = crabd.HostSampler(times=lambda: None,
+                                    memory=darwin_memory().memory,
+                                    platform=crabd.NullPlatform())
+        block = sampler.sample()
+        self.assertEqual(block["memTotalGB"], 128.0)
+        self.assertEqual(block["memUsedGB"], 66.0)
+        self.assertEqual(block["memPct"], 51.5)
+        # The plausible wrong answer, named: `top`'s used is total - free, which on this
+        # machine is 106_653_417_472 bytes - 99.3 GiB, half the machine again.
+        self.assertNotEqual(block["memUsedGB"], 99.3)
+
+
+class DarwinMemoryRefusalTests(LogOnceReset):
+    """Five ways the memory read can be unusable, all of them answered with None and
+    one stderr line - never a fabricated figure. Each has a specific wrong answer it is
+    there to prevent, named in its own test."""
+
+    def refuses(self, pages=None, sysctl=None):
+        self.forget()
+        out, noise = self.capture(darwin_memory(pages, sysctl).memory)
+        self.assertIsNone(out)
+        self.assertEqual(noise.count("serving no host memory"), 1, noise)
+
+    def test_a_reply_whose_word_count_is_not_the_struct_we_declared_is_refused(self):
+        """`count` comes back saying how many 32-bit words the kernel wrote. A different
+        number means a different struct layout, so purgeable_count and the rest are not
+        at the offsets this code reads them from - and the arithmetic would then be
+        confident nonsense rather than an error."""
+        for count in (0, 37, 39, 44):
+            with self.subTest(count=count):
+                self.refuses(pages={"count": count})
+
+    def test_a_page_size_that_is_not_a_positive_power_of_two_is_refused(self):
+        """0 would multiply every page count to nothing; 12345 is not a page size any
+        machine has and would scale the whole reading by a wrong constant."""
+        for page in (0, -16384, 12345, None):
+            with self.subTest(page=page):
+                self.refuses(sysctl={"vm.pagesize": page})
+
+    def test_an_unreadable_installed_size_is_refused(self):
+        """Zero installed memory is not a machine, and it is also the denominator of
+        memPct: divided into, it is a ZeroDivisionError inside a daemon thread."""
+        for total in (0, -1, None):
+            with self.subTest(total=total):
+                self.refuses(sysctl={"hw.memsize": total})
+
+    def test_used_larger_than_installed_is_refused_rather_than_served_negative(self):
+        """available = total - used, so a used past total is a NEGATIVE availability.
+        HostSampler clamps that back to a plausible-looking figure rather than
+        rejecting it, so the refusal has to happen here."""
+        self.refuses(pages={"internal_page_count": 10_000_000})
+
+    def test_more_purgeable_than_internal_is_refused_rather_than_served_as_empty(self):
+        """The other end of the same subtraction: app memory below zero makes `used`
+        negative, and HostSampler would then serve memPct 0.0 - a machine reported as
+        using none of its memory, which is the fabricated-zero the contract forbids."""
+        self.refuses(pages={"purgeable_count": 5_000_000})
+
+    def test_a_failed_syscall_is_refused(self):
+        """host_statistics64 answering non-zero comes back as None from the seam."""
+        self.forget()
+        platform = crabd.DarwinPlatform(vm_stats=lambda: None,
+                                        sysctl=lambda name: MEASURED_SYSCTL[name])
+        out, noise = self.capture(platform.memory)
+        self.assertIsNone(out)
+        self.assertEqual(noise.count("serving no host memory"), 1, noise)
+
+    def test_a_raising_seam_is_refused_and_named_once(self):
+        """sysctlbyname is a syscall; OSError out of it is a real shape, and so is a
+        KeyError from a reply that is missing a field this code reads. Both are one
+        stderr line for the life of the process, not one every two seconds."""
+        def boom(_name):
+            raise OSError("sysctl exploded")
+
+        working = {"sysctl": lambda name: MEASURED_SYSCTL[name],
+                   "vm_stats": lambda: dict(MEASURED_PAGES)}
+        for seam in ({"sysctl": boom},
+                     {"vm_stats": lambda: {"count": 38}}):     # no page counts at all
+            with self.subTest(seam=sorted(seam)):
+                self.forget()
+                platform = crabd.DarwinPlatform(**{**working, **seam})
+                out, noise = self.capture(
+                    lambda: [platform.memory() for _ in range(3)])
+                self.assertEqual(out, [None, None, None])
+                self.assertEqual(noise.count("serving no host memory"), 1, noise)
+
+    def test_the_sampler_serves_cpu_with_no_memory_beside_it(self):
+        """The other half of tier 2: memory failed, so its three fields are null and
+        cpuPct is intact. Still a `host` block - a missing block is what BOTH failing
+        means."""
+        self.forget()
+        raw = [(1_000, 1_000, 5_000, 0), (1_100, 1_100, 5_300, 0)]
+        cpu = crabd.DarwinPlatform(load_info=scripted(raw), clk_tck=100)
+        sampler = crabd.HostSampler(
+            times=cpu.cpu_times, memory=darwin_memory({"count": 39}).memory,
+            platform=crabd.NullPlatform())
+        block, _ = self.capture(lambda: [sampler.sample(), sampler.sample()][1])
+        self.assertEqual(block, {"cpuPct": 40.0, "memPct": None,
+                                 "memUsedGB": None, "memTotalGB": None})
+
+
+class DarwinVmStructTests(unittest.TestCase):
+    """The declared struct is 38 32-bit words, which is both what the call passes in as
+    its capacity and what it checks on the way back. Pinned here because the two halves
+    are far apart in the file and a field added to one without the other would make the
+    capacity and the drift check disagree."""
+
+    def test_the_declared_struct_is_thirty_eight_words(self):
+        self.assertEqual(crabd.ctypes.sizeof(crabd._VM_STATISTICS64) % 4, 0)
+        self.assertEqual(crabd.ctypes.sizeof(crabd._VM_STATISTICS64) // 4, 38)
+
+    def test_every_field_the_formula_reads_is_declared(self):
+        declared = {name for name, _type in crabd._VM_STATISTICS64._fields_}
+        self.assertLessEqual(set(crabd.HOST_VM_FIELDS), declared)
+
+
 if __name__ == "__main__":
     unittest.main()

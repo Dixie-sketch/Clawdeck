@@ -990,6 +990,12 @@ def _pct(value) -> float | None:
     return round(min(max(value, 0.0), 100.0), 1)
 
 
+def _positive_int(value) -> bool:
+    """A whole number above zero, and not a bool. `True` is an int in Python and would
+    pass every arithmetic check downstream while meaning nothing at all."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def _gb(value) -> float | None:
     """Bytes as GiB, 1 decimal. Negative is not a size, so it is None, not 0.0."""
     value = _finite_number(value)
@@ -3205,6 +3211,79 @@ def _darwin_cpu_load_info() -> tuple[int, int, int, int] | None:
     return (int(info[0]), int(info[1]), int(info[2]), int(info[3]))
 
 
+class _VM_STATISTICS64(ctypes.Structure):
+    """The host_statistics64(HOST_VM_INFO64) out-parameter.
+
+    Every field is declared, in order, even the ones nothing here reads: the kernel
+    writes as many 32-bit words as the in/out `count` allows, and a short struct would
+    be a write past the end. 38 words (152 bytes) as measured, which is also what the
+    caller passes in as the count and checks on the way back out - a kernel whose layout
+    differs answers a different count, and the fields would then not be where the
+    offsets below say they are.
+    """
+    _fields_ = [("free_count", ctypes.c_uint32),
+                ("active_count", ctypes.c_uint32),
+                ("inactive_count", ctypes.c_uint32),
+                ("wire_count", ctypes.c_uint32),
+                ("zero_fill_count", ctypes.c_uint64),
+                ("reactivations", ctypes.c_uint64),
+                ("pageins", ctypes.c_uint64),
+                ("pageouts", ctypes.c_uint64),
+                ("faults", ctypes.c_uint64),
+                ("cow_faults", ctypes.c_uint64),
+                ("lookups", ctypes.c_uint64),
+                ("hits", ctypes.c_uint64),
+                ("purges", ctypes.c_uint64),
+                ("purgeable_count", ctypes.c_uint32),
+                ("speculative_count", ctypes.c_uint32),
+                ("decompressions", ctypes.c_uint64),
+                ("compressions", ctypes.c_uint64),
+                ("swapins", ctypes.c_uint64),
+                ("swapouts", ctypes.c_uint64),
+                ("compressor_page_count", ctypes.c_uint32),
+                ("throttled_count", ctypes.c_uint32),
+                ("external_page_count", ctypes.c_uint32),
+                ("internal_page_count", ctypes.c_uint32),
+                ("total_uncompressed_pages_in_compressor", ctypes.c_uint64)]
+
+
+#: The four page counts the Activity Monitor formula needs, plus the reply's own count.
+HOST_VM_FIELDS = ("wire_count", "purgeable_count", "compressor_page_count",
+                  "internal_page_count")
+#: Taken FROM the struct rather than written down beside it, so the capacity the call
+#: passes in and the drift check it makes on the way out can never disagree. Measured 38.
+HOST_VM_STAT_WORDS = ctypes.sizeof(_VM_STATISTICS64) // 4
+
+
+def _darwin_vm_statistics64() -> dict | None:
+    """`host_statistics64(HOST_VM_INFO64)` -> the page counts, plus the `count` the
+    kernel reported writing. MEASURED 2026-09-04: kr 0, count 38."""
+    libc = _darwin_libc()
+    stats = _VM_STATISTICS64()
+    count = ctypes.c_uint32(HOST_VM_STAT_WORDS)
+    kr = libc.host_statistics64(libc.mach_host_self(), HOST_VM_INFO64,
+                                ctypes.byref(stats), ctypes.byref(count))
+    if kr != 0:
+        return None
+    out = {name: int(getattr(stats, name)) for name in HOST_VM_FIELDS}
+    out["count"] = int(count.value)
+    return out
+
+
+def _darwin_sysctl(name: str) -> int | None:
+    """One named integer sysctl, or None when the name is unknown. MEASURED: hw.memsize
+    answers 8 bytes, vm.pagesize 4 - both are read into the same zeroed 64-bit buffer,
+    which is why the width is taken from the size the call reports back."""
+    libc = _darwin_libc()
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    rc = libc.sysctlbyname(name.encode("ascii"), ctypes.byref(value),
+                           ctypes.byref(size), None, ctypes.c_size_t(0))
+    if rc != 0 or size.value not in (4, 8):
+        return None
+    return int(value.value) if size.value == 8 else int(value.value & 0xFFFFFFFF)
+
+
 class DarwinPlatform:
     """macOS: mach host statistics, launchd, and no long-lived token store.
 
@@ -3220,6 +3299,8 @@ class DarwinPlatform:
     def __init__(self, load_info=None, vm_stats=None, sysctl=None,
                  clk_tck=None) -> None:
         self._load_info = load_info or _darwin_cpu_load_info
+        self._vm_stats = vm_stats or _darwin_vm_statistics64
+        self._sysctl = sysctl or _darwin_sysctl
         self._clk_tck = clk_tck
         # The 32-bit unwrap, per bucket: the last RAW value seen, and how many whole
         # 2^32 laps have been added to it. Both are only ever touched by cpu_times.
@@ -3321,6 +3402,55 @@ class DarwinPlatform:
         return HOST_100NS_PER_SEC // clk
 
     def memory(self) -> tuple[int, int] | None:
+        """(total physical bytes, available bytes), or None.
+
+        `used` is ACTIVITY MONITOR's "Memory Used" - app memory + wired + compressed,
+        which is (internal_page_count - purgeable_count) + wire_count +
+        compressor_page_count. The contract's promise for this row is that it matches
+        what the machine's own monitor shows, and on a Mac there are two other plausible
+        answers that do not: `top`'s used is total - free, which read 98.3 GiB on the
+        128 GiB machine measured here against Activity Monitor's 66.0, and counting
+        free + inactive + speculative as available reads differently again. Available is
+        then total - used, so the served memPct is the one the user can check.
+
+        Five refusals, each answering None with one stderr line rather than a figure.
+        The last two matter most: HostSampler CLAMPS an availability outside 0..total
+        back into range, so a `used` past either end would arrive at the document as a
+        plausible-looking 100% or 0% instead of the null it is.
+        """
+        try:
+            total = self._sysctl("hw.memsize")
+            page = self._sysctl("vm.pagesize")
+            stats = self._vm_stats()
+            if stats is None:
+                return self._no_memory("host_statistics64 returned failure")
+            if stats["count"] != HOST_VM_STAT_WORDS:
+                # STOP before a single page count is read. A different word count is a
+                # different struct layout, so the fields are not at the offsets these
+                # names were resolved from and the arithmetic would be confident
+                # nonsense rather than an error.
+                return self._no_memory(
+                    f"host_statistics64 wrote {stats['count']!r} words, not "
+                    f"{HOST_VM_STAT_WORDS}")
+            if not _positive_int(page) or page & (page - 1):
+                return self._no_memory(
+                    f"vm.pagesize is {page!r}, which is not a page size")
+            if not _positive_int(total):
+                return self._no_memory(f"hw.memsize is {total!r}")
+            used = page * (stats["internal_page_count"] - stats["purgeable_count"]
+                           + stats["wire_count"] + stats["compressor_page_count"])
+        except Exception as exc:
+            return self._no_memory(f"the memory readers raised {type(exc).__name__}")
+        if not 0 <= used <= total:
+            return self._no_memory(
+                f"used memory reads {used}, which is not within 0..{total}")
+        return (total, total - used)
+
+    @staticmethod
+    def _no_memory(reason: str) -> None:
+        """One stderr line for the life of the process, then silence: `_log_once` keys
+        on the failure KIND, and this reader runs every two seconds."""
+        _log_once(HOST_MEM_LOG_KEY, f"crabd: {reason}; serving no host memory")
         return None
 
     @staticmethod
