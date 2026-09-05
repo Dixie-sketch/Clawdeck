@@ -76,7 +76,7 @@ at baseline. Anything found later is added to the seam table below with its buck
 - **Memory on macOS (Phase 2).** `host_statistics64(HOST_VM_INFO64)` returns 38 words (page counts);
   `vm.pagesize` is 16384 and `hw.memsize` 128.0 GiB here. Activity Monitor's headline "Memory Used"
   is app memory (internal minus purgeable) plus wired plus compressed, 66.0 GiB at the time of
-  measurement, while `top` reports total minus free, 98.3 GiB. The contract promises the Activity
+  measurement, while `top` reports total minus free, 99.3 GiB. The contract promises the Activity
   Monitor figure, so that formula is the one served.
   A live read through the finished reader on this Mac (2026-09-04) served memTotalGB 128.0,
   memUsedGB 68.2, memPct 53.3 and, on the second sample, cpuPct 15.1, agreeing with `vm_stat`
@@ -112,8 +112,9 @@ at baseline. Anything found later is added to the seam table below with its buck
   `UserPromptSubmit` command hook, no `statusLine`, no `allowedHttpHookUrls`. The installer
   must preserve that hook.
 - **App Nap and timer coalescing under the LaunchAgent (Phase 8) - MEASURED 2026-09-04.**
-  The open question `docs/GETTING-STARTED-MACOS-NOTES.md` carried, answered with the sampling
-  command that file prescribed: two minutes of `GET /v1/state` against the live
+  The open question the macOS installer notes carried (since folded into
+  `docs/GETTING-STARTED.md`), answered with the sampling command they prescribed - which that
+  walkthrough still carries: two minutes of `GET /v1/state` against the live
   `com.sidecrab.crabd` agent produced **55 distinct `generatedAt` snapshots, max gap 3.0 s,
   mean 2.19 s, none over 4 s**. crabd rebuilds every 2 s, so that is the healthy figure and
   not a throttled one. **Decision: the plists carry no `ProcessType` key.** The default
