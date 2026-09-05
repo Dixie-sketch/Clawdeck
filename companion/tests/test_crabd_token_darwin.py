@@ -969,18 +969,38 @@ class EveryModuleDisablesTheKeychainTests(unittest.TestCase):
     it has no business seeing.
     """
 
+    @staticmethod
+    def function(tree, name):
+        found = [node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == name]
+        return found[0] if len(found) == 1 else None
+
     def test_every_test_module_names_the_kill_switch_in_its_setupmodule(self):
+        """Named AND set to False AND put back afterwards.
+
+        Naming it is not enough: a module that mentioned the global while assigning it
+        something truthy would pass a substring test and leave the operator's Keychain
+        reachable for its whole run. And a module that switched it off without a
+        tearDownModule would leave it off for every module that runs after it, which is
+        the opposite failure - a suite that silently stops testing the live path.
+        """
         modules = sorted(Path(__file__).resolve().parent.glob("test_*.py"))
         self.assertGreaterEqual(len(modules), 9, modules)
         for path in modules:
             with self.subTest(module=path.name):
                 tree = ast.parse(path.read_text(encoding="utf-8"))
-                setups = [node for node in tree.body
-                          if isinstance(node, ast.FunctionDef)
-                          and node.name == "setUpModule"]
-                self.assertEqual(len(setups), 1, path.name)
+                setup = self.function(tree, "setUpModule")
+                teardown = self.function(tree, "tearDownModule")
+                self.assertIsNotNone(setup, path.name)
+                self.assertIsNotNone(teardown, path.name)
+                assigned = [ast.unparse(node.value)
+                            for node in ast.walk(setup)
+                            if isinstance(node, ast.Assign)
+                            and any("KEYCHAIN_CREDENTIALS_ENABLED" in ast.unparse(t)
+                                    for t in node.targets)]
+                self.assertEqual(assigned, ["False"], path.name)
                 self.assertIn("KEYCHAIN_CREDENTIALS_ENABLED",
-                              ast.unparse(setups[0]), path.name)
+                              ast.unparse(teardown), path.name)
 
 
 class NoTestReachesTheRealSecurityBinaryTests(KeychainCase):

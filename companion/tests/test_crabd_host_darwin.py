@@ -635,16 +635,24 @@ class DarwinLibcDeclarationTests(unittest.TestCase):
 
     def loaded(self) -> FakeLibc:
         """crabd's libc holder, freshly resolved over a fake CDLL. Pure: nothing here
-        loads a real library, so it runs on any OS."""
+        loads a real library, so it runs on any OS.
+
+        `_DARWIN_HOST_PORT` is saved and restored WITH the holder: the two caches are one
+        pair (the port is resolved through the library), so resetting one and leaving the
+        other would hand a later test a port that came from a fake libc - on a Mac, a
+        port number that is not this task's, in a test that would look unrelated.
+        """
         fake = FakeLibc()
-        original = (crabd._DARWIN_LIBC, crabd.ctypes.CDLL, crabd.ctypes.util.find_library)
+        original = (crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT, crabd.ctypes.CDLL,
+                    crabd.ctypes.util.find_library)
 
         def restore():
-            (crabd._DARWIN_LIBC, crabd.ctypes.CDLL,
+            (crabd._DARWIN_LIBC, crabd._DARWIN_HOST_PORT, crabd.ctypes.CDLL,
              crabd.ctypes.util.find_library) = original
 
         self.addCleanup(restore)
         crabd._DARWIN_LIBC = None
+        crabd._DARWIN_HOST_PORT = None
         crabd.ctypes.util.find_library = lambda _name: "libc.dylib"
         crabd.ctypes.CDLL = lambda *a, **k: fake
         return crabd._darwin_libc()
