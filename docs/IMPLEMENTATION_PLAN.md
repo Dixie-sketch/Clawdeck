@@ -79,6 +79,7 @@ rewritten for macOS; CI `macos-latest` job.
 **Success Criteria**: every decision this port made is recorded in the contract or notes; the
 live install on this Mac (operator-approved 2026-09-04, on condition that everything it touches
 is backed up first: `~/.claude/settings.json`, `~/.sidecrab/`, `~/Library/LaunchAgents/`) leaves a
-running LaunchAgent and a panel at http://localhost:9999 in Safari and Chrome.
+running LaunchAgent and a panel at http://localhost:9999 in Safari and Chromium (the Chrome
+application itself was not exercised).
 **Tests**: CI green on macOS; the definition-of-done walkthrough recorded in PORT-NOTES.
 **Status**: In Progress (live install done 2026-09-04 with a full backup; docs under way)
