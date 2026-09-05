@@ -1,15 +1,16 @@
 # Port notes: SideCrab from Windows + iCUE to macOS + any browser
 
 The durable record of the port: every Windows- or iCUE-specific seam found while reading,
-what each became, every measurement taken, and every decision the port brief asked for. Kept
-current as the port proceeds. Stage status lives in `docs/IMPLEMENTATION_PLAN.md` until the
-port is complete.
+what each became, every measurement taken, and every decision the port brief asked for. The
+staged plan (`docs/IMPLEMENTATION_PLAN.md`) tracked stage status while the port was in
+progress and was removed when every stage completed, per the repository's planning
+convention; this file is what remains.
 
 ## How the brief and CLAUDE.md were reconciled
 
 - Commit messages carry no model attribution trailer: the repository's own history and the
   operator's global instructions both forbid it, and they win over the session default.
-- `docs/IMPLEMENTATION_PLAN.md` holds stage status (removed when done); this file holds the
+- The staged plan held stage status and was removed at completion; this file holds the
   seams and decisions and persists.
 - The PowerShell installer and its Pester suite stay in the tree untouched. The macOS installer
   and its Python suite are added beside them; nothing Windows is deleted.
