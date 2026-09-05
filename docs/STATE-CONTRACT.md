@@ -1,5 +1,17 @@
 # SideCrab state contract — `/v1/state` (schema 5-compat, feature-detected)
 
+**What the macOS port changed, by section.** The five dated sections below cover it, and none of
+them changed the document's shape — the schema number did not move. **v0.34.0**: on macOS the
+long-lived limits token and Claude Code's own credential come from the login Keychain, and four
+`limits.note` strings name the platform's own command. **v0.33.0**: `fleet` reads `launchctl` on
+macOS, and `glow` is served `absent` because there is no lighting component there. **v0.32.0**:
+`host` is served on macOS from mach `host_statistics` and `sysctlbyname`, in the same four fields
+and units. **v0.31.0**: transport only — crabd listens on 9999, serves the panel itself, and gains
+a `Host` allowlist, an Origin allowlist and a required `X-SideCrab-Panel` on every POST.
+**v0.30.0**: `limits.tokenSource` and the long-lived token, whose Windows half is unchanged and
+whose store on macOS is superseded by v0.34.0. Everything older in this file is history, and the
+append-only, newest-first rule is unchanged.
+
 > **VERSIONING REWORK (v0.6.1/crabd 0.6.1, 2026-08-26).** The strict schema whitelist coupled
 > every crabd deploy to a console-bound widget import (schema N+1 bricked the on-glass widget
 > until someone stood at the desk). New policy:
