@@ -905,18 +905,35 @@ class NoTestReachesTheRealSecurityBinaryTests(KeychainCase):
 
         crabd.subprocess.run = refusing
 
-    def test_with_the_switch_off_a_default_platform_never_spawns_it(self):
+    def platform(self):
+        """A DEFAULT platform - no injected runner, the real `_run_security` behind it -
+        with the custom-config-dir gate explicitly open, so the only thing that can stop
+        it reaching the tool is the switch under test. (Without that, a developer whose
+        CRABD_CLAUDE_HOME is set would be passing the credential half of this test for
+        the wrong reason.)"""
+        return crabd.DarwinPlatform(custom_claude_home=False)
+
+    def test_with_the_switch_off_no_keychain_path_spawns_it(self):
+        """All THREE paths, because the guarantee is about the Keychain and not about one
+        reader: a store would be worse than a read - it WRITES a person's Keychain."""
         crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
         self.rig()
         self.assertFalse(self.creds.exists())
-        self.assertIsNone(crabd.DarwinPlatform().cli_credentials())
+        self.assertIsNone(self.platform().cli_credentials())
+        self.assertIsNone(self.platform().read_limits_token(None))
+        self.assertIs(self.platform().store_limits_token(GOOD_TOKEN), False)
 
-    def test_and_the_rig_really_would_have_caught_it(self):
-        """The negative above is worth nothing without this: with the switch ON, the
-        same platform does reach for the tool."""
+    def test_and_the_rig_really_would_have_caught_each_of_them(self):
+        """The negatives above are worth nothing without this: with the switch ON, every
+        one of the three does reach for the tool."""
         self.rig()
-        with self.assertRaises(self.Reached):
-            crabd.DarwinPlatform(custom_claude_home=False).cli_credentials()
+        for name, call in (("cli_credentials", lambda p: p.cli_credentials()),
+                           ("read_limits_token", lambda p: p.read_limits_token(None)),
+                           ("store_limits_token",
+                            lambda p: p.store_limits_token(GOOD_TOKEN))):
+            with self.subTest(path=name):
+                with self.assertRaises(self.Reached):
+                    call(self.platform())
 
 
 # ------------------------------------------------------------- the live half, opt-in
