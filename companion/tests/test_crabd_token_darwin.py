@@ -625,6 +625,46 @@ class KeychainKillSwitchTests(KeychainCase):
         self.assertIn("no Claude credentials", out["note"])
         self.assertEqual(fake.calls, [])
 
+    def test_the_module_global_is_read_at_call_time_like_every_other_one(self):
+        """Bound in the constructor, the answer belongs to whenever the platform was
+        BUILT - and the one that matters is built at import, as `crabd.PLATFORM`. Every
+        other global naming where crabd reads things is read per call so a test module
+        can repoint it in setUpModule; this is the same rule."""
+        original = crabd.CUSTOM_CLAUDE_HOME
+        self.addCleanup(lambda: setattr(crabd, "CUSTOM_CLAUDE_HOME", original))
+        crabd.CUSTOM_CLAUDE_HOME = False
+        fake = self.with_item(CLI_SERVICE, credential_document())
+        platform = crabd.DarwinPlatform(security=fake)     # built while it was False
+        crabd.CUSTOM_CLAUDE_HOME = True
+        self.assertIsNone(platform.cli_credentials())
+        self.assertEqual(fake.calls, [])
+
+    def test_an_explicit_constructor_argument_still_outranks_it(self):
+        original = crabd.CUSTOM_CLAUDE_HOME
+        self.addCleanup(lambda: setattr(crabd, "CUSTOM_CLAUDE_HOME", original))
+        crabd.CUSTOM_CLAUDE_HOME = True
+        fake = self.with_item(CLI_SERVICE, credential_document("keychain-token"))
+        platform = crabd.DarwinPlatform(security=fake, custom_claude_home=False)
+        self.assertIn("keychain-token", platform.cli_credentials())
+
+    def test_the_flags_polarity_is_what_the_environment_says(self):
+        """A SUBPROCESS on each side, because the flag is computed at IMPORT and the
+        polarity is the whole of it: inverted, crabd would consult the Keychain only on
+        the machines where the entry it names is the wrong one. Nothing in-process can
+        prove that - the module is already imported here."""
+        source = "import crabd; print(crabd.CUSTOM_CLAUDE_HOME)"
+        for value, expected in ((None, "False"), ("/tmp/elsewhere-claude", "True")):
+            with self.subTest(CRABD_CLAUDE_HOME=value):
+                env = dict(os.environ)
+                env.pop("CRABD_CLAUDE_HOME", None)
+                if value is not None:
+                    env["CRABD_CLAUDE_HOME"] = value
+                out = subprocess.run(
+                    [sys.executable, "-c", source], capture_output=True, text=True,
+                    timeout=60, check=True,
+                    cwd=str(Path(crabd.__file__).resolve().parent), env=env)
+                self.assertEqual(out.stdout.strip(), expected)
+
     def test_the_default_answer_to_that_question_is_read_from_the_environment(self):
         """A SOURCE-TEXT test, because the rule is an IMPORT-TIME one: the flag is
         computed once from CRABD_CLAUDE_HOME, and a behavioural test would only prove

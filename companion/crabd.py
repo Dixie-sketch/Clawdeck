@@ -3567,8 +3567,12 @@ class DarwinPlatform:
         # test that really does write a Keychain, so it can write its own item.
         self._security = security or _run_security
         self._limits_service = limits_service or KEYCHAIN_LIMITS_SERVICE
-        self._custom_claude_home = (CUSTOM_CLAUDE_HOME if custom_claude_home is None
-                                    else bool(custom_claude_home))
+        # KEPT AS GIVEN, resolved per call: None means "ask the module", and the module
+        # global is read at call time like every other one in this file, so a test can
+        # repoint it in setUpModule. Bound here instead, the answer would belong to
+        # whenever the platform was built - and the platform that matters is built at
+        # import, as PLATFORM.
+        self._custom_claude_home = custom_claude_home
         # The resolved 100 ns-units-per-tick scale, once SC_CLK_TCK has answered
         # usefully. See _tick_scale: only an answer is remembered.
         self._scale: int | None = None
@@ -3939,6 +3943,14 @@ class DarwinPlatform:
             return False
         return True
 
+    def _custom_config_dir(self) -> bool:
+        """Was crabd pointed at a config dir other than ~/.claude? The constructor
+        argument outranks the module global, and the global is read HERE rather than
+        remembered, for the reason in __init__."""
+        if self._custom_claude_home is None:
+            return CUSTOM_CLAUDE_HOME
+        return bool(self._custom_claude_home)
+
     def limits_token_hint(self) -> str:
         return "setup/install.sh --limits-token"
 
@@ -3994,7 +4006,7 @@ class DarwinPlatform:
         raw = _read_cli_credentials()
         if raw is not None:
             return raw
-        if not KEYCHAIN_CREDENTIALS_ENABLED or self._custom_claude_home:
+        if not KEYCHAIN_CREDENTIALS_ENABLED or self._custom_config_dir():
             return None
         code, out, why = self._keychain_read(KEYCHAIN_CREDENTIALS_SERVICE)
         if code is None:
