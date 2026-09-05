@@ -317,6 +317,58 @@ class LimitsTokenStoreTests(KeychainCase):
         self.assertEqual(fake.calls, [])
 
 
+class KeychainNameSafetyTests(KeychainCase):
+    """The other two fields in the store command, held to the same rule as the token.
+
+    `add-generic-password -a "<account>" -s "<service>" -X <hex> -U` is ONE LINE with two
+    QUOTED fields in it. A `"` closes its field early, a `\\` escapes the quote that would
+    have closed it, and a control character can end the line - so either name could do
+    what the token was stopped from doing, one field along.
+
+    Neither is attacker-controlled today: the account is the login user's own name and the
+    service is a constant in this file. That is exactly why this is a check and not a
+    crisis - it is what keeps "not attacker-controlled" from being the only thing between
+    the two, on the day a future crabd takes either from configuration.
+    """
+
+    def store(self, fake, **kwargs):
+        return self.platform(fake, **kwargs).store_limits_token(GOOD_TOKEN)
+
+    def test_a_service_name_that_could_end_its_field_is_refused(self):
+        # An EMPTY service is not in this table on purpose: the constructor reads it as
+        # "not given" and falls back to the production name, which the test below pins.
+        for service in ('SideCrab "limits" token', "SideCrab\\limits", "SideCrab\nlimits",
+                        "SideCrab\x00limits", "SideCrab\x7flimits"):
+            with self.subTest(service=repr(service)):
+                crabd._LOG_ONCE_SEEN.discard(crabd.LIMITS_TOKEN_LOG_KEY)
+                fake = FakeSecurity()
+                out, noise = self.capture(
+                    lambda: self.store(fake, limits_service=service))
+                self.assertIs(out, False)
+                self.assertEqual(fake.calls, [])
+                self.assertEqual(noise.count("nothing was stored"), 1, noise)
+
+    def test_an_account_name_that_could_end_its_field_is_refused(self):
+        original = crabd._login_account
+        self.addCleanup(lambda: setattr(crabd, "_login_account", original))
+        for account in ('ev"il', "ev\\il", "ev\til"):
+            with self.subTest(account=repr(account)):
+                crabd._LOG_ONCE_SEEN.discard(crabd.LIMITS_TOKEN_LOG_KEY)
+                crabd._login_account = lambda: account
+                fake = FakeSecurity()
+                out, noise = self.capture(lambda: self.store(fake))
+                self.assertIs(out, False)
+                self.assertEqual(fake.calls, [])
+                self.assertEqual(noise.count("nothing was stored"), 1, noise)
+
+    def test_an_ordinary_name_with_spaces_is_still_stored(self):
+        """The bound on the rule: the production service name HAS spaces in it, and
+        quoting is exactly what it is quoted for."""
+        fake = FakeSecurity()
+        self.assertIs(self.store(fake), True)
+        self.assertIn(f'-s "{crabd.KEYCHAIN_LIMITS_SERVICE}"', fake.calls[0][1])
+
+
 class LimitsTokenReadFailureTests(KeychainCase):
     """Absence is silent; every other failure says so once and says nothing else."""
 

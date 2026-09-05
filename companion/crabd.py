@@ -3156,6 +3156,19 @@ def _usable_limits_token(token) -> bool:
     return isinstance(token, str) and bool(LIMITS_TOKEN_RE.fullmatch(token))
 
 
+def _keychain_name_safe(value) -> bool:
+    """A service or account name crabd is willing to put in a `security -i` command.
+
+    That command is ONE LINE with two QUOTED fields in it, so a `"` closes its field
+    early, a `\\` escapes the quote that would have closed it, and a control character can
+    end the line. Neither name is attacker-controlled today - the account is the login
+    user's own and the service is a constant in this file - which is why this is a check
+    rather than a crisis: it keeps that from being the only thing between the two.
+    """
+    return (isinstance(value, str) and bool(value)
+            and not any(ch in '"\\' or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value))
+
+
 def _login_account() -> str | None:
     """The login user name - the ACCOUNT half of both Keychain items - or None.
 
@@ -3897,6 +3910,15 @@ class DarwinPlatform:
         if account is None:
             _log_once(LIMITS_TOKEN_LOG_KEY,
                       "crabd: there is no login account to name a Keychain item with; "
+                      "nothing was stored; this is logged once")
+            return False
+        if not (_keychain_name_safe(account)
+                and _keychain_name_safe(self._limits_service)):
+            # The same rule as the token check, one field along: both names go into the
+            # command QUOTED, and a name that could close its own field could carry the
+            # rest of the line with it.
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: this Keychain item's name cannot be quoted safely; "
                       "nothing was stored; this is logged once")
             return False
         command = (f'add-generic-password -a "{account}" -s "{self._limits_service}" '
