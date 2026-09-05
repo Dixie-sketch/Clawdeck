@@ -37,7 +37,13 @@ python3 -m unittest discover -s setup/tests -t setup/tests           # the macOS
 python3 -m unittest discover lighting/tests
 node widget/tests/test_ordering.js
 node widget/tests/test_panel.js                                      # transport: origin, header
+node --check widget/scripts/sidecrab.js
+python3 -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
+python3 -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
 ```
+
+That is all ten steps of the macOS CI job, in its order, and the same list `CONTRIBUTING.md`
+gives contributors.
 
 One test or one file:
 
@@ -47,13 +53,10 @@ python3 -m unittest discover -s notifier/tests -t notifier/tests -p test_mute.py
 pwsh -File setup/tests/RunTests.ps1 -Path setup/tests/SideCrab.Setup.Tests.ps1   # Windows only; for one test use Invoke-Pester -FullNameFilter
 ```
 
-Widget checks the Corsair validator misses. CI runs both; run `node --check` yourself too, since a
-parse-time SyntaxError is exactly how widget 0.27.0 shipped blank:
-
-```
-python3 -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read())"
-node --check widget/scripts/sidecrab.js
-```
+The last three steps above are the widget checks the Corsair validator misses, and CI runs all
+three. Run them locally while iterating on `widget/` rather than waiting for CI: a parse-time
+SyntaxError is exactly how widget 0.27.0 shipped blank, and the strict-XML parse is the only check
+that has ever caught it.
 
 Panel preview: crabd serves it, so `http://localhost:9999/?mock=<name>` with one of `normal
 attention empty stale question quiet recap caveat hot rework dense extras future`. Without crabd,
@@ -125,7 +128,7 @@ stays the only one; a second read is a second answer that can disagree, and it w
 host it was written on. `ctypes.windll` appears in exactly two places, `WindowsPlatform` and
 `_dpapi_unprotect` (a Windows helper, not a reader - the same test names that one exception).
 `companion/tests/test_crabd_platform.py` is the surface pin: all three classes expose the same
-twelve methods (`cpu_times`, `memory`, `fleet_targets`, `service_query`, `service_status`,
+eleven methods (`cpu_times`, `memory`, `fleet_targets`, `service_query`, `service_status`,
 `read_limits_token`, `store_limits_token`, `limits_token_hint`, `cli_credentials`,
 `server_reuse_address`, `port_holder_hint`), with the same signatures and **bound the same way** -
 interchangeable, not merely answering alike today. Injection still beats the platform: every reader
@@ -229,12 +232,17 @@ permission hook parks a real thread for up to 55 s, holds at most 8 pending requ
 (`PERMISSION_MAX_PENDING`, so a ninth is refused rather than held), and every early exit returns
 `{}` (pass-through); no path reaches `allow` without a tap.
 
-Disk: writes only `~/.sidecrab/{config.json, history.jsonl, limits-cache.json, panel-token}`; reads
-`~/.claude/projects/**/*.jsonl`, `~/.claude/.credentials.json`, `~/.sidecrab/limits-token.dpapi`,
-and on macOS the two Keychain items instead of the last two. Paths are module globals resolved per
-call; each test module's `setUpModule` repoints them at a temp dir **and sets the Keychain kill
-switch** (the real cache was poisoned once, and one config file was written into the operator's real
-`~/.sidecrab` during the port before the isolation was completed).
+Disk: crabd writes only `~/.sidecrab/{config.json, history.jsonl, limits-cache.json, panel-token}`;
+reads `~/.claude/projects/**/*.jsonl`, `~/.claude/.credentials.json`,
+`~/.sidecrab/limits-token.dpapi`, and on macOS the two Keychain items instead of the last two. Two
+writes are outside that list and worth knowing: `PLATFORM.store_limits_token` (reached only from
+`install.sh --limits-token`, never from the serving paths) writes the `SideCrab limits token`
+Keychain item on macOS and `~/.sidecrab/limits-token.dpapi` on Windows; and **launchd**, not crabd,
+writes `~/.sidecrab/logs/<label>.log` from the plists' `StandardOutPath` / `StandardErrorPath` -
+mode 0700 on the directory, because those logs carry session titles and repo paths. Paths are
+module globals resolved per call; each test module's `setUpModule` repoints them at a temp dir **and
+sets the Keychain kill switch** (the real cache was poisoned once, and one config file was written
+into the operator's real `~/.sidecrab` during the port before the isolation was completed).
 
 Invariants: `/v1/state` never 500s (503 only before the first snapshot). OTLP always answers 204.
 Hooks are answered before parsing. Every swallowed exception reports through `_log_once` (capped by
@@ -264,8 +272,11 @@ Settings are declared once, in `index.html`: `<meta name="x-icue-property">` tag
 parses the same declarations at runtime to generate its own settings sheet** (gear beside the filter
 chips, or `s`), so a setting is one meta and one group membership and there is no second copy to
 disagree. Every declared property must be claimed by exactly one group - the suite asserts it.
-`cpuTempSensor`, `gpuTempSensor` and `touchDiag` are *absent* rather than disabled outside iCUE:
-there is no bridge behind them.
+`SETTINGS_HIDDEN` keeps four properties *absent* rather than disabled outside iCUE, for two
+different reasons: `cpuTempSensor`, `gpuTempSensor` and `touchDiag` have **no bridge** behind them
+in a browser, while `crabdPort` is **inert** - `baseUrl()` reads `location.protocol` first and
+returns `''` on a served origin, so the property cannot move where the panel polls. It stays
+declared for the iCUE case. Rendered: 16 rows of 20 declared properties.
 
 `insideIcue()` is the host test, memoised, and it asks whether `uniqueId` is **declared**, not what
 it holds - an injected empty `uniqueId` is still iCUE. Off iCUE, everything the panel persists lives
