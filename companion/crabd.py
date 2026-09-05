@@ -176,9 +176,14 @@ LIMITS_TOKEN_FILE = SIDECRAB_DIR / "limits-token.dpapi"
 # login user name, and setup/sidecrab_setup.py probes the same pair by exit code.
 #
 # THE KILL SWITCH is not a feature: it is how the test suite guarantees it cannot raise a
-# Keychain prompt on the operator's desktop or read a secret it has no business seeing.
-# Every companion test module sets it False in setUpModule, exactly as they repoint the
-# path globals, and the tests that exercise this path turn it on with an injected runner.
+# Keychain prompt on the operator's desktop, read a secret it has no business seeing, or
+# WRITE an item into a person's login Keychain. Every companion test module sets it False
+# in setUpModule, exactly as they repoint the path globals, and the tests that exercise
+# these paths turn it on with an injected runner.
+#
+# It gates every Keychain access, not only the credential one its name comes from: all
+# three of cli_credentials, read_limits_token and store_limits_token check it, because
+# "no test reaches the operator's Keychain" is only a guarantee if it has no exceptions.
 KEYCHAIN_CREDENTIALS_ENABLED = True
 KEYCHAIN_CREDENTIALS_SERVICE = "Claude Code-credentials"
 KEYCHAIN_LIMITS_SERVICE = "SideCrab limits token"
@@ -3842,7 +3847,7 @@ class DarwinPlatform:
         token.
         """
         if not KEYCHAIN_CREDENTIALS_ENABLED:
-            return None
+            return None                 # the suite's kill switch: it covers both items
         code, out, why = self._keychain_read(self._limits_service)
         if code == KEYCHAIN_ITEM_NOT_FOUND:
             return None
