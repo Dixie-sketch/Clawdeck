@@ -319,17 +319,31 @@ in `index.html`, parsed at runtime. Those declarations were written and reviewed
 iCUE console; a second copy here would be a copy that can disagree with the one iCUE
 reads. Adding a setting is still one meta and one name in a group.
 
-Measured at 2560x720 with the sheet open: 3 groups, 17 rows, every control 60.5 px tall
-(the 48 px fingertip floor with room over it), region 921.8 x 540.9 scrolling 1449 px of
-content. Every control opens on the value the panel would *read* for that property, so
-the sheet cannot show one thing while the panel behaves as another.
+**Measured at 2560x720 with the sheet open, Chromium 152 via Playwright, `?mock=rework`:**
+3 groups, **16 rows** (20 declared properties less the 4 not rendered outside iCUE, below),
+every control **60.5 px** tall — all sixteen, no exceptions — which is the 48 px fingertip
+floor with room over it. Region `#sheetSettings` 921.8 x 540.9, scrolling **1361 px** of
+content. Row heights vary with what sits around the control (60.5 bare, 64.5 with a slider
+value, 66.5 with a switch); the one 126 px row is Approval Pairing Code, the only row
+carrying help text. Every control opens on the value the panel would *read* for that
+property, so the sheet cannot show one thing while the panel behaves as another.
+
+> An earlier revision of this line said 17 rows and 1449 px of scroll. That was the sheet
+> before `crabdPort` joined the not-rendered list; the figures above are the re-measurement.
 
 - **`panelToken` gained a group.** It was declared as a property and named by no group at
   all, which means the iCUE console never rendered it either. It is now its own
   **Approvals** group. The suite asserts that every declared property is claimed by
   exactly one group, so the next one cannot go missing quietly.
-- **Not rendered outside iCUE:** `cpuTempSensor`, `gpuTempSensor`, `touchDiag`. Absent
-  rather than disabled — there is no bridge behind any of them in a browser.
+- **Not rendered outside iCUE:** `cpuTempSensor`, `gpuTempSensor`, `touchDiag` and
+  `crabdPort` (`SETTINGS_HIDDEN`). Absent rather than disabled — a control that cannot do
+  anything is worse than no control. The first three have **no bridge behind them** in a
+  browser: the two combo boxes need the Sensors plugin, and the touch recorder was built to
+  find out what the iCUE webview forwards, which a browser's pointer stream does not ask.
+  **`crabdPort` is hidden for a different reason and it is worth naming: it is not unbacked,
+  it is INERT.** `baseUrl()` reads `location.protocol` first and returns the empty string on
+  a served origin, so the property cannot move where the panel polls. It stays declared for
+  the iCUE case, where the panel is loaded from disk and has to name crabd outright.
 - **`crabStyle` is a real enum control** (`auto` / `plain`). `crabPlain()` has accepted
   the words since v0.11.0 precisely so this needed no code.
 - **Built once on open, never on the poll**, and every change fires on `change` rather
