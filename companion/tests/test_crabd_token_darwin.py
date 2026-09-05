@@ -306,6 +306,11 @@ class LimitsTokenStoreTests(KeychainCase):
         for bad in ("has space", "", "x" * 10, "sk-ant-oat01-" + "a" * 600,
                     'sk-ant-"quote"-token-aaaaaaaaaaaaa',
                     "sk-ant-oat01-aaaaaaaaaaaaaaaaaaaa\nadd-generic-password -a x",
+                    # A TRAILING newline is the one a `$` anchor lets through: `$` also
+                    # matches just before a final newline, so a token pasted with the
+                    # line ending still on it would have gone into the command line and
+                    # ended it early. `fullmatch` is what refuses it.
+                    GOOD_TOKEN + "\n",
                     None, 12345):
             with self.subTest(token=repr(bad)[:40]):
                 self.assertIs(self.store(fake, bad), False)

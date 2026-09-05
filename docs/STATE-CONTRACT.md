@@ -77,9 +77,11 @@ The READ is the other direction and needs no secret in either place: the argv na
 item, the value comes back on stdout. Items created through this tool carry the tool in
 their access list, so crabd's own later reads do not prompt.
 
-A value that is not `^[A-Za-z0-9_-]{20,512}$` is refused **before** anything is spawned and
-is never named in a log line. That is not only a typo catcher: a value carrying a newline
-would otherwise become a second command inside a tool that writes the Keychain.
+A value that is not `^[A-Za-z0-9_-]{20,512}$` — matched with `fullmatch`, because `$` also
+matches just before a final newline and a token is routinely pasted with its line ending
+still attached — is refused **before** anything is spawned and is never named in a log
+line. That is not only a typo catcher: a value carrying a newline would otherwise become a
+second command inside a tool that writes the Keychain.
 
 ### 4. The notes
 

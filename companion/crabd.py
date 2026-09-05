@@ -199,6 +199,11 @@ KEYCHAIN_ITEM_NOT_FOUND = 44
 #: a safety rule, not only a typo catcher: the macOS store command goes through
 #: `security -i`'s own tokenizer, so a value carrying a quote or a newline is refused
 #: here rather than quoted around.
+#:
+#: MATCHED WITH `fullmatch`, and the anchors are kept for the reader rather than for the
+#: engine: `$` also matches just BEFORE a final newline, so `re.match` accepted a token
+#: pasted with its line ending still attached - which is exactly the value that would
+#: have ended the store command early.
 LIMITS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
 # What the panel says when the item is there and crabd was not allowed to read it. It
 # names the ONE action that fixes it. Deliberately not the "no Claude credentials" note:
@@ -3148,7 +3153,7 @@ def _read_cli_credentials() -> str | None:
 def _usable_limits_token(token) -> bool:
     """Is this something crabd is willing to store? SHAPE only - see LIMITS_TOKEN_RE -
     and the value is never named in a log line or an exception on the way out."""
-    return isinstance(token, str) and bool(LIMITS_TOKEN_RE.match(token))
+    return isinstance(token, str) and bool(LIMITS_TOKEN_RE.fullmatch(token))
 
 
 def _login_account() -> str | None:
