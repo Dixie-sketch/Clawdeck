@@ -2,8 +2,9 @@
 
 **What the macOS port changed, by section.** The five dated sections below cover it, and none of
 them changed the document's shape — the schema number did not move. **v0.34.0**: on macOS the
-long-lived limits token and Claude Code's own credential come from the login Keychain, and four
-`limits.note` strings name the platform's own command. **v0.33.0**: `fleet` reads `launchctl` on
+long-lived limits token and Claude Code's own credential come from the login Keychain; three
+`limits.note` strings now name the platform's own command, and a fourth is new, separating a
+Keychain crabd was refused from credentials that are simply absent. **v0.33.0**: `fleet` reads `launchctl` on
 macOS, and `glow` is served `absent` because there is no lighting component there. **v0.32.0**:
 `host` is served on macOS from mach `host_statistics` and `sysctlbyname`, in the same four fields
 and units. **v0.31.0**: transport only — crabd listens on 9999, serves the panel itself, and gains
@@ -30,7 +31,10 @@ append-only, newest-first rule is unchanged.
 
 crabd `VERSION` → `0.34.0`. **No shape change.** No field is added, moved, renamed or
 removed on `/v1/state`, `/v1/action` or `/v1/config`; `schema` stays **5**. What changed is
-where two SECRETS are read from on macOS, and the wording of four `limits.note` strings.
+where two SECRETS are read from on macOS, and four `limits.note` strings: **three** are
+reworded to name the command of the platform they are shown on, and **one is new**
+(`KEYCHAIN_REFUSED_NOTE`), which separates a Keychain crabd was refused from credentials that
+are not there. §4 has all four.
 
 **What Windows sees.** Nothing on the wire, and nothing it reads: the same file, the same
 DPAPI, the same notes, byte for byte. It does gain one ability it did not have — crabd on
