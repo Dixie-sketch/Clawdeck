@@ -9,6 +9,59 @@ permissions:
   contents: read
 
 jobs:
+  # The documented platform. Everything except the Pester suite runs here.
+  macos:
+    name: Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: Companion (crabd)
+        run: python3 -m unittest discover -s companion/tests -t companion/tests
+
+      - name: Notifier
+        run: python3 -m unittest discover -s notifier/tests -t notifier/tests
+
+      - name: Hooks
+        run: python3 -m unittest discover -s hooks/tests -t hooks/tests
+
+      # The macOS installer's suite, and it runs HERE ONLY. test_setup_scripts.py executes
+      # install.sh / update.sh / uninstall.sh through /bin/sh, and the class is guarded by
+      # skipUnless - so on Windows the wrapper coverage would SKIP and the job would report
+      # success having proved nothing. There is no equivalent step in the Windows job,
+      # deliberately: the Pester suite is that job's installer coverage.
+      - name: Setup (macOS installer)
+        run: python3 -m unittest discover -s setup/tests -t setup/tests
+
+      - name: Lighting
+        run: python3 -m unittest discover lighting/tests
+
+      - name: Widget ordering
+        run: node widget/tests/test_ordering.js
+
+      - name: Widget transport
+        run: node widget/tests/test_panel.js
+
+      - name: Widget script parses (a parse-time SyntaxError is how 0.27.0 shipped blank)
+        run: node --check widget/scripts/sidecrab.js
+
+      - name: Widget index.html is strict XML (iCUE requirement the CLI validator misses)
+        run: python3 -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
+
+      - name: Widget manifest parses
+        run: python3 -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
+
+  # Kept deliberately. The iCUE widget and the PowerShell installer are still in the tree
+  # and still shipped, and the Pester suite only runs on Windows: it asserts C:\ paths and
+  # calls DPAPI. Dropping this job would mean the Windows half is untested, not retired.
   test:
     name: Tests (Windows)
     runs-on: windows-latest
