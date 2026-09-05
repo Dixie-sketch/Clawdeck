@@ -27,7 +27,7 @@ room instead of by cycling through terminal windows. Then you can answer it from
 | **macOS** | Built and measured on **macOS 26.6, Apple silicon** | Older macOS versions are **untested rather than unsupported**: every measurement in these docs was taken on that one machine, and no other release has been tried. |
 | **Python 3.13 or newer** | From **Homebrew** (`brew install python@3.13`) or python.org | Apple's `/usr/bin/python3` is 3.9 and is **refused by version**, not by path. The installer probes `$SIDECRAB_PYTHON`, then `python3.14`, `python3.13`, `python3` across `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`. |
 | **Claude Code** | Installed and used on the **same Mac** | The companion reads Claude Code's local session data. It cannot see sessions on other machines. |
-| **A browser** | Any modern one | Safari and Chromium are what the port was checked in (the Chrome application itself was not exercised). An iPad or a phone on the same network needs a tunnel you set up yourself; SideCrab does not open one, and does not listen anywhere a tunnel could reach without you. |
+| **A browser** | Any modern one | The live panel was measured in **Chromium** only (Playwright, 2560x720, no console errors); Safari was opened on the same address but nothing was recorded in it, and the Chrome application itself was not exercised. An iPad or a phone on the same network needs a tunnel you set up yourself; SideCrab does not open one, and does not listen anywhere a tunnel could reach without you. |
 
 Everything runs on one Mac and talks only over `127.0.0.1:9999`. Nothing is sent anywhere.
 
@@ -429,8 +429,14 @@ disclosed residuals and how to report a vulnerability.
 SideCrab began as an iCUE widget for the Corsair Xeneon Edge, and **that build is still in the
 tree and still packageable**. The panel is the same files: `widget/index.html` stays strict-XML
 clean, `widget/manifest.json` still carries the widget version, and `icuewidget validate widget`
-/ `icuewidget package widget` still work. The PowerShell installer (`setup/*.ps1`) and its Pester
-suite are untouched, and CI still runs the Windows job.
+/ `icuewidget package widget` still work. CI still runs the Windows job. The PowerShell installer
+and its Pester suite moved with the port rather than standing still: nine `.ps1` files changed,
+all nine of them moving the port literal 2722 to 9999, and the three that POST live -
+`Repair-SideCrab.ps1`, `Test-SideCrab.ps1` and `Verify-PanelApproval.ps1` - also send
+`X-SideCrab-Panel`, which the Pester suite now expects in six places. **Upgrading an existing
+Windows install leaves its 2722-era hook entries in `settings.json` behind**, because the
+installer matches its own entries on the port: delete them by hand for now - see `UPG-a` in
+[`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 What changed is which path is documented. macOS plus a browser is the one this README walks you
 through; the Windows path is no longer the primary one and its instructions live in the history.
