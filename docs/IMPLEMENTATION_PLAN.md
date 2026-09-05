@@ -45,8 +45,8 @@ non-zero exit, timeout and garbage land on unknown; off the request path.
 argv); the CLI credential read from the Keychain when the file is absent.
 **Success Criteria**: precedence unchanged; token never in state, health, logs or argv;
 user-facing strings name the macOS command.
-**Tests**: Keychain round trip through a fake `security`, argv leak test, string tests.
-**Status**: In Progress
+**Tests**: `companion/tests/test_crabd_token_darwin.py` (41 tests; the argv-leak test; a nine-module kill-switch pin; one opt-in live round trip).
+**Status**: Complete (2026-09-04; under review)
 
 ## Stage 5: install, hooks and the service
 **Goal**: `setup/install.sh`, `update.sh`, `uninstall.sh`, `--status`, `doctor`; LaunchAgent
