@@ -60,6 +60,10 @@ cd ~/SideCrab
 Anywhere you like; the installer records the path it was run from. Keep it somewhere you will
 not move, because the LaunchAgents point at these files.
 
+The three wrappers work out their own directory, so it does not matter where you run them from:
+`./setup/install.sh` inside the checkout and `~/SideCrab/setup/update.sh` from anywhere else both
+act on this checkout.
+
 ---
 
 ## 3. Install (5 minutes)
@@ -89,6 +93,10 @@ refuses before writing anything if something else already holds port 9999; it ba
 `~/.claude/settings.json` up to `<path>.sidecrab-bak-YYYYMMDD-HHMMSS` before merging the hooks;
 it takes the `statusLine` slot and saves whatever was there; and it loads
 `com.sidecrab.crabd` (and `com.sidecrab.toast`) as LaunchAgents.
+
+Those agents carry `RunAtLoad` and `KeepAlive`, which is the last thing you have to think about
+starting: **crabd comes up when you log in, and launchd restarts it if it ever dies.** Nothing
+below asks you to start it by hand, and a reboot needs no ceremony.
 
 Then check it:
 
@@ -127,7 +135,8 @@ Open **<http://localhost:9999>** in Safari.
 usage and reset times, and a hardware row with this Mac's CPU and memory. No session cards yet -
 you have not started a session.
 
-Now open the same address in Chrome. **What you should see:** the same panel. What does *not*
+Now open the same address in a second browser - Chrome, or any Chromium build, which is what the
+port was checked in. **What you should see:** the same panel. What does *not*
 carry across is settings: each browser keeps its own copy on the panel's address, so a colour or
 a pairing code set in one is not set in the other. That is the same-origin policy doing its job,
 and section 8 explains why it matters for the pairing code.
@@ -169,6 +178,12 @@ deliberately:
 ```sh
 python3 notifier/sidecrab_toast.py --test-toast
 ```
+
+**If you dismiss that prompt, every alert after it is lost silently.** Nothing appears on screen;
+the notifier logs the failure and re-arms the waiting question for its next poll, so the panel
+still knows and you never hear about it. The switch is Script Editor's, not SideCrab's: turn it
+back on in **System Settings > Notifications > Script Editor**, then run `--test-toast` again to
+confirm.
 
 Now try the panel's controls:
 
@@ -319,6 +334,11 @@ the status-line slot:
 It takes back what SideCrab wrote and nothing else: your own hooks stay, your prior status-line
 command is restored, and `~/.sidecrab` and every backup survive. `uninstall.sh --purge` deletes
 `~/.sidecrab` too, after telling you what is in it and asking.
+
+There is no notifier-only removal: `--with-toast` only ever *adds* the notifier, so re-running
+without it changes nothing, and `uninstall.sh` removes everything. To drop just the notifier,
+`launchctl bootout gui/$(id -u)/com.sidecrab.toast` and delete
+`~/Library/LaunchAgents/com.sidecrab.toast.plist`.
 
 ---
 
