@@ -27,7 +27,7 @@ room instead of by cycling through terminal windows. Then you can answer it from
 | **macOS** | Built and measured on **macOS 26.6, Apple silicon** | Older macOS versions are **untested rather than unsupported**: every measurement in these docs was taken on that one machine, and no other release has been tried. |
 | **Python 3.13 or newer** | From **Homebrew** (`brew install python@3.13`) or python.org | Apple's `/usr/bin/python3` is 3.9 and is **refused by version**, not by path. The installer probes `$SIDECRAB_PYTHON`, then `python3.14`, `python3.13`, `python3` across `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`. |
 | **Claude Code** | Installed and used on the **same Mac** | The companion reads Claude Code's local session data. It cannot see sessions on other machines. |
-| **A browser** | Any modern one | Safari and Chrome are what the port was checked in. An iPad or a phone on the same network needs a tunnel you set up yourself; SideCrab does not open one, and does not listen anywhere a tunnel could reach without you. |
+| **A browser** | Any modern one | Safari and Chromium are what the port was checked in (the Chrome application itself was not exercised). An iPad or a phone on the same network needs a tunnel you set up yourself; SideCrab does not open one, and does not listen anywhere a tunnel could reach without you. |
 
 Everything runs on one Mac and talks only over `127.0.0.1:9999`. Nothing is sent anywhere.
 
@@ -106,8 +106,13 @@ The installer prints one line per thing it does. In order:
 6. **Writes and loads the LaunchAgents**: `com.sidecrab.crabd` always, `com.sidecrab.toast` with
    `--with-toast`. Plists at `~/Library/LaunchAgents/<label>.plist`, logs at
    `~/.sidecrab/logs/<label>.log` in a directory with mode 0700, because the log carries session
-   titles and repo paths. An agent you disabled yourself has its plist refreshed and is **not**
+   titles and repo paths. Both carry `RunAtLoad` and `KeepAlive`, so **crabd starts when you log
+   in and launchd restarts it if it dies** - you do not start it by hand and there is nothing to
+   remember after a reboot. An agent you disabled yourself has its plist refreshed and is **not**
    started; `--force-enable` is the only override.
+
+The three wrappers work out their own directory, so `./setup/install.sh` from inside the checkout
+and `~/SideCrab/setup/install.sh` from anywhere else are the same command.
 
 Then check it:
 
@@ -181,6 +186,15 @@ starting blind. The panel updates with the same pull, because crabd serves it fr
 `uninstall.sh` removes what SideCrab wrote and keeps your data: `~/.sidecrab` and every backup
 survive. `uninstall.sh --purge` deletes `~/.sidecrab` too, after telling you exactly what is in
 it and asking.
+
+**There is no notifier-only removal.** Re-running the installer *without* `--with-toast` does not
+unload the notifier - the flag only ever adds it - and `uninstall.sh` removes everything. To drop
+just the notifier and keep the panel:
+
+```sh
+launchctl bootout gui/$(id -u)/com.sidecrab.toast
+rm ~/Library/LaunchAgents/com.sidecrab.toast.plist
+```
 
 ---
 
@@ -345,10 +359,16 @@ worth reading rather than assuming:
 | Limit gauges show an em-dash and "token expired" | The CLI's access token has passed its ~6 h life and nothing has refreshed it | Store a long-lived token once (above), or run any `claude` command in a terminal to refresh it |
 | Gauges show an em-dash and a note about the Keychain | crabd asked for `Claude Code-credentials` and macOS refused this process | Approve the prompt (Always Allow) when it appears, or run `claude` in a terminal so the CLI writes a credential crabd can read without it |
 | The browser cannot connect at all | crabd is not running - the panel is a page crabd serves, so there is nothing to show you a SideCrab error screen | `./setup/install.sh --status`, then `./setup/update.sh` |
-| `crabd: cannot listen on 127.0.0.1:9999 - [Errno 48] Address already in use` | Something else holds the port. crabd stops loudly rather than moving to another one, because a crabd on a port nothing addresses is a silent dead panel | `lsof -nP -iTCP:9999 -sTCP:LISTEN`, stop it, or set `CRABD_PORT` (and point the hooks and the panel at the same number) |
+| `crabd: cannot listen on 127.0.0.1:9999 - [Errno 48] Address already in use` | Something else holds the port. crabd stops loudly rather than moving to another one, because a crabd on a port nothing addresses is a silent dead panel | `lsof -nP -iTCP:9999 -sTCP:LISTEN`, then stop it. `CRABD_PORT` is the other way out, but read the note below first |
 | "python3 is 3.9" or a refusal naming the version | Only Apple's `/usr/bin/python3` was found | `brew install python@3.13`, or set `$SIDECRAB_PYTHON` to a 3.13+ interpreter |
 | A finished session still reads "working" | A session was killed by an app restart, so no end hook fired | It clears itself within 15 minutes; taps on it are refused rather than queued |
 | Something else | | `./setup/install.sh --doctor` prints a PASS/FAIL row for every piece |
+
+**About `CRABD_PORT`.** It moves crabd, and nothing else. The seven hook entries the installer
+wrote into `~/.claude/settings.json` carry `127.0.0.1:9999` as a literal, as does the status-line
+command, so moving the port means editing all of them by hand - and the installer's next run puts
+9999 back. Freeing 9999 is nearly always the better answer; `CRABD_PORT` is for running a second
+crabd beside the live one, which is what it was added for.
 
 ---
 
@@ -364,7 +384,10 @@ worth reading rather than assuming:
   thing on screen naming the product. `display notification` has no action affordance and no
   replacement identifier, so a second outage notice sits beneath the first instead of replacing
   it. Acknowledge on the panel. Whether the notification **sound** is audible on your machine was
-  not measured; it is `sound name "default"`.
+  not measured; it is `sound name "default"`. **If you dismissed the one-time permission prompt
+  for Script Editor, alerts are lost silently** - the notifier logs the failure and re-arms, but
+  nothing appears on screen. Turn it back on in System Settings > Notifications > Script Editor,
+  then prove it with `python3 notifier/sidecrab_toast.py --test-toast`.
 - **App Nap and timer coalescing do not throttle the feed here, measured.** Two minutes of
   sampling `/v1/state` against the live LaunchAgent gave 55 distinct snapshots, max gap 3.0 s,
   mean 2.19 s, none over 4 s, against a 2 s rebuild - so the plists carry no `ProcessType` key
@@ -448,7 +471,8 @@ python3 -m unittest discover lighting/tests
 node widget/tests/test_ordering.js
 node widget/tests/test_panel.js
 node --check widget/scripts/sidecrab.js
-python3 -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read())"
+python3 -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
+python3 -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
 ```
 
 The Pester suite (`pwsh -File setup/tests/RunTests.ps1`) is Windows-only: it asserts `C:\` paths
