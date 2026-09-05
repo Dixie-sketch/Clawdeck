@@ -7,10 +7,37 @@ file runs offline against a temporary HOME.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from _harness import REPO_ROOT, RecordingHttp, RecordingRunner, TempHome, setup
+
+
+class LoginAccount(unittest.TestCase):
+    """Both halves have to mean the same person by "the account".
+
+    crabd names the Keychain item with `pwd.getpwuid(os.getuid()).pw_name`. This tool used
+    `getpass.getuser()`, which reads $LOGNAME, $USER, $LNAME and $USERNAME BEFORE it falls
+    back to the password database - so under `sudo -E`, in a shell that exports a
+    different USER, or from an agent with a stale environment, it named somebody else.
+    The tool then probed an item crabd never wrote, and `--status` reported "none stored"
+    for a token that is stored: the worst kind of wrong answer, because it sends the
+    operator to store it again.
+    """
+
+    @unittest.skipIf(sys.platform == "win32", "the login account is a POSIX reading")
+    def test_the_account_is_the_uids_own_and_not_the_environments(self):
+        sys.path.insert(0, str(REPO_ROOT / "companion"))
+        import crabd  # noqa: PLC0415 - the same lazy import the tool itself uses
+
+        with mock.patch.dict(os.environ, {"USER": "not-the-login-user",
+                                          "LOGNAME": "not-the-login-user"}):
+            env = setup.Environment.default(repo_root=REPO_ROOT)
+        self.assertEqual(env.user, crabd._login_account())
+        self.assertNotEqual(env.user, "not-the-login-user")
 
 
 class PairingCode(TempHome):
@@ -228,11 +255,18 @@ class Status(TempHome):
         probe = runner.argv_for("find-generic-password")[0]
         self.assertEqual(
             probe,
-            ["security", "find-generic-password", "-s", "SideCrab limits token", "-a", "tester"],
+            ["/usr/bin/security", "find-generic-password", "-s", "SideCrab limits token",
+             "-a", "tester"],
         )
         # -w would print the secret; the exit code is the whole answer.
         self.assertNotIn("-w", probe)
         self.assertIn("stored", self.output)
+
+    def test_the_security_binary_is_the_same_absolute_path_crabd_spawns(self):
+        """Bare `security` is whatever PATH says it is, and this tool runs from a shell
+        the operator owns. Both halves name the same absolute path, so the answer cannot
+        depend on whose PATH was in effect."""
+        self.assertEqual(setup.SECURITY_BIN, "/usr/bin/security")
 
     def test_an_absent_limits_token_is_a_state(self):
         runner = RecordingRunner({"find-generic-password": (44, "", "not found")})

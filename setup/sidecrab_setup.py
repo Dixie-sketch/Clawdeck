@@ -75,6 +75,10 @@ LIMITS_TOKEN_PREFIX = "sk-ant-"
 #: The Keychain item crabd stores the long-lived token under. Probed by exit code here
 #: and never read: `security find-generic-password -w` would print the secret.
 KEYCHAIN_SERVICE = "SideCrab limits token"
+#: The same absolute path crabd spawns. Bare `security` is whatever PATH says it is, and
+#: this tool runs from a shell the operator owns - the two halves have to be asking the
+#: same tool about the same item, or the row this prints is about something else.
+SECURITY_BIN = "/usr/bin/security"
 
 #: The schema the panel and this build of crabd agree on (docs/STATE-CONTRACT.md).
 SCHEMA_EXPECTED = 5
@@ -611,6 +615,32 @@ def _default_read_secret(prompt: str) -> str:
     return sys.stdin.readline()
 
 
+def _default_login_account(repo_root) -> str:
+    """The login user name, taken from crabd's own reader so the two halves cannot
+    disagree about WHOSE Keychain item is being talked about.
+
+    `getpass.getuser()` reads $LOGNAME, $USER, $LNAME and $USERNAME before it falls back
+    to the password database, so under `sudo -E`, in a shell that exports a different
+    USER, or from an agent with a stale environment it names somebody else - and this
+    tool then probes an item crabd never wrote, so `--status` says "none stored" for a
+    token that IS stored, which sends the operator to store it again.
+
+    crabd resolves it from the uid (`pwd.getpwuid(os.getuid()).pw_name`). If crabd cannot
+    be imported or cannot answer - an older build, a checkout with no companion/ - the
+    environment reading is still better than nothing, and the row it feeds says only
+    whether an item exists.
+    """
+    try:
+        account = _crabd_module(repo_root)._login_account()
+    except Exception:
+        account = None
+    if account:
+        return account
+    import getpass  # noqa: PLC0415 - the fallback path only
+
+    return getpass.getuser()
+
+
 @dataclass
 class Environment:
     """Everything this module is not allowed to reach for on its own.
@@ -645,14 +675,12 @@ class Environment:
 
     @classmethod
     def default(cls, repo_root=None) -> "Environment":
-        import getpass
-
         root = Path(repo_root or Path(__file__).resolve().parent.parent)
         return cls(
             home=Path(os.path.expanduser("~")),
             repo_root=root,
             uid=os.getuid(),
-            user=getpass.getuser(),
+            user=_default_login_account(root),
             now=lambda: datetime.now().astimezone(),
             run=_default_run,
             http_get=_default_http,
@@ -1339,15 +1367,21 @@ def validate_limits_token(token) -> str:
     return value
 
 
-def _crabd_platform(env: Environment):
-    """crabd's platform object, imported lazily - this is the only path that needs
-    companion/, and a setup run that never touches a token must not pay for it."""
-    companion = str(Path(env.repo_root) / "companion")
+def _crabd_module(repo_root):
+    """crabd, imported lazily off `repo_root`. The only paths that need companion/ are
+    the token ones and the account lookup, and a run that touches neither must not pay
+    for the import."""
+    companion = str(Path(repo_root) / "companion")
     if companion not in sys.path:
         sys.path.insert(0, companion)
     import crabd  # noqa: PLC0415 - lazy on purpose
 
-    return getattr(crabd, "PLATFORM", None)
+    return crabd
+
+
+def _crabd_platform(env: Environment):
+    """crabd's platform object, imported lazily."""
+    return getattr(_crabd_module(env.repo_root), "PLATFORM", None)
 
 
 def default_store_capable(env: Environment) -> bool:
@@ -1383,7 +1417,7 @@ def keychain_has_limits_token(env: Environment) -> bool:
     ask, and the value never enters this process.
     """
     code, _out, _err = env.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", env.user],
+        [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", env.user],
         timeout=10,
     )
     return code == 0
