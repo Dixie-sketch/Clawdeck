@@ -1146,4 +1146,36 @@ reasoning. Where two places state the same thing, the first named is the one to 
 
 ## Definition of done
 
-_(filled by the coordinator after the live install)_
+The walkthrough the brief calls the definition of done, run on this Mac on 2026-09-04 against the
+final tree, with the operator's approval and a full backup first
+(`~/sidecrab-port-backup-20260904-200742/`: `settings.json`, `~/.sidecrab`, the LaunchAgents
+listing; the installer took its own `settings.json.sidecrab-bak-20260904-200743` and
+`config.json.sidecrab-bak-20260904-200743` as well).
+
+- `./setup/install.sh --with-toast --no-approvals --yes` merged seven hook events into
+  `~/.claude/settings.json` (the operator's own UserPromptSubmit hook preserved beside them), took
+  the empty status-line slot, wrote `panelApprovals: false`, and registered and started
+  `com.sidecrab.crabd` and `com.sidecrab.toast`. `--status` read both agents running and 7 of 7
+  hooks present; `--doctor` passed 19 of 19 rows, including the smoke session through the real
+  hooks and the header gate answering 403 to an unheadered POST.
+- `http://localhost:9999` rendered the live panel in Chromium (Playwright) at 2560x720 with no
+  console errors: the limits gauges fed by the status line, the host row showing CPU and memory
+  with no temperature cells, `glow` as a dash and `toast` green, and the operator's own session as
+  a working card. Safari was opened on the same address for the operator. A headless
+  `claude -p` run fired the real hooks (hooksSeen went from 1 to 10).
+- Stopping crabd (`launchctl bootout`) produced `body.stale`, the worried grey crab, the dimmed
+  panel and the banner "crabd not responding - data as of 8:10 PM" in the open tab; bootstrapping
+  it again cleared the stale state within one poll.
+- From the browser: `s` opened the settings sheet with sixteen controls and a masked pairing-code
+  field; a tap on the moon chip wrote `quiet.override {mode: on}` into crabd through the Host,
+  origin and header gates, and two more taps handed quiet back to auto (`quiet: null`).
+- The limits gauges went live through the CLI credential read from the login Keychain; the
+  operator confirmed the earlier test notification appeared on screen. Not exercised live here:
+  a real permission approval from the browser (the pairing code and the decide gate are pinned by
+  tests and the Windows-era live verification still stands), and the Chrome application itself
+  (the extension was not connected; Chromium stood in).
+- The refresh cadence under the LaunchAgent was measured at the same time: 55 distinct snapshots
+  in two minutes, max gap 3.0 s, mean 2.19 s, so the App Nap question closed without a plist
+  change.
+- `./setup/update.sh` restarted both agents on the final code and re-merged the hooks
+  idempotently.
