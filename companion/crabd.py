@@ -7265,9 +7265,16 @@ class Handler(BaseHTTPRequestHandler):
                 # but said once, because a recorder that quietly stopped recording would
                 # make /v1/health's originsSeen an empty answer rather than a broken one,
                 # and that is the shape of failure this daemon forbids.
-                _log_once(ORIGIN_RECORD_LOG_KEY,
-                          f"crabd: the origin recorder raised {type(exc).__name__}; "
-                          f"originsSeen may be incomplete; this is logged once")
+                try:
+                    _log_once(ORIGIN_RECORD_LOG_KEY,
+                              f"crabd: the origin recorder raised {type(exc).__name__}; "
+                              f"originsSeen may be incomplete; this is logged once")
+                except Exception:   # noqa: BLE001 - the SAYING must not fail it either
+                    # `_log_once` prints, and a stderr that is closed or full raises. This
+                    # runs above every gate now, so an unguarded line here would kill the
+                    # request it was only describing: a panel that stops loading because
+                    # the daemon could not write a log line about a diagnostic.
+                    pass
 
     def do_GET(self):
         # SEC-4 (v0.16.0). The reads are gated exactly like the writes. /v1/state serves

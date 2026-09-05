@@ -641,6 +641,24 @@ def _default_login_account(repo_root) -> str:
     return getpass.getuser()
 
 
+def _lazy_login_account(repo_root) -> Callable[[], str]:
+    """The account, resolved on FIRST USE and remembered.
+
+    Resolving it means importing crabd, and that import is the one cost this tool defers:
+    a run that never asks about a Keychain item - an install, a doctor on a machine
+    without companion/ - must not pay for it. So `Environment.user` holds this callable
+    rather than a string, and `Environment.account` is what asks.
+    """
+    resolved = []
+
+    def resolve() -> str:
+        if not resolved:
+            resolved.append(_default_login_account(repo_root))
+        return resolved[0]
+
+    return resolve
+
+
 @dataclass
 class Environment:
     """Everything this module is not allowed to reach for on its own.
@@ -652,7 +670,10 @@ class Environment:
     home: Path
     repo_root: Path
     uid: int
-    user: str
+    #: A plain name, or a CALLABLE resolved on first use. `Environment.account` is what
+    #: reads it; the default is lazy so a run that asks about no Keychain item never
+    #: imports crabd to find out whose item it would be.
+    user: "str | Callable[[], str]"
     now: Callable[..., Any]
     run: Callable[..., Any]
     http_get: Callable[..., Any]
@@ -680,7 +701,7 @@ class Environment:
             home=Path(os.path.expanduser("~")),
             repo_root=root,
             uid=os.getuid(),
-            user=_default_login_account(root),
+            user=_lazy_login_account(root),
             now=lambda: datetime.now().astimezone(),
             run=_default_run,
             http_get=_default_http,
@@ -690,6 +711,11 @@ class Environment:
             path_dirs=tuple(p for p in os.environ.get("PATH", "").split(os.pathsep) if p),
             ask=input if sys.stdin.isatty() else None,
         )
+
+    @property
+    def account(self) -> str:
+        """The login user name - the ACCOUNT half of the Keychain items crabd writes."""
+        return self.user() if callable(self.user) else self.user
 
     # -- the paths this tool is allowed to touch, and no others
 
@@ -1368,9 +1394,13 @@ def validate_limits_token(token) -> str:
 
 
 def _crabd_module(repo_root):
-    """crabd, imported lazily off `repo_root`. The only paths that need companion/ are
-    the token ones and the account lookup, and a run that touches neither must not pay
-    for the import."""
+    """crabd, imported lazily off `repo_root`.
+
+    The only paths that need companion/ are the token ones and the account lookup, and a
+    run that touches neither must not pay for the import - which is why the account is a
+    callable resolved on first use (see _lazy_login_account) rather than a string built
+    for every Environment.
+    """
     companion = str(Path(repo_root) / "companion")
     if companion not in sys.path:
         sys.path.insert(0, companion)
@@ -1417,7 +1447,7 @@ def keychain_has_limits_token(env: Environment) -> bool:
     ask, and the value never enters this process.
     """
     code, _out, _err = env.run(
-        [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", env.user],
+        [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", env.account],
         timeout=10,
     )
     return code == 0

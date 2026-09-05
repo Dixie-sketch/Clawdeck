@@ -36,8 +36,26 @@ class LoginAccount(unittest.TestCase):
         with mock.patch.dict(os.environ, {"USER": "not-the-login-user",
                                           "LOGNAME": "not-the-login-user"}):
             env = setup.Environment.default(repo_root=REPO_ROOT)
-        self.assertEqual(env.user, crabd._login_account())
-        self.assertNotEqual(env.user, "not-the-login-user")
+        self.assertEqual(env.account, crabd._login_account())
+        self.assertNotEqual(env.account, "not-the-login-user")
+
+    def test_it_is_not_resolved_until_something_asks(self):
+        """The account comes out of crabd, and importing crabd is the one cost this tool
+        defers - `--doctor` on a machine with no companion/ must not pay it, and neither
+        must a plain `install`. So the field holds a CALLABLE until a Keychain row asks."""
+        env = setup.Environment.default(repo_root=REPO_ROOT)
+        self.assertTrue(callable(env.user))
+        self.assertEqual(env.account, env.account)      # resolved, and the same twice
+
+    def test_a_checkout_with_no_companion_still_answers(self):
+        """The fallback path, end to end: crabd cannot be imported at all, so the account
+        is the environment's reading and the row still prints. A tool that raised here
+        would take `--status` down over a diagnostic line."""
+        nowhere = REPO_ROOT / "no-such-checkout"
+        self.assertFalse((nowhere / "companion").exists())
+        resolve = setup._lazy_login_account(nowhere)
+        self.assertTrue(callable(resolve))
+        self.assertTrue(resolve())
 
 
 class PairingCode(TempHome):
@@ -272,6 +290,17 @@ class Status(TempHome):
         runner = RecordingRunner({"find-generic-password": (44, "", "not found")})
         self.status(run=runner, store_capable=lambda: True)
         self.assertIn("none stored", self.output)
+
+    def test_status_runs_where_crabd_cannot_be_imported_for_the_account(self):
+        """The lazy account resolved from a checkout that has no companion/: the import
+        fails, the environment reading answers instead, and the row still prints. This is
+        the whole reason the resolution is deferred AND has a fallback."""
+        runner = RecordingRunner({"find-generic-password": (44, "", "not found")})
+        self.status(run=runner, store_capable=lambda: True,
+                    user=setup._lazy_login_account(self.repo / "no-such-checkout"))
+        self.assertIn("none stored", self.output)
+        probe = runner.argv_for("find-generic-password")[0]
+        self.assertTrue(probe[-1])                     # an account was named
 
     def test_a_crabd_without_the_store_says_so_rather_than_none_stored(self):
         # "none stored" would send the operator to run --limits-token, which cannot work

@@ -1029,8 +1029,18 @@ class EveryModuleDisablesTheKeychainTests(unittest.TestCase):
                             and any("KEYCHAIN_CREDENTIALS_ENABLED" in ast.unparse(t)
                                     for t in node.targets)]
                 self.assertEqual(assigned, ["False"], path.name)
-                self.assertIn("KEYCHAIN_CREDENTIALS_ENABLED",
-                              ast.unparse(teardown), path.name)
+                restores = [node.value for node in ast.walk(teardown)
+                            if isinstance(node, ast.Assign)
+                            and any("KEYCHAIN_CREDENTIALS_ENABLED" in ast.unparse(t)
+                                    for t in node.targets)]
+                self.assertTrue(restores, path.name)
+                # RESTORED, not re-stated: a teardown assigning a literal would put back
+                # whatever that literal is rather than what the module borrowed - and a
+                # `= True` there is how the switch gets turned on for every module that
+                # runs afterwards, on a suite that would still look green.
+                for value in restores:
+                    self.assertNotIsInstance(value, ast.Constant,
+                                             f"{path.name}: {ast.unparse(value)}")
 
 
 class NoTestReachesTheRealSecurityBinaryTests(KeychainCase):

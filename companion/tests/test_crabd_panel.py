@@ -396,6 +396,38 @@ class HostAllowlistTests(PanelServed):
         self.probe("evil.example")
         self.assertFalse(self.acked())
 
+    def test_a_recorder_that_cannot_even_be_logged_about_still_answers(self):
+        """The diagnostic's own failure path must not become the failure.
+
+        `_record_origin` swallows anything the recorder raises and says so once - but the
+        saying is a `print` to stderr, and a stderr that is closed or full raises too.
+        That raise would come out of _record_origin, which now runs ABOVE every gate, so
+        the request it was merely describing would die on its way in: a panel that stops
+        loading because the daemon could not write a log line about a diagnostic.
+        """
+        recorder = self.builder.origins
+        original = (recorder.record, crabd._log_once)
+
+        def restore():
+            recorder.record, crabd._log_once = original
+
+        self.addCleanup(restore)
+
+        def broken_record(*_a, **_k):
+            raise RuntimeError("the recorder is unwell")
+
+        def broken_log(*_a, **_k):
+            raise OSError(9, "Bad file descriptor")     # a closed stderr
+
+        recorder.record = broken_record
+        crabd._log_once = broken_log
+        self.assertEqual(self.client.get("/v1/state").status, 200)
+        self.assertEqual(self.post_ack_all(self.panel_origin()).status, 204)
+        # ...and the refusal paths above it are unaffected too.
+        reply = self.client.get("/v1/state",
+                                headers={"Host": f"evil.example:{self.port}"})
+        self.assertEqual(reply.status, 403)
+
     def test_a_refused_host_still_records_the_origin_it_carried(self):
         """ORIGIN-REC is a DIAGNOSTIC and it never decides anything, so it belongs above
         every gate - including this one, which is the newest and the first to run.
