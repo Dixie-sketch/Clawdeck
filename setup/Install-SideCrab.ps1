@@ -69,7 +69,7 @@ param(
     [string] $ChainPath  = (Join-Path $HOME '.sidecrab\statusline-chain.json'),
     # NO -TaskName. It renamed the crabd task and nothing else, and nothing downstream could
     # find the result: Update, Repair and Test all discover by the catalogue's names, and
-    # SideCrab is single-instance by construction anyway - port 2722 is fixed in the component
+    # SideCrab is single-instance by construction anyway - port 9999 is fixed in the component
     # catalogue, in the hook fragment's URLs and in the status-line command, so a second
     # install could never have run beside the first. All the switch ever bought was an install
     # the rest of the toolchain could not see. See the "single instance" test in setup\tests.
@@ -96,7 +96,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
 
-$HookUrlMarker = '127.0.0.1:2722/v1/hook'
+$HookUrlMarker = '127.0.0.1:9999/v1/hook'
 $TokenPath     = Join-Path (Split-Path -Parent $ConfigPath) 'panel-token'
 $LimitsTokenPath = Join-Path (Split-Path -Parent $ConfigPath) 'limits-token.dpapi'
 
@@ -483,4 +483,4 @@ if ($PSCmdlet.ShouldProcess($ConfigPath, 'Configure panelApprovals')) {
     }
 }
 
-Write-Host 'Done. Check http://127.0.0.1:2722/v1/health'
+Write-Host 'Done. Check http://127.0.0.1:9999/v1/health'

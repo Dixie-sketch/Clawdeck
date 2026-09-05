@@ -1,8 +1,8 @@
 # Getting started with SideCrab
 
-A first-time walkthrough, from nothing installed to a crab on your Xeneon Edge that knows what
-your Claude Code sessions are doing. Budget about 20 minutes. Every step says what you should
-see, so you know when it worked.
+A first-time walkthrough on macOS, from nothing installed to a panel in your browser that knows
+what your Claude Code sessions are doing. Budget about 20 minutes. Every step says what you
+should see, so you know when it worked.
 
 If you already know the pieces, the [README](../README.md) is the reference; this page is the
 tour.
@@ -11,226 +11,394 @@ tour.
 
 ## 0. What you are installing
 
-Two things, and the second is optional:
+Two things, and only the first is required:
 
-1. **The widget.** A file you import into Corsair iCUE. It draws the panel: the crab, the clock,
-   your CPU and GPU temperatures, and, once the companion runs, your sessions.
-2. **The companion (`crabd`).** A small background service on the same PC. It reads what Claude
-   Code is doing and serves it to the widget over `127.0.0.1` only. Nothing leaves your machine.
+1. **The companion (`crabd`).** A small background service on your Mac. It reads what Claude Code
+   is doing, serves it as one JSON document on `127.0.0.1:9999`, **and serves the panel itself**
+   on the same port. Nothing leaves your machine.
+2. **The notifier.** Optional. Raises a macOS notification when a session has been waiting on you
+   for a while.
 
-Stop after step 2 and you have a handsome clock and temperature panel. Do step 3 and it comes
-alive.
+There is no separate panel to install. `http://localhost:9999` *is* the panel, so it exists only
+while crabd runs - a page with no crabd is a page that did not load, and your browser will say so
+in its own words rather than showing you a SideCrab screen.
 
 ---
 
 ## 1. Check you have what it needs
 
-Open **PowerShell 7** (the app is called "PowerShell 7", not "Windows PowerShell") and run each
-line. The expected answer is beside it.
+Open Terminal and run each line. The expected answer is beside it.
 
 | Check | Run | You want |
 |---|---|---|
-| Windows | `[Environment]::OSVersion.Version` | Major version 10 (Windows 10 or 11) |
-| iCUE | Open iCUE, Settings, About | 5.44 or newer, and a Xeneon Edge listed as a device |
-| Claude Code | `claude --version` | A version number. If it says "not recognized", install Claude Code first and sign in once |
-| PowerShell 7 | `$PSVersionTable.PSVersion` | 7.x |
-| Python | `python --version` | `Python 3.13.x`. If a Microsoft Store window opens instead, you have the Store alias, not Python: install from python.org and tick "Add python.exe to PATH" |
+| macOS | `sw_vers -productVersion` | This was built and measured on 26.6. Older is untested, not refused |
+| Python | `python3.13 --version` | `Python 3.13.x` or newer. `python3.14 --version` is just as good |
+| Claude Code | `claude --version` | A version number. If it says "command not found", install Claude Code first and sign in once |
 | Git | `git --version` | Any version |
 
-Not on Windows, or no iCUE? SideCrab cannot run. The widget is an iCUE widget and the companion
-is a Windows service; there is no other build.
+**If `python3.13` is not found**, check what you do have:
 
----
-
-## 2. Install the widget (5 minutes)
-
-1. Go to the [releases page](https://github.com/Dixie-sketch/Clawdeck/releases) and
-   download the newest `SideCrab-<version>.icuewidget` (companion-only releases, named
-   `crabd-…`, carry no widget file; pick the newest release that has one).
-2. Double-click the file. iCUE 5.46.67 or newer imports it directly. On an older iCUE, open the
-   Xeneon Edge's dashboard editor in iCUE and use its import option to pick the file.
-3. In iCUE, put the widget on the Xeneon Edge and make it **full-screen**. It is designed for the
-   whole 2560 × 720 display.
-
-**What you should see:** the crab, a large clock, and a line saying Claude Code stats need the
-companion. Temperatures appear once you pick sensors: open the widget's settings in iCUE and
-choose a CPU and a GPU sensor. Each reading shows the sensor's name beside it, so a wrong pick is
-obvious.
-
-If the panel is completely blank, with no crab and no clock, the widget did not load. Re-import
-the newest release; if it stays blank, [open an issue](https://github.com/Dixie-sketch/Clawdeck/issues)
-with your iCUE version.
-
----
-
-## 3. Install the companion (10 minutes)
-
-In PowerShell 7:
-
-```powershell
-git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
-cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1 -WithToast
+```sh
+/usr/bin/python3 --version   # Apple's: 3.9.6 on this machine, and the installer refuses it
+brew install python@3.13     # the fix
 ```
 
-`-WithToast` also installs the notifier, which raises a Windows notification when a session has
-been waiting on you for a while. Leave it off if you do not want toasts.
-
-The installer prints one line per thing it does. It:
-
-- registers a Scheduled Task that starts `crabd` at logon, and starts it now,
-- backs up `~/.claude/settings.json`, then adds the SideCrab hooks to it. Your other hooks are
-  untouched, and running the installer twice never duplicates anything,
-- registers the notifier's identity, under your user account only. No admin prompt,
-- asks about **panel approvals**. Answer **no** for now; section 6 covers it.
-
-Then check the result:
-
-```powershell
-pwsh -File .\setup\Install-SideCrab.ps1 -Status
-pwsh -File .\setup\Test-SideCrab.ps1
-```
-
-**What you should see:** `-Status` shows the crabd task Running and health `ok`. The smoke test
-prints a table with every row PASS. A FAIL row names what is wrong and what to do.
+The refusal is **by version, not by path**. The installer probes `$SIDECRAB_PYTHON`, then
+`python3.14`, `python3.13` and `python3` across `PATH`, `/opt/homebrew/bin` and
+`/usr/local/bin`, asking each one what it is. The absolute path it settles on is written into
+the LaunchAgent files, because an agent does not inherit your login `PATH`.
 
 ---
 
-## 4. Your first session
+## 2. Clone it
+
+```sh
+git clone https://github.com/Dixie-sketch/Clawdeck.git ~/SideCrab
+cd ~/SideCrab
+```
+
+Anywhere you like; the installer records the path it was run from. Keep it somewhere you will
+not move, because the LaunchAgents point at these files.
+
+The three wrappers work out their own directory, so it does not matter where you run them from:
+`./setup/install.sh` inside the checkout and `~/SideCrab/setup/update.sh` from anywhere else both
+act on this checkout.
+
+---
+
+## 3. Install (5 minutes)
+
+```sh
+./setup/install.sh --with-toast
+```
+
+`--with-toast` also loads the notifier agent. Leave it off if you do not want notifications; you
+can add it later by re-running with the flag.
+
+Partway through it stops and asks:
+
+```
+  Panel approvals let a tap in the browser panel allow or deny a tool call.
+    - crabd holds each permission prompt for at most 55 s and NEVER auto-allows
+    - no tap, a timeout, or approvals off all fall back to the terminal dialog
+    - a tap is only honoured with the pairing code - print it with install.sh --pairing-code
+  Enable panel approvals? [y/N]
+```
+
+**Answer no for now.** Section 8 covers it. (`--yes` takes every default without asking;
+`--with-approvals` and `--no-approvals` answer it on the command line.)
+
+**What you should see:** one line per thing it did, ending with the panel's address. It
+refuses before writing anything if something else already holds port 9999; it backs
+`~/.claude/settings.json` up to `<path>.sidecrab-bak-YYYYMMDD-HHMMSS` before merging the hooks;
+it takes the `statusLine` slot and saves whatever was there; and it loads
+`com.sidecrab.crabd` (and `com.sidecrab.toast`) as LaunchAgents.
+
+Those agents carry `RunAtLoad` and `KeepAlive`, which is the last thing you have to think about
+starting: **crabd comes up when you log in, and launchd restarts it if it ever dies.** Nothing
+below asks you to start it by hand, and a reboot needs no ceremony.
+
+Then check it:
+
+```sh
+./setup/install.sh --status
+```
+
+**What you should see:** the agents `loaded, running` with a pid, `service: ok - crabd answered
+and the agent is running - it owns port 9999`, `hooks: 7 of 7 present`, and
+`panel: http://localhost:9999`. `--status` writes nothing at all.
+
+---
+
+## 4. The Keychain prompt
+
+Claude Code keeps its credential in your login Keychain (service `Claude Code-credentials`), not
+in a file - on the machine this was written on, `~/.claude/.credentials.json` does not exist at
+all. A process that is not on that item's access list gets a macOS dialog the first time it reads
+it, and crabd reads it through `/usr/bin/security`.
+
+**What you should see:** one dialog, shortly after the first install, naming the `security` tool
+and the `Claude Code-credentials` item. Choose **Always Allow** and it does not come back.
+
+If you dismiss it, nothing breaks and nothing is guessed: the LIMITS gauges go dark and the panel
+says the Keychain refused, pointing you back at the prompt rather than telling you to log in
+again. The two failures - "there are no credentials" and "this process was not allowed to see
+them" - have different fixes, so they are different messages.
+
+---
+
+## 5. Open the panel
+
+Open **<http://localhost:9999>** in Safari.
+
+**What you should see:** the crab, a large clock, the LIMITS gauges filling in with your current
+usage and reset times, and a hardware row with this Mac's CPU and memory. No session cards yet -
+you have not started a session.
+
+Now open the same address in a second browser - Chrome, or any Chromium build, which is what the
+port was checked in. **What you should see:** the same panel. What does *not*
+carry across is settings: each browser keeps its own copy on the panel's address, so a colour or
+a pairing code set in one is not set in the other. That is the same-origin policy doing its job,
+and section 8 explains why it matters for the pairing code.
+
+Resize the window. The layout is a set of media queries, not a fixed canvas: a laptop window
+gets three card columns, a tablet-shaped window two, a phone-shaped one gets a single column with
+the gauges side by side.
+
+---
+
+## 6. Your first session
 
 Open a terminal, `cd` into any project, and run `claude`. Ask it anything.
 
 **What you should see:** within a few seconds a card appears on the panel with the session's
-title, the repo name, and a WORKING state. The two LIMITS gauges fill in with your current usage
-and reset times. When the session finishes its turn, the card turns DONE; when it asks you a
-question, the card turns to NEEDS INPUT and the crab perks up.
+title, the repo name, and a WORKING state. When the session finishes its turn the card turns
+DONE; the crab may put its sunglasses on and dance if the turn was a real one.
 
-If no card appears, the hooks are not reaching the companion. Run `Test-SideCrab.ps1` and look
-at the hook rows.
-
----
-
-## 4b. Keep the limit gauges alive (two commands, once)
-
-The LIMITS gauges read Claude Code's own sign-in token, which expires about six hours after the
-last time a terminal `claude` made a request. If you mostly use the desktop app, the gauges will
-show "token expired" by the next morning. Fix it once:
-
-```powershell
-claude setup-token
-pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
-```
-
-The first command opens a browser sign-in and prints a long-lived token; paste it into the
-second. It is stored encrypted for your Windows account, and used only when the short-lived one
-has expired.
-
-## 5. Make it yours (optional)
-
-All of these live in `~/.sidecrab/config.json`, and most are also on the panel's settings sheet.
-The file is created for you; every key is optional.
-
-```jsonc
-{
-  "quietHours": { "start": "22:00", "end": "07:00" },  // dim the panel, no toasts, no glow
-  "toast":  { "enabled": true, "thresholdSec": 120 },  // toast after a session waits this long
-  "digest": { "enabled": true, "time": "09:00" },      // one "yesterday" summary toast a day
-  "budget": { "dailyOutputTokens": 5000000 },          // a daily token budget marker and toast
-  "continuePrompts": ["Continue", "Run the tests"],    // extra next-step buttons on a card
-  "recapRepos": ["C:\\Dev\\my-project"]                // repos whose commits count in the recap
-}
-```
-
-The moon button beside the clock is quiet hours on the glass: tap for an hour of quiet, tap again
-to stay awake through tonight's window, tap again to go back to the schedule.
+If no card appears, the hooks are not reaching the companion. Run `./setup/install.sh --doctor`
+and look at the hook rows.
 
 ---
 
-## 6. Approving permission requests from the panel (optional, read first)
+## 7. Watch it ask you something
+
+Ask the session a question it has to come back to you with - anything that makes it stop and
+wait rather than finish.
+
+**What you should see:** the card turns to NEEDS INPUT, the crab perks up and glows, and (if you
+installed the notifier) a macOS notification arrives once the session has been waiting past the
+threshold - 120 seconds by default. The notification is attributed to **Script Editor**, because
+that is who `osascript` posts as; the subtitle always says SideCrab. It has no buttons: you
+acknowledge on the panel, where the context is.
+
+The very first notification a process posts can raise a one-time macOS permission prompt for
+Script Editor. To meet that at a prompt rather than wonder why an alert was silent, fire one
+deliberately:
+
+```sh
+python3 notifier/sidecrab_toast.py --test-toast
+```
+
+**If you dismiss that prompt, every alert after it is lost silently.** Nothing appears on screen;
+the notifier logs the failure and re-arms the waiting question for its next poll, so the panel
+still knows and you never hear about it. The switch is Script Editor's, not SideCrab's: turn it
+back on in **System Settings > Notifications > Script Editor**, then run `--test-toast` again to
+confirm.
+
+Now try the panel's controls:
+
+| Do this | What happens |
+|---|---|
+| Click the card | Its sheet opens: the question, the subagents, the last event |
+| Click the crab, or press `a` | Every waiting session is acknowledged at once; the glow stops |
+| Press and hold a card, or press `p` with it focused | It is pinned to the front. Again to unpin |
+| Drag a card sideways, or press Delete | Acknowledge or dismiss it |
+| The filter chips, top right | Show only waiting / working / finished. It is a view: the glow, the crab and the notification threshold still see every session |
+| The density chip | Comfortable or compact cards |
+| The moon beside the clock | Quiet for an hour, then "stay awake through tonight's window", then back to the schedule. The choice is written to `~/.sidecrab/config.json` by crabd, so it survives a reload |
+| Click a stopped card | Pick a next step: Continue, Run the tests, Commit + push, or any you added to `continuePrompts`. It is delivered the next time that session's Stop hook fires |
+| Press `s` | The settings sheet: quiet hours, notifications, the budget, the crab style, the accent colour, the pairing code |
+
+The continue prompts are a **fixed vocabulary**. There is no free-text box on the panel, and no
+supported way to inject arbitrary text into a live session.
+
+---
+
+## 8. Approving permission requests from the panel (optional, read first)
 
 When a Claude Code session stops to ask permission for a tool call, the card can show Approve
 and Deny buttons, and a tap decides it. This is off by default because it is a real security
 control, and it needs a one-time pairing so that only your panel, not a web page you happen to
 visit, can decide.
 
-1. Print the pairing code the companion made for this PC:
+1. Turn approvals on:
 
-   ```powershell
-   pwsh -File .\setup\Install-SideCrab.ps1 -PairingCode
+   ```sh
+   ./setup/install.sh --with-approvals
    ```
 
-2. In iCUE, open the widget's settings and paste the code into **Approval Pairing Code**.
-3. Turn approvals on:
+2. Print the pairing code crabd minted for this machine:
 
-   ```powershell
-   pwsh -File .\setup\Install-SideCrab.ps1 -WithApprovals
+   ```sh
+   ./setup/install.sh --pairing-code
    ```
 
-4. Prove it on a throwaway session before you trust it. Open `claude` in an empty folder, ask
-   it to run a command your settings do not pre-allow, and when the card shows the request,
-   tap Approve. The command should run with no dialog in the terminal. Then do one Deny and
-   confirm the command does not run. `setup\Verify-PanelApproval.ps1` walks through this with
-   the exact commands.
+3. Open the panel's settings sheet (`s`), find **Approval Pairing Code**, and paste it in.
+
+4. Prove it on a throwaway session before you trust it. Open `claude` in an empty folder, ask it
+   to run a command your settings do not pre-allow, and when the card shows the request, tap
+   Approve. The command should run with no dialog in the terminal. Then do one Deny and confirm
+   the command does not run.
 
 What to expect while it is on: a request waits on the panel for up to 55 seconds. If you do not
 tap, or the companion is down, or the code is wrong, the normal terminal dialog appears and
-decides, exactly as if SideCrab were not installed. The README's "Before you turn on panel
-approvals" section has the full guarantees.
+decides, exactly as if SideCrab were not installed. The terminal dialog is **raced, not
+suppressed**: whichever surface answers first wins.
+
+**The code lives in the browser you pasted it into**, in that browser's storage on the panel's
+address. Only a page on that address can read it - but that is a weaker guarantee than the iCUE
+property it replaces, because a script running on the panel's own origin can. The README's
+"Before you turn on panel approvals" and [`SECURITY.md`](../SECURITY.md) have the full argument
+and what the code is only one factor of.
 
 ---
 
-## 7. Everyday use
+## 9. Prove it fails honestly
 
-| Do this | To |
-|---|---|
-| Tap a card | Read its question or its last event |
-| Swipe a card | Acknowledge or dismiss it |
-| Press and hold a card | Pin it to the front |
-| Tap the crab, or two-finger tap anywhere | Acknowledge everything at once |
-| Tap a card that has stopped | Send it a next step: Continue, Run the tests, or your own |
-| Tap a limit gauge | See when the window resets and when your current pace would fill it |
-| Tap a day in the week strip | Drill into that day |
-| Pull down from the top | Refresh now |
+The most useful thing you can do before you trust a status panel is watch it lie badly on
+purpose. Stop the companion:
 
-The crab is the summary. Calm means nothing needs you. Alert with a glow means a session is
-waiting. Worried and grey means the data is stale: the companion stopped, or the feed is older
-than 30 seconds. The panel never shows old numbers as if they were fresh.
-
----
-
-## 8. Updating and removing
-
-```powershell
-git -C C:\Dev\sidecrab pull
-pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1
+```sh
+launchctl bootout gui/$(id -u)/com.sidecrab.crabd
 ```
 
-That updates the companion. The widget updates separately: download the new `.icuewidget` from
-the releases page and import it again. The two sides tolerate a version gap, so the order does
-not matter. After an import, check the widget's settings; iCUE can reset them, including the
-pairing code.
+**What you should see, in the tab you already have open:** within about 30 seconds the crab turns
+grey and worried and a banner appears reading `crabd not responding — data as of HH:MM`. The
+cards do not disappear and the numbers do not go to zero - the last good document stays on the
+glass, dated. That is the whole design: a green-looking panel always means fresh data.
 
-To remove everything the installer added, including the hooks in `~/.claude/settings.json`:
+**What you should see in a new tab:** a browser connection error. There is nothing serving a
+page, so there is nothing to show you a nicer message.
 
-```powershell
-pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1
+Start it again:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sidecrab.crabd.plist
 ```
 
-Remove the widget from the Edge in iCUE as you would any other widget.
+(Re-running `./setup/install.sh` does the same thing, plus everything else it does.) The banner
+clears on the next poll, within three seconds.
 
 ---
 
-## 9. When something is wrong
+## 10. The doctor
+
+```sh
+./setup/install.sh --doctor
+```
+
+**What you should see:** a PASS/FAIL table with a row for each agent, the interpreter, health,
+the state document's reachability, schema and freshness, the panel, the panel's and the
+notifier's accepted schemas, the header gate, the three hook events, the hook cycle,
+`config.json`, the status-line chain, the limits token and panel approvals. A FAIL row names what
+is wrong; the command exits non-zero if any row failed.
+
+**`--doctor` is not read-only.** It posts a real SessionStart / Notification / SessionEnd cycle
+for the session id `smoke-test` to prove the write path end to end, and it POSTs to `/v1/hook`
+*without* the `X-SideCrab-Panel` header to prove the header gate is live. The cycle cleans up
+after itself - SessionEnd is sent from a `finally`, so even a crash mid-run clears the row - but
+crabd persists every hook event, so the run leaves three rows in `~/.sidecrab/history.jsonl` and
+they appear in that day's history. Use `--status` when you want a look and no footprint.
+
+---
+
+## 11. Make it yours (optional)
+
+All of these live in `~/.sidecrab/config.json`, and most are also on the panel's settings sheet.
+The file is created for you; every key is optional.
+
+```jsonc
+{
+  "quietHours": { "start": "22:00", "end": "07:00" },  // dim the panel, no notifications
+  "toast":  { "enabled": true, "thresholdSec": 120 },  // alert after a session waits this long
+  "digest": { "enabled": true, "time": "09:00" },      // one "yesterday" summary a day
+  "budget": { "dailyOutputTokens": 5000000 },          // a daily token budget marker and alert
+  "continuePrompts": ["Continue", "Run the tests"],    // extra next-step buttons on a card
+  "recapRepos": ["/Users/you/dev/my-project"]          // repos whose commits count in the recap
+}
+```
+
+The `toast` key keeps its name on the wire even though the panel now calls the switch "Desktop
+Notifications": a contract key is not a label.
+
+---
+
+## 12. Updating and removing
+
+```sh
+git -C ~/SideCrab pull
+~/SideCrab/setup/update.sh
+```
+
+That refreshes the plists from the checkout and restarts crabd - and because crabd serves the
+panel from the same checkout, the pull updates the panel too. Reload the tab. `update.sh` refuses
+to restart over a port held by something else, and names the PID rather than starting blind.
+
+To remove everything the installer added, including the hooks in `~/.claude/settings.json` and
+the status-line slot:
+
+```sh
+~/SideCrab/setup/uninstall.sh
+```
+
+It takes back what SideCrab wrote and nothing else: your own hooks stay, your prior status-line
+command is restored, and `~/.sidecrab` and every backup survive. `uninstall.sh --purge` deletes
+`~/.sidecrab` too, after telling you what is in it and asking.
+
+There is no notifier-only removal: `--with-toast` only ever *adds* the notifier, so re-running
+without it changes nothing, and `uninstall.sh` removes everything. To drop just the notifier,
+`launchctl bootout gui/$(id -u)/com.sidecrab.toast` and delete
+`~/Library/LaunchAgents/com.sidecrab.toast.plist`.
+
+---
+
+## 13. Two macOS things worth knowing
+
+### App Nap and timer coalescing - measured, and no plist key
+
+macOS can throttle a background process's timers. Whether it throttles a `KeepAlive` LaunchAgent
+was measured on this hardware rather than guessed: two minutes of sampling the feed's own
+timestamp gave **55 distinct snapshots, max gap 3.0 s, mean 2.19 s, none over 4 s**, against a
+2 s rebuild. So the plists carry **no `ProcessType` key** and the default scheduling stands.
+
+That reading was taken with the machine in normal use. The case where a throttle would show -
+idle, on battery, lid shut - has not been measured. To take your own reading:
+
+```sh
+for i in $(seq 1 120); do
+  curl -s localhost:9999/v1/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["generatedAt"])'
+  sleep 1
+done > /tmp/generated.txt
+
+python3 - <<'PY'
+from datetime import datetime
+stamps = [datetime.fromisoformat(line.strip().replace("Z", "+00:00"))
+          for line in open("/tmp/generated.txt") if line.strip()]
+gaps = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
+print("max gap %.1fs over %d samples" % (max(gaps), len(stamps)))
+PY
+```
+
+Record any number you get in [`PORT-NOTES.md`](PORT-NOTES.md) before changing anything about the
+plist. Do not add a `ProcessType` on the strength of a forum post.
+
+### TCC (the "would like to access your Documents folder" dialogs)
+
+crabd **reads** `~/.claude` (transcripts and settings) and **writes only** `~/.sidecrab` (its own
+config, history, logs and pairing code). The installer is the thing that writes
+`~/.claude/settings.json`, and it does so once, with a backup, when you run it - not from the
+agent. None of those is a TCC-protected location, so no folder-access dialog is expected.
+
+If a future change makes crabd read `~/Documents`, `~/Desktop`, `~/Downloads` or an iCloud
+folder, macOS will prompt - and under a LaunchAgent that prompt can appear detached from any
+window, with a denial that is permanent until it is reset in System Settings. Treat "the daemon
+needs a new directory" as a decision with a user-visible cost, not a detail.
+
+---
+
+## 14. When something is wrong
 
 | You see | Try |
 |---|---|
-| Blank panel, no crab | Re-import the newest `.icuewidget`; then open an issue with your iCUE version |
-| Worried grey crab, "data as of HH:MM" | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
-| No session cards | `Test-SideCrab.ps1`; check `~/.claude/settings.json` still has the SideCrab hooks |
-| Gauges show a dash and "token expired" | The CLI token lives ~6 h. Store a long-lived one: `claude setup-token`, then `Install-SideCrab.ps1 -LimitsToken` (README, "Keeping the limit gauges alive") |
-| Temperatures frozen or wrong | Pick the right sensor in the widget's settings; the row names the one it reads |
-| "not paired" or "pairing code wrong" on Approve | Re-paste the code from `-PairingCode` into the widget's settings |
-| Anything else | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL row for every piece |
+| The browser cannot connect | crabd is not running. `./setup/install.sh --status`, then `./setup/update.sh` |
+| Worried grey crab, "data as of HH:MM" | The same: the agent stopped, or the feed is older than 30 s |
+| No session cards | `./setup/install.sh --doctor`; check `~/.claude/settings.json` still has the SideCrab hooks. If you set `allowedHttpHookUrls`, both host forms have to be in it |
+| Gauges show a dash and "token expired" | The CLI token lives ~6 h. Store a long-lived one: `claude setup-token`, then `./setup/install.sh --limits-token` (README, "Keeping the limit gauges alive") |
+| Gauges show a dash and a Keychain note | Approve the `Claude Code-credentials` prompt (Always Allow), or run `claude` in a terminal |
+| `Address already in use` on port 9999 | `lsof -nP -iTCP:9999 -sTCP:LISTEN`, then stop it. crabd stops loudly rather than moving to another port |
+| The installer refuses your Python | It is Apple's 3.9 stub. `brew install python@3.13`, or set `$SIDECRAB_PYTHON` |
+| "not paired" or "pairing code wrong" on Approve | Re-paste the code from `--pairing-code` into that browser's settings sheet. Each browser needs it once |
+| Anything else | `./setup/install.sh --doctor` prints a PASS/FAIL row for every piece |
 
-Still stuck? [Open an issue](https://github.com/Dixie-sketch/Clawdeck/issues) with the smoke-test
+Still stuck? [Open an issue](https://github.com/Dixie-sketch/Clawdeck/issues) with the doctor
 table. Please do not paste anything from `~/.claude`; it holds your session transcripts.

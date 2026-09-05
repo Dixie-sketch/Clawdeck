@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,11 @@ def setUpModule():
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
@@ -78,6 +84,7 @@ def tearDownModule():
     # another module's test failing. Cleared here so the module hands back what it found.
     crabd.Handler.builder = None
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 MOCK_LIMITS = {
@@ -1325,7 +1332,11 @@ class LimitsTokenFallbackTests(unittest.TestCase):
     """v0.30.0: the long-lived token in ~/.sidecrab/limits-token.dpapi is used only when
     the CLI's own token is expired, and never leaks. urlopen is stubbed so no test talks
     to the usage endpoint; the DPAPI reader is stubbed except in the one Windows-only
-    round-trip test."""
+    round-trip test.
+
+    The reader names platform=WindowsPlatform() explicitly: the store is a DPAPI blob,
+    so its precedence rules are a Windows claim and must keep being proven on every
+    host rather than only on the one that would have selected that platform."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1356,7 +1367,8 @@ class LimitsTokenFallbackTests(unittest.TestCase):
         self.reject = False
         crabd.urllib.request.urlopen = fake_urlopen
         crabd._dpapi_unprotect = lambda blob: blob[::-1]     # "decrypt" = reverse
-        self.reader = crabd.LimitsReader(cache_file=root / "cache.json")
+        self.reader = crabd.LimitsReader(cache_file=root / "cache.json",
+                                         platform=crabd.WindowsPlatform())
 
     def tearDown(self):
         (crabd.CREDENTIALS_FILE, crabd.LIMITS_TOKEN_FILE,
@@ -1367,7 +1379,7 @@ class LimitsTokenFallbackTests(unittest.TestCase):
             "accessToken": token, "expiresAt": int(time.time() * 1000) + expires_in_ms,
             "subscriptionType": "max", "rateLimitTier": "t"}}), encoding="utf-8")
 
-    def store_token(self, token="sk-ant-oat01-long"):
+    def store_token(self, token="sk-ant-oat01-longlonglong"):
         self.token_file.write_bytes(token.encode()[::-1])
 
     def test_a_fresh_cli_token_wins_even_when_a_long_lived_one_is_stored(self):
@@ -1382,8 +1394,8 @@ class LimitsTokenFallbackTests(unittest.TestCase):
         out = self.reader.get(time.time(), force=True)
         self.assertTrue(out["available"])
         self.assertEqual(out["tokenSource"], "sidecrab")
-        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-long"])
-        self.assertNotIn("sk-ant-oat01-long", json.dumps(out))
+        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-longlonglong"])
+        self.assertNotIn("sk-ant-oat01-longlonglong", json.dumps(out))
 
     def test_a_missing_cli_file_still_uses_the_long_lived_token(self):
         self.store_token()
@@ -2036,8 +2048,8 @@ class ServeTests(TempProjects):
         self.assertEqual(body["version"], crabd.VERSION)
         self.assertEqual(sorted(body),
                          ["hooksSeen", "lastStatuslineAgeSec", "ok", "originsSeen",
-                          "otlpSeen", "panelToken", "statuslineSeen", "uptimeSec",
-                          "version"])
+                          "otlpSeen", "panel", "panelToken", "statuslineSeen",
+                          "uptimeSec", "version"])
 
     def test_state_matches_the_contract_shape(self):
         response, state = self.get("/v1/state")
@@ -3053,7 +3065,7 @@ class UserConfigTests(unittest.TestCase):
 # ------------------------------------------------------- schema 2: served over a socket
 
 class ServedOverASocket(TempProjects):
-    """A real crabd server on a test port - never 2722. No tests of its own; the
+    """A real crabd server on a test port - never DEFAULT_PORT. No tests of its own; the
     endpoint suites below inherit the fixture."""
 
     SID = "33333333-0000-0000-0000-000000000009"
@@ -3075,7 +3087,7 @@ class ServedOverASocket(TempProjects):
         crabd.Handler.builder = self.builder
         self.server, self.thread, self.port, self.client = start_test_server(
             lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
-        self.assertNotEqual(self.port, 2722)
+        self.assertNotEqual(self.port, crabd.DEFAULT_PORT)
         self.addCleanup(self.stop_server)
         self.addCleanup(self.client.close)
 
@@ -3193,7 +3205,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.30.0")
+        self.assertEqual(crabd.VERSION, "0.34.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -4437,11 +4449,17 @@ NOT_FOUND = (1, "", "ERROR: The system cannot find the file specified.\r\r\n")
 
 
 class FleetMappingTests(unittest.TestCase):
-    """crabd's half of the fleet contract, with the subprocess mocked."""
+    """crabd's half of the fleet contract, with the subprocess mocked.
+
+    `platform=WindowsPlatform()` is explicit rather than defaulted so the schtasks task
+    names and the csv mapping keep being proven on EVERY host, not only on the one that
+    would have selected that platform anyway.
+    """
 
     @staticmethod
     def reader(results):
-        return crabd.FleetReader(runner=FakeSchtasks(results))
+        return crabd.FleetReader(runner=FakeSchtasks(results),
+                                 platform=crabd.WindowsPlatform())
 
     def status(self, result):
         return self.reader({"SideCrab-glow": result}).status("SideCrab-glow")
@@ -4503,7 +4521,7 @@ class FleetMappingTests(unittest.TestCase):
 
     def test_the_query_is_cached_for_sixty_seconds(self):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
-        fleet = crabd.FleetReader(runner=runner)
+        fleet = crabd.FleetReader(runner=runner, platform=crabd.WindowsPlatform())
         now = time.time()
         self.assertTrue(fleet.poll(now))
         self.assertFalse(fleet.poll(now + crabd.FLEET_REFRESH_SEC - 1))
@@ -4526,7 +4544,7 @@ class FleetOffRequestPathTests(TempProjects):
 
     def test_building_the_state_never_runs_schtasks(self):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
-        fleet = crabd.FleetReader(runner=runner)
+        fleet = crabd.FleetReader(runner=runner, platform=crabd.WindowsPlatform())
         builder = crabd.StateBuilder(
             crabd.TranscriptStore(self.projects), crabd.HookTracker(), StubLimits(),
             time.time(), None, None, fleet)
@@ -4545,7 +4563,7 @@ class FleetOffRequestPathTests(TempProjects):
         wedged schtasks leaves the LAST reading standing rather than a dead document."""
         boom = FakeSchtasks({"SideCrab-glow": OK_GLOW,
                              "SideCrab-toast": subprocess.TimeoutExpired("schtasks", 10)})
-        fleet = crabd.FleetReader(runner=boom)
+        fleet = crabd.FleetReader(runner=boom, platform=crabd.WindowsPlatform())
         fleet.poll(time.time())
         self.assertEqual(fleet.get(), {"glow": "running", "toast": "unknown"})
 
@@ -4557,7 +4575,8 @@ class FleetServedOverASocket(ServedOverASocket):
         runner = FakeSchtasks({"SideCrab-glow": OK_GLOW,
                                "SideCrab-toast": (0, schtasks_csv("SideCrab-toast",
                                                                   "Ready"), "")})
-        self.builder.fleet = crabd.FleetReader(runner=runner)
+        self.builder.fleet = crabd.FleetReader(
+            runner=runner, platform=crabd.WindowsPlatform())
         self.builder.fleet.poll(time.time())
         with self.builder._lock:
             self.builder._state = self.builder.build()
@@ -5957,7 +5976,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.30.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.34.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -7706,19 +7725,169 @@ class ContinueEndpointTests(V12ServedTests):
             self.assertEqual(json.loads(body), {}, raw)
 
 
+#: The versioned-directory layout, measured on this Mac 2026-09-04:
+#: ~/.local/bin/claude -> ~/.local/share/claude/versions/2.1.260, a Mach-O executable.
+_CLAUDE_VERSIONS_DIR = "versions"
+#: The npm layout, the same two path segments the WinGet path below ends with.
+_CLAUDE_NPM_SEGMENTS = ("@anthropic-ai", "claude-code")
+
+
+def _claude_layout_version(path: Path) -> str | None:
+    """The CLI version this resolved path DECLARES, or None if the path is not in a
+    layout the CLI actually installs in.
+
+    Recognising the layout is not fussiness, it is the difference between skipping and
+    a false alarm: mise / nvm / asdf put a `#!/bin/sh` wrapper named `claude` on PATH,
+    and streaming EVIDENCE needles at a shell script fails every one of them with a
+    message that says the CLI changed under a shipping write path.
+    """
+    if path.parent.name == _CLAUDE_VERSIONS_DIR:
+        return path.name                     # .../versions/<version>
+    parts = path.parts
+    if any(parts[i:i + 2] == _CLAUDE_NPM_SEGMENTS for i in range(len(parts) - 1)):
+        manifest = path.parent.parent / "package.json"
+        try:
+            return json.loads(manifest.read_text(encoding="utf-8"))["version"]
+        except Exception:   # noqa: BLE001 - a missing/renamed manifest is not the claim
+            return "unknown"
+    return None
+
+
 def _shipped_claude_binary():
     """The shipped CLI, or None. `CRABD_CLAUDE_BINARY` overrides for a differently
-    installed host; the default is this machine's WinGet-managed Node install."""
+    installed host.
+
+    Two defaults, because the CLI installs two different ways. Windows: the WinGet-
+    managed Node install, named in full. Elsewhere: whatever `claude` PATH points at,
+    RESOLVED (the launcher is a symlink into a versioned directory) and then CHECKED
+    against the layouts above - an unrecognised one is None, so the pin skips rather
+    than measuring something that is not the CLI.
+    """
     override = os.environ.get("CRABD_CLAUDE_BINARY")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" /
-            "Packages" /
-            "OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe" /
-            "node-v24.16.0-win-x64" / "node_modules" / "@anthropic-ai" /
-            "claude-code" / "bin" / "claude.exe")
-    return path if path.is_file() else None
+    if sys.platform == "win32":
+        path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" /
+                "Packages" /
+                "OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe" /
+                "node-v24.16.0-win-x64" / "node_modules" / "@anthropic-ai" /
+                "claude-code" / "bin" / "claude.exe")
+        return path if path.is_file() else None
+    found = shutil.which("claude")
+    if not found:
+        return None
+    path = Path(found).resolve()
+    if not path.is_file() or _claude_layout_version(path) is None:
+        return None
+    return path
+
+
+@unittest.skipIf(sys.platform == "win32",
+                 "the WinGet path is the Windows branch and is asserted by using it")
+class ShippedClaudeBinaryPathLookupTests(unittest.TestCase):
+    """Where the shape pin below LOOKS for the CLI when the host is not Windows.
+
+    Off Windows there is no WinGet layout to name, so PATH is the answer - and the
+    launcher on PATH is normally a symlink into a versioned directory, which is why the
+    lookup resolves before checking. Without this the pin would skip on every non-Windows
+    host, and a shape pin that never runs is a shape pin that proves nothing.
+    """
+
+    def setUp(self):
+        """PATH is set to a temp bin/ and the REAL shutil.which runs over it. A stubbed
+        `which` would let a test assert a shape the resolver never actually produces -
+        executability and dangling links are its rules, not this file's."""
+        override = os.environ.pop("CRABD_CLAUDE_BINARY", None)
+        if override is not None:
+            self.addCleanup(os.environ.__setitem__, "CRABD_CLAUDE_BINARY", override)
+        original_path = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", original_path)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        os.environ["PATH"] = str(self.bin)
+
+    def launcher(self, target: Path):
+        """`claude` on PATH, as a symlink - which is how every installer writes it."""
+        (self.bin / "claude").symlink_to(target)
+
+    def executable(self, path: Path, body=b"\x7fELF\x02\x01\x01"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        path.chmod(0o755)
+        return path
+
+    def test_the_versioned_directory_layout_resolves_to_the_real_file(self):
+        """The layout measured on this Mac:
+        ~/.local/bin/claude -> ~/.local/share/claude/versions/<version>."""
+        real = self.executable(self.root / "share" / "claude" / "versions" / "2.1.260")
+        self.launcher(real)
+        found = _shipped_claude_binary()
+        # real.resolve() rather than real: macOS's own temp root is a symlink
+        # (/var/folders -> /private/var/folders), so the expectation has to be resolved
+        # too or this asserts the platform's quirk instead of the lookup's behaviour.
+        self.assertEqual(found, real.resolve())
+        self.assertNotEqual(found, self.bin / "claude")   # the symlink is not the answer
+
+    def test_the_npm_layout_is_accepted_too(self):
+        real = self.executable(self.root / "node_modules" / "@anthropic-ai" /
+                               "claude-code" / "cli.js")
+        self.launcher(real)
+        self.assertEqual(_shipped_claude_binary(), real.resolve())
+
+    def test_a_shell_shim_on_path_is_refused(self):
+        """THE ONE THAT MATTERS. mise / nvm / asdf put a `#!/bin/sh` wrapper named
+        `claude` on PATH. Its bytes are a shell script, so every EVIDENCE needle is
+        missing from it - and the shape pin would then hard-fail saying the CLI changed
+        under a shipping write path, which is the exact false alarm its docstring
+        forbids. An unrecognised layout must SKIP, not fail."""
+        shim = self.executable(self.bin / "claude",
+                               b"#!/bin/sh\nexec mise x -- claude \"$@\"\n")
+        self.assertTrue(shim.is_file())          # it really is on PATH and executable
+        self.assertIsNone(_shipped_claude_binary())
+
+    def test_no_claude_on_path_is_none_rather_than_a_crash(self):
+        """The CI case. None means SKIP downstream, which is the honest answer where
+        there is nothing to measure."""
+        self.assertIsNone(_shipped_claude_binary())
+
+    def test_a_dangling_launcher_is_none(self):
+        """shutil.which filters it (os.access follows the link and fails), and the
+        is_file() check behind it is the belt to that brace."""
+        self.launcher(self.root / "share" / "claude" / "versions" / "gone")
+        self.assertIsNone(_shipped_claude_binary())
+
+
+class ShippedClaudeVersionTests(unittest.TestCase):
+    """The version NAMED in the pin's failure message. Never asserted - a CLI upgrade
+    is a healthy night - but it has to be right or the message misdirects."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_the_versioned_directory_names_the_version(self):
+        path = self.root / "share" / "claude" / "versions" / "2.1.260"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "2.1.260")
+
+    def test_the_npm_layout_still_reads_its_manifest(self):
+        pkg = self.root / "node_modules" / "@anthropic-ai" / "claude-code"
+        (pkg / "bin").mkdir(parents=True)
+        (pkg / "package.json").write_text('{"version": "2.1.199"}', encoding="utf-8")
+        path = pkg / "bin" / "claude"
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "2.1.199")
+
+    def test_a_layout_with_neither_says_unknown(self):
+        path = self.root / "claude"
+        path.write_bytes(b"\x7fELF")
+        self.assertEqual(StopContinueShapeBinaryPinTests._version(path), "unknown")
 
 
 class StopContinueShapeBinaryPinTests(unittest.TestCase):
@@ -7782,12 +7951,12 @@ class StopContinueShapeBinaryPinTests(unittest.TestCase):
     @staticmethod
     def _version(path):
         """Named in the failure message, NOT asserted. The evidence strings are the pin;
-        a CLI upgrade is a healthy night and must not redden this suite on its own."""
-        manifest = path.parent.parent / "package.json"
-        try:
-            return json.loads(manifest.read_text(encoding="utf-8"))["version"]
-        except Exception:   # noqa: BLE001 - a missing/renamed manifest is not the claim
-            return "unknown"
+        a CLI upgrade is a healthy night and must not redden this suite on its own.
+
+        The versioned-directory layout names the version in the file name and carries no
+        manifest beside it; the npm layout reads package.json. Same recogniser the
+        lookup uses, so a path the lookup accepted always has an answer here."""
+        return _claude_layout_version(path) or "unknown"
 
     @staticmethod
     def _count(path, needles):
@@ -9741,11 +9910,14 @@ class HostBlockThroughTheBuilderTests(TempProjects):
         self.assertIsNone(parsed["host"]["cpuPct"])
 
 
-@unittest.skipUnless(sys.platform == "win32", "GetSystemTimes / GlobalMemoryStatusEx")
+@unittest.skipUnless(sys.platform == "win32", "the WINDOWS live read: GetSystemTimes / "
+                                              "GlobalMemoryStatusEx")
 class HostSamplerLiveReadTests(unittest.TestCase):
-    """A read-only measurement of THIS host, bounds-checked. The healthy-night test:
-    the arithmetic above is proven against numbers this file invented, and this is the
-    one place it meets a real kernel."""
+    """A read-only measurement of THIS host on WINDOWS, bounds-checked. The
+    healthy-night test: the arithmetic above is proven against numbers this file
+    invented, and this is the one place it meets a real Win32 kernel. The macOS half of
+    the same promise - mach host_statistics against a real Mac - is
+    DarwinHostLiveReadTests in test_crabd_host_darwin.py."""
 
     def test_the_real_counters_produce_a_sane_block(self):
         sampler = crabd.HostSampler()

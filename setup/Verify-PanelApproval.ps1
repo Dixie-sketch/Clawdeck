@@ -37,7 +37,7 @@
 [CmdletBinding()]
 param(
     [string] $RepoRoot     = (Split-Path -Parent $PSScriptRoot),
-    [string] $BaseUri      = 'http://127.0.0.1:2722',
+    [string] $BaseUri      = 'http://127.0.0.1:9999',
     [string] $ConfigPath   = (Join-Path $HOME '.sidecrab\config.json'),
     [string] $SettingsPath = (Join-Path $HOME '.claude\settings.json'),
     [switch] $DryRun
@@ -105,6 +105,7 @@ if ($DryRun) {
     try {
         $resp = Invoke-WebRequest -Uri "$BaseUri$PermPath" -Method Post -Body '{}' `
                                   -ContentType 'application/json' -TimeoutSec 5 `
+                                  -Headers @{ 'X-SideCrab-Panel' = '1' } `
                                   -SkipHttpErrorCheck -ErrorAction Stop
         $permStatus = [int] $resp.StatusCode
         $permBody   = "$($resp.Content)".Trim()
@@ -218,7 +219,7 @@ Write-Host ''
 Write-Host '  3. APPROVE it - tap Approve on the widget sheet. That tap is the whole point; only'
 Write-Host '     use the equivalent POST if the widget is unavailable, and type it yourself:'
 Write-Host ''
-Write-Host "       curl.exe -s -X POST $BaseUri/v1/action -H 'Content-Type: application/json' ``" -ForegroundColor White
+Write-Host "       curl.exe -s -X POST $BaseUri/v1/action -H 'Content-Type: application/json' -H 'X-SideCrab-Panel: 1' ``" -ForegroundColor White
 Write-Host '              --data ''{"sessionId":"<id from step 2>","action":"decide","decision":"allow",'
 Write-Host '                       "token":"<code from Install-SideCrab.ps1 -PairingCode>","requestId":"<pendingPermission.requestId from step 2>"}''' -ForegroundColor White
 Write-Host '     (crabd 0.29.0: without the pairing code a decide is 403, without the requestId 400,'

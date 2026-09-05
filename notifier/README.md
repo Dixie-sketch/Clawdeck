@@ -1,16 +1,19 @@
 # SideCrab notifier
 
-A native Windows toast when the Edge is out of view and a Claude session has been waiting
+A native desktop alert when the panel is out of view and a Claude session has been waiting
 too long. Standalone, read-only consumer of the crabd feed — it polls `/v1/state`, decides,
-and fires **at most one toast per waiting spell**.
+and fires **at most one alert per waiting spell**.
 
-Zero pip dependencies. Python 3.13 stdlib + Windows PowerShell 5.1.
+Zero pip dependencies. Python 3.13 stdlib, plus Windows PowerShell 5.1 on Windows and
+`/usr/bin/osascript` on macOS — one adapter each, chosen from `sys.platform`. Everything
+outside those two adapters is shared and platform-free; the macOS differences are in
+[macOS](#macos).
 
 ---
 
 ## Behavior
 
-Every 10 s the notifier GETs `http://127.0.0.1:2722/v1/state` and toasts a session when
+Every 10 s the notifier GETs `http://127.0.0.1:9999/v1/state` and toasts a session when
 **all** of these hold:
 
 | Condition | Detail |
@@ -723,6 +726,64 @@ stdlib: `zlib` + `struct`, no pip dependency on either side.
 
 ---
 
+## macOS
+
+Everything above this line — the six deciders, the thresholds, the dedupe ledgers, quiet
+hours, snooze marks, the failure matrix — is shared. What changes on a Mac is the last step,
+and only that: `MacNotificationAdapter` posts through `/usr/bin/osascript` instead of
+building toast XML for PowerShell. `pick_adapter(sys.platform, icon)` chooses, at the one
+construction site in `main()`, so every `--test-*` flag exercises the real macOS path.
+
+**The mechanism.** Three CONSTANT AppleScript strings passed with `-e`, then `--`, then the
+body, the title and the subtitle as three positional arguments:
+
+```
+/usr/bin/osascript -e 'on run argv' \
+  -e 'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv) sound name "default"' \
+  -e 'end run' -- <body> <title> "SideCrab"
+```
+
+The notification text is never interpolated into the script — the same boundary Windows gets
+from base64, obtained by not building a script out of operator text at all. The measurement
+that licenses it (argv arrives byte for byte, hostile characters and all) is recorded once, at
+`MAC_SCRIPT_DISPLAY_LINE` in `sidecrab_toast.py`. `notifier/tests/test_mac_adapter.py` pins
+it: the three `-e` strings must stay byte-identical whatever the request says, the subprocess
+must be handed a **list** with no `shell=`, and `osacompile` must accept the AppleScript.
+
+Control bytes are stripped from every argument with the same character class the Windows lane
+strips (`strip_control`), which is load-bearing here rather than cosmetic: `subprocess`
+refuses an argument carrying a NUL with `ValueError`, and that is not one of the failures
+`show()` converts to `False`.
+
+**No buttons.** `display notification` has no action affordance, so there is no Acknowledge
+and no Snooze on macOS — the operator acknowledges **on the panel**, where the context is.
+The approval notification carries no Approve/Deny either, which is the same deliberate rule
+as on Windows and not a platform limitation. `sidecrab-ack:` / `sidecrab-snooze:`,
+`sidecrab_ack_handler.pyw` and `sidecrab_snooze_handler.pyw` are the Windows route's protocol
+handlers and stay Windows-only; nothing on macOS registers or invokes them.
+
+**Two residuals**, both permanent properties of this route:
+
+| | What it means |
+|---|---|
+| Notifications **stack**, they do not replace | `display notification` cannot set a replacement identifier. A second outage notice sits beneath the first instead of replacing it, and the same goes for the digest and budget alerts. The ids and prefixes still keep the deciders' ledgers honest — one alert per outage, per day, per spell — so what stacks is only what the notifier meant to say twice. |
+| The identity is **Script Editor**'s | Notifications posted through `osascript` are attributed to Script Editor, so macOS's per-app notification switch is Script Editor's, not SideCrab's. The subtitle is always `SideCrab`, which is the only thing on screen naming the product. There is no AUMID to register and no registry to read: that whole block is Windows-only. |
+
+The first notification may raise a one-time macOS permission prompt for Script Editor. Until
+it is allowed, `osascript` can exit non-zero or sit until the adapter's 5 s timeout; both
+return `False`, which re-arms a waiting question for the next poll rather than consuming it,
+and both are logged (`notification failed rc=…`) — the **first** at ERROR, the repeats at DEBUG
+until one lands, so a denial that fails every 10 s poll does not bury the line that explains it.
+
+There is no Linux route. `pick_adapter` hands any platform that is neither Darwin nor Windows
+an `UnsupportedPlatformAdapter`, whose `show()` logs `no notification route on <platform>`
+once and returns `False` — the failure shape the daemon already handles, said in the
+operator's own terms. It is deliberately *not* the Windows adapter: that one fails too, but it
+fails by naming `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, which reads as a
+broken install rather than an unsupported platform.
+
+---
+
 ## Running it
 
 ```powershell
@@ -757,6 +818,24 @@ python notifier\sidecrab_toast.py --version
 python notifier\sidecrab_toast.py --once --dry-run --config <temp.json> --state <temp-state.json>
 ```
 
+On macOS it is the same module and the same flags, with `python3` and forward slashes:
+
+```bash
+# one evaluation, decide only, never show  (safe against a live crabd)
+python3 notifier/sidecrab_toast.py --once --dry-run --verbose
+
+# fire one sample notification through osascript and exit
+python3 notifier/sidecrab_toast.py --test-toast
+
+# which module is this, really?  (stdout, before logging is set up)
+python3 notifier/sidecrab_toast.py --version
+```
+
+`--test-toast` is the one to run first on a Mac: the first notification a process posts can
+raise a one-time permission prompt for Script Editor, and it is better to meet that at a
+prompt than to wonder why a waiting question was silent. Nothing here starts the daemon at
+logon — `setup/install.sh --with-toast` registers the toast LaunchAgent that does.
+
 Flags: `--endpoint`, `--interval`, `--config`, `--state`, `--once`, `--dry-run`,
 `--test-toast`, `--test-digest`, `--test-budget`, `--test-approval`, `--test-stale`,
 `--test-longrun`, `--version`, `--verbose`.
@@ -770,12 +849,14 @@ carries both actions.
 python -m unittest discover -s notifier\tests -t notifier\tests -v
 ```
 
-**500 tests** - 84 decision/adapter/ack-action/AUMID + 72 snooze + 53 long-run + 52 digest +
-49 approval + 43 budget + 37 stale-feed + 33 ack handler + 29 global mute + 24
-version/state-file + 13 emit matrix + 11 icon.
+**554 tests** - 84 decision/adapter/ack-action/AUMID + 72 snooze + 53 long-run + 52 digest +
+52 macOS adapter + 49 approval + 43 budget + 38 stale-feed + 34 ack handler + 29 global mute +
+24 version/state-file + 13 emit matrix + 11 icon.
 (Counted with `loadTestsFromName().countTestCases()`, so the parts sum to the whole - the
 previous breakdown was hand-kept and summed to 446 against a stated 449.) Stdlib `unittest` only, fully headless: toast
-emission sits behind a `ToastAdapter` and the tests use `RecordingToastAdapter`. The AUMID
+emission sits behind a `ToastAdapter` and the tests use `RecordingToastAdapter` or, for the
+macOS adapter, an injected runner in place of the subprocess - no test posts a real
+notification, and none reads or writes anything outside a temp dir. The AUMID
 tests inject the registry read, so none of them passes or fails because of what happens to be
 registered on the running machine; the handler tests fake `urlopen` and redirect the log to a
 temp dir, so no test posts to a live crabd. Every decider is handed its own `now` and ledger
@@ -832,6 +913,31 @@ Every gate is mutation-proven — breaking it in turn fails the suite:
 | the muted line logged per attempt rather than per kind per day | 1 |
 | the config read moved back below the schema check (the outage path escapes) | 12 |
 | the muted path's per-request guard dropped (v0.18.0 batch independence) | 1 |
+| **the macOS display line built with the title interpolated** | 3 |
+| **the macOS argv joined and run through a shell** | 1 |
+| the control-byte strip removed from the macOS arguments | 1 |
+| the control strip widened over tab / newline / return | 5 |
+| `MAC_TITLE_TRIM` collapsed to `TITLE_TRIM` (the label eaten) | 4 |
+| the macOS argument cap removed | 2 |
+| the subtitle emptied, or dropped on the way to argv | 1 |
+| `sound name "default"` deleted from the display line | 1 |
+| one letter deleted from the AppleScript (`osacompile` rejects it) | 1 |
+| the macOS failure line carries the request title and the untruncated stderr | 2 |
+| the two macOS failure shapes report at different levels again | 3 |
+| the repeat latch removed (every failing poll logs an ERROR) | 2 |
+| a landed notification no longer re-arms the ERROR line | 1 |
+| the macOS adapter catches `TimeoutExpired` only | 3 |
+| `ValueError` dropped from the catch (a lone surrogate escapes) | 1 |
+| a non-zero `osascript` reported as shown (the spell consumed) | 4 |
+| the default timeout back at or above the poll interval | 1 |
+| the platform test inverted in `pick_adapter` | 2 |
+| an unsupported platform handed the Windows adapter | 2 |
+| the unsupported adapter's one-line latch removed | 1 |
+| `main` names `PowerShellToastAdapter` directly again | 1 |
+| `--dry-run` shows through the real adapter | 1 |
+
+> The macOS rows count **distinct failing tests**: a `subTest` that fails four times is one
+> test, not four. The rows above them predate that convention and count failure lines.
 
 > The long-run **quiet** row was `0` on the first mutation run. The obvious test (quiet poll,
 > then a loud poll on the same done row) passed with the mark deleted, because the
@@ -886,7 +992,10 @@ Register-ScheduledTask -TaskName 'SideCrab Notifier' -Action $action -Trigger $t
   `setup\Test-SideCrab.ps1` fails the "toast identity" row when it is missing.
 - **Focus Assist / Do Not Disturb** suppresses toasts at the OS level, independently of the
   `quiet` block. `Show()` still returns success. There is no reliable read-back for this
-  (the `Setting` projection is null under 5.1), so the notifier cannot warn about it.
+  (the `Setting` projection is null under 5.1), so the notifier cannot warn about it. macOS
+  Focus behaves the same way and is worse in one respect: the switch that silences these
+  notifications is Script Editor's, so an operator who mutes them has muted every script on
+  the machine (see [macOS](#macos)).
 - **Subprocess cost.** Each toast spawns a PowerShell process (~0.5–1 s). Fine at one toast
   per waiting spell; it would not be fine if the dedupe rule were ever loosened.
 - **Ledger is in-process** for the waiting-session, approval and outage toasts (the digest and

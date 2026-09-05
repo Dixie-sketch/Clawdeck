@@ -10,12 +10,12 @@
     broken before. Every check prints what it saw, why that matters, and the exact command.
 
     THE CHECKS, and the real incident behind each
-      crabd health        crabd not answering on 2722 at all. Probed TWICE, a few seconds apart,
+      crabd health        crabd not answering on 9999 at all. Probed TWICE, a few seconds apart,
                           before it is called a failure: a single GET reads a healthy crabd as
                           dead right after a task restart, and on this host whenever a loopback
                           SYN-ACK is dropped (docs/BACKLOG.md). A reading that only the retry
                           answered is reported as such - recovered, not hidden.
-      crabd owns its port an answer on 2722 with SideCrab-crabd NOT Running. Health-by-HTTP
+      crabd owns its port an answer on 9999 with SideCrab-crabd NOT Running. Health-by-HTTP
                           cannot tell WHO replied: a stray non-task process held the port and
                           answered convincingly while the task was dead in Ready with
                           LastTaskResult=1. FAIL, with the holding PID named - and while it
@@ -59,7 +59,7 @@
 
     EVERY START GOES THROUGH Restart-SideCrabTask, never a bare Start-ScheduledTask: it waits
     for the port to be released and refuses to start rather than losing the bind race. And
-    while a foreign process holds 2722 the start fix is not offered at ALL - the port-owner row
+    while a foreign process holds 9999 the start fix is not offered at ALL - the port-owner row
     carries that story, and starting into a held port is the 2026-08-27 incident itself.
 
     A FIX COUNTS ONLY WHEN IT IS VERIFIED. Each fixable row states what "worked" means and that
@@ -90,7 +90,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string] $RepoRoot     = (Split-Path -Parent $PSScriptRoot),
-    [string] $BaseUri      = 'http://127.0.0.1:2722',
+    [string] $BaseUri      = 'http://127.0.0.1:9999',
     [string] $SettingsPath = (Join-Path $HOME '.claude\settings.json'),
     [string] $ConfigPath   = (Join-Path $HOME '.sidecrab\config.json'),
     [string] $ChainPath    = (Join-Path $HOME '.sidecrab\statusline-chain.json'),
@@ -105,7 +105,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
 
-$HookUrlMarker = '127.0.0.1:2722/v1/hook'
+$HookUrlMarker = '127.0.0.1:9999/v1/hook'
 
 $script:Checks = [System.Collections.Generic.List[object]]::new()
 
@@ -173,6 +173,7 @@ function Get-PermissionRouteState {
     try {
         $resp = Invoke-WebRequest -Uri "$BaseUri/v1/hook/permission" -Method Post -Body '{}' `
                                   -ContentType 'application/json' -TimeoutSec $TimeoutSec `
+                                  -Headers @{ 'X-SideCrab-Panel' = '1' } `
                                   -SkipHttpErrorCheck -ErrorAction Stop
         $status = [int] $resp.StatusCode
         [pscustomobject]@{ Reachable = $true; Status = $status; Is404 = ($status -eq 404) }
@@ -186,7 +187,7 @@ function Test-CrabdIsServing {
        start row: both halves, because either alone lies - a health answer can come from a
        foreign process and a Running task may never have bound the port. Freshly probed on
        every call; nothing here reads a value measured earlier in the run. #>
-    param([int] $Port = 2722, [string] $TaskName = 'SideCrab-crabd')
+    param([int] $Port = 9999, [string] $TaskName = 'SideCrab-crabd')
 
     $probe = Get-SideCrabHealthProbe -Probe { Get-HealthDocument } -RetryDelaySec $HealthRetryDelaySec
     $st    = Get-SideCrabTaskState -TaskName $TaskName
@@ -208,7 +209,7 @@ function Get-HookWiringPath {
        hand-merged into one of ours got its paths attributed to SideCrab - and a doctor that
        reports someone else's checkout as our stray wiring sends the operator to re-run the
        installer over a hook the installer does not own. See Split-SideCrabHookMatcher. #>
-    param($Settings, [string] $Marker = '127.0.0.1:2722/v1/hook')
+    param($Settings, [string] $Marker = '127.0.0.1:9999/v1/hook')
 
     $found = @()
     if ($null -eq $Settings -or $Settings -isnot [System.Collections.IDictionary]) { return $found }
@@ -252,7 +253,7 @@ $settings = $null
 $settingsError = $null
 try { $settings = Read-SideCrabSettings -SettingsPath $SettingsPath } catch { $settingsError = $_.Exception.Message }
 
-# WHO HOLDS 2722, read BEFORE the health row is built. The start fix below is gated on it:
+# WHO HOLDS 9999, read BEFORE the health row is built. The start fix below is gated on it:
 # starting the task while a foreign process holds the port is exactly the 2026-08-27 incident -
 # the new instance loses the bind, exits 1, and the task parks in Ready looking freshly broken.
 $crabdPort   = [int] ([uri] $BaseUri).Port
@@ -287,7 +288,7 @@ if ($healthProbe.Ok) {
     $lastResult = if ($null -ne $crabdTask.LastTaskResult) {
                       '0x{0:X8}' -f ([int64] $crabdTask.LastTaskResult -band 0xFFFFFFFFL)
                   } else { 'n/a' }
-    # A BARE Start-ScheduledTask IS THE INCIDENT. If something else is on 2722 - answering or
+    # A BARE Start-ScheduledTask IS THE INCIDENT. If something else is on 9999 - answering or
     # not - the started process cannot bind, exits 1 and parks the task back in Ready, and the
     # doctor has "fixed" nothing. Two guards: the fix is not offered at all while the port is
     # held (the port-owner row below carries that story and its command), and the fix that IS
@@ -322,7 +323,7 @@ if ($healthProbe.Ok) {
 
 # -- 1b. WHO is answering: the health answer and the task, together --------------------
 # Health-by-HTTP cannot tell who replied. Measured 2026-08-27: a stray non-task process held
-# 2722 and answered /v1/health convincingly while SideCrab-crabd was dead in Ready with
+# 9999 and answered /v1/health convincingly while SideCrab-crabd was dead in Ready with
 # LastTaskResult=1 - and every check that asked only "does it answer?" reported green.
 $owner = Get-SideCrabServiceVerdict -HealthOk $healthProbe.Ok -TaskState "$($crabdTask.State)" `
                                     -LastTaskResult $crabdTask.LastTaskResult `

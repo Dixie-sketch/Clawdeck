@@ -3,7 +3,7 @@
 
 Serves the /v1/state document defined in docs/STATE-CONTRACT.md (schema 5, the last
 breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
-127.0.0.1:2722 for the SideCrab widget, from eleven sources:
+127.0.0.1:9999 for the SideCrab panel, from eleven sources:
 
   1. Claude Code hooks POSTed to /v1/hook  -> session state machine, per-session events
   2. ~/.claude/projects/**/*.jsonl         -> titles, model, token burn, questions,
@@ -14,7 +14,8 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               toast, digest, the burn budget, panel
                                               approvals, the reply gate
   5. `git log` in today's session cwds     -> recap.commits, recap.week[].commits
-  6. `schtasks /query` on the SideCrab tasks -> fleet (glow / toast)
+  6. `schtasks /query` on Windows, `launchctl print gui/<uid>/<label>` on macOS
+                                           -> fleet (glow / toast)
   7. ~/.sidecrab/history.jsonl             -> replayed at startup so doneToday, the
                                               per-session events ring and recap.week
                                               survive a crabd restart
@@ -23,7 +24,9 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               in the picture; PREFERRED over source 3
   9. OTLP http/json on /v1/metrics + /v1/logs (v0.12.0) -> burn.costUSD in real dollars,
                                               api_error events onto the session rings
- 10. GetSystemTimes / GlobalMemoryStatusEx (v0.22.0) -> `host`: this machine's CPU
+ 10. GetSystemTimes / GlobalMemoryStatusEx on Windows, mach host_statistics /
+     host_statistics64 / sysctlbyname on macOS (v0.22.0, v0.32.0)
+                                           -> `host`: this machine's CPU
                                               utilization and memory, for the panel
                                               beside the iCUE temperature sensors
  11. GET /v1/models on the same OAuth token (v0.28.0) -> the context WINDOW size behind
@@ -42,13 +45,14 @@ diagnostic lines to it and a maintainer GETs them back, because iCUE renders the
 a surface no devtools can reach. It is in-memory only, it feeds nothing, and nothing in
 here ever reads a stored line back into a decision.
 
-stdlib only, Python 3.13, Windows host. ~/.claude is read strictly read-only.
+stdlib only, Python 3.13, macOS and Windows hosts. ~/.claude is read strictly read-only.
 """
 
 from __future__ import annotations
 
 import csv
 import ctypes
+import ctypes.util
 import hmac
 import json
 import math
@@ -67,6 +71,15 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 
+try:
+    # POSIX only, and it is the login user name for the two macOS Keychain items - see
+    # _login_account. Guarded rather than lazily imported inside the reader so that
+    # "this host has no pwd" is answered once, at import, on the one platform where it
+    # is true (Windows) rather than per call.
+    import pwd
+except ImportError:                     # pragma: no cover - Windows
+    pwd = None
+
 # The served `schema` marks the last BREAKING shape, NOT the feature level - see the
 # VERSIONING REWORK section of docs/STATE-CONTRACT.md. Additive fields (contextTokens,
 # fleet, everything after) ship under this same number and are found by FIELD PRESENCE;
@@ -75,12 +88,18 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.30.0"
+VERSION = "0.34.0"
 
 HOST = "127.0.0.1"
-# 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
-# test instance can run against the real ~/.claude without racing the live service.
-PORT = int(os.environ.get("CRABD_PORT") or 2722)
+# The production port, and the one the service registration owns. It was 2722 (C-R-A-B on
+# a phone keypad) while the only client was a widget configured once at the iCUE console;
+# it is 9999 now that the panel is a page a person opens in a browser and therefore a
+# number a person types. Stated ONCE: PORT below reads this, and so does every test that
+# has to promise it is not binding production.
+DEFAULT_PORT = 9999
+# CRABD_PORT exists so a test instance can run against the real ~/.claude without racing
+# the live service.
+PORT = int(os.environ.get("CRABD_PORT") or DEFAULT_PORT)
 
 SIDECRAB_DIR = Path.home() / ".sidecrab"
 USER_CONFIG_FILE = SIDECRAB_DIR / "config.json"
@@ -113,6 +132,12 @@ HISTORY_DONE_KIND = "done"
 # in-memory session table with rows nothing can ever render.
 HISTORY_REPLAY_SEC = 24 * 3600
 CLAUDE_HOME = Path(os.environ.get("CRABD_CLAUDE_HOME") or (Path.home() / ".claude"))
+# Was crabd pointed somewhere other than ~/.claude? Read ONCE, here, because the answer
+# decides whether the login Keychain may be asked for the CLI credential on macOS: the
+# documentation says a custom config dir keys a DIFFERENT Keychain entry, and crabd
+# cannot compose that entry's name - so asking about the default one would answer about
+# a login the operator is not running. See DarwinPlatform.cli_credentials.
+CUSTOM_CLAUDE_HOME = bool(os.environ.get("CRABD_CLAUDE_HOME"))
 PROJECTS_DIR = CLAUDE_HOME / "projects"
 CREDENTIALS_FILE = CLAUDE_HOME / ".credentials.json"
 
@@ -137,6 +162,63 @@ LIMITS_CACHE_FILE = SIDECRAB_DIR / "limits-cache.json"  # survives restarts; no 
 # DPAPI-protected (CurrentUser), and crabd decrypts it in memory when the CLI token is
 # past its expiry. Never logged, never served, never written anywhere else.
 LIMITS_TOKEN_FILE = SIDECRAB_DIR / "limits-token.dpapi"
+# --- macOS: the login Keychain, which is where BOTH secrets live on a Mac.
+#
+# `Claude Code-credentials` is the CLI's OWN credential. MEASURED 2026-09-04 (Claude Code
+# 2.1.260): ~/.claude/.credentials.json does not exist on this machine at all and the
+# Keychain item does, so a crabd that only knows about the file reads "no Claude
+# credentials" for ever on an account that is perfectly logged in. The documentation says
+# the file is written only when the Keychain write FAILS, which is why the file still
+# wins where both exist.
+#
+# `SideCrab limits token` is SideCrab's own store for a long-lived `claude setup-token`
+# value - the macOS answer to the DPAPI blob above. The account half of both items is the
+# login user name, and setup/sidecrab_setup.py probes the same pair by exit code.
+#
+# THE KILL SWITCH is not a feature: it is how the test suite guarantees it cannot raise a
+# Keychain prompt on the operator's desktop, read a secret it has no business seeing, or
+# WRITE an item into a person's login Keychain. Every companion test module sets it False
+# in setUpModule, exactly as they repoint the path globals, and the tests that exercise
+# these paths turn it on with an injected runner.
+#
+# It gates every Keychain access, not only the credential one its name comes from: all
+# three of cli_credentials, read_limits_token and store_limits_token check it, because
+# "no test reaches the operator's Keychain" is only a guarantee if it has no exceptions.
+KEYCHAIN_CREDENTIALS_ENABLED = True
+KEYCHAIN_CREDENTIALS_SERVICE = "Claude Code-credentials"
+KEYCHAIN_LIMITS_SERVICE = "SideCrab limits token"
+SECURITY_BIN = "/usr/bin/security"
+KEYCHAIN_TIMEOUT_SEC = 5.0
+# MEASURED 2026-09-04: `security find-generic-password` exits 44 for an item that is not
+# there ("The specified item could not be found in the keychain"), on the argv form and
+# inside `security -i` alike. ABSENCE, not failure - it is answered silently.
+#
+# WHERE 44 COMES FROM, because it is not an errno and the arithmetic explains its
+# neighbours: the tool exits with the OSStatus truncated to its low byte.
+# errSecItemNotFound is -25300, and -25300 & 0xFF == 44; errSecInteractionNotAllowed is
+# -25308, and -25308 & 0xFF == 36, which is the code the refused-read note is written
+# against. Two OSStatus values 256 apart would collide here; none of the ones these two
+# reads can produce do.
+KEYCHAIN_ITEM_NOT_FOUND = 44
+#: What crabd is willing to STORE as a long-lived token: the SHAPE of a `claude
+#: setup-token` value (`sk-ant-oat01-...`), never decoded, never logged. The same
+#: expression setup/sidecrab_setup.py validates with before it hands one over. It is also
+#: a safety rule, not only a typo catcher: the macOS store command goes through
+#: `security -i`'s own tokenizer, so a value carrying a quote or a newline is refused
+#: here rather than quoted around.
+#:
+#: MATCHED WITH `fullmatch`, and the anchors are kept for the reader rather than for the
+#: engine: `$` also matches just BEFORE a final newline, so `re.match` accepted a token
+#: pasted with its line ending still attached - which is exactly the value that would
+#: have ended the store command early.
+LIMITS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
+# What the panel says when the item is there and crabd was not allowed to read it. It
+# names the ONE action that fixes it. Deliberately not the "no Claude credentials" note:
+# an operator told to log in for a Keychain crabd could not open would do it, watch
+# nothing change, and have no next move.
+KEYCHAIN_REFUSED_NOTE = ("Claude credential is in the Keychain and crabd could not read "
+                         "it - approve the Keychain prompt (Always Allow) or run claude "
+                         "in a terminal")
 # A cached `at` before this is not a stale reading, it is CORRUPT. Measured in
 # production 2026-08-26: the real cache held at=1000.0 (Jan 1970) because the unit
 # suite wrote the live file with fixture data. An `at` from 1970 makes every age
@@ -212,6 +294,27 @@ FLEET_STATUS_MAP = {"running": "running", "ready": "stopped",
 # specified task name ... does not exist'); anything else that fails is `unknown`,
 # because a task that exists and cannot be read is NOT the same claim as an absent one.
 FLEET_ABSENT_MARKERS = ("cannot find", "does not exist")
+# Measured 2026-09-04 on macOS 26.6 (uid 502). `launchctl print gui/<uid>/<label>` exits 0
+# for a loaded agent and prints a block whose FIRST-LEVEL lines carry ONE tab: a running
+# agent has '\tstate = running' and a '\tpid = ' line, a loaded idle one '\tstate = not
+# running', '\truns = 0' and no pid at all. Sub-objects are indented deeper and carry
+# their own '\t\tstate = active' lines, which is why the parse reads the first-level
+# line only.
+# `waiting` and `spawn scheduled` are the other words launchd uses for not executing.
+# An unrecognised word is `unknown`, never `stopped` - same rule as the Windows map.
+LAUNCHD_STATUS_MAP = {"running": "running", "not running": "stopped",
+                      "waiting": "stopped", "spawn scheduled": "stopped"}
+# Same measurement, unregistered label: exit 113, stdout empty, stderr 'Bad request.\n
+# Could not find service "com.sidecrab.nonexistent" in domain for user gui: 502'. Any
+# OTHER non-zero exit is `unknown` - a label that exists and cannot be read is not the
+# same claim as an absent one.
+LAUNCHD_ABSENT_MARKERS = ("could not find service",)
+# The (code, out, err) a platform returns for a component it has NO service for at all -
+# macOS glow, since there is no lighting component here. A code of None is not an exit
+# status any process can produce, which is what makes it unmistakable; the platform's
+# service_status turns it into a word, so "this component does not exist here" stays a
+# platform answer rather than becoming a rule inside FleetReader.
+FLEET_NO_SERVICE = (None, "", "")
 
 # --- v0.22.0 `host`: the machine's own CPU and memory, beside the iCUE temperatures.
 # Sampled on the BUILDER's existing pass (REFRESH_INTERVAL_SEC, 2 s) rather than a
@@ -233,6 +336,21 @@ HOST_MEM_LOG_KEY = "host-mem"
 # builds on the request thread while _refresh_loop takes its first snapshot (overlapping,
 # sub-quantum windows). = 100 ms of aggregate core-time.
 CPU_MIN_TOTAL_TICKS = 1_000_000
+
+# --- v0.32.0 `host` on macOS. HostSampler's unit is the Win32 FILETIME's 100 ns tick;
+# mach counts CLK_TCK ticks, so DarwinPlatform scales by this over CLK_TCK. Kept as a
+# named number because the DIVISIBILITY of it by CLK_TCK is a guard: a CLK_TCK that does
+# not divide it evenly would silently lose ticks in the integer division.
+HOST_100NS_PER_SEC = 10_000_000
+HOST_CPU_STATES = 4          # CPU_STATE_USER, _SYSTEM, _IDLE, _NICE - the reply's count
+HOST_CPU_LOAD_INFO = 3       # host_statistics flavour
+HOST_VM_INFO64 = 4           # host_statistics64 flavour
+# The mach CPU tick counters are natural_t - THIRTY-TWO BITS - and cumulative since boot.
+# Measured on an M-series 16-core Mac: ~1600 ticks/s summed across cores at CLK_TCK 100,
+# so a bucket crosses 2^32 in about 31 days of uptime. Unwrapped in DarwinPlatform, once,
+# so nothing downstream ever sees the backwards jump that would otherwise arrive once per
+# bucket per month.
+HOST_CPU_COUNTER_MODULUS = 1 << 32
 
 RECAP_REFRESH_SEC = 300      # contract: the recap is cached ~5 min
 RECAP_POLL_SEC = 5.0
@@ -713,6 +831,12 @@ TRANSCRIPT_FILE_LOG_KEY = "transcript-file"
 STATE_SERIALIZE_LOG_KEY = "state-serialize"
 STATE_BUILD_LOG_KEY = "state-build"
 GET_HANGUP_LOG_KEY = "get-hangup"
+PANEL_READ_LOG_KEY = "panel-read"
+PANEL_TOO_BIG_LOG_KEY = "panel-too-big"
+PANEL_DIR_LOG_KEY = "panel-dir"
+ORIGIN_RECORD_LOG_KEY = "origin-record"
+CLI_CREDENTIALS_LOG_KEY = "cli-credentials"
+LIMITS_TOKEN_LOG_KEY = "limits-token"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -764,6 +888,56 @@ SOCKET_TIMEOUT_SEC = 30.0
 # Shared rather than inlined twice so a cross-site GET and a cross-site POST cannot drift
 # into telling an attacker which of the two they hit.
 CROSS_SITE_REFUSED = b'{"error":"cross-site request refused"}'
+# v0.31.0. EVERY POST carries this header, with any non-empty value; a POST without it is
+# refused before it is routed. It is not authentication - the value is never read - it is
+# a NON-SIMPLE request header, and that is the whole mechanism: a CORS-simple POST needs
+# no permission from crabd, while one carrying a custom header must be preflighted, and
+# do_OPTIONS below hands the permission only to an origin the allowlist already trusts
+# (never to `null`). So the forged-`null` page keeps its reads and loses its writes.
+# A DISTINCT body from CROSS_SITE_REFUSED on purpose, the opposite way round from that
+# constant's sharing rule: the two refusals are told apart by an OPERATOR wiring a hook
+# up, and "cross-site request refused" for a curl on the command line sent people
+# looking at CORS for an hour.
+# v0.31.0. The DNS-rebinding refusal. Its own body, because the two other 403s answer a
+# different question: "you are cross-site" and "you sent no panel header" are both about
+# the CALLER, and this one is about the caller's belief that it is talking to
+# evil.example when the socket is loopback.
+HOST_NOT_ALLOWED = b'{"error":"host not allowed"}'
+PANEL_HEADER = "X-SideCrab-Panel"
+PANEL_HEADER_REQUIRED = b'{"error":"panel header required"}'
+# The panel crabd serves on / (v0.31.0). A module GLOBAL read per request, like every
+# other path here, so a test can repoint it at a temp tree; CRABD_PANEL_DIR is for
+# running the daemon against a panel build that is not the one beside it.
+PANEL_DIR = Path(os.environ.get("CRABD_PANEL_DIR")
+                 or Path(__file__).resolve().parent.parent / "widget")
+# By SUFFIX, never by sniffing the bytes - and every static reply carries
+# X-Content-Type-Options: nosniff, so what is declared here is what the browser uses. An
+# unrecognised suffix is a download, not a guess: crabd serves a directory whose contents
+# it does not enumerate, and a wrong `text/html` on a file somebody dropped in there is
+# the one mistake that turns a static server into a scripting hole.
+PANEL_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
+}
+PANEL_CONTENT_TYPE_DEFAULT = "application/octet-stream"
+# A ceiling on what ONE static reply may read into memory. The whole shipped panel is
+# under a megabyte, so this is not a limit anybody meets - it is a limit on a directory
+# an operator can point anywhere with CRABD_PANEL_DIR, or drop a file into. Without it a
+# big enough file is a MemoryError, and MemoryError is NOT an OSError: it escapes the
+# narrowed catch on the read, escapes do_GET's `except OSError`, and lands in
+# socketserver's handle_error as a traceback on a daemon that is now also short of
+# memory. Checked by stat BEFORE the read, so the bytes are never allocated.
+PANEL_MAX_BYTES = 64 * 1024 * 1024
+# One 404 body for a mistyped endpoint and for a file that is not the panel's to serve.
+# Shared so the two cannot drift into telling a prober which of them it hit.
+NOT_FOUND = b'{"error":"not found"}'
 # A session id long enough to be a memory-growth vector rather than an identifier. Real
 # ones are 36-char UUIDs; this is generous enough that no legitimate id is refused.
 SESSION_ID_MAX = 200
@@ -913,6 +1087,12 @@ def _pct(value) -> float | None:
     if value is None:
         return None
     return round(min(max(value, 0.0), 100.0), 1)
+
+
+def _positive_int(value) -> bool:
+    """A whole number above zero, and not a bool. `True` is an int in Python and would
+    pass every arithmetic check downstream while meaning nothing at all."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _gb(value) -> float | None:
@@ -2930,10 +3110,1074 @@ class HookTracker:
                     del self._titles[sid]
 
 
+# ---------------------------------------------------------------------- platform
+#
+# Everything crabd knows about the OS it is running on, behind ONE interface with three
+# implementations. The readers above and below (HostSampler, FleetReader, LimitsReader)
+# each take a `platform=` and default to PLATFORM, so none of them contains an OS test:
+# they own their arithmetic and their honest-failure rules, the platform owns the
+# syscall. A reader that reaches for the Win32 DLLs or `schtasks` directly is the bug
+# this section exists to prevent - it is unreachable, and therefore untested, on the
+# host most of this suite runs on.
+#
+# The three classes are INTERCHANGEABLE by contract, pinned by tests that compare their
+# public method sets, signatures and binding. Adding a method to one alone ships an
+# AttributeError to every other OS, in a daemon whose one promise is to keep serving.
+#
+# `cpu_times` and `memory` are INSTANCE methods on all three (everything else is static)
+# because the macOS CPU reader keeps state: the mach tick counters are 32-bit and wrap,
+# and unwrapping them needs the last raw reading per bucket. The other two classes carry
+# no state and would be happy as staticmethods - they are instance methods anyway so the
+# binding stays identical across the three, which is the seam's whole promise and is
+# pinned by a test. PLATFORM is a module singleton, so the accumulators live as long as
+# the process; a reader that built a fresh DarwinPlatform per sample would lose them.
+#
+# A platform with no service manager RAISES out of service_query rather than returning
+# None: the caller unpacks the result, so a bare None would be a TypeError past
+# FleetReader's catch list - a crash where an `unknown` belongs.
+#
+# The one deliberate non-raise is FLEET_NO_SERVICE, `(None, "", "")`: a component the
+# platform NAMES but has no service for at all (macOS glow, since there is no lighting
+# component there). It unpacks like any other answer, and the None CODE - which no
+# process can exit with - is what service_status reads as `absent`. FleetReader
+# short-circuits an empty target onto that sentinel before any runner is called, so a
+# platform whose targets are ALL empty never reaches its own service_query at all.
+
+
+def _read_cli_credentials() -> str | None:
+    """The CLI credential document's raw text, or None when there is no file. Portable,
+    so all three platforms delegate here rather than carrying a copy each.
+
+    CREDENTIALS_FILE is read off the MODULE per call, never bound at import: every test
+    module repoints it, and a binding taken at import would send the suite at the
+    operator's live OAuth token and then at the network.
+    """
+    try:
+        return CREDENTIALS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _usable_limits_token(token) -> bool:
+    """Is this something crabd is willing to store? SHAPE only - see LIMITS_TOKEN_RE -
+    and the value is never named in a log line or an exception on the way out."""
+    return isinstance(token, str) and bool(LIMITS_TOKEN_RE.fullmatch(token))
+
+
+def _keychain_name_safe(value) -> bool:
+    """A service or account name crabd is willing to put in a `security -i` command.
+
+    That command is ONE LINE with two QUOTED fields in it, so a `"` closes its field
+    early, a `\\` escapes the quote that would have closed it, and a control character can
+    end the line. Neither name is attacker-controlled today - the account is the login
+    user's own and the service is a constant in this file - which is why this is a check
+    rather than a crisis: it keeps that from being the only thing between the two.
+    """
+    return (isinstance(value, str) and bool(value)
+            and not any(ch in '"\\' or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value))
+
+
+def _login_account() -> str | None:
+    """The login user name - the ACCOUNT half of both Keychain items - or None.
+
+    `pwd.getpwuid(os.getuid())` rather than $USER: the environment of a LaunchAgent is
+    not the one a terminal has, and an account name that does not match the one the items
+    were created under simply finds nothing. None off POSIX, where there is no Keychain
+    to name anyway.
+    """
+    if pwd is None or not hasattr(os, "getuid"):
+        return None
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, OSError):
+        return None
+
+
+def _run_security(argv: list[str], stdin_text: str | None, timeout: float):
+    """`/usr/bin/security` -> (exit code, stdout, stderr). The ONE place crabd spawns it.
+
+    A SECRET NEVER TRAVELS IN `argv`. `ps` is world-readable on macOS, so an argument
+    list is a broadcast: the store command therefore goes in on STDIN, to `security -i`,
+    and the reads (whose argv names only the item, and whose secret comes back on stdout)
+    are the only ones that use an argument list at all.
+
+    BYTES IN, BYTES OUT, decoded here with `errors="replace"`. `text=True` decodes with
+    the locale's codec and RAISES UnicodeDecodeError on a byte that codec cannot read -
+    and UnicodeDecodeError is a ValueError, which is in neither of the except tuples that
+    guard the two callers. It would come out of cli_credentials, out of the limits fetch,
+    and out of build() on the refresh thread. Nothing crabd asks for should produce one
+    (JSON payload, ASCII item names), and "should" is exactly why this is not left to the
+    locale: a Keychain item somebody else wrote is not crabd's to make promises about.
+    """
+    proc = subprocess.run(
+        [SECURITY_BIN, *argv],
+        input=None if stdin_text is None else stdin_text.encode("utf-8"),
+        capture_output=True, timeout=timeout, check=False)
+    return (proc.returncode,
+            proc.stdout.decode("utf-8", errors="replace"),
+            proc.stderr.decode("utf-8", errors="replace"))
+
+
+class WindowsPlatform:
+    """GetSystemTimes / GlobalMemoryStatusEx, schtasks, DPAPI."""
+
+    name = "windows"
+
+    def cpu_times(self) -> tuple[int, int, int] | None:
+        """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
+        Cumulative counters, raw; every rule for turning them into a percentage - the
+        kernel-includes-idle trap among them - is HostSampler's.
+
+        `ctypes.windll` does not exist off Windows, so the AttributeError below is the
+        error path for a host that selected this platform anyway (a test does) as well
+        as for a real syscall failure.
+        """
+        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+        try:
+            ok = ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+        except (AttributeError, OSError, ValueError) as exc:
+            _log_once(HOST_CPU_LOG_KEY,
+                      f"crabd: GetSystemTimes unavailable ({type(exc).__name__}); "
+                      f"serving no host CPU")
+            return None
+        if not ok:
+            _log_once(HOST_CPU_LOG_KEY,
+                      "crabd: GetSystemTimes returned failure; serving no host CPU")
+            return None
+        return (_filetime(idle), _filetime(kernel), _filetime(user))
+
+    def memory(self) -> tuple[int, int] | None:
+        """GlobalMemoryStatusEx -> (total physical bytes, available bytes), or None."""
+        status = _MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        try:
+            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        except (AttributeError, OSError, ValueError) as exc:
+            _log_once(HOST_MEM_LOG_KEY,
+                      f"crabd: GlobalMemoryStatusEx unavailable ({type(exc).__name__}); "
+                      f"serving no host memory")
+            return None
+        if not ok:
+            _log_once(HOST_MEM_LOG_KEY,
+                      "crabd: GlobalMemoryStatusEx returned failure; "
+                      "serving no host memory")
+            return None
+        return (int(status.ullTotalPhys), int(status.ullAvailPhys))
+
+    @staticmethod
+    def server_reuse_address() -> bool:
+        """False. Windows SO_REUSEADDR lets a SECOND process bind a port that is
+        already being listened on, and the two servers then answer half the requests
+        each - the split feed measured during build QA. Refusing reuse is what turns
+        that into a loud "already running"."""
+        return False
+
+    @staticmethod
+    def port_holder_hint(port: int) -> str:
+        """The command that names what is holding `port`. PowerShell, because `lsof`
+        does not exist here - and this string's whole job is to be runnable."""
+        return (f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+                f"| Select-Object OwningProcess")
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        return FLEET_TASKS
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        proc = subprocess.run(
+            ["schtasks", "/query", "/tn", target, "/fo", "csv", "/nh"],
+            capture_output=True, timeout=timeout, check=False,
+            # No console under the Scheduled Task, and without this a window would
+            # flash on the desktop on an interactive login.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return (proc.returncode,
+                proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
+
+    @staticmethod
+    def service_status(code, out, err) -> str:
+        if code is None:
+            # The no-such-component sentinel, answered EXPLICITLY. Without this branch it
+            # fell into the `code != 0` path below and scanned an empty blob for a
+            # not-found marker - `unknown` by accident, and `absent` by accident on the
+            # day some stderr happened to carry one of those words.
+            return "absent"
+        if code != 0:
+            blob = f"{out or ''}\n{err or ''}".lower()
+            return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
+        return FLEET_STATUS_MAP.get(WindowsPlatform._status_field(out), "unknown")
+
+    @staticmethod
+    def _status_field(out) -> str:
+        """Last csv row's status column. `csv` rather than a split: the task name is a
+        quoted field and a task name containing a comma would break a naive split."""
+        try:
+            rows = [row for row in csv.reader((out or "").splitlines())
+                    if len(row) > FLEET_STATUS_COL]
+        except (csv.Error, ValueError):
+            return ""
+        return rows[-1][FLEET_STATUS_COL].strip().lower() if rows else ""
+
+    def read_limits_token(self, path) -> str | None:
+        """The long-lived usage token, or None. Read fresh on every call so a token
+        stored while crabd runs is picked up on the next poll; the decrypted string is
+        returned to the caller and dropped - LimitsReader keeps the same no-log,
+        no-store rule for it that it keeps for the CLI token.
+
+        `_dpapi_unprotect` is looked up on the MODULE at call time, not bound at import:
+        the suite stubs `crabd._dpapi_unprotect` to reach this path off Windows.
+        """
+        try:
+            blob = path.read_bytes()
+        except OSError:
+            return None
+        raw = _dpapi_unprotect(blob)
+        if not raw:
+            return None
+        token = raw.decode("utf-8", errors="replace").strip()
+        return token or None
+
+    def store_limits_token(self, token: str) -> bool:
+        """Store the long-lived token DPAPI-protected in LIMITS_TOKEN_FILE. True when it
+        is on disk; False - having written nothing - for anything else.
+
+        The path is read off the MODULE per call, like every other path in this file, so
+        the suite can point it somewhere harmless.
+
+        ATOMIC, and 0600 from the moment the bytes exist: a temp file in the same
+        directory (so the rename cannot cross a volume) opened with the mode already set,
+        then os.replace. A store that crashed half way through the old shape left a
+        truncated blob that decrypts to nothing, which reads exactly like "no token
+        stored" and would have sent the operator to store it again.
+        """
+        if not _usable_limits_token(token):
+            return False
+        blob = _dpapi_protect(token.encode("utf-8"))
+        if not blob:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: DPAPI would not protect the limits token; nothing was "
+                      "stored; this is logged once")
+            return False
+        path = LIMITS_TOKEN_FILE
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp, "wb", opener=lambda p, flags: os.open(p, flags, 0o600)) as fh:
+                fh.write(blob)
+            os.replace(temp, path)
+        except OSError as exc:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the limits token could not be written "
+                      f"({type(exc).__name__}); nothing was stored; this is logged once")
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            return False
+        return True
+
+    def limits_token_hint(self) -> str:
+        """The command that stores a long-lived token HERE. Three of LimitsReader's notes
+        end with it, and a note whose whole job is to say what to do next is worth
+        nothing if it names a tool this platform does not have."""
+        return "Install-SideCrab.ps1 -LimitsToken"
+
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document, from the FILE and nowhere else.
+
+        An INSTANCE method, like the other two platforms' - only Darwin needs the
+        instance (its Keychain seam lives on it), and the three have to be bound the
+        same way or they are not interchangeable. The surface test pins that.
+        """
+        return _read_cli_credentials()
+
+
+#: None = not looked up yet; False = looked up and NOT THERE; anything else is the
+#: loaded library. The false sentinel is what keeps a host without libSystem from
+#: re-running the dyld search twice a pass for the life of the process.
+_DARWIN_LIBC = None
+
+
+def _darwin_libc():
+    """libSystem, resolved once, with every entry point crabd calls DECLARED.
+
+    `find_library` is a dyld search - not free, and this is on a 2 s cadence - so the
+    ANSWER IS REMEMBERED EITHER WAY. Off macOS the load or the lookup fails, that failure
+    is remembered too, and the callers below turn the raise into the same None a failed
+    syscall gives. (Unlike the CLK_TCK read, a missing libSystem is not a transient: the
+    library a process has is fixed for its life.)
+
+    THE DECLARATIONS ARE NOT DECORATION. ctypes defaults both `argtypes` and `restype` to
+    `c_int`, and `mach_port_t` is UNSIGNED 32-bit: a host port at or above 2^31 does not
+    fit the default signed conversion on the way IN to host_statistics, which is where
+    the failure would land - on the machines whose port happens to have the high bit set
+    and not on the others. The restype is the same fact one step later. The pointer
+    arguments are `c_void_p`, which is what a `byref()` is handed to the kernel as, and
+    it stops ctypes guessing at an `int` for the address.
+    """
+    global _DARWIN_LIBC
+    if _DARWIN_LIBC is False:
+        raise OSError("libSystem is not available on this host")
+    if _DARWIN_LIBC is None:
+        try:
+            # No use_errno: nothing here reads errno - every one of these calls reports
+            # its own failure in its return value - and asking ctypes to save and restore
+            # it around each call buys a cost and no information.
+            libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib")
+            libc.mach_host_self.restype = ctypes.c_uint32
+            libc.mach_host_self.argtypes = []
+            for name in ("host_statistics", "host_statistics64"):
+                entry = getattr(libc, name)
+                entry.restype = ctypes.c_int          # kern_return_t
+                entry.argtypes = [ctypes.c_uint32,    # host_t / host_priv_t
+                                  ctypes.c_int,       # the flavour
+                                  ctypes.c_void_p,    # the out struct
+                                  ctypes.c_void_p]    # the in/out word count
+            libc.sysctlbyname.restype = ctypes.c_int
+            libc.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                                          ctypes.c_void_p, ctypes.c_void_p,
+                                          ctypes.c_size_t]
+        except Exception:
+            # Every shape of "not this platform" - no such library, no such symbol - and
+            # the FIRST one is re-raised so the caller's log line names it. After that
+            # the sentinel answers, with no search behind it.
+            _DARWIN_LIBC = False
+            raise
+        _DARWIN_LIBC = libc
+    return _DARWIN_LIBC
+
+
+_DARWIN_HOST_PORT = None
+
+
+def _darwin_host_port() -> int:
+    """The mach host port, resolved ONCE for the life of the process.
+
+    `mach_host_self()` takes a send right and returns a REFERENCE to it, and nothing here
+    ever gives one back (`mach_port_deallocate`), so each call adds one uref to this
+    task's right. MEASURED 2026-09-04: 2 urefs after one call, 1002 after 1001 - one per
+    call, exactly. The endpoint is undramatic (years of two-second passes to
+    MACH_PORT_UREFS_MAX, and past it host_statistics fails and the gauges null out the
+    honest way), but it is a counter climbing for the life of a daemon meant to run for
+    months, over a value that cannot change: the host port is a property of the task.
+    """
+    global _DARWIN_HOST_PORT
+    if _DARWIN_HOST_PORT is None:
+        _DARWIN_HOST_PORT = _darwin_libc().mach_host_self()
+    return _DARWIN_HOST_PORT
+
+
+def _darwin_cpu_load_info() -> tuple[int, int, int, int] | None:
+    """`host_statistics(HOST_CPU_LOAD_INFO)` -> (user, system, idle, nice) raw ticks.
+
+    MEASURED 2026-09-04 (macOS 26.6, 16 cores): kr 0, count 4, four natural_t counters
+    cumulative since boot and SUMMED ACROSS CORES, in 1/CLK_TCK s. One second of wall
+    clock moved them by [213, 103, 1280, 0] - about 16 cores x 100 Hz.
+
+    The array order is the CPU_STATE_* indices, which is NOT the order the caller wants:
+    user, system, idle, nice. Handed on raw; the folding is cpu_times'.
+    """
+    libc = _darwin_libc()
+    info = (ctypes.c_uint32 * HOST_CPU_STATES)()
+    count = ctypes.c_uint32(HOST_CPU_STATES)
+    kr = libc.host_statistics(_darwin_host_port(), HOST_CPU_LOAD_INFO,
+                              ctypes.byref(info), ctypes.byref(count))
+    if kr != 0 or count.value != HOST_CPU_STATES:
+        return None
+    return (int(info[0]), int(info[1]), int(info[2]), int(info[3]))
+
+
+class _VM_STATISTICS64(ctypes.Structure):
+    """The host_statistics64(HOST_VM_INFO64) out-parameter.
+
+    Every field is declared, in order, even the ones nothing here reads: the kernel
+    writes as many 32-bit words as the in/out `count` allows, and a short struct would
+    be a write past the end. 38 words (152 bytes) as measured, which is also what the
+    caller passes in as the count and checks on the way back out - a kernel whose layout
+    differs answers a different count, and the fields would then not be where the
+    offsets below say they are.
+    """
+    _fields_ = [("free_count", ctypes.c_uint32),
+                ("active_count", ctypes.c_uint32),
+                ("inactive_count", ctypes.c_uint32),
+                ("wire_count", ctypes.c_uint32),
+                ("zero_fill_count", ctypes.c_uint64),
+                ("reactivations", ctypes.c_uint64),
+                ("pageins", ctypes.c_uint64),
+                ("pageouts", ctypes.c_uint64),
+                ("faults", ctypes.c_uint64),
+                ("cow_faults", ctypes.c_uint64),
+                ("lookups", ctypes.c_uint64),
+                ("hits", ctypes.c_uint64),
+                ("purges", ctypes.c_uint64),
+                ("purgeable_count", ctypes.c_uint32),
+                ("speculative_count", ctypes.c_uint32),
+                ("decompressions", ctypes.c_uint64),
+                ("compressions", ctypes.c_uint64),
+                ("swapins", ctypes.c_uint64),
+                ("swapouts", ctypes.c_uint64),
+                ("compressor_page_count", ctypes.c_uint32),
+                ("throttled_count", ctypes.c_uint32),
+                ("external_page_count", ctypes.c_uint32),
+                ("internal_page_count", ctypes.c_uint32),
+                ("total_uncompressed_pages_in_compressor", ctypes.c_uint64)]
+
+
+#: The four page counts the Activity Monitor formula needs, plus the reply's own count.
+HOST_VM_FIELDS = ("wire_count", "purgeable_count", "compressor_page_count",
+                  "internal_page_count")
+#: Taken FROM the struct rather than written down beside it, so the capacity the call
+#: passes in and the drift check it makes on the way out can never disagree. Measured 38.
+HOST_VM_STAT_WORDS = ctypes.sizeof(_VM_STATISTICS64) // 4
+
+
+def _darwin_vm_statistics64() -> dict | None:
+    """`host_statistics64(HOST_VM_INFO64)` -> the page counts, plus the `count` the
+    kernel reported writing. MEASURED 2026-09-04: kr 0, count 38."""
+    libc = _darwin_libc()
+    stats = _VM_STATISTICS64()
+    count = ctypes.c_uint32(HOST_VM_STAT_WORDS)
+    kr = libc.host_statistics64(_darwin_host_port(), HOST_VM_INFO64,
+                                ctypes.byref(stats), ctypes.byref(count))
+    if kr != 0:
+        return None
+    out = {name: int(getattr(stats, name)) for name in HOST_VM_FIELDS}
+    out["count"] = int(count.value)
+    return out
+
+
+def _darwin_sysctl(name: str) -> int | None:
+    """One named integer sysctl, or None when the name is unknown. MEASURED: hw.memsize
+    answers 8 bytes, vm.pagesize 4 - both are read into the same zeroed 64-bit buffer,
+    which is why the width is taken from the size the call reports back."""
+    libc = _darwin_libc()
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    rc = libc.sysctlbyname(name.encode("ascii"), ctypes.byref(value),
+                           ctypes.byref(size), None, ctypes.c_size_t(0))
+    if rc != 0 or size.value not in (4, 8):
+        return None
+    return int(value.value) if size.value == 8 else int(value.value & 0xFFFFFFFF)
+
+
+class DarwinPlatform:
+    """macOS: mach host statistics, launchd, and the login Keychain.
+
+    The two host readers go through injectable seams (`load_info`, `vm_stats`, `sysctl`,
+    `clk_tck`) rather than patched ctypes, for the same reason HostSampler takes
+    callables: the arithmetic is the part with the traps in it, and it is unreachable if
+    a test has to own a real kernel to get to it. Production passes nothing and the
+    module-level `_darwin_*` helpers answer.
+
+    The Keychain is behind one more seam of the same kind (`security`), and for a sharper
+    reason: it is a SUBPROCESS holding two secrets, and a test that had to spawn the real
+    tool could neither run off macOS nor be trusted with the operator's own items.
+    """
+
+    name = "darwin"
+
+    def __init__(self, load_info=None, vm_stats=None, sysctl=None,
+                 clk_tck=None, security=None, limits_service=None,
+                 custom_claude_home=None) -> None:
+        self._load_info = load_info or _darwin_cpu_load_info
+        self._vm_stats = vm_stats or _darwin_vm_statistics64
+        self._sysctl = sysctl or _darwin_sysctl
+        self._clk_tck = clk_tck
+        # The Keychain, behind one seam: `security` is a SUBPROCESS, and a test that had
+        # to spawn the real one could neither run off macOS nor be trusted not to touch
+        # the operator's own items. `limits_service` is parametrised for the one live
+        # test that really does write a Keychain, so it can write its own item.
+        self._security = security or _run_security
+        self._limits_service = limits_service or KEYCHAIN_LIMITS_SERVICE
+        # KEPT AS GIVEN, resolved per call: None means "ask the module", and the module
+        # global is read at call time like every other one in this file, so a test can
+        # repoint it in setUpModule. Bound here instead, the answer would belong to
+        # whenever the platform was built - and the platform that matters is built at
+        # import, as PLATFORM.
+        self._custom_claude_home = custom_claude_home
+        # The resolved 100 ns-units-per-tick scale, once SC_CLK_TCK has answered
+        # usefully. See _tick_scale: only an answer is remembered.
+        self._scale: int | None = None
+        # The 32-bit unwrap, per bucket: the last RAW value seen, and how many whole
+        # 2^32 laps have been added to it.
+        #
+        # UNDER A LOCK THAT SPANS THE FETCH AS WELL AS THE UNWRAP, because cpu_times runs
+        # on two threads: at cold start `_do_state` builds on the REQUEST thread while
+        # `_refresh_loop` builds its own first snapshot, and HostSampler calls its reader
+        # OUTSIDE the lock that guards its `_prev`. Unserialised, thread A can fetch the
+        # older ticks, thread B fetch newer ones and unwrap first - moving the baseline
+        # forward - and A then unwrap ITS reading against a baseline newer than itself.
+        # Every bucket reads smaller, the unwrap cannot tell that from a wrap (by design,
+        # see _unwrap), and four laps are added to a perfectly ordinary reading. Nothing
+        # downstream catches it: the deltas stay positive and idle stays under the total,
+        # so A-07 and A-08 both pass and the panel is served a percentage the machine
+        # never produced.
+        self._cpu_lock = threading.Lock()
+        self._cpu_last: list[int] | None = None
+        self._cpu_laps = [0] * HOST_CPU_STATES
+
+    def cpu_times(self) -> tuple[int, int, int] | None:
+        """(idle, kernel, user) in 100 ns units, HostSampler's convention, or None.
+
+        TWO DECISIONS LIVE HERE, and both are silent if got wrong:
+
+        IDLE IS FOLDED INTO KERNEL. HostSampler was written against GetSystemTimes,
+        where kernel time INCLUDES idle time, and its busy fraction is
+        ((kernel + user) - idle) / (kernel + user). mach reports the two separately, so
+        handing `system` on as `kernel` would make idle larger than the total on any
+        machine that is mostly idle - which is A-08, and the sampler answers null.
+        Forever, on a healthy machine: a dead gauge, not a wrong one.
+
+        NICE IS BUSY TIME. `nice` counts user-priority-lowered processes running, so it
+        belongs with `user`; dropping it under-reports a machine doing background work
+        at nice priority (a box running a nice'd build reads idle while it is not).
+        """
+        scale = self._tick_scale()
+        if scale is None:
+            return None
+        ticks = self._read_ticks()
+        if ticks is None:
+            return None
+        user, system, idle, nice = ticks
+        return (idle * scale, (system + idle) * scale, (user + nice) * scale)
+
+    def _read_ticks(self) -> list[int] | None:
+        """The four counters, unwrapped, or None - with the FETCH AND THE UNWRAP UNDER
+        ONE LOCK. Two callers overlap at cold start (see the __init__ comment), and a
+        reading unwrapped against a baseline newer than itself invents four laps that
+        nothing downstream can tell from a real wrap."""
+        with self._cpu_lock:
+            try:
+                raw = self._load_info()
+            except Exception as exc:
+                _log_once(HOST_CPU_LOG_KEY,
+                          f"crabd: host_statistics raised {type(exc).__name__}; "
+                          f"serving no host CPU")
+                return None
+            if raw is None:
+                _log_once(HOST_CPU_LOG_KEY,
+                          "crabd: host_statistics returned failure; serving no host CPU")
+                return None
+            # Both shapes are the same failure - the four buckets this arithmetic names
+            # are not where it thinks they are - so they share an answer and a line.
+            try:
+                ticks = [int(v) for v in raw]
+            except (TypeError, ValueError):
+                ticks = None
+            if ticks is None or len(ticks) != HOST_CPU_STATES:
+                _log_once(HOST_CPU_LOG_KEY,
+                          "crabd: host_statistics gave a reading that is not four "
+                          "numbers; serving no host CPU")
+                return None
+            return self._unwrap(ticks)
+
+    def _unwrap(self, ticks: list[int]) -> list[int]:
+        """The four 32-bit counters as 64-bit monotonic ones.
+
+        A bucket that reads SMALLER than last time has wrapped 2^32 (about 31 days of
+        uptime per bucket at the measured ~1600 ticks/s), so a lap is added and the
+        sampler never sees the backwards jump it would otherwise re-baseline on once a
+        month per bucket. Each bucket carries its own lap count, so two wrapping in the
+        same reading are independent.
+
+        A genuine backwards jump of any OTHER kind - a rigged reader, a counter reset -
+        is INDISTINGUISHABLE from a wrap here and is treated as one. That is the honest
+        trade: the resulting delta is at worst one over-large window served as a
+        percentage, and HostSampler still refuses it if idle then exceeds the total,
+        while the alternative (treating every wrap as suspicious) is a null gauge on
+        every long-uptime machine.
+        """
+        last, self._cpu_last = self._cpu_last, list(ticks)
+        out = []
+        for i, value in enumerate(ticks):
+            if last is not None and value < last[i]:
+                self._cpu_laps[i] += 1
+            out.append(value + self._cpu_laps[i] * HOST_CPU_COUNTER_MODULUS)
+        return out
+
+    def _tick_scale(self) -> int | None:
+        """100 ns units per CLK_TCK tick, or None.
+
+        CLK_TCK is 100 on every macOS measured, and the scale is then 100_000. It is
+        checked rather than assumed because the division is INTEGER: a CLK_TCK that does
+        not divide 10_000_000 evenly would quietly drop part of every tick, and one that
+        is zero or negative would divide by zero or invert the counters.
+
+        RESOLVED ONCE and remembered: the clock is a property of the kernel, not a
+        reading that drifts, and this runs every two seconds for the life of the daemon.
+        Only an ANSWER is cached - a sysconf that raised or answered something unusable
+        is re-asked next time, because a remembered failure would be a gauge that stays
+        dark for the whole process over one bad call.
+        """
+        if self._scale is not None:
+            return self._scale
+        clk = self._clk_tck
+        if clk is None:
+            try:
+                clk = os.sysconf("SC_CLK_TCK")
+            except (AttributeError, OSError, ValueError) as exc:
+                _log_once(HOST_CPU_LOG_KEY,
+                          f"crabd: SC_CLK_TCK unreadable ({type(exc).__name__}); "
+                          f"serving no host CPU")
+                return None
+        if (isinstance(clk, bool) or not isinstance(clk, int) or clk <= 0
+                or HOST_100NS_PER_SEC % clk):
+            _log_once(HOST_CPU_LOG_KEY,
+                      f"crabd: SC_CLK_TCK is {clk!r}, which cannot scale the CPU "
+                      f"counters; serving no host CPU")
+            return None
+        self._scale = HOST_100NS_PER_SEC // clk
+        return self._scale
+
+    def memory(self) -> tuple[int, int] | None:
+        """(total physical bytes, available bytes), or None.
+
+        `used` is ACTIVITY MONITOR's "Memory Used" - app memory + wired + compressed,
+        which is (internal_page_count - purgeable_count) + wire_count +
+        compressor_page_count. The contract's promise for this row is that it matches
+        what the machine's own monitor shows, and on a Mac there are two other plausible
+        answers that do not: `top`'s used is total - free, which is 99.3 GiB from the
+        page counts recorded in the test fixture (`top` itself rounded it to "98G") on
+        the 128 GiB machine measured here, against Activity Monitor's 66.0, and counting
+        free + inactive + speculative as available reads differently again. Available is
+        then total - used, so the served memPct is the one the user can check.
+
+        Five refusals, each answering None with one stderr line rather than a figure.
+        The last two matter most: HostSampler CLAMPS an availability outside 0..total
+        back into range, so a `used` past either end would arrive at the document as a
+        plausible-looking 100% or 0% instead of the null it is.
+        """
+        try:
+            total = self._sysctl("hw.memsize")
+            page = self._sysctl("vm.pagesize")
+            stats = self._vm_stats()
+            if stats is None:
+                return self._no_memory("host_statistics64 returned failure")
+            if stats["count"] != HOST_VM_STAT_WORDS:
+                # STOP before a single page count is read. A different word count is a
+                # different struct layout, so the fields are not at the offsets these
+                # names were resolved from and the arithmetic would be confident
+                # nonsense rather than an error.
+                return self._no_memory(
+                    f"host_statistics64 wrote {stats['count']!r} words, not "
+                    f"{HOST_VM_STAT_WORDS}")
+            if not _positive_int(page) or page & (page - 1):
+                return self._no_memory(
+                    f"vm.pagesize is {page!r}, which is not a page size")
+            if not _positive_int(total):
+                return self._no_memory(f"hw.memsize is {total!r}")
+            used = page * (stats["internal_page_count"] - stats["purgeable_count"]
+                           + stats["wire_count"] + stats["compressor_page_count"])
+        except Exception as exc:
+            return self._no_memory(f"the memory readers raised {type(exc).__name__}")
+        if not 0 <= used <= total:
+            return self._no_memory(
+                f"used memory reads {used}, which is not within 0..{total}")
+        return (total, total - used)
+
+    @staticmethod
+    def _no_memory(reason: str) -> None:
+        """One stderr line for the life of the process, then silence.
+
+        `_log_once` keys on THIS READER - one key for all five refusals - so the first
+        one to fire is the one that speaks and a second kind arriving later is silent.
+        That is the trade this reader wants: it runs every two seconds, and a key per
+        kind would let a machine alternating between two failures print for ever.
+        """
+        _log_once(HOST_MEM_LOG_KEY, f"crabd: {reason}; serving no host memory")
+        return None
+
+    @staticmethod
+    def server_reuse_address() -> bool:
+        """True, and it is NOT the Windows setting under another name. BSD
+        SO_REUSEADDR does not admit a second listener on an address something is
+        already listening on, so a collision still fails loudly here; all it permits is
+        a fresh listener taking a port that a CLOSED connection still holds in
+        TIME_WAIT. Without it crabd restarted inside that window cannot have its own
+        port back, and prints the "another process is holding it" message about its own
+        dead connection."""
+        return True
+
+    @staticmethod
+    def port_holder_hint(port: int) -> str:
+        return f"lsof -nP -iTCP:{port} -sTCP:LISTEN"
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        # glow has NO launchd label, and that is not an omission: there is no lighting
+        # component on macOS at all (the Corsair SDK is Windows-only), so there is
+        # nothing to observe and `absent` is the literally true answer. The KEY stays,
+        # so the served document's shape is identical on both platforms and a panel that
+        # feature-detects `fleet` draws a hollow absent dot rather than a missing row.
+        return (("glow", ""), ("toast", "com.sidecrab.toast"))
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        """`launchctl print gui/<uid>/<label>` -> (exit code, stdout, stderr).
+
+        The per-user `gui/<uid>` domain is where the SideCrab agents are loaded; the
+        older `launchctl list` answers a different shape and `system/` is a different
+        domain. An EMPTY target - a component this platform has no service for - returns
+        the FLEET_NO_SERVICE sentinel WITHOUT SPAWNING ANYTHING, because
+        `launchctl print gui/<uid>/` is a different question with a different answer.
+        service_status turns that sentinel into `absent`; the two halves are one pair.
+        """
+        if not target:
+            return FLEET_NO_SERVICE
+        try:
+            uid = os.getuid()
+        except AttributeError as exc:
+            # POSIX-only, and read OUTSIDE the subprocess call. This platform is never
+            # SELECTED on a host without it, but the seam lets anything build one (the
+            # suite does), and an AttributeError from here lands past FleetReader's catch
+            # list and crashes the fleet thread. OSError is the shape that reader already
+            # answers `unknown` to, and the one NullPlatform uses to say the same thing.
+            raise OSError("os.getuid is not available on this host") from exc
+        proc = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{uid}/{target}"],
+            capture_output=True, timeout=timeout, check=False)
+        return (proc.returncode,
+                proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
+
+    @staticmethod
+    def service_status(code, out, err) -> str:
+        """`launchctl print`'s answer as one of the contract's four words.
+
+        Anything the vocabulary does not cover is `unknown`, never `stopped`: an answer
+        crabd cannot read is a gap in what it knows, and the fourth word exists so it
+        can say so instead of guessing the reassuring one.
+        """
+        if code is None:
+            # The no-such-component sentinel, not a failed query. `absent` is the honest
+            # word: there is no service here to be running or stopped.
+            return "absent"
+        if code != 0:
+            blob = f"{out or ''}\n{err or ''}".lower()
+            return ("absent" if any(m in blob for m in LAUNCHD_ABSENT_MARKERS)
+                    else "unknown")
+        return LAUNCHD_STATUS_MAP.get(DarwinPlatform._state_field(out), "unknown")
+
+    @staticmethod
+    def _state_field(out) -> str:
+        """The FIRST-LEVEL `state = ...` word, or "".
+
+        launchd indents the service's own properties with ONE tab and nests sub-objects
+        deeper, and those sub-objects carry their own `state = active` lines - measured,
+        two of them under a running agent. A parser taking the first `state =` anywhere,
+        or the last, would report a stopped agent as running on the strength of one.
+        """
+        for line in (out or "").splitlines():
+            if not line.startswith("\t") or line.startswith("\t\t"):
+                continue
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "state":
+                return value.strip().lower()
+        return ""
+
+    def read_limits_token(self, path) -> str | None:
+        """The long-lived token out of the login Keychain, or None.
+
+        `path` IS IGNORED here, deliberately: the three platforms have to take the same
+        arguments (the surface pin says so) and on Windows the token really is that file.
+        On a Mac it is a generic-password item, service `SideCrab limits token`, account
+        the login user - the pair setup/sidecrab_setup.py probes by exit code.
+
+        Read fresh on every poll, so a token stored while crabd runs is picked up on the
+        next pass with no restart, and dropped as soon as the caller has used it as a
+        header. Exit 44 is ABSENCE and is silent - the ordinary state of a machine whose
+        operator never ran `--limits-token`, on every poll for ever. Anything else is one
+        line naming the exit code, never the output: in this direction the output IS the
+        token.
+        """
+        if not KEYCHAIN_CREDENTIALS_ENABLED:
+            return None                 # the suite's kill switch: it covers both items
+        code, out, why = self._keychain_read(self._limits_service)
+        if code == KEYCHAIN_ITEM_NOT_FOUND:
+            return None
+        if code != 0:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not hand over the limits token "
+                      f"({why}); the gauges fall back to the CLI token; this is logged "
+                      f"once")
+            return None
+        return out.strip() or None
+
+    def store_limits_token(self, token: str) -> bool:
+        """Store the long-lived token in the login Keychain. True when it is in.
+
+        THE SECRET TRAVELS ON STDIN. `ps` is world-readable on macOS, so a value in an
+        argument list is handed to every user on the machine - and to anything sampling
+        `ps` for ever after. `security -i` reads its commands from stdin, so the argv here
+        is exactly ["-i"], and `-X` takes the value HEX-ENCODED, which removes the last
+        question about quoting the secret itself.
+
+        `-U` updates an item that is already there instead of failing on it: storing a
+        second token is what an operator does after minting a new one, and the failure
+        mode without it is the OLD, rejected token staying in the Keychain.
+
+        The service name is quoted because it has spaces in it. MEASURED 2026-09-04:
+        `security -i` honours double quotes - `find-generic-password -s "SideCrab quoting
+        probe (no such item)" -a probe -w` fed to it answered "could not be found"
+        (exit 44), not a usage error. A value that would need quoting of its own never
+        gets this far; _usable_limits_token refuses it.
+
+        Items created through this tool carry the tool in their access list, so crabd's
+        own later reads through it do not raise a prompt.
+        """
+        if not _usable_limits_token(token):
+            return False                # nothing stored, and the value never named
+        if not KEYCHAIN_CREDENTIALS_ENABLED:
+            # The same kill switch the reads honour, and it guards the WRITE for a
+            # sharper reason: a suite that could reach this would be modifying the
+            # operator's login Keychain, not merely reading it.
+            return False
+        account = _login_account()
+        if account is None:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: there is no login account to name a Keychain item with; "
+                      "nothing was stored; this is logged once")
+            return False
+        if not (_keychain_name_safe(account)
+                and _keychain_name_safe(self._limits_service)):
+            # The same rule as the token check, one field along: both names go into the
+            # command QUOTED, and a name that could close its own field could carry the
+            # rest of the line with it.
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      "crabd: this Keychain item's name cannot be quoted safely; "
+                      "nothing was stored; this is logged once")
+            return False
+        command = (f'add-generic-password -a "{account}" -s "{self._limits_service}" '
+                   f'-X {token.encode("utf-8").hex()} -U\n')
+        try:
+            code, _out, _err = self._security(["-i"], command, KEYCHAIN_TIMEOUT_SEC)
+        except (OSError, subprocess.SubprocessError) as exc:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not take the limits token "
+                      f"({type(exc).__name__}); nothing was stored; this is logged once")
+            return False
+        if code != 0:
+            _log_once(LIMITS_TOKEN_LOG_KEY,
+                      f"crabd: the login Keychain would not take the limits token "
+                      f"(exit {code}); nothing was stored; this is logged once")
+            return False
+        return True
+
+    def _custom_config_dir(self) -> bool:
+        """Was crabd pointed at a config dir other than ~/.claude? The constructor
+        argument outranks the module global, and the global is read HERE rather than
+        remembered, for the reason in __init__."""
+        if self._custom_claude_home is None:
+            return CUSTOM_CLAUDE_HOME
+        return bool(self._custom_claude_home)
+
+    def limits_token_hint(self) -> str:
+        return "setup/install.sh --limits-token"
+
+    def _keychain_read(self, service: str) -> tuple[int | None, str, str]:
+        """`security find-generic-password -s <service> -a <login> -w`
+        -> (exit code, stdout, a short reason fit for a log line).
+
+        The code is None when the tool could not be RUN at all (no such binary, a refused
+        spawn, a timeout), and the reason is then a type name. Neither the tool's stdout
+        nor its stderr ever reaches the reason: stdout is the secret, and stderr is output
+        that a future macOS could put anything into.
+
+        No `-i` here. The read carries no secret in its arguments - the item's name is
+        not a secret - and the value comes back on stdout, so an argument list is safe in
+        this direction and only in this direction.
+        """
+        account = _login_account()
+        if account is None:
+            return (None, "", "there is no login account to name")
+        try:
+            code, out, _err = self._security(
+                ["find-generic-password", "-s", service, "-a", account, "-w"],
+                None, KEYCHAIN_TIMEOUT_SEC)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (None, "", type(exc).__name__)
+        return (code, out or "", f"exit {code}")
+
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document: the FILE first, then the login Keychain.
+
+        MEASURED 2026-09-04 (Claude Code 2.1.260): `~/.claude/.credentials.json` is not
+        on this machine at all and the Keychain item is. The file still wins where both
+        exist - the documentation says it is written only when the Keychain write FAILS,
+        which makes it the CLI's own fallback - and asking the Keychain anyway would raise
+        a prompt on the operator's desktop for an answer crabd already had.
+
+        THE PAYLOAD WAS NEVER READ while this was written: it is the operator's live OAuth
+        token, and the session that wrote this refused to look at it. So it is handed back
+        as text and parsed as the FILE's shape by the caller that already does that, and
+        nothing here guesses - a payload that is not that shape reaches the existing
+        "unreadable" and "no access token" notes, never a fabricated token.
+
+        Two gates before the Keychain is touched, both silent absence rather than failure:
+        the module kill switch (see KEYCHAIN_CREDENTIALS_ENABLED), and a custom
+        CRABD_CLAUDE_HOME, which keys a different Keychain entry crabd cannot name.
+
+        A REFUSED READ RAISES PermissionError. It is not "no credentials": the item is
+        there and this process was not allowed to see it, which is what a LaunchAgent
+        meets the first time (a Keychain dialog in a GUI session, exit 36 "User
+        interaction is not allowed" in one with no UI). The two need different words
+        because they have different actions attached - log in, versus approve the prompt.
+        """
+        raw = _read_cli_credentials()
+        if raw is not None:
+            return raw
+        if not KEYCHAIN_CREDENTIALS_ENABLED or self._custom_config_dir():
+            return None
+        code, out, why = self._keychain_read(KEYCHAIN_CREDENTIALS_SERVICE)
+        if code is None:
+            # The tool never RAN - no binary, a refused spawn, a timeout, no login
+            # account to name the item with - so crabd learned nothing about whether
+            # there are credentials. NOT the refusal below: "approve the Keychain prompt"
+            # would be advice about a dialog nobody is being shown, and the operator
+            # would wait for something that is never going to appear. One line naming the
+            # failure TYPE, since there is no exit code to name.
+            _log_once(CLI_CREDENTIALS_LOG_KEY,
+                      f"crabd: {SECURITY_BIN} could not be run ({why}); serving no "
+                      f"Claude credentials; this is logged once")
+            return None
+        if code == KEYCHAIN_ITEM_NOT_FOUND:
+            return None                 # no file and no item: nothing is logged in here
+        if code != 0:
+            _log_once(CLI_CREDENTIALS_LOG_KEY,
+                      f"crabd: the login Keychain would not hand over the Claude "
+                      f"credential ({why}); approve the Keychain prompt or run claude in "
+                      f"a terminal; this is logged once")
+            raise PermissionError("the login Keychain refused the Claude credential item")
+        return out.strip() or None
+
+
+class NullPlatform:
+    """Any other OS (Linux CI). Every OS-specific reading is absent, which the readers
+    turn into no `host` key and an unknown fleet - never a fabricated zero."""
+
+    name = "none"
+
+    def cpu_times(self) -> tuple[int, int, int] | None:
+        return None
+
+    def memory(self) -> tuple[int, int] | None:
+        return None
+
+    @staticmethod
+    def server_reuse_address() -> bool:
+        """True, for the same reason as Darwin: Linux SO_REUSEADDR does not admit a
+        second listener either, and a CI run that restarts crabd back to back is the
+        exact TIME_WAIT case."""
+        return True
+
+    @staticmethod
+    def port_holder_hint(port: int) -> str:
+        """The POSIX answer rather than an empty one: Linux is what lands here, and
+        `lsof` is the command there too."""
+        return f"lsof -nP -iTCP:{port} -sTCP:LISTEN"
+
+    @staticmethod
+    def fleet_targets() -> tuple[tuple[str, str], ...]:
+        # The contract's two keys are always present; there is no service to name.
+        return (("glow", ""), ("toast", ""))
+
+    @staticmethod
+    def service_query(target: str, timeout: float):
+        raise OSError("no service manager on this platform")
+
+    @staticmethod
+    def service_status(code, out, err) -> str:
+        """`unknown`, including for the FLEET_NO_SERVICE sentinel - and that difference
+        from the other two is the point, not an oversight.
+
+        Windows and macOS answer the sentinel `absent`: they HAVE a service manager, so
+        "there is no service for this component" is a fact they can state. This platform
+        has none at all, so it cannot observe anything and cannot make that claim; "I
+        could not find out" is the only true word it has, and it is the one it gives to
+        every question.
+        """
+        return "unknown"
+
+    def read_limits_token(self, path) -> str | None:
+        return None
+
+    def store_limits_token(self, token: str) -> bool:
+        """False: there is nowhere to put it here. Not an exception and not a plain
+        file - an unprotected bearer token on disk that later reads would hand out as
+        though it had been stored properly is worse than saying no. The installer reads
+        False as "nothing is confirmed stored"."""
+        return False
+
+    def limits_token_hint(self) -> str:
+        """No command, because there is nothing here to run one against - and inventing
+        one would send an operator to a tool that cannot work on their machine."""
+        return "(no long-lived token store on this platform)"
+
+    def cli_credentials(self) -> str | None:
+        """The CLI credential document, from the FILE and nowhere else.
+
+        An INSTANCE method, like the other two platforms' - only Darwin needs the
+        instance (its Keychain seam lives on it), and the three have to be bound the
+        same way or they are not interchangeable. The surface test pins that.
+        """
+        return _read_cli_credentials()
+
+
+def select_platform(sys_platform: str):
+    if sys_platform == "win32":
+        return WindowsPlatform()
+    if sys_platform == "darwin":
+        return DarwinPlatform()
+    return NullPlatform()
+
+
+#: THE ONLY READ OF THE HOST'S PLATFORM STRING IN THIS MODULE, and a source-text test
+#: asserts that it stays the only one. Every OS-specific reader defaults to this object;
+#: a second `sys.platform` test anywhere downstream is a second answer that can disagree
+#: with this one - and it would be correct on the host it was written on, which is why
+#: no behavioural test can catch it.
+#:
+#: ONE EXCEPTION, deliberate: `_dpapi_unprotect` guards on `hasattr(ctypes, "windll")`.
+#: It is a Windows helper, not a reader - it has no cross-platform behaviour to select,
+#: and its guard is the same "this syscall is not here" error path the WindowsPlatform
+#: counters take. The source-text test names it alongside WindowsPlatform for that
+#: reason; nothing else may reach for the Win32 DLLs.
+PLATFORM = select_platform(sys.platform)
+
+
 # ------------------------------------------------------------------------- limits
 
 class _DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_protect(raw: bytes) -> bytes | None:
+    """CryptProtectData for the current user, no entropy - the exact mirror of
+    `_dpapi_unprotect` below, and of the `[ProtectedData]::Protect(bytes, $null,
+    'CurrentUser')` the PowerShell installer used to write this file with. None on any
+    failure (not Windows, a refused call), and the caller then stores NOTHING: an
+    unprotected token written to that path would be handed out by every later read as
+    though it had been encrypted.
+    """
+    if not raw or not hasattr(ctypes, "windll"):
+        return None
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        buf = ctypes.create_string_buffer(raw, len(raw))
+        inp = _DATA_BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        out = _DATA_BLOB()
+        if not crypt32.CryptProtectData(ctypes.byref(inp), None, None, None, None, 0,
+                                        ctypes.byref(out)):
+            return None
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            kernel32.LocalFree(out.pbData)
+    except (OSError, AttributeError, ValueError):
+        return None
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes | None:
@@ -2959,21 +4203,29 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
         return None
 
 
-def read_limits_token(path: Path = None) -> str | None:
-    """The long-lived usage token, or None. Read fresh on every call so a token stored
-    while crabd runs is picked up on the next poll; the decrypted string is returned to
-    the caller and dropped - LimitsReader keeps the same no-log, no-store rule for it
-    that it keeps for the CLI token."""
-    path = path or LIMITS_TOKEN_FILE
-    try:
-        blob = path.read_bytes()
-    except OSError:
+def read_limits_token(path: Path = None, platform=None) -> str | None:
+    """The long-lived usage token, or None. Reading it is the platform's job - the store
+    is a DPAPI blob on Windows and a login Keychain item on macOS - but this stays a
+    module function because it is pre-existing public API. Its name, signature and
+    `path=` override predate the platform seam; adding a seam under a name is not a
+    reason to change the name.
+
+    THE SHAPE IS CHECKED ON THE WAY OUT, not only on the way in. Whatever the store holds
+    was put there by something ELSE - the installer, a `security` command typed by hand,
+    an older crabd - and the very next thing that happens to it is that it becomes an
+    `Authorization` header. A value with a newline in it is header injection at that
+    point, and one with a space is simply not a token. Same rule as the store, and the
+    value is still never named in the line that says so.
+    """
+    token = (platform or PLATFORM).read_limits_token(path or LIMITS_TOKEN_FILE)
+    if token is None:
         return None
-    raw = _dpapi_unprotect(blob)
-    if not raw:
+    if not _usable_limits_token(token):
+        _log_once(LIMITS_TOKEN_LOG_KEY,
+                  "crabd: the stored limits token is not a shape crabd will send (see "
+                  "LIMITS_TOKEN_RE); ignoring it; this is logged once")
         return None
-    token = raw.decode("utf-8", errors="replace").strip()
-    return token or None
+    return token
 
 
 class LimitsReader:
@@ -2985,11 +4237,15 @@ class LimitsReader:
     could echo a request.
     """
 
-    def __init__(self, cache_file: Path | None = None) -> None:
+    def __init__(self, cache_file: Path | None = None, platform=None) -> None:
         # Injectable for the same reason UserConfig takes a path: a test that builds a
         # real reader must not be one forgotten patch away from writing the operator's
         # live last-good store (it happened - see LIMITS_CACHE_MIN_EPOCH).
         self._cache_file = Path(cache_file) if cache_file else None
+        # Both credential sources are the platform's, and each has two shapes: the CLI
+        # document is a file everywhere and ALSO a login Keychain item on macOS, and the
+        # long-lived store is a DPAPI blob on Windows and a Keychain item on a Mac.
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._cached: dict | None = None
         self._fetched_at = 0.0
@@ -3092,8 +4348,14 @@ class LimitsReader:
 
     def _fetch(self) -> dict:
         try:
-            raw = CREDENTIALS_FILE.read_text(encoding="utf-8")
-        except OSError:
+            raw = self._platform.cli_credentials()
+        except PermissionError:
+            # macOS only: the credential is in the login Keychain and this process was
+            # refused it. A DIFFERENT claim from "there are no credentials", with a
+            # different action attached - the operator has to approve the prompt, and
+            # being told to log in would send them to do something that changes nothing.
+            return self._unavailable(KEYCHAIN_REFUSED_NOTE)
+        if raw is None:
             return self._unavailable("no Claude credentials on this machine - run /login")
         try:
             oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
@@ -3111,18 +4373,23 @@ class LimitsReader:
         # setup token is the fallback for the hours (or days) the CLI file sits expired.
         token_source = "cli"
         if not cli_usable:
-            fallback = read_limits_token()
+            # The command that stores one is the PLATFORM's - `Install-SideCrab.ps1
+            # -LimitsToken` on Windows, `setup/install.sh --limits-token` on a Mac. These
+            # notes are the panel's only instruction for this failure, and naming a
+            # PowerShell script to a Mac operator is naming something they cannot run.
+            hint = self._platform.limits_token_hint()
+            fallback = read_limits_token(platform=self._platform)
             if fallback:
                 token = fallback
                 token_source = "sidecrab"
             elif not isinstance(token, str) or not token:
                 return self._unavailable(
-                    "no Claude access token - run claude in a terminal, or store a "
-                    "long-lived one: Install-SideCrab.ps1 -LimitsToken")
+                    f"no Claude access token - run claude in a terminal, or store a "
+                    f"long-lived one: {hint}")
             else:
                 out = self._unavailable(
-                    "Claude token expired - run claude in a terminal to refresh it, or "
-                    "store a long-lived one: Install-SideCrab.ps1 -LimitsToken")
+                    f"Claude token expired - run claude in a terminal to refresh it, or "
+                    f"store a long-lived one: {hint}")
                 out["subscriptionType"] = subscription
                 out["rateLimitTier"] = tier
                 return out
@@ -3142,8 +4409,9 @@ class LimitsReader:
         except urllib.error.HTTPError as exc:
             code = exc.code
             if code in (401, 403) and token_source == "sidecrab":
-                note = ("SideCrab limits token rejected - mint a new one with "
-                        "claude setup-token and re-run Install-SideCrab.ps1 -LimitsToken")
+                note = (f"SideCrab limits token rejected - mint a new one with "
+                        f"claude setup-token and store it again: "
+                        f"{self._platform.limits_token_hint()}")
             elif code in (401, 403):
                 note = "Claude token rejected - run /login in Claude Code"
             else:
@@ -3317,11 +4585,15 @@ class ModelCatalog:
     bar does not draw. No fallback table, no guess, no zero (see the MODELS_URL comment).
     """
 
-    def __init__(self, credentials_file: Path | None = None) -> None:
+    def __init__(self, credentials_file: Path | None = None, platform=None) -> None:
         # Injectable for the reason LimitsReader's cache_file is: a test that builds a
         # real catalog must not be one forgotten patch away from reading the operator's
         # live token and hitting the network.
         self._credentials_file = Path(credentials_file) if credentials_file else None
+        # ...and with no file injected, the credential comes from the PLATFORM, which on
+        # macOS means the login Keychain. Reading the file directly here is what took the
+        # ctx-fill bar off every card on a Mac: the file is not there at all.
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._windows: dict[str, int] | None = None
         self._fetched_at = 0.0
@@ -3330,6 +4602,27 @@ class ModelCatalog:
     @property
     def credentials_file(self) -> Path:
         return self._credentials_file or CREDENTIALS_FILE
+
+    def _credential_document(self) -> str | None:
+        """The credential text, or None. An INJECTED file is read directly - it is the
+        seam this class's own tests are built on - and otherwise the platform answers,
+        which on macOS means the login Keychain as well as the file.
+
+        A refusal (macOS: the item is there and this process may not read it) is the same
+        None as every other failure here. The catalog has exactly one failure answer - no
+        entry, so `contextWindowTokens` is null and the bar does not draw - and it runs
+        inside build(), which must never raise. The platform has already said so once on
+        stderr; a second line from here would be the same fact twice.
+        """
+        if self._credentials_file is not None:
+            try:
+                return self._credentials_file.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        try:
+            return self._platform.cli_credentials()
+        except PermissionError:
+            return None
 
     def window(self, model, now: float) -> int | None:
         """The context window for a served model string, or None when unknown.
@@ -3368,9 +4661,8 @@ class ModelCatalog:
             self._not_before = 0.0
 
     def _fetch(self) -> dict[str, int] | None:
-        try:
-            raw = self.credentials_file.read_text(encoding="utf-8")
-        except OSError:
+        raw = self._credential_document()
+        if raw is None:
             return None
         try:
             oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
@@ -3715,7 +5007,7 @@ class StatusLineReader:
 
 class OtlpReceiver:
     """POST /v1/metrics + POST /v1/logs - OTLP http/json from Claude Code's built-in
-    telemetry (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, endpoint 127.0.0.1:2722).
+    telemetry (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, endpoint 127.0.0.1:9999).
 
     Two facts are taken and the rest of a very large schema is walked past:
       - `claude_code.cost.usage` (USD) -> burn.costUSD for the LOCAL day, costSource
@@ -4158,33 +5450,45 @@ class RecapReader:
 # -------------------------------------------------------------------------- fleet
 
 class FleetReader:
-    """`fleet` - SideCrab observing its own Scheduled Tasks (glow, toast).
+    """`fleet` - SideCrab observing its own background services (glow, toast).
 
-    Four outcomes, and the difference between the last two is the whole point:
-      running  - schtasks reports Running
-      stopped  - Ready / Queued / Disabled: the task exists and is not executing
-      absent   - the query failed BECAUSE there is no such task
-      unknown  - anything else: schtasks missing, timed out, an unrecognised status,
-                 a non-zero exit with no not-found wording
+    Which services exist, how to query one and how to read its answer are the
+    PLATFORM's; the four served outcomes are this class's, and they are the contract:
+      running  - the platform's service query reports it executing
+      stopped  - it exists and is not executing
+      absent   - the query failed BECAUSE there is no such service
+      unknown  - anything else: the query is missing, timed out, returned a status this
+                 platform does not recognise, or failed with no not-found wording
 
-    A task whose state cannot be read is never folded into `stopped`. "the notifier is
-    not running" and "I could not find out" are different claims, and a widget dot that
-    guesses the first when it means the second is exactly the silent-all-green failure
-    the contract's stale rules exist to prevent.
+    A service whose state cannot be read is never folded into `stopped`. "the notifier
+    is not running" and "I could not find out" are different claims, and a widget dot
+    that guesses the first when it means the second is exactly the silent-all-green
+    failure the contract's stale rules exist to prevent.
 
     Cached FLEET_REFRESH_SEC and computed on its own thread for the same reason recap
     is: two subprocesses on the builder thread would freeze `generatedAt`.
     """
 
-    def __init__(self, runner=None) -> None:
-        self._runner = runner        # tests inject; production uses _run
+    def __init__(self, runner=None, platform=None) -> None:
+        # The reader owns the CACHING and the four-outcome rule; the platform owns the
+        # service manager - which targets exist, how to query one, and how to read its
+        # answer. Splitting them is what lets the Windows mapping keep being proven on
+        # a host that has no schtasks: `runner=` injects the query, `platform=` the
+        # parse, and neither is a test of what OS this is.
+        self._runner = runner
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
-        self._result = self.unknown()
+        self._result = self.unknown(self._platform)
         self._due = 0.0
 
     @staticmethod
-    def unknown() -> dict:
-        return {name: "unknown" for name, _task in FLEET_TASKS}
+    def unknown(platform=None) -> dict:
+        """Every component the platform names, all `unknown`. STATIC because
+        StateBuilder calls it on the class for a builder with no reader attached, and
+        build() must never raise. The keys come from the platform because the SERVICE
+        NAMES do - the no-reader answer must carry the same key set a reader would."""
+        return {name: "unknown"
+                for name, _target in (platform or PLATFORM).fleet_targets()}
 
     def get(self) -> dict:
         with self._lock:
@@ -4202,43 +5506,27 @@ class FleetReader:
         return True
 
     def read(self) -> dict:
-        return {name: self.status(task) for name, task in FLEET_TASKS}
+        return {name: self.status(target)
+                for name, target in self._platform.fleet_targets()}
 
-    def status(self, task: str) -> str:
-        runner = self._runner or self._run
+    def status(self, target: str) -> str:
+        if not target:
+            # A component this platform names but has NO service for. There is nothing
+            # to spawn and nothing to ask, so the platform is handed the same sentinel
+            # its own service_query returns for an empty target and answers in its own
+            # terms. Short-circuited HERE rather than left to the platform so that an
+            # INJECTED runner is not called either: a test's fake would otherwise record
+            # a query for a service that does not exist, and a real injected runner
+            # would spawn one.
+            return self._platform.service_status(*FLEET_NO_SERVICE)
+        runner = self._runner or self._platform.service_query
         try:
-            code, out, err = runner(task, FLEET_TIMEOUT_SEC)
+            code, out, err = runner(target, FLEET_TIMEOUT_SEC)
         except subprocess.TimeoutExpired:
             return "unknown"
-        except (OSError, ValueError):    # schtasks missing, or the spawn failed
+        except (OSError, ValueError):    # the query is missing, or the spawn failed
             return "unknown"
-        if code != 0:
-            blob = f"{out or ''}\n{err or ''}".lower()
-            return "absent" if any(m in blob for m in FLEET_ABSENT_MARKERS) else "unknown"
-        return FLEET_STATUS_MAP.get(self._status_field(out), "unknown")
-
-    @staticmethod
-    def _status_field(out) -> str:
-        """Last csv row's status column. `csv` rather than a split: the task name is a
-        quoted field and a task name containing a comma would break a naive split."""
-        try:
-            rows = [row for row in csv.reader((out or "").splitlines())
-                    if len(row) > FLEET_STATUS_COL]
-        except (csv.Error, ValueError):
-            return ""
-        return rows[-1][FLEET_STATUS_COL].strip().lower() if rows else ""
-
-    @staticmethod
-    def _run(task: str, timeout: float):
-        proc = subprocess.run(
-            ["schtasks", "/query", "/tn", task, "/fo", "csv", "/nh"],
-            capture_output=True, timeout=timeout, check=False,
-            # No console under the Scheduled Task, and without this a window would
-            # flash on the desktop on an interactive login.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return (proc.returncode,
-                proc.stdout.decode("utf-8", errors="replace"),
-                proc.stderr.decode("utf-8", errors="replace"))
+        return self._platform.service_status(code, out, err)
 
 
 # ------------------------------------------------------------------ host sampler
@@ -4293,7 +5581,7 @@ class HostSampler:
     and is therefore served on the very first pass.
 
     HONEST FAILURE, in three tiers, because "cannot read" has three different shapes:
-      - no counters at all (a platform with no `ctypes.windll`, or both calls failing)
+      - no counters at all (a platform whose reader answers None, or both calls failing)
         -> NO `host` key in the document. The widget feature-detects presence, so it
         renders nothing rather than a row of em-dashes.
       - one of the two calls failing -> that call's fields null, the other's intact.
@@ -4309,13 +5597,15 @@ class HostSampler:
     overlapping windows served as if they were consecutive.
     """
 
-    def __init__(self, times=None, memory=None) -> None:
-        # Tests inject; production uses the two static readers below. Injection is by
-        # CALLABLE rather than by patching ctypes because the FILETIME arithmetic - the
-        # part with the trap in it - is what needs proving, and it is unreachable if the
-        # test has to own a real kernel counter to get to it.
+    def __init__(self, times=None, memory=None, platform=None) -> None:
+        # Tests inject; production falls through to the platform's two readers.
+        # Injection is by CALLABLE rather than by patching ctypes because the FILETIME
+        # arithmetic - the part with the trap in it - is what needs proving, and it is
+        # unreachable if the test has to own a real kernel counter to get to it. An
+        # injected reader OUTRANKS the platform for that reason.
         self._times = times
         self._memory = memory
+        self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._prev: tuple[int, int, int] | None = None
 
@@ -4332,7 +5622,7 @@ class HostSampler:
     def _cpu(self) -> tuple[float | None, bool]:
         """(cpuPct, did-the-counter-read-succeed). The two are independent: a successful
         read with no predecessor is `(None, True)`, and that is the first-sample rule."""
-        reader = self._times or self._read_times
+        reader = self._times or self._platform.cpu_times
         try:
             reading = reader()
         except Exception as exc:            # an injected reader, or a ctypes surprise
@@ -4399,7 +5689,7 @@ class HostSampler:
     def _mem(self) -> tuple[dict, bool]:
         """({memPct, memUsedGB, memTotalGB}, did-the-read-succeed)."""
         blank = {"memPct": None, "memUsedGB": None, "memTotalGB": None}
-        reader = self._memory or self._read_memory
+        reader = self._memory or self._platform.memory
         try:
             reading = reader()
         except Exception as exc:
@@ -4421,48 +5711,6 @@ class HostSampler:
         return ({"memPct": _pct(100.0 * used / total),
                  "memUsedGB": _gb(used),
                  "memTotalGB": _gb(total)}, True)
-
-    @staticmethod
-    def _read_times() -> tuple[int, int, int] | None:
-        """GetSystemTimes -> (idle, kernel, user) in 100 ns ticks since boot, or None.
-
-        `ctypes.windll` does not exist off Windows, so the AttributeError below is the
-        platform gate as well as the error path - which is why the sandboxed test run
-        serves no `host` key at all instead of failing.
-        """
-        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
-        try:
-            ok = ctypes.windll.kernel32.GetSystemTimes(
-                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
-        except (AttributeError, OSError, ValueError) as exc:
-            _log_once(HOST_CPU_LOG_KEY,
-                      f"crabd: GetSystemTimes unavailable ({type(exc).__name__}); "
-                      f"serving no host CPU")
-            return None
-        if not ok:
-            _log_once(HOST_CPU_LOG_KEY,
-                      "crabd: GetSystemTimes returned failure; serving no host CPU")
-            return None
-        return (_filetime(idle), _filetime(kernel), _filetime(user))
-
-    @staticmethod
-    def _read_memory() -> tuple[int, int] | None:
-        """GlobalMemoryStatusEx -> (total physical bytes, available bytes), or None."""
-        status = _MEMORYSTATUSEX()
-        status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-        try:
-            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-        except (AttributeError, OSError, ValueError) as exc:
-            _log_once(HOST_MEM_LOG_KEY,
-                      f"crabd: GlobalMemoryStatusEx unavailable ({type(exc).__name__}); "
-                      f"serving no host memory")
-            return None
-        if not ok:
-            _log_once(HOST_MEM_LOG_KEY,
-                      "crabd: GlobalMemoryStatusEx returned failure; "
-                      "serving no host memory")
-            return None
-        return (int(status.ullTotalPhys), int(status.ullAvailPhys))
 
 
 # ---------------------------------------------------------------- continue queue
@@ -5129,7 +6377,8 @@ class OriginRecorder:
     def record(self, origin, user_agent, now: float) -> None:
         """origin is the raw header value (str) or None for an absent header; user_agent
         likewise. Total by construction: it is called on every GET and POST before the
-        origin gate, so it must never raise into the request path. The (origin, source)
+        HOST and ORIGIN gates - a rebound page's origin is the reading this exists for -
+        so it must never raise into the request path. The (origin, source)
         pair is the key - source classifies the caller (browser/local/none) so the widget
         is separable from other no-Origin local processes."""
         origin_key = origin if isinstance(origin, str) else ORIGIN_ABSENT
@@ -5909,13 +7158,18 @@ class Handler(BaseHTTPRequestHandler):
     # unreadable reply) instead of open.
     _acao: str | None = None
 
-    def _send(self, code: int, body: bytes | None, ctype: str = "application/json") -> None:
+    def _send(self, code: int, body: bytes | None,
+              ctype: str = "application/json") -> None:
         self.send_response(code)
         if body is None:
             self.send_header("Content-Length", "0")
         else:
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+        # UNCONDITIONAL, like the Cache-Control below it. "believe the Content-Type I
+        # declared" has no reason to be a property of one branch, and a per-branch flag
+        # is one more thing a new route can forget.
+        self.send_header("X-Content-Type-Options", "nosniff")
         acao = self._acao
         if acao is not None:
             self.send_header("Access-Control-Allow-Origin", acao)
@@ -5931,33 +7185,72 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         # No preflight, on ANY path, is answered with ACAO:* any more (SEC-1 for the
         # mutating paths, SEC-4 for the reads): that header is what invites the
-        # cross-origin read. A real web page's preflight gets no ACAO at all, so its
-        # application/json request dies at the preflight; the widget's opaque origin is
-        # reflected so its own preflight still passes.
-        acao = self._preflight_acao(self.headers.get("Origin"))
+        # cross-origin read. A cross-site page's preflight gets no ACAO at all, so its
+        # application/json request dies at the preflight; the panel's own origin and the
+        # widget's opaque one are reflected so their preflights still pass.
+        # The Host gate first, here as on the other two methods: a preflight answer is
+        # the MAP of both other gates (which origins, which headers), and a rebound page
+        # has no business reading it.
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            self._acao = None
+            self._send(403, HOST_NOT_ALLOWED)
+            return
+        origin = self.headers.get("Origin")
+        acao = self._preflight_acao(origin)
         self.send_response(204)
         if acao is not None:
             self.send_header("Access-Control-Allow-Origin", acao)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers",
+                             self._preflight_headers(origin))
             self.send_header("Vary", "Origin")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    @classmethod
-    def _preflight_acao(cls, origin) -> str | None:
+    def _preflight_acao(self, origin) -> str | None:
         """The Access-Control-Allow-Origin for a preflight, PATH-INDEPENDENT since
         v0.16.0: reads and writes are gated alike, so the answer depends only on the
-        Origin. A real web page is refused with no ACAO; the widget's opaque origin is
+        Origin. A cross-site page is refused with no ACAO; an allowed origin is
         reflected so its application/json preflight still succeeds - never "*"."""
-        if cls._is_web_origin(origin):
+        if self._is_cross_site(origin, self.server.server_port):
             return None
         return origin if origin else None
 
+    def _preflight_headers(self, origin) -> str:
+        """Which request headers this preflight may unlock. THE FORGED-NULL WRITE IS
+        CLOSED HERE and nowhere else.
+
+        `null` gets exactly Content-Type - the same list it got before 0.31.0 - and keeps
+        its ACAO, so a `null` caller can still READ. A page that forged `Origin: null` (a
+        sandboxed allow-scripts iframe on anything the operator visits) comes back from
+        its preflight without permission to send PANEL_HEADER, and its POST therefore
+        never leaves the browser.
+
+        WHY A NON-WEB SCHEME GETS THE HEADER, and the measurement it rests on. The iCUE
+        build's origin was MEASURED as `file://`, not `null` - originsSeen on 2026-09-02
+        after the 0.27.0 import, `origin: file://` with an AppleWebKit/537.36 UA; the
+        reading is ORIGIN-b in docs/BACKLOG.md. A web page cannot forge `Origin: file://`
+        (a browser serialises an opaque origin as `null` and nothing else), so unlocking
+        the header for a non-web scheme hands it to something a visited page cannot
+        claim to be.
+
+        THE ACCEPTED TRADE, stated rather than hidden: that measurement is one reading on
+        one iCUE build. A build that reports `null` instead keeps its reads and loses its
+        taps - the same shape as the 0.29.0 `decide` change, and safe for the same
+        reason, since every write it makes has a terminal-side fallback. Widening `null`
+        to close that would re-open the forged-null write for every browser on the
+        machine, which is the trade going the wrong way.
+        """
+        if isinstance(origin, str) and origin.strip().lower() == "null":
+            return "Content-Type"
+        return f"Content-Type, {PANEL_HEADER}"
+
     def _record_origin(self, origin) -> None:
-        """Feed the diagnostic origin recorder (ORIGIN-REC), before the origin gate so
-        REFUSED web origins are counted too. Defensive: never let a diagnostic write
-        break a request - a builder without a recorder (an old test double) is a no-op."""
+        """Feed the diagnostic origin recorder (ORIGIN-REC), ABOVE EVERY GATE so refused
+        callers are counted too - the Host gate included, since a rebound page's origin
+        is precisely the reading this recorder exists for. It decides nothing, which is
+        what makes running it first safe. Defensive: never let a diagnostic write break a
+        request - a builder without a recorder (an old test double) is a no-op."""
         builder = getattr(self, "builder", None)
         recorder = getattr(builder, "origins", None) if builder else None
         if recorder is not None:
@@ -5967,27 +7260,65 @@ class Handler(BaseHTTPRequestHandler):
                 # never reaches the origin gate below. Absent header -> None -> "none".
                 user_agent = self.headers.get("User-Agent")
                 recorder.record(origin, user_agent, time.time())
-            except Exception:   # noqa: BLE001 - a diagnostic must never fail a request
-                pass
+            except Exception as exc:    # noqa: BLE001 - never fail a request for this
+                # Swallowed because a DIAGNOSTIC must not take a request down with it -
+                # but said once, because a recorder that quietly stopped recording would
+                # make /v1/health's originsSeen an empty answer rather than a broken one,
+                # and that is the shape of failure this daemon forbids.
+                try:
+                    _log_once(ORIGIN_RECORD_LOG_KEY,
+                              f"crabd: the origin recorder raised {type(exc).__name__}; "
+                              f"originsSeen may be incomplete; this is logged once")
+                except Exception:   # noqa: BLE001 - the SAYING must not fail it either
+                    # `_log_once` prints, and a stderr that is closed or full raises. This
+                    # runs above every gate now, so an unguarded line here would kill the
+                    # request it was only describing: a panel that stops loading because
+                    # the daemon could not write a log line about a diagnostic.
+                    pass
 
     def do_GET(self):
         # SEC-4 (v0.16.0). The reads are gated exactly like the writes. /v1/state serves
         # cwds, session titles, the full text of the question a session is waiting on and
         # pendingPermission; under the old ACAO:* any page the operator visited could
         # read the lot cross-origin. Same predicate as the mutating gate, same 403 body:
-        # a present http(s) Origin is a real visited page and is refused; absent, "null"
-        # and non-web origins (the QtWebEngine widget, curl, local tools) are allowed and
-        # get their own origin reflected back.
+        # a present http(s) Origin that is NOT this crabd's own is a visited page and is
+        # refused; the panel's own origin (v0.31.0), absent, "null" and non-web origins
+        # (the QtWebEngine widget, curl, local tools) are allowed and get their own
+        # origin reflected back.
+        # The Host gate runs first of the GATES, and on the reads especially: a
+        # DNS-rebound page is SAME-ORIGIN with crabd as far as the browser is concerned,
+        # so its GET carries no Origin at all and the allowlist below has nothing to
+        # refuse it with. The recorder above it is not a gate - see _record_origin.
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            self._acao = None
+            self._send(403, HOST_NOT_ALLOWED)
+            return
+        if self._is_cross_site(origin, self.server.server_port):
             self._acao = None
             self._send(403, CROSS_SITE_REFUSED)
             return
         self._acao = origin if origin else None
-        split = urllib.parse.urlsplit(self.path)
-        path = split.path.rstrip("/") or "/"
+        # THE SPLIT ONLY, and the narrowness is the point. `GET http://[::1/ HTTP/1.1` is
+        # a legal request LINE - absolute-form is what a proxy sends, and
+        # BaseHTTPRequestHandler accepts it - carrying an authority urlsplit refuses with
+        # ValueError("Invalid IPv6 URL"); unguarded, that walked out of the handler into
+        # socketserver's handle_error and printed a traceback for a request a scanner
+        # sends by accident. A request target crabd cannot parse names nothing crabd
+        # serves, so 404 is the honest answer and it is the one every other unroutable
+        # path gets.
+        #
+        # The routing below is deliberately OUTSIDE it: wrapped, a ValueError from any
+        # reader would answer this same 404, so a real bug would read exactly like a
+        # mistyped path - silence, in the daemon that forbids it.
         try:
+            split = urllib.parse.urlsplit(self.path)
+        except ValueError:
+            self._send(404, NOT_FOUND)
+            return
+        try:
+            path = split.path.rstrip("/") or "/"
             if path == "/v1/health":
                 self._send(200, dump_state(self._health()))
             elif path == "/v1/state":
@@ -5996,8 +7327,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._do_history(split.query)
             elif path == "/v1/panel-log":
                 self._do_panel_log_read()
+            elif path == "/v1" or path.startswith("/v1/"):
+                # STRICTLY ABOVE the panel routes. A mistyped endpoint keeps the JSON 404
+                # it has always had; nothing about serving files may turn /v1/stat into a
+                # page, or let a file under the panel root shadow an API path.
+                self._send(404, NOT_FOUND)
             else:
-                self._send(404, b'{"error":"not found"}')
+                self._do_panel_file(path)
         except OSError as exc:      # noqa: BLE001 - narrowed on purpose, see below
             # The reader hung up before crabd finished answering. ORDINARY on this host
             # (loopback drops SYN-ACKs) and doubly so on a feed the widget polls every
@@ -6090,6 +7426,13 @@ class Handler(BaseHTTPRequestHandler):
             "panelToken": (token.status(now) if token is not None
                            else {"present": False, "rejectedRecently": 0,
                                  "lockedUntil": None}),
+            # v0.31.0: what this crabd will accept from a browser, and where the panel it
+            # serves comes from. Diagnostic - "which origins does your crabd trust" and
+            # "which build is it serving" were both answerable only by reading the source.
+            # NOT the state contract, so no schema bump, and never in /v1/state.
+            "panel": {"origins": sorted(self._panel_origins(self.server.server_port)),
+                      "headerRequired": True,
+                      "dir": str(PANEL_DIR)},
         }
 
     def _do_history(self, query: str) -> None:
@@ -6120,6 +7463,119 @@ class Handler(BaseHTTPRequestHandler):
         # other served document already goes through the one serializer; this was the
         # last that did not.
         self._send(200, dump_state(body))
+
+    #: The only directories the panel is served out of. `index.html` is routed by NAME;
+    #: everything else has to sit under one of these. An allowlist rather than a
+    #: denylist because the alternative is "everything in the folder", and the folder
+    #: also holds DEV.md (a quarter of a megabyte of internal measurement notes), the
+    #: iCUE packaging manifest and the test harness. None of those is the panel.
+    PANEL_ROOTS = frozenset(("styles", "scripts", "resources", "mock"))
+
+    def _do_panel_file(self, path: str) -> None:
+        """GET a file from PANEL_DIR - or 404. Never a traceback, never a read outside.
+
+        Deliberately touches NOTHING else in this daemon: no builder, no lock, no
+        reader. A wedged state build must not stop the panel loading (the operator would
+        see a dead browser tab and no way to find out why), and a large file must not
+        stall a hook (a hook with no answer is a session waiting for one).
+
+        The files are small - the whole shipped panel is under a megabyte - so they are
+        read whole and handed to _send, bounded by PANEL_MAX_BYTES (64 MB) checked by
+        stat BEFORE the read, because "small" is a fact about the shipped tree and not
+        about a directory CRABD_PANEL_DIR can point anywhere. There is no cache and no
+        conditional-GET handling: Cache-Control: no-store is the daemon's one caching
+        rule, and it is what stops a script surviving an update that the crabd it talks
+        to did not.
+        """
+        target = self._panel_target(path)
+        if target is None:
+            self._panel_not_found()
+            return
+        # RESOLVE, then check containment. The text rules above cannot see a symlink:
+        # `styles/escape.css` passes every one of them and can still point at ~/.ssh.
+        root = PANEL_DIR.resolve()
+        candidate = (root / target).resolve()
+        if root not in candidate.parents or not candidate.is_file():
+            self._panel_not_found()
+            return
+        # A file that raced away between is_file() and here reads as size 0, and the read
+        # below then answers 404 on its own.
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            size = 0
+        if size > PANEL_MAX_BYTES:
+            _log_once(PANEL_TOO_BIG_LOG_KEY,
+                      f"crabd: {candidate} is too big to serve "
+                      f"({size} bytes, the bound is {PANEL_MAX_BYTES}); serving 404; "
+                      f"this is logged once")
+            self._send(404, NOT_FOUND)
+            return
+        try:
+            body = candidate.read_bytes()
+        except OSError as exc:
+            # A file that resolved, is a file, and still cannot be read (permissions, a
+            # racing delete). 404 rather than 500: a page crabd cannot serve is missing
+            # as far as the browser is concerned, and the reason belongs in the log.
+            _log_once(PANEL_READ_LOG_KEY,
+                      f"crabd: a panel file could not be read ({type(exc).__name__}); "
+                      f"serving 404; this is logged once")
+            self._send(404, NOT_FOUND)
+            return
+        self._send(200, body,
+                   PANEL_CONTENT_TYPES.get(candidate.suffix.lower(),
+                                           PANEL_CONTENT_TYPE_DEFAULT))
+
+    def _panel_not_found(self) -> None:
+        """404 for a panel request - and, ONCE, the reason when the reason is that there
+        is no panel.
+
+        A PANEL_DIR pointing at a typo answers 404 for every asset while the API answers
+        perfectly: the page is blank, and the first place anybody looks is the routing in
+        this file. The stat is paid only on the 404 path, so an asset that is served
+        never pays for it. Deliberately NOT logged for an ordinary missing file inside a
+        panel that IS there - that is the normal answer, and it would be a line per
+        favicon probe.
+        """
+        if not PANEL_DIR.is_dir():
+            _log_once(PANEL_DIR_LOG_KEY,
+                      f"crabd: the panel directory {PANEL_DIR} is not there, so every "
+                      f"panel request answers 404 (the API is unaffected; set "
+                      f"CRABD_PANEL_DIR); this is logged once")
+        self._send(404, NOT_FOUND)
+
+    @classmethod
+    def _panel_target(cls, path: str) -> str | None:
+        """The panel-relative path this URL may read, or None to refuse it.
+
+        ONE percent-decode, then the refusals. One decode and not a loop: decoding twice
+        is how `%252e%252e` becomes `..` in a server that thought it was being thorough,
+        so a `%` that SURVIVES the single decode is itself a refusal rather than an
+        invitation to decode again.
+
+        Every rule here is a shape, not a guess about the filesystem:
+          - a backslash: a separator on Windows and a legal filename character on POSIX,
+            so `styles\\..\\x` is harmless on the host it was tested on and a traversal
+            on the other
+          - a NUL: truncates the path in any C library underneath
+          - an empty segment (`//`): on some path implementations a leading `//` is an
+            absolute path all of its own
+          - a segment starting with `.`: covers `..`, `.` and every dotfile in one rule -
+            `.git/config` is not a shape this needs a second test for
+        """
+        decoded = urllib.parse.unquote(path)
+        if "%" in decoded or "\\" in decoded or "\x00" in decoded:
+            return None
+        if decoded in ("/", "/index.html"):
+            return "index.html"
+        if not decoded.startswith("/"):
+            return None
+        segments = decoded[1:].split("/")
+        if any(not segment or segment.startswith(".") for segment in segments):
+            return None
+        if segments[0] not in cls.PANEL_ROOTS:
+            return None
+        return "/".join(segments)
 
     def _do_panel_log_read(self) -> None:
         """GET /v1/panel-log - the diagnostics ring, oldest first (contract v0.24.0).
@@ -6239,45 +7695,27 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _is_web_origin(origin) -> bool:
-        """True when Origin marks a real http(s) browser page - the CSRF vector refused
-        on a mutating endpoint. False for absent, "null", and any non-web scheme.
+        """True when Origin marks a real http(s) browser page. False for absent, "null",
+        and any non-web scheme.
 
-        THE TRADE the gate rests on, and its assumption: an opaque "null" Origin is
-        ALLOWED. The widget runs from an iCUE-served file/qrc page inside QtWebEngine
-        (Chromium), and a cross-origin fetch from an opaque origin serializes its Origin
-        header to exactly "null" - it can carry no other value we could allowlist, and a
-        widget that cannot POST is a broken product. A sandboxed-iframe attacker can
-        also FORGE Origin:null, so this gate closes the visited-http(s)-page vector, not
-        the local-process or forged-null one.
+        The PURE half of the gate - it says what KIND of caller this is, not whether it
+        is allowed. `_is_cross_site` below is the gate; this is what it asks first.
 
-        SEC-a is CLOSED as of v0.29.0: `decide` additionally requires the panel pairing
-        code (PanelToken) and the request's `requestId`, neither of which a forged-null
-        page can obtain - so the paragraph below now describes the pre-0.29.0 exposure
-        and why this gate alone was never enough. It is kept because the reasoning about
-        `null` is still what stops someone "fixing" this gate by rejecting null.
+        WHAT WAS ACTUALLY MEASURED, because this docstring used to assert the opposite.
+        The iCUE build reports `file://`, not `null` - originsSeen on 2026-09-02 after
+        the 0.27.0 import, `origin: file://` with an AppleWebKit/537.36 UA (ORIGIN-b in
+        docs/BACKLOG.md). QtWebEngine did NOT collapse its file page to an opaque origin.
+        Both land here as "not a web origin", so this predicate never had to tell them
+        apart - but the two are not interchangeable one layer up, where
+        _preflight_headers hands the panel header to `file://` and refuses it to `null`.
 
-        THE EXACT RESIDUAL as it stood (SEC-a, 2026-08-28 audit -
-        docs/findings/QA-Audit-2026-08-28.md). When panelApprovals is enabled, a
-        forged/opaque null Origin - a sandboxed allow-scripts iframe on any page the
-        operator visits, or any local process - CAN reach `POST /v1/action decide` and
-        approve a REAL pending permission the operator never tapped. It first GETs
-        /v1/state (also null-allowed) to harvest the live sessionId and pending tool,
-        then decides on it. The queue-whitelist bound applies ONLY to `queue-continue`
-        (which restricts the queued prompt to a fixed vocabulary); `decide` is NOT
-        whitelisted, and the permission broker keys pending permissions by sessionId
-        alone - which the same null-readable /v1/state discloses - so there is NO second
-        barrier on the decide path. (This is escalation of an already-pending request,
-        not arbitrary command choice: the attacker can only approve what a Claude session
-        already proposed while a prompt is live.) The real mitigations are (a) an
-        allowlist of the widget's TRUE origin - which first needs measuring what
-        QtWebEngine actually sends (see the origin recorder / GET /v1/health.originsSeen),
-        or (b) a per-request nonce in pendingPermission that decide must echo. Until one
-        of those lands, the posture is panelApprovals-off (the ship default). DO NOT
-        blindly tighten this gate to reject null: the QtWebEngine widget legitimately
-        sends null, and a blind change breaks the product. See also
-        docs/findings/audit-security.md (SEC-1). If a future widget build is confirmed to
-        send a stable non-"null" origin, tighten this to an allowlist of that exact
-        value."""
+        `null` is still not a web origin, and DO NOT "fix" that by rejecting it. A
+        QtWebEngine build that does collapse to an opaque origin has no other value it
+        could send, and reads from it cost nothing to allow. A sandboxed-iframe attacker
+        can FORGE Origin:null, so this predicate cannot separate the two and no amount of
+        tightening here will; the forged-null WRITE is closed a layer up, by PANEL_HEADER
+        and the preflight rule in _preflight_headers.
+        """
         if not isinstance(origin, str):
             return False
         o = origin.strip().lower()
@@ -6285,11 +7723,112 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return o.startswith("http://") or o.startswith("https://")
 
+    #: The host names this crabd answers to. NOT a convenience list - it is the whole
+    #: DNS-rebinding gate. `[::1]` carries its brackets because that is how a Host
+    #: header spells an IPv6 literal.
+    PANEL_HOSTS = frozenset(("localhost", "127.0.0.1", "[::1]"))
+
+    @staticmethod
+    def _host_parts(host_header: str) -> tuple[str, str | None] | None:
+        """`Host` split into (host, port-or-None), lowercased. None = unparseable.
+
+        Unparseable is REFUSED rather than ignored: a Host crabd cannot read is a Host
+        it cannot check, and the whole point of this gate is that the header is the only
+        thing distinguishing a rebound page from a local one.
+        """
+        value = host_header.strip().lower()
+        if not value:
+            return None
+        if value.startswith("["):                   # an IPv6 literal, [::1] or [::1]:9999
+            end = value.find("]")
+            if end < 0:
+                return None
+            host, rest = value[:end + 1], value[end + 1:]
+            if not rest:
+                return (host, None)
+            return (host, rest[1:]) if rest.startswith(":") else None
+        if value.count(":") > 1:
+            # A bare IPv6 literal with no brackets. Not a legal Host, and guessing which
+            # colon is the port separator is exactly how a parser is walked past.
+            return None
+        if ":" in value:
+            host, _, port = value.partition(":")
+            return (host, port)
+        return (value, None)
+
+    @classmethod
+    def _is_foreign_host(cls, host_header, port: int) -> bool:
+        """True when the caller believes it is talking to somebody else. Refused 403.
+
+        DNS REBINDING, which no other gate here can see. The operator visits
+        http://evil.example:9999; the name has a short TTL and re-resolves to 127.0.0.1,
+        so the browser now believes crabd IS evil.example and the page is SAME-ORIGIN
+        with it. A same-origin GET carries no Origin header at all - which is the
+        ordinary shape of a hook, a curl and a plain navigation - so the origin
+        allowlist waves it through, and the GET is the request that reads /v1/state.
+
+        `Host` is the one header taken from the URL the page thinks it is addressing
+        rather than from the socket, so a rebound page still says evil.example on every
+        request. An ABSENT Host is allowed: HTTP/1.0 has none, several diagnostics in
+        this repo hand-roll requests without one, and absent is not a claim about
+        anything.
+        """
+        if host_header is None:
+            return False
+        parts = cls._host_parts(host_header)
+        if parts is None:
+            return True
+        host, host_port = parts
+        if host not in cls.PANEL_HOSTS:
+            return True
+        # The port is part of the claim: a page served on another local port and rebound
+        # would otherwise pass on the name alone.
+        return host_port is not None and host_port != str(port)
+
+    @staticmethod
+    def _panel_origins(port: int) -> frozenset:
+        """The three spellings of "this crabd", lowercase - the allowlist.
+
+        This is the case the old _is_web_origin docstring anticipated in its last
+        sentence: a panel build confirmed to send a stable non-"null" origin, allowlisted
+        to that exact value. crabd serves the panel itself as of v0.31.0, so the panel's
+        origin IS an http one, and "refuse every http origin" would refuse the product.
+
+        Three, because a browser sends back whatever the operator typed and `localhost`
+        resolves to ::1 first on a dual-stack machine. The BOUND port, never the
+        configured one: a second instance on CRABD_PORT must allowlist itself, not the
+        production daemon it is running beside.
+        """
+        return frozenset((f"http://localhost:{port}",
+                          f"http://127.0.0.1:{port}",
+                          f"http://[::1]:{port}"))
+
+    @classmethod
+    def _is_cross_site(cls, origin, port: int) -> bool:
+        """The gate: a web page that is NOT this crabd's own panel. Refused 403.
+
+        EXACT match against the allowlist, on the whole serialised origin. Not a prefix
+        (`http://localhost:9999.evil.example` starts with the right string), not a host
+        test that ignores the port (any dev server, notebook or other local tool the
+        operator has open on 127.0.0.1 is a different origin), and not a scheme-blind one
+        (nothing serves this panel over TLS, so an `https://localhost:9999` claiming to
+        be it is a page that is not).
+        """
+        if not cls._is_web_origin(origin):
+            return False
+        return origin.strip().lower() not in cls._panel_origins(port)
+
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._is_foreign_host(self.headers.get("Host"), self.server.server_port):
+            # Same order and the same drain as the two gates below it.
+            self._acao = None
+            self._read_body()
+            self._send(403, HOST_NOT_ALLOWED)
+            return
+        if self._is_cross_site(origin, self.server.server_port):
             # Drain the body first so keep-alive framing survives, then refuse. Drained
             # on EVERY path, not just the mutating ones: a refused POST to an unknown
             # path still arrived with a body, and leaving it in the stream desynchronises
@@ -6298,11 +7837,22 @@ class Handler(BaseHTTPRequestHandler):
             self._read_body()
             self._send(403, CROSS_SITE_REFUSED)
             return
-        # Reflect a PRESENT allowed origin (the widget's "null") so its cors-mode fetch
-        # can read the status - the widget rolls back its optimistic tap on an unreadable
-        # reply. Never the wildcard (SEC-1/SEC-4). An absent Origin is a non-browser
-        # client that needs no ACAO at all.
+        # Reflect a PRESENT allowed origin (the panel's own, the widget's "null") so its
+        # cors-mode fetch can read the status - the panel rolls back its optimistic tap
+        # on an unreadable reply. Never the wildcard (SEC-1/SEC-4). An absent Origin is a
+        # non-browser client that needs no ACAO at all.
         self._acao = origin if origin else None
+        # The header gate (v0.31.0), AFTER the origin gate and before any routing, so it
+        # covers every path including the unknown ones. Order is deliberate: a cross-site
+        # page is told it is cross-site - which it already knew - and never learns there
+        # is a header to look for. Same drain-then-refuse as above, and _acao is left as
+        # the origin gate computed it, because a same-origin panel has to be able to READ
+        # this 403 (an unreadable reply is a CORS error, not a status, and the panel
+        # cannot tell the operator what happened).
+        if not (self.headers.get(PANEL_HEADER) or "").strip():
+            self._read_body()
+            self._send(403, PANEL_HEADER_REQUIRED)
+            return
         if path == "/v1/hook":
             # Answer first, parse after: a hook must never hold Claude Code open.
             raw = self._read_body()
@@ -6339,7 +7889,7 @@ class Handler(BaseHTTPRequestHandler):
             # garbage, or the connection dies. The test client's connect-retry hid this;
             # framing is not something a retry may be relied on to paper over.
             self._read_body()
-            self._send(404, b'{"error":"not found"}')
+            self._send(404, NOT_FOUND)
 
     @staticmethod
     def _json_body(raw: bytes):
@@ -7010,10 +8560,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class CrabdServer(ThreadingHTTPServer):
-    # Windows SO_REUSEADDR lets a SECOND crabd bind the same port and answer half the
-    # requests - two instances raced during build QA. Refusing reuse turns that into
-    # a loud "already running" instead of a silently split feed.
-    allow_reuse_address = False
+    # SO_REUSEADDR is a per-platform ANSWER, not a constant, because the option means
+    # two different things: on Windows it admits a second listener on a port already
+    # being listened on (two crabds answering half the requests each - measured during
+    # build QA), and on BSD/Linux it does not, so all it buys there is a restart inside
+    # the TIME_WAIT window of the last connection. Each platform class says which it is;
+    # a collision is loud on all three either way.
+    # Read ONCE, at import, onto the class attribute - socketserver reads it per bind
+    # but this expression is not re-evaluated. A test that swaps crabd.PLATFORM must set
+    # this attribute too, or it is measuring the platform it replaced.
+    allow_reuse_address = PLATFORM.server_reuse_address()
     daemon_threads = True
     # socketserver's default accept backlog is FIVE. That was survivable while crabd
     # only saw hook POSTs; it is not now that the control surface is wired. The status
@@ -7084,6 +8640,33 @@ def _expiry_loop(builder: StateBuilder, stop: threading.Event) -> None:
         stop.wait(EXPIRY_POLL_SEC)
 
 
+def _bind_server(host: str, port: int) -> tuple[CrabdServer | None, str | None]:
+    """Bind, or say why not. -> (server, None) or (None, message). Never both.
+
+    ONE ATTEMPT, on exactly the port it was given. The tempting shape - "busy? try the
+    next one" - produces the worst failure this daemon has: crabd reports itself up on
+    10000 while every hook, the status line command and the panel are still addressing
+    9999, so the feed is empty and nothing anywhere says why. A daemon that cannot have
+    the port it was told to have has failed, and says so.
+
+    The message names the port, and says how to FIND the holder rather than guessing at
+    it. 2722 was ours alone and "another crabd is running" was a fair guess; 9999 is a
+    popular number and the holder is usually something else entirely. The command it
+    suggests comes from the PLATFORM (`lsof` is not on a Windows box), and it quotes
+    what the operating system actually said - "[Errno 48] Address already in use" is a
+    sentence the operator can search for and it separates a busy port from a permission
+    refusal on a privileged one, where the class name "OSError" separates nothing.
+    """
+    try:
+        return CrabdServer((host, port), Handler), None
+    except OSError as exc:
+        return None, (
+            f"crabd: cannot listen on {host}:{port} - {exc}. If another process is "
+            f"holding the port, this names it: {PLATFORM.port_holder_hint(port)} - "
+            f"then stop it, or set CRABD_PORT to run crabd on a different port (the "
+            f"panel and the hooks have to be pointed at the same number).")
+
+
 def main() -> int:
     started = time.time()
     recap = RecapReader()
@@ -7120,12 +8703,17 @@ def main() -> int:
     threading.Thread(target=_fleet_loop, args=(fleet, stop), daemon=True).start()
     threading.Thread(target=_expiry_loop, args=(builder, stop), daemon=True).start()
 
-    try:
-        server = CrabdServer((HOST, PORT), Handler)
-    except OSError:
+    # Said BEFORE the bind, so it is the first thing on stderr rather than something to
+    # scroll back for. Not fatal: crabd without a panel is still the feed the notifier,
+    # the glow and an iCUE widget all live on.
+    if not PANEL_DIR.is_dir():
+        print(f"crabd: the panel directory {PANEL_DIR} is not there - the API will "
+              f"serve normally but http://{HOST}:{PORT}/ will answer 404 "
+              f"(set CRABD_PANEL_DIR)", file=sys.stderr, flush=True)
+    server, failure = _bind_server(HOST, PORT)
+    if server is None:
         stop.set()
-        print(f"crabd: port {PORT} is already in use - another crabd is running "
-              f"(set CRABD_PORT to run a second instance)", file=sys.stderr, flush=True)
+        print(failure, file=sys.stderr, flush=True)
         return 1
     print(f"crabd {VERSION} listening on http://{HOST}:{PORT}", flush=True)
     try:

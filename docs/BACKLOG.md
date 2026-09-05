@@ -83,6 +83,23 @@ the repo and proceed.
 
 ## Small, known, not yet fixed
 
+- **UPG-a (2026-09-04, the port) — a pre-port Windows install is not recognised after upgrading.**
+  Install, uninstall, repair and restore find SideCrab's own entries in `~/.claude/settings.json`
+  by the URL substring `$HookUrlMarker`, which the port moved from `127.0.0.1:2722/v1/hook` to
+  `127.0.0.1:9999/v1/hook` (`Install-SideCrab.ps1:99`, `Uninstall-SideCrab.ps1:100`,
+  `Repair-SideCrab.ps1:108`, `Restore-SideCrab.ps1:79`, and five parameter defaults in
+  `SideCrab.Common.ps1`). A `settings.json` written by a 2722-era install therefore reads as
+  someone else's: re-running `Install-SideCrab.ps1` adds the 9999 entries BESIDE the 2722 ones,
+  uninstall leaves the 2722 ones behind, and repair and restore never see them. **Not fixed on the
+  port because it was not reproduced:** the PowerShell path needs a Windows host and this Mac has
+  no `pwsh`; the macOS installer needs nothing here, there having never been a 2722 install on
+  macOS. **Intended fix:** install and uninstall match on BOTH markers and remove the legacy 2722
+  entries, with Pester cases fed a 2722-era `settings.json` — nothing in `setup/` mentions the old
+  port today and no test covers a file written by one. **Workaround until then:** delete the 2722
+  entries from `settings.json` by hand after upgrading; the installer's own `<path>.sidecrab-bak-*`
+  keeps the prior file. `docs/PORT-NOTES.md:384` and `:523` both predicted this ("An installed base
+  matched on the old one will not be recognised for merge or removal, so the migration must match
+  both") — the marker moved, the migration did not follow.
 - **GHOST-a (2026-09-01, live incident) — HALF CLOSED in crabd 0.28.1:** a session killed by an
   app restart (no SessionEnd — hooks are best-effort) read `working`, and card taps queued
   continues into the void (3 queued on a session whose transcript had been frozen 5+ min) — each

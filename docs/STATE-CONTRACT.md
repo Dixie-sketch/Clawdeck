@@ -1,5 +1,18 @@
 # SideCrab state contract — `/v1/state` (schema 5-compat, feature-detected)
 
+**What the macOS port changed, by section.** The five dated sections below cover it, and none of
+them changed the document's shape — the schema number did not move. **v0.34.0**: on macOS the
+long-lived limits token and Claude Code's own credential come from the login Keychain; three
+`limits.note` strings now name the platform's own command, and a fourth is new, separating a
+Keychain crabd was refused from credentials that are simply absent. **v0.33.0**: `fleet` reads `launchctl` on
+macOS, and `glow` is served `absent` because there is no lighting component there. **v0.32.0**:
+`host` is served on macOS from mach `host_statistics` and `sysctlbyname`, in the same four fields
+and units. **v0.31.0**: transport only — crabd listens on 9999, serves the panel itself, and gains
+a `Host` allowlist, an Origin allowlist and a required `X-SideCrab-Panel` on every POST.
+**v0.30.0**: `limits.tokenSource` and the long-lived token, whose Windows half is unchanged and
+whose store on macOS is superseded by v0.34.0. Everything older in this file is history, and the
+append-only, newest-first rule is unchanged.
+
 > **VERSIONING REWORK (v0.6.1/crabd 0.6.1, 2026-08-26).** The strict schema whitelist coupled
 > every crabd deploy to a console-bound widget import (schema N+1 bricked the on-glass widget
 > until someone stood at the desk). New policy:
@@ -14,10 +27,540 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.34.0 (2026-09-04 — BEHAVIOUR on macOS: the limits token and the CLI credential come from the login Keychain; schema stays 5)
+
+crabd `VERSION` → `0.34.0`. **No shape change.** No field is added, moved, renamed or
+removed on `/v1/state`, `/v1/action` or `/v1/config`; `schema` stays **5**. What changed is
+where two SECRETS are read from on macOS, and four `limits.note` strings: **three** are
+reworded to name the command of the platform they are shown on, and **one is new**
+(`KEYCHAIN_REFUSED_NOTE`), which separates a Keychain crabd was refused from credentials that
+are not there. §4 has all four.
+
+**What Windows sees.** Nothing on the wire, and nothing it reads: the same file, the same
+DPAPI, the same notes, byte for byte. It does gain one ability it did not have — crabd on
+Windows can now WRITE `~/.sidecrab/limits-token.dpapi` itself, through
+`PLATFORM.store_limits_token` (CryptProtectData, atomic, mode 0600), where before only the
+PowerShell installer wrote it and crabd only read. Nothing calls that on Windows yet;
+`Install-SideCrab.ps1 -LimitsToken` is unchanged.
+
+### 1. The two Keychain items
+
+Both are generic-password items in the **login** Keychain, and the account half of both is
+the login user name (`pwd.getpwuid(os.getuid()).pw_name`, not `$USER` — a LaunchAgent's
+environment is not a terminal's).
+
+| service | what it is | who writes it |
+|---|---|---|
+| `Claude Code-credentials` | the CLI's OWN credential, the macOS equivalent of `~/.claude/.credentials.json` | Claude Code |
+| `SideCrab limits token` | the long-lived `claude setup-token` value, the macOS equivalent of `~/.sidecrab/limits-token.dpapi` | `setup/install.sh --limits-token` |
+
+**MEASURED 2026-09-04** (macOS 26.6, Claude Code 2.1.260): `~/.claude/.credentials.json`
+does not exist on that machine at all and the `Claude Code-credentials` item does. A crabd
+that only knows about the file therefore served *"no Claude credentials on this machine -
+run /login"* for ever, on an account that was perfectly logged in — and `/login` was not
+even the fix. Also measured: `security find-generic-password ... -w` exits **44** for an
+item that is not there, on the argv form and inside `security -i` alike; `security -i`
+honours double quotes (the service name has spaces in it).
+
+**NOT measured, and stated as such:** the *payload* of the credentials item was never read
+while this was written — it is the operator's live OAuth token. crabd parses it as the
+FILE's shape (`claudeAiOauth.accessToken` / `expiresAt` / …) and **guesses nothing**: a
+payload that does not parse that way lands on the existing *"Claude credentials file is
+unreadable"* note, and one without a token on the existing *"no Claude access token"* note.
+
+### 2. Which source wins
+
+`~/.claude/.credentials.json` **first**, the Keychain second. The documentation says the
+file is written only when the Keychain write FAILS, which makes it the CLI's own fallback;
+and asking the Keychain for an answer crabd already has would raise a dialog on the
+operator's desktop for nothing.
+
+The Keychain is not consulted at all when **`CRABD_CLAUDE_HOME` is set**. A custom config
+dir keys a DIFFERENT Keychain entry, whose name crabd cannot compose, so asking about the
+default item would answer confidently about a login the operator is not running.
+
+Token precedence inside `limits` is **unchanged** from v0.30.0: the CLI token while it is
+unexpired, else the long-lived one, and `limits.tokenSource` still says which answered.
+
+### 3. Storing the long-lived token, and why it goes in on stdin
+
+```
+security -i     <- argv is exactly ["-i"]
+   stdin: add-generic-password -a "<login>" -s "SideCrab limits token" -X <hex> -U
+```
+
+`ps` is world-readable on macOS: a secret in an argument list is handed to every user on
+the machine, and to anything sampling `ps` afterwards. So the value travels on **stdin**,
+hex-encoded by `-X` (which also removes every question about quoting it), and `-U` updates
+an item that already exists rather than failing on it — storing a second token is what an
+operator does after minting one, and without `-U` the old, rejected token would stay.
+
+The READ is the other direction and needs no secret in either place: the argv names the
+item, the value comes back on stdout. Items created through this tool carry the tool in
+their access list, so crabd's own later reads do not prompt.
+
+A value that is not `^[A-Za-z0-9_-]{20,512}$` — matched with `fullmatch`, because `$` also
+matches just before a final newline and a token is routinely pasted with its line ending
+still attached — is refused **before** anything is spawned and is never named in a log
+line. That is not only a typo catcher: a value carrying a newline would otherwise become a
+second command inside a tool that writes the Keychain.
+
+### 4. The notes
+
+Three of them named `Install-SideCrab.ps1 -LimitsToken` as a literal, which on a Mac is an
+instruction to run something that is not there. The command is now the platform's:
+
+| where | the note ends with |
+|---|---|
+| Windows | `Install-SideCrab.ps1 -LimitsToken` (**unchanged**) |
+| macOS | `setup/install.sh --limits-token` |
+| anything else | `(no long-lived token store on this platform)` |
+
+- *"no Claude access token - run claude in a terminal, or store a long-lived one: <hint>"*
+- *"Claude token expired - run claude in a terminal to refresh it, or store a long-lived one: <hint>"*
+- *"SideCrab limits token rejected - mint a new one with claude setup-token and store it again: <hint>"*
+
+And one new note, macOS only, for a case that has no equivalent on Windows:
+
+> *"Claude credential is in the Keychain and crabd could not read it - approve the Keychain
+> prompt (Always Allow) or run claude in a terminal"* — `available: false`.
+
+It is raised **only when the tool ran and exited non-zero and non-44.** A `security` that
+never ran at all — no such binary, a refused spawn, a timeout, no login account to name the
+item with — is *not* this: crabd learned nothing about whether credentials exist, so it
+serves the ordinary *"no Claude credentials"* note and logs the failure's TYPE (there is no
+exit code to name). Telling an operator to approve a prompt that is never going to appear
+is worse than telling them nothing.
+
+The refusal itself is DISTINCT from *"no Claude credentials on this machine - run /login"*
+on purpose. The item exists and this process was not allowed to see it: a LaunchAgent meets a Keychain
+dialog the first time it reads (one "Always Allow" ends it), and in a session with no UI
+the read fails outright ("User interaction is not allowed"). The two failures have
+different actions attached, and an operator told to log in for a Keychain crabd could not
+open would do it, watch nothing change, and have no next move. One stderr line per process
+names the exit code — never the tool's output, which in this direction is the secret.
+
+### 5. What is unchanged
+
+`limits` keeps its shape and its failure rules; the tokens are still read, used as a
+request header and dropped — never logged, never cached, never in `/v1/state` or
+`/v1/health`, which is asserted on the served bytes. The models catalog now reads its
+credential through the same platform reader, so `sessions[].contextWindowTokens` is
+populated on a Keychain-only Mac too; its failure answer is unchanged (no entry, so the
+field is null and the panel draws no ctx bar).
+
+## v0.33.0 (2026-09-04 — BEHAVIOUR on macOS: fleet reads launchd; glow is absent; schema stays 5)
+
+crabd `VERSION` → `0.33.0`. **No shape change.** `fleet` keeps exactly the two keys it has
+had since v0.5.0 (`glow`, `toast`), the same four-word vocabulary
+(`running` / `stopped` / `absent` / `unknown`), the same ~60 s cache and the same 10 s query
+timeout. `schema` stays **5**. What changed is that on **macOS** the two values are now real
+answers rather than a flat `unknown`. Windows is untouched.
+
+### 1. The query
+
+```
+/bin/launchctl print gui/<uid>/<label>
+```
+
+run with `capture_output`, `check=False` and the contract's 10 s timeout, on the fleet's own
+thread — never on the builder, because it is a subprocess and a build that spawned one would
+put it in the request path and stall `generatedAt`. `gui/<uid>` is the per-user domain the
+SideCrab agents are loaded into; `system/` is a different domain and `launchctl list` a
+different, older answer shape.
+
+### 2. The mapping
+
+MEASURED 2026-09-04, macOS 26.6, uid 502.
+
+| launchctl says | served |
+|---|---|
+| exit 0, first-level `state = running` | `running` |
+| exit 0, first-level `state = not running` / `waiting` / `spawn scheduled` | `stopped` |
+| exit 0, no first-level `state` line, or a word not in that list | `unknown` |
+| non-zero exit whose output contains `Could not find service` | `absent` |
+| any other non-zero exit | `unknown` |
+| the query timed out, could not be spawned, or was refused | `unknown` |
+
+**Only the first-level line counts.** `launchctl print` indents the service's own properties
+with one TAB and nests sub-objects deeper, and those sub-objects carry their own
+`state = active` lines — two of them under the running agent measured here. A parser taking the
+first `state =` anywhere, or the last, would report a stopped agent as running on the strength
+of a sub-object. A running agent also has a `pid = ` line and an idle one does not, but the
+pid is *not* what this reads: `state` is the field the measured block puts at first level,
+and a loaded idle agent has no pid at all — so a pid-based parser would have to read its
+absence as `stopped` and could not tell that apart from a block it failed to parse. Nothing
+here rests on documentation: `launchctl print`'s output format is not documented, which is
+why every row of the table above is a recorded block rather than a citation.
+
+An unrecognised word is `unknown`, never `stopped`, and only the not-found wording earns
+`absent`. A label that exists and cannot be read is not the same claim as one that is not
+there, and `unknown` is the word for the difference. This is the same rule the Windows
+`schtasks` map has always followed.
+
+### 3. `fleet.glow` is `absent` on macOS, and that is honest
+
+There is no lighting component on a Mac — the Corsair SDK is Windows-only — so glow has **no
+launchd label at all**. crabd does not run anything for it: an empty label short-circuits to
+the same `(None, "", "")` sentinel `launchctl print` would never produce, and the platform
+reads that as `absent`. Nothing is spawned, so a Mac's fleet cycle is one subprocess, not two.
+
+`absent` is the literally true word here: the query did not fail, the component is not there.
+The KEY stays so the document's shape is identical on both platforms — a panel that
+feature-detects `fleet` draws a hollow absent dot rather than a missing row — and **the
+panel's rendering of `absent` is unchanged**; no widget update is needed or implied.
+
+`unknown` still means "not asked yet": a builder with no fleet reader attached serves both
+components `unknown` on macOS exactly as it does on Windows, and only a completed poll turns
+glow into `absent`.
+
+---
+
+## v0.32.0 (2026-09-04 — BEHAVIOUR on macOS: the host block is served; schema stays 5)
+
+crabd `VERSION` → `0.32.0`. **No shape change.** `host` keeps exactly the four fields it has
+had since v0.22.0 (`cpuPct`, `memPct`, `memUsedGB`, `memTotalGB`), the same units, the same
+rounding and the same three failure tiers. `schema` stays **5**. What changed is that on
+**macOS** the block is now PRESENT, where a Mac used to serve no `host` key at all. The widget
+feature-detects `host` by presence, so this is the whole user-visible difference: the gauges
+render on a Mac.
+
+Windows is untouched — same counters, same numbers, same code path.
+
+### 1. Where the numbers come from on macOS
+
+| field | source |
+|---|---|
+| `cpuPct` | `host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, …)` from libSystem |
+| `memTotalGB` | `sysctlbyname("hw.memsize")` |
+| `memUsedGB`, `memPct` | `host_statistics64(mach_host_self(), HOST_VM_INFO64, …)` page counts × `sysctlbyname("vm.pagesize")` |
+
+MEASURED 2026-09-04 on an Apple-silicon Mac, 16 cores, macOS 26.6: the CPU call returns
+`kr == 0`, `count == 4` and four `uint32` ticks in CPU_STATE order — `user, system, idle,
+nice` — cumulative since boot, summed across cores, in 1/`CLK_TCK` s where
+`os.sysconf("SC_CLK_TCK")` is 100. One second of wall clock moved them by
+`[213, 103, 1280, 0]`, sum 1596, which is about 16 cores × 100 Hz. The VM call returns
+`kr == 0` and `count == 38` (the struct is 38 × 32-bit words); `vm.pagesize` is 16384 and
+`hw.memsize` 137438953472 (128.0 GiB).
+
+### 2. The tuple convention, and the two decisions inside it
+
+`HostSampler` is unchanged and was written against Win32 `GetSystemTimes`, whose unit is the
+FILETIME's 100 ns tick and whose **kernel time includes idle time**. The macOS reader adapts
+to it rather than the other way round, so `CPU_MIN_TOTAL_TICKS` keeps meaning 100 ms of
+aggregate core-time and every A-07/A-08/A-09 branch keeps its measured provenance:
+
+```
+scale  = 10_000_000 // CLK_TCK          (100_000 at the measured CLK_TCK 100)
+idle   =  idle                  * scale
+kernel = (system + idle)        * scale
+user   = (user   + nice)        * scale
+```
+
+**Idle is folded into kernel.** Unfolded, `idle` exceeds `(kernel + user)` on any mostly-idle
+machine, the sampler takes its A-08 branch, and `cpuPct` is null — not once, but on every
+pass, on a perfectly healthy Mac. A dead gauge rather than a wrong one, which is exactly the
+failure nobody reports.
+
+**`nice` is busy time.** It counts user-priority-lowered processes actually running, so it
+belongs with `user`. Left out, a machine doing background work at nice priority under-reports:
+the worked example in the tests is a delta of `(user 100, system 100, idle 300, nice 100)`,
+which is 50.0% with nice and 40.0% without.
+
+### 3. The counters are 32-bit and they wrap
+
+The mach tick counters are `natural_t` — **32 bits** — and cumulative since boot. At the
+measured ~1600 ticks/s a bucket crosses 2^32 after roughly **31 days of uptime**, so a reader
+that passes them on raw produces one backwards jump per bucket per month, and the sampler
+answers a backwards counter by re-baselining and serving null.
+
+crabd unwraps them into 64-bit monotonic values inside the platform reader: the last raw value
+and a lap count are kept **per bucket**, and a value smaller than the last adds one 2^32 lap.
+The sampler never sees the jump. A genuine backwards movement of any other kind is
+indistinguishable from a wrap here and is treated as one — the honest trade, because the worst
+case is a single over-large window served as a percentage (and the sampler still refuses it
+if idle then exceeds the total), while the alternative is a null gauge on every long-uptime
+machine.
+
+`CLK_TCK` is read via `os.sysconf("SC_CLK_TCK")` once per reader — the answer is remembered,
+a failure is not, so a sysconf that raised is re-asked on the next pass — and must be a
+positive integer that
+divides 10_000_000 evenly; anything else (0, negative, `True`, 3, 7, missing) serves **no
+`cpuPct`** with one stderr line, because the scaling is an integer division.
+
+### 4. `memUsedGB` is Activity Monitor's "Memory Used"
+
+```
+used      = (internal_page_count - purgeable_count + wire_count + compressor_page_count)
+            × page_size
+available = total - used
+```
+
+That is app memory + wired + compressed, which is the headline figure Activity Monitor shows —
+66.0 GiB of 128.0 on the machine measured here. The contract's promise for this row has always
+been that it matches what the OS's own monitor shows, and on a Mac there are two other
+plausible answers that do not: `top`'s used is `total - free`, which is **99.3 GiB** from the
+page counts recorded on that machine (`top` itself printed the rounded "98G"), and counting
+free + inactive + speculative as available reads differently again.
+`free_count` and `inactive_count` therefore do **not** enter the formula.
+
+### 5. Failure is unchanged, and it is honest
+
+The three tiers are exactly the v0.22.0 ones: both readings failing → **no `host` key at all**
+(the widget renders nothing rather than a row of em-dashes); one failing → that reading's
+fields `null` and the other's intact; an unusable number → `null` via `_pct` / `_gb`. There is
+still no last-good cache anywhere, which is why `cpuPct` is `null` on the first pass after a
+crabd start and stays `null` rather than repeating a stale figure.
+
+The macOS memory reader refuses, with one stderr line each and never a figure, when:
+`host_statistics64` fails; the returned `count` is not the 38 words the declared struct is (a
+different layout means the fields are not at the offsets the names were resolved from, and
+nothing is read past that check); `vm.pagesize` is not a positive power of two; `hw.memsize`
+is unreadable or not positive; or the computed `used` falls outside `0..total`. The last one
+earns its place because `HostSampler` clamps an out-of-range availability back into range — an
+unrefused negative `used` would reach the document as a confident `memPct: 0.0`.
+
+---
+
+## v0.31.0 (2026-09-04 — TRANSPORT: the panel is served by crabd on 9999; the Host and Origin allowlists; the panel header; schema stays 5)
+
+crabd `VERSION` → `0.31.0`. **Nothing in the DOCUMENT changed.** No field was added, moved,
+renamed or removed on `/v1/state`, `/v1/action` or `/v1/config`, so `schema` stays **5** and
+every feature is still found by field presence. What changed is where crabd listens, who it
+will talk to, and what a POST has to carry.
+
+### 1. The port is 9999
+
+`DEFAULT_PORT = 9999`. It was 2722 (C-R-A-B on a phone keypad), which was a fine choice while
+the only client was a widget configured once at the iCUE console; the panel is now a page a
+person opens in a browser, so the port is a number a person types. `CRABD_PORT` still
+overrides it for a second instance running beside the live one.
+
+The bind address is unchanged and is **not** configurable: `127.0.0.1`, a module-level
+literal, with no environment variable and no config key that reaches it. There is deliberately
+no `CRABD_HOST`. Loopback binding is the whole of crabd's access-control story on the read
+paths, and a source-text test refuses `0.0.0.0` and any environment read of the host.
+
+**A collision is a loud stop, never a move to another port.** crabd makes exactly one bind
+attempt on exactly the port it was told to use; if that fails it prints to stderr and exits 1:
+
+```
+crabd: cannot listen on 127.0.0.1:9999 - [Errno 48] Address already in use. If another
+process is holding the port, this names it: lsof -nP -iTCP:9999 -sTCP:LISTEN - then stop
+it, or set CRABD_PORT to run crabd on a different port (the panel and the hooks have to
+be pointed at the same number).
+```
+
+What the operating system said is quoted verbatim, because `[Errno 48] Address already in
+use` and `[Errno 13] Permission denied` are different problems and the class name
+`OSError` separates neither. The command is the PLATFORM's: `lsof -nP -iTCP:<port>
+-sTCP:LISTEN` on macOS and Linux, `Get-NetTCPConnection -LocalPort <port> -State Listen |
+Select-Object OwningProcess` on Windows, where `lsof` does not exist.
+
+The refused alternative, recorded so it is not re-tried: "busy? bind the next port". That
+produces this daemon's worst failure — crabd up on 10000 while every hook, the status line
+command and the panel are still addressing 9999, so the feed is empty and nothing says why.
+
+`SO_REUSEADDR` is now a per-platform answer (`False` on Windows, `True` on macOS and Linux)
+rather than a constant. The option means two different things: on Windows it admits a SECOND
+listener on a port already being listened on — two crabds answering half the requests each —
+and on BSD/Linux it does not, where all it buys is a restart inside the TIME_WAIT window of
+the last connection. A collision is loud on all three either way.
+
+### 2. TRANSPORT: a `Host` allowlist, ahead of everything (DNS rebinding)
+
+Runs FIRST, before the origin gate, on `GET`, `POST` and `OPTIONS` alike. A refusal is
+**403** `{"error":"host not allowed"}` with **no** `Access-Control-Allow-Origin`; a POST
+body is drained first so keep-alive framing survives.
+
+| Request `Host` | Answer |
+|---|---|
+| absent (HTTP/1.0, a hand-rolled probe) | allowed - it is not a claim about anything |
+| `localhost:<port>`, `127.0.0.1:<port>`, `[::1]:<port>` | allowed |
+| `LOCALHOST:<port>` | allowed - the host part is compared case-insensitively |
+| `localhost`, `127.0.0.1`, `[::1]` (no port part) | allowed - the port rule applies only when a port is present |
+| `evil.example:<port>`, `evil.example` | **403** `{"error":"host not allowed"}` |
+| `localhost:<other port>` | **403** - the port is part of the claim |
+| `localhost.:<port>` (trailing dot) | **403** - the fully-qualified form resolves the same, which is exactly why it is a bypass |
+| anything unparseable as `host` / `host:port` (an unbracketed IPv6 literal, an unclosed `[`) | **403** |
+
+`<port>` is the BOUND port, as everywhere else in this section.
+
+**Why, and why the origin gate cannot cover it.** The operator visits
+`http://evil.example:9999`; its DNS record has a short TTL and re-resolves to `127.0.0.1`.
+The browser now believes crabd *is* `evil.example`, so the page is **same-origin** with it -
+and a same-origin `GET` carries no `Origin` header at all. The origin allowlist sees an
+absent Origin, which is the ordinary shape of a hook, a curl and a plain navigation, and
+allows it. Nothing else in the request distinguishes the two. `Host` does: it is taken from
+the URL the page thinks it is talking to, not from the socket, so a rebound page still says
+`evil.example` on every request it makes. Refusing it is not "who is asking" but "you are
+not talking to who you think you are", which is why it is answered before anything about
+CORS.
+
+**What this also refuses, by design: a port forward or a reverse proxy.** `ssh -L
+8080:localhost:9999` (or an nginx in front of crabd) makes the browser send `Host:
+localhost:8080` — the port it typed, not the port crabd is bound to — and that is **403**.
+It is the same shape as a rebind and crabd cannot tell the two apart: the header is the
+whole of the evidence, and a gate that accepted a mismatched port would accept the attack
+it exists for. The panel is a loopback page opened on the machine crabd runs on; reaching
+it from elsewhere is out of scope, and forwarding `9999:localhost:9999` (the same number on
+both ends) is the arrangement that does work.
+
+### 3. TRANSPORT: the Origin gate is an ALLOWLIST
+
+Supersedes the v0.16.0 table above (§1 of that section). The rule is still identical for
+`GET`, `POST` and `OPTIONS` on every path, and `Access-Control-Allow-Origin: *` is still
+illegal everywhere. What changed is that crabd now serves the panel itself, so the panel HAS
+a real `http://` origin, and "refuse every http origin" would refuse the product. This is
+exactly the case v0.16.0's closing sentence anticipated: a panel confirmed to send a stable
+non-`null` origin, allowlisted to that exact value.
+
+`<port>` below is the port crabd is actually BOUND to, not the configured default — a second
+instance on `CRABD_PORT` allowlists itself, never the production daemon beside it.
+
+| Request `Origin` | Answer |
+|---|---|
+| absent (curl, the hooks, the status line command, the notifier) | handled; **no** ACAO header (a non-browser client needs none) |
+| `http://localhost:<port>` | handled; ACAO echoes **exactly that origin** + `Vary: Origin` |
+| `http://127.0.0.1:<port>` | same |
+| `http://[::1]:<port>` | same (what `localhost` resolves to first on a dual-stack machine) |
+| `HTTP://LOCALHOST:<port>` | same — the comparison is case-insensitive (scheme and host both are) |
+| `http://localhost:<other port>` | **403** `{"error":"cross-site request refused"}`, no ACAO |
+| `https://localhost:<port>` | **403** — nothing serves this panel over TLS |
+| `http://localhost:<port>/` | **403** — a trailing slash is not a valid Origin serialisation, and a prefix match is how an allowlist gets walked past |
+| `http://evil.example` (any other web origin) | **403**, no ACAO |
+| `null` (an opaque origin; the iCUE build was measured sending `file://`, see Compatibility) | **preserved**: handled; ACAO `null` + `Vary: Origin` |
+| `file://`, `qrc://icue/widget` | **preserved**: handled; the origin is reflected |
+
+The match is EXACT, against the whole serialised origin. Not a prefix
+(`http://localhost:9999.evil.example` starts with the right string), not a host test that
+ignores the port (every dev server, notebook and other local UI the operator has open on
+127.0.0.1 is a different origin), and not scheme-blind.
+
+`null` stays allowed because a QtWebEngine build that does collapse to an opaque origin has no
+other value it could send — and a panel that cannot read is a broken product. It is also
+forgeable by a sandboxed iframe, which is what §4 is for.
+
+### 4. TRANSPORT: every POST carries `X-SideCrab-Panel`
+
+**`PANEL_HEADER = "X-SideCrab-Panel"`**, any non-empty value. A POST without it is answered
+`403 {"error":"panel header required"}` — a DISTINCT body from the cross-site refusal, so an
+operator wiring up a hook can tell the two apart.
+
+- Applies to **every** POST path: `/v1/hook`, `/v1/hook/stop`, `/v1/hook/permission`,
+  `/v1/statusline`, `/v1/metrics`, `/v1/logs`, `/v1/action`, `/v1/config`, `/v1/panel-log`,
+  and every unknown path. `GET` and `OPTIONS` never require it.
+- **Order: the origin gate answers first.** A cross-site page is told it is cross-site, which
+  it already knew, and never learns there is a header to look for.
+- The body is drained before the 403, so keep-alive framing survives.
+- The 403 carries whatever ACAO the origin gate computed, so a same-origin panel can READ its
+  own refusal (an unreadable reply is a CORS error, not a status).
+- `/v1/hook/permission` is refused **immediately**, in front of the routing, never after its
+  55 s hold.
+- The value is never interpreted. It is not authentication.
+
+**An OTLP exporter has to be told.** `/v1/metrics` and `/v1/logs` are on the list above, and
+nothing in SideCrab configures the exporter inside Claude Code — so a session exporting to
+crabd is refused `403` until the operator sets
+
+```
+OTEL_EXPORTER_OTLP_HEADERS=X-SideCrab-Panel=1
+```
+
+alongside `OTEL_EXPORTER_OTLP_ENDPOINT`. The failure is silent from crabd's side by design
+(telemetry never gets a 4xx that teaches its exporter to retry — see the OTLP contract below),
+so the symptom is `burn.costUSD` staying `null`. Nothing in this repo writes that variable yet.
+
+**What it actually buys.** A custom request header makes the POST non-simple, so a browser
+must preflight it — and the preflight is where the gate is enforced:
+
+| Preflight `Origin` | `Access-Control-Allow-Headers` |
+|---|---|
+| a panel origin from the table above | `Content-Type, X-SideCrab-Panel` |
+| `file://`, `qrc://…` (non-web scheme) | `Content-Type, X-SideCrab-Panel` |
+| `null` | `Content-Type` — **exactly as before 0.31.0** |
+| absent (a non-browser client; nothing preflights without one) | no ACAO at all, so no `Access-Control-Allow-Headers` either |
+| any other web origin | no ACAO at all, so no preflight answer to use |
+
+So a page that forges `Origin: null` keeps its READS (unchanged, and still a disclosed
+residual) and loses its WRITES: its preflight comes back without permission to send the
+header, and the POST never leaves the browser. That is the closure of the forged-null write
+vector `SECURITY.md` carried as a residual.
+
+### 5. crabd serves the panel
+
+`GET /` and `/index.html` serve the panel's `index.html`; a path whose first segment is
+`styles`, `scripts`, `resources` or `mock` serves that file. **Nothing else under the panel
+root is served** — `/manifest.json`, `/translation.json`, `/DEV.md` and `/tests/…` are `404
+{"error":"not found"}`, and an unknown `/v1/…` stays the JSON 404 it has always been. The
+directory is `CRABD_PANEL_DIR`, defaulting to the `widget/` tree beside `crabd.py`.
+
+Path safety, applied after ONE percent-decode: a path is refused (404, never an exception and
+never a read) when it contains `..` as a segment, a backslash, a NUL, an empty segment, a
+segment starting with `.`, or a `%` that survived decoding; the resolved candidate must have
+the resolved panel directory as a parent, which also refuses a symlink inside the tree that
+points outside it. A directory path and a missing file are both 404. A query string never
+reaches the path (`/index.html?mock=normal` serves `index.html`).
+
+Content type by suffix — `.html` `text/html; charset=utf-8`, `.css` `text/css; charset=utf-8`,
+`.js` `text/javascript; charset=utf-8`, `.json` `application/json`, `.svg` `image/svg+xml`,
+`.png` `image/png`, `.ico` `image/x-icon`, `.woff2` `font/woff2`, `.txt`
+`text/plain; charset=utf-8`, anything else `application/octet-stream`. `X-Content-Type-Options: nosniff` and
+`Cache-Control: no-store` are on **every** response crabd sends, static or API — one rule each
+for the whole daemon rather than a per-branch flag a new route can forget. `no-store` matters
+here in particular: the panel now ships with crabd, and a stale script surviving an update is
+the bug it avoids.
+
+One static reply reads at most **64 MB** (`PANEL_MAX_BYTES`), checked by `stat` before
+the read; a larger file is `404` plus one log line. Not a limit the shipped panel comes
+near - it is a limit on a directory `CRABD_PANEL_DIR` can point anywhere.
+
+The origin gate applies to static reads exactly as to the API: a foreign-origin `fetch` of
+`/scripts/sidecrab.js` is 403, while a plain navigation (which sends no `Origin`) is served.
+A static read never touches the builder's lock, so it cannot be blocked by a wedged state
+build and cannot block a hook.
+
+### 6. `/v1/health` gains `panel`
+
+```jsonc
+"panel": { "origins": ["http://127.0.0.1:9999", "http://[::1]:9999", "http://localhost:9999"],
+           "headerRequired": true, "dir": "/Users/you/SideCrab/widget" }
+```
+
+Diagnostic, **not the state contract** — health has never been part of it, so no schema bump,
+and the block is never in `/v1/state`. It exists because "which origins does your crabd trust"
+and "which panel build is it serving" were answerable only by reading the source.
+
+### Compatibility, stated honestly
+
+An installed iCUE widget older than 0.29.0 **cannot POST to this crabd**: it sends no
+`X-SideCrab-Panel`, so every write is refused 403. Its READS are unaffected — its origin,
+whatever it is, is one this crabd allows and reflects — so it keeps rendering the panel, and
+only its taps stop working. That is the same shape as the 0.29.0 `decide` change and it is safe
+for the same reason: the writes that stop, stop by being refused, and every one of them has a
+terminal-side fallback. (It is also polling 2722, so in practice it shows the standalone state
+until it is re-imported.)
+
+**Which origin the iCUE build sends, and the case that is NOT covered.** Measured, not assumed:
+`originsSeen` recorded `origin: file://` (AppleWebKit/537.36 UA) on 2026-09-02, after the 0.27.0
+import — ORIGIN-b in `docs/BACKLOG.md`. QtWebEngine did *not* collapse its file page to an
+opaque origin, and a web page cannot forge `Origin: file://`, which is why §4's preflight table
+unlocks the panel header for a non-web scheme. That is **one reading on one iCUE build**. A
+build that reports `Origin: null` instead — a different QtWebEngine, a different iCUE — keeps
+its reads and **loses its taps**, because `null` is forgeable and its preflight therefore never
+unlocks the header. That is the accepted trade: widening `null` to cover it would re-open the
+forged-null write for every browser on the machine. A second install's `originsSeen` is what
+would settle it.
+
 ## v0.30.0 (2026-09-04 — ADDITIVE: `limits.tokenSource`; the long-lived limits token; schema stays 5)
 
 crabd `VERSION` → `0.30.0`. One additive member, one new optional file, no wire change on any
 write path.
+
+> **Superseded in part by v0.34.0.** Every `Install-SideCrab.ps1 -LimitsToken` below is the
+> WINDOWS answer and is unchanged there; on macOS the store is a login Keychain item and the
+> command in those notes is `setup/install.sh --limits-token`. The precedence rule and
+> `tokenSource` are unchanged on both.
 
 **`limits.tokenSource`** — `"cli"` | `"sidecrab"`, present only when `limits.available` is true.
 Which token answered the usage endpoint: the CLI's own access token from

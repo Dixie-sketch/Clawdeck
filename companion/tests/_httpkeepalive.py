@@ -85,6 +85,11 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import crabd  # noqa: E402
 
 
 class Reply:
@@ -214,7 +219,15 @@ class KeepAliveClient:
         return self.request("GET", path, headers=headers, timeout=timeout)
 
     def post(self, path, body=b"", headers=None, timeout=None) -> Reply:
-        head = {"Content-Type": "application/json"}
+        # crabd.PANEL_HEADER is on every POST because it is on every REAL POST: the
+        # hooks, the status line command, the notifier's ack handler and the panel all
+        # send it, and crabd 0.31.0 refuses a POST without it. A default here rather than
+        # at 97 call sites - and `request()` deliberately adds nothing, so the gate's own
+        # tests can omit the header and see the refusal.
+        # NOT the OTLP exporter: nothing in this repo configures its headers, so a
+        # Claude Code session exporting to crabd is refused until the operator sets
+        # OTEL_EXPORTER_OTLP_HEADERS (see the contract's header-gate section).
+        head = {"Content-Type": "application/json", crabd.PANEL_HEADER: "1"}
         head.update(headers or {})
         return self.request("POST", path, body=body, headers=head, timeout=timeout)
 
@@ -251,8 +264,15 @@ def start_test_server(server_factory, attempts: int = 4):
     for attempt in range(attempts):
         server = server_factory()
         port = server.server_address[1]
-        assert port != 2722, "test server must never bind the production port"
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # The CONSTANT, never the literal: the production port moved once already, and a
+        # guard that names a number a suite ago stops guarding the day it moves again.
+        assert port != crabd.DEFAULT_PORT, \
+            "test server must never bind the production port"
+        # poll_interval 0.05, not socketserver's 0.5 default. serve_forever() sits in a
+        # select() with that timeout, and shutdown() has to wait for the current one to
+        # come round - so every fixture teardown in these suites paid up to half a second
+        # for nothing. The interval costs one wakeup per 50 ms on an idle test server.
+        thread = threading.Thread(target=lambda: server.serve_forever(0.05), daemon=True)
         thread.start()
         client = KeepAliveClient(port)
         try:

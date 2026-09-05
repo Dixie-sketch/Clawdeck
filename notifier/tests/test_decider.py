@@ -505,8 +505,14 @@ class AdapterTests(unittest.TestCase):
     def test_xml_omits_image_without_icon(self) -> None:
         self.assertNotIn("appLogoOverride", self.adapter.build_xml(ToastRequest("s", "t", "a", "b")))
 
+    @unittest.skipUnless(sys.platform == "win32",
+                         "asserts a Windows drive letter in the toast image URI")
     def test_icon_uri_keeps_the_drive_colon_unescaped(self) -> None:
-        """A quoted 'C%3A' silently renders a logo-less toast — regression guard."""
+        """A quoted 'C%3A' silently renders a logo-less toast — regression guard.
+
+        Windows-only because the claim IS the drive letter: an absolute POSIX path has
+        no colon to leave unescaped, so off Windows this asserts nothing about the toast
+        that ships. test_icon_uri_escapes_spaces below is the portable half."""
         with tempfile.TemporaryDirectory() as tmp:
             icon = Path(tmp) / "sidecrab.png"
             icon.write_bytes(b"\x89PNG\r\n\x1a\n")

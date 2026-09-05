@@ -2,16 +2,10 @@
  *
  *   node widget/tests/test_ordering.js
  *
- * WHY A VM AND NOT A MODULE. scripts/sidecrab.js is a flat browser script that
- * ends by calling init(); it has no exports and this repo ships no bundler, and a
- * second copy of the ordering rules in a test file would be a copy that can
- * disagree with the panel. So the SHIPPING file is loaded whole into a vm context
- * with a document stub whose readyState is 'loading' — the same branch a real
- * browser takes before DOMContentLoaded, which parks init() on a listener nobody
- * fires. Nothing renders, and the functions under test are the ones on the glass.
- * If this file ever stops loading, the cause is new TOP-LEVEL work in sidecrab.js
- * (everything else lives inside a function): add the stub it needs, do not fork
- * the logic.
+ * WHY A VM AND NOT A MODULE, and the document stub that makes it work, both live
+ * in _harness.js — shared with test_panel.js, because two copies of the stub are
+ * two things to keep in step and the rule here has always been "add the stub it
+ * needs, do not fork the logic".
  *
  * WHAT IS PINNED. The compact grid's "+N more" tile is acceptable only while a
  * WAITING (needs_input) card can never be the row it swallows. Until v0.26.0 the
@@ -22,39 +16,12 @@
  */
 'use strict';
 
-var fs = require('fs');
-var path = require('path');
-var vm = require('vm');
+var loadWidget = require('./_harness.js').loadWidget;
 
-var SRC = path.join(__dirname, '..', 'scripts', 'sidecrab.js');
-
-function loadWidget() {
-	var listeners = 0;
-	var doc = {
-		readyState: 'loading',
-		addEventListener: function () { listeners++; },
-		documentElement: { style: { setProperty: function () {} } },
-		body: { classList: { toggle: function () {}, add: function () {}, remove: function () {}, contains: function () { return false; } } },
-		getElementById: function () { return null; },
-		querySelector: function () { return null; },
-		createElement: function () { throw new Error('the ordering tests build no DOM'); }
-	};
-	var sandbox = { document: doc, console: console };
-	sandbox.window = sandbox;
-	sandbox.self = sandbox;
-	sandbox.location = { search: '', href: 'http://127.0.0.1/index.html' };
-	sandbox.navigator = { userAgent: 'node' };
-	sandbox.setTimeout = function () { return 0; };
-	sandbox.clearTimeout = function () {};
-	sandbox.setInterval = function () { return 0; };
-	sandbox.clearInterval = function () {};
-	var ctx = vm.createContext(sandbox);
-	vm.runInContext(fs.readFileSync(SRC, 'utf8'), ctx, { filename: 'sidecrab.js' });
-	if (!listeners) throw new Error('init() ran: the document stub was not in the loading state');
-	return ctx;
-}
-
-var W = loadWidget();
+var W = loadWidget({
+	location: { search: '', href: 'http://127.0.0.1/index.html' },
+	domReason: 'the ordering tests build no DOM'
+});
 
 /* ------------------------------------------------------------------ harness */
 

@@ -47,7 +47,7 @@ from icue import (  # noqa: E402
     lighting_verdict,
 )
 
-DEFAULT_URL = os.environ.get("SIDECRAB_URL", "http://127.0.0.1:2722/v1/state")
+DEFAULT_URL = os.environ.get("SIDECRAB_URL", "http://127.0.0.1:9999/v1/state")
 
 POLL_INTERVAL_SEC = 3.0
 FETCH_TIMEOUT_SEC = 2.0

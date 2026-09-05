@@ -9,11 +9,14 @@
 			"Quiet Hours": "Quiet Hours",
 			"Quiet Start (HH:MM)": "Quiet Start (HH:MM)",
 			"Quiet End (HH:MM)": "Quiet End (HH:MM)",
-			"Desktop Toast Alerts": "Desktop Toast Alerts",
+			"Desktop Notifications": "Desktop Notifications",
 			"Toast After": "Toast After",
 			"Approval Toast After": "Approval Toast After",
 			"Daily Token Budget": "Daily Token Budget",
 			"Budget Per Day": "Budget Per Day",
+			"Approvals": "Approvals",
+			"Approval Pairing Code": "Approval Pairing Code",
+			"Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with Install-SideCrab.ps1 -PairingCode. Leave it empty unless panel approvals are turned on.": "Approve and Deny on a session card are refused until this matches the code the companion minted. Print it with Install-SideCrab.ps1 -PairingCode. Leave it empty unless panel approvals are turned on.",
 			"Hardware Sensors": "Hardware Sensors",
 			"CPU Temperature Sensor": "CPU Temperature Sensor",
 			"GPU Temperature Sensor": "GPU Temperature Sensor",
@@ -26,7 +29,7 @@
 			"Accent Color": "Accent Color",
 			"Background Color": "Background Color",
 			"Background Transparency": "Background Transparency",
-			"Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions.": "Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions."
+			"Claude Code session data comes from the SideCrab companion service, which also serves this panel. Desktop Notifications is a master switch: turning it off silences every SideCrab notification, not only waiting sessions.": "Claude Code session data comes from the SideCrab companion service, which also serves this panel. Desktop Notifications is a master switch: turning it off silences every SideCrab notification, not only waiting sessions."
 		}
 	}
 }

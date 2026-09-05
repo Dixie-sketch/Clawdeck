@@ -28,7 +28,7 @@
 [CmdletBinding()]
 param(
     [string] $RepoRoot     = (Split-Path -Parent $PSScriptRoot),
-    [string] $BaseUri      = 'http://127.0.0.1:2722',
+    [string] $BaseUri      = 'http://127.0.0.1:9999',
     [string] $ConfigPath   = (Join-Path $HOME '.sidecrab\config.json'),
     [string] $SettingsPath = (Join-Path $HOME '.claude\settings.json'),
     [string] $ChainPath    = (Join-Path $HOME '.sidecrab\statusline-chain.json'),
@@ -112,6 +112,7 @@ function Send-SmokeHook {
     $body = $payload | ConvertTo-Json -Compress
     $resp = Invoke-WebRequest -Uri "$BaseUri/v1/hook" -Method Post -Body $body `
                               -ContentType 'application/json' -TimeoutSec 5 `
+                              -Headers @{ 'X-SideCrab-Panel' = '1' } `
                               -SkipHttpErrorCheck -ErrorAction Stop
     [int] $resp.StatusCode
 }

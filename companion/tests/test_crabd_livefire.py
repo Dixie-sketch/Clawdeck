@@ -65,6 +65,11 @@ def setUpModule():
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
+    # The Keychain kill switch, for the same reason as the paths above: with it
+    # False, nothing in this module can reach the operator's login Keychain - no
+    # prompt on their desktop, and no secret this suite has any business seeing.
+    setUpModule.keychain = crabd.KEYCHAIN_CREDENTIALS_ENABLED
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = False
 
 
 def tearDownModule():
@@ -77,6 +82,7 @@ def tearDownModule():
     # another module's test failing. Cleared here so the module hands back what it found.
     crabd.Handler.builder = None
     _MODULE_TMP.cleanup()
+    crabd.KEYCHAIN_CREDENTIALS_ENABLED = setUpModule.keychain
 
 
 OAUTH_LIMITS = {
@@ -305,7 +311,7 @@ class ReadBodyCapTests(unittest.TestCase):
 class LiveFireServed(unittest.TestCase):
     """A crabd with every reader wired, on a test port, with one SERVED session.
 
-    Never 2722: that port is production and the Scheduled Task owns it.
+    Never DEFAULT_PORT: that port is production and the service registration owns it.
     """
 
     SID = "5c5c5c5c-0000-0000-0000-00000000000e"
@@ -337,7 +343,7 @@ class LiveFireServed(unittest.TestCase):
         # Proven-reachable port + one reused connection - see _httpkeepalive.
         self.server, self.thread, self.port, self.client = start_test_server(
             lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
-        self.assertNotEqual(self.port, 2722)
+        self.assertNotEqual(self.port, crabd.DEFAULT_PORT)
         self.addCleanup(self._stop)
         self.addCleanup(self.client.close)
         # One session on a served row - a hook alone is enough, the builder folds hook
@@ -786,6 +792,11 @@ class Sec1OriginGateLiveFireTests(LiveFireServed):
         self.assertEqual(widget.headers.get("Access-Control-Allow-Origin"), "null")
         self.assertEqual(widget.headers.get("Access-Control-Allow-Methods"),
                          "GET, POST, OPTIONS")
+        # v0.31.0: `null` keeps its ACAO (the iCUE build's reads) and is the one allowed
+        # origin whose preflight may NOT unlock the panel header - see
+        # test_crabd_panel.PanelPreflightTests for the whole rule.
+        self.assertEqual(widget.headers.get("Access-Control-Allow-Headers"),
+                         "Content-Type")
         state = self.client.request("OPTIONS", "/v1/state", headers={"Origin": "null"})
         self.assertEqual(state.headers.get("Access-Control-Allow-Origin"), "null")
         evil_read = self.client.request("OPTIONS", "/v1/state",
@@ -859,7 +870,8 @@ class OversizedBodyOverTheWireTests(LiveFireServed):
         conn = socket.create_connection(("127.0.0.1", self.port), timeout=read_timeout)
         try:
             head = (f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                    f"Content-Type: application/json\r\n{headers_extra}\r\n")
+                    f"Content-Type: application/json\r\n"
+                    f"{crabd.PANEL_HEADER}: 1\r\n{headers_extra}\r\n")
             conn.sendall(head.encode() + payload)
             conn.settimeout(read_timeout)
             try:
@@ -918,6 +930,10 @@ class UnknownPathFramingTests(LiveFireServed):
     second chance, so the second response IS the proof the first body left the stream.
     """
 
+    #: What a real POST carries. Without the panel header the header gate answers
+    #: first and this class would be asserting the WRONG refusal's framing.
+    HEAD = {"Content-Type": "application/json", crabd.PANEL_HEADER: "1"}
+
     def bare_connection(self):
         conn = KeepAliveClient(self.port)._connect()
         self.addCleanup(conn.close)
@@ -927,7 +943,7 @@ class UnknownPathFramingTests(LiveFireServed):
         conn = self.bare_connection()
         conn.request("POST", "/v1/not-a-real-path",
                      body=json.dumps({"pad": "x" * 4096}).encode(),
-                     headers={"Content-Type": "application/json"})
+                     headers=self.HEAD)
         first = conn.getresponse()
         self.assertEqual(first.status, 404)
         self.assertEqual(json.loads(first.read()), {"error": "not found"})
@@ -945,7 +961,7 @@ class UnknownPathFramingTests(LiveFireServed):
         conn = self.bare_connection()
         for i in range(5):
             conn.request("POST", f"/v1/nope/{i}", body=b'{"a":' + str(i).encode() + b'}',
-                         headers={"Content-Type": "application/json"})
+                         headers=self.HEAD)
             response = conn.getresponse()
             self.assertEqual(response.status, 404, i)
             response.read()
@@ -1045,13 +1061,13 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.30.0")
+        self.assertEqual(crabd.VERSION, "0.34.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),
                          ["hooksSeen", "lastStatuslineAgeSec", "ok", "originsSeen",
-                          "otlpSeen", "panelToken", "statuslineSeen", "uptimeSec",
-                          "version"])
+                          "otlpSeen", "panel", "panelToken", "statuslineSeen",
+                          "uptimeSec", "version"])
 
     def test_a_statusline_that_has_never_posted_is_null_not_zero(self):
         """The sharp one. Null means the status line has NEVER posted, which is a
@@ -1180,10 +1196,24 @@ class Sec4ReadGateLiveFireTests(LiveFireServed):
             self.assertIsNone(reply.headers.get("Access-Control-Allow-Origin"), path)
 
     def test_an_http_origin_is_refused_as_well_as_https(self):
+        """Loopback is not a pass. `http://127.0.0.1:<not this port>` is every other
+        local tool the operator has open - a dev server, a notebook, another daemon's
+        UI - and each is a different origin. (v0.31.0 moved the one exception to the
+        allowlist: this crabd's OWN bound port, asserted below.)"""
         for origin in ("http://attacker.local:8080", "HTTPS://Evil.Example",
-                       "http://127.0.0.1:2722"):
+                       f"http://127.0.0.1:{self.port + 1}",
+                       f"http://localhost:{self.port + 1}"):
             reply = self.client.get("/v1/state", headers={"Origin": origin})
             self.assertEqual(reply.status, 403, origin)
+
+    def test_this_crabds_own_panel_origin_is_the_one_http_origin_served(self):
+        """The other half of the row above, so "refuse http origins" cannot quietly
+        become "refuse the panel". Fully covered in test_crabd_panel.py."""
+        for origin in (f"http://127.0.0.1:{self.port}",
+                       f"http://localhost:{self.port}"):
+            reply = self.client.get("/v1/state", headers={"Origin": origin})
+            self.assertEqual(reply.status, 200, origin)
+            self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     # -- THE WIDGET MUST KEEP WORKING
 

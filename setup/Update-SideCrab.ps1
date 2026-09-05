@@ -152,7 +152,7 @@ if ($SkipRestart) {
             continue
         }
         if ($PSCmdlet.ShouldProcess($s.TaskName, 'Restart scheduled task')) {
-            # -Port is what makes this wait for the old process to let go of 2722 before the new
+            # -Port is what makes this wait for the old process to let go of 9999 before the new
             # one tries to bind it; Restart-SideCrabTask THROWS rather than starting blind when
             # it does not come free, which is the whole fix. 0 for a component that owns no port.
             $port = [int] $portByTask[$s.TaskName]
@@ -169,7 +169,7 @@ foreach ($s in @($states | Where-Object { -not $_.Registered })) {
 }
 
 # ---- 3. verify: /v1/health AND the task, together
-# BOTH, because either one alone lies. Health alone passed a run where a stray process held 2722
+# BOTH, because either one alone lies. Health alone passed a run where a stray process held 9999
 # and answered while SideCrab-crabd was dead in Ready (2026-08-27); the task state alone passes a
 # Running process that never bound the port.
 $verifyFailed = $false

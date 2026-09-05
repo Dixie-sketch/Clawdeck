@@ -1,11 +1,23 @@
-/* SideCrab — Xeneon Edge (dashboard_lcd), designed at 2560x720 landscape.
+/* SideCrab widget v0.30.0 — Xeneon Edge (dashboard_lcd), designed at 2560x720
+   landscape, and served in a browser at any size since v0.30.0.
    QtWebEngine 6.9.3 / Chromium 130: no :has(), no container queries, no
    backdrop-filter, no subgrid. Everything below is flexbox/grid + custom props. */
 
 :root {
 	/* Rule 1/2: ONE baseline; every component token derives from it and no
-	   component selector uses a raw viewport unit. */
-	--layout-unit: 1vmin;
+	   component selector uses a raw viewport unit.
+	   v0.30.0 — BOUNDED, because the panel now has a resizable window. `1vmin` was
+	   calibrated for a glass panel that is always 2560x720, where it is 7.2 px;
+	   in a browser it is whatever the window is, and every token in this file
+	   moves with it. Measured at HEAD before the clamp: 9.0 px at 1440x900 (a 25%
+	   inflation of the entire panel, clock at 135 px) and 3.89 px at 390x844 (card
+	   type down to 11.5 px).
+	   THE CEILING IS THE REFERENCE SLOT AND THE EDGE IS THEREFORE UNCHANGED: vmin
+	   at 2560x720 measures 7.1875 px, inside 7.2, so the middle term still wins
+	   there and every measurement in this file still holds. The floor is 4.5 px,
+	   which is the 390 px phone: 3.89 -> 4.5 puts card type back to 13.3 px and
+	   the fingertip floor is a max() with 48px and cannot shrink either way. */
+	--layout-unit: clamp(4.5px, 1vmin, 7.2px);
 
 	--fs-clock: calc(var(--layout-unit) * 15);
 	--fs-clock-sec: calc(var(--layout-unit) * 4.2);
@@ -93,8 +105,19 @@
 	   on the panel still follows --accent. */
 	--gauge-blue: #2E7FF2;
 
-	--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-	--font-mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+	/* v0.30.0: the macOS faces JOIN the stack, behind the ones it was measured in.
+	   THE ORDER IS THE MEASUREMENT'S, not the platform's. Every px width comment
+	   in this file — the sensor cell's 49.8 px of slack, the row's 360.8, the
+	   13-glyph name clamp — was measured in Segoe on the Edge, and putting a
+	   different face in front of it there would invalidate all of them at once
+	   with nothing to show for it. Segoe leads; the system face is what a Mac
+	   resolves to, because neither Segoe family exists on one.
+	   BOTH SEGOE ENTRIES ARE INERT ON macOS, which is why the measurement table
+	   in DEV.md shows no movement across this change and why the Windows face is
+	   unchanged BY CONSTRUCTION rather than by measurement — nothing was inserted
+	   ahead of it. */
+	--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "SF Pro Text", sans-serif;
+	--font-mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -2292,6 +2315,141 @@ body.pinflash-frozen .card-pin.pin-confirm-off {
 .sheet[data-mode="host"] .sheet-pin-actions,
 .sheet[data-mode="host"] .sheet-events { display: none; }
 .sheet[data-mode="host"] .sheet-panel { border-left-color: var(--accent); }
+
+/* ---------- sheet: panel settings (v0.30.0) ---------- */
+
+/* The eighth mode. A region of its own for the reason the host charts have one:
+   its content is a form, which is not the same kind of thing as a read-only list
+   of rows, and gating the burn region a fourth way would have been four
+   conditions on one selector.
+   INSIDE iCUE THIS SHEET DOES NOT EXIST. The console owns the properties there;
+   the gear that opens this is off the glass, set by the body class in init(). */
+.head-chip-gear { display: none; }
+body.panel-settings .head-chip-gear {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: calc(var(--layout-unit) * 2.8);
+	line-height: 1;
+}
+
+.sheet-settings { display: none; }
+.sheet[data-mode="settings"] .sheet-settings {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 2.2);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+.sheet[data-mode="settings"] .sheet-question,
+.sheet[data-mode="settings"] .sheet-burn,
+.sheet[data-mode="settings"] .sheet-host,
+.sheet[data-mode="settings"] .sheet-timeline,
+.sheet[data-mode="settings"] .sheet-week,
+.sheet[data-mode="settings"] .sheet-day-foot,
+.sheet[data-mode="settings"] .sheet-meta,
+.sheet[data-mode="settings"] .sheet-subs,
+.sheet[data-mode="settings"] .sheet-status,
+.sheet[data-mode="settings"] .sheet-actions,
+.sheet[data-mode="settings"] .sheet-detail-actions,
+.sheet[data-mode="settings"] .sheet-pin-actions,
+.sheet[data-mode="settings"] .sheet-events { display: none; }
+.sheet[data-mode="settings"] .sheet-panel { border-left-color: var(--accent); }
+
+.set-group { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 1.2); }
+.set-group-title {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.set-group-info {
+	font-size: var(--fs-sheet-meta);
+	line-height: 1.4;
+	color: var(--muted);
+}
+/* Label, control, and for a slider its reading — one row, and the fingertip floor
+   every other control on this panel wears. The label takes the slack so the
+   controls line up down the right-hand edge whatever the label says. */
+.set-row {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.6);
+	flex-wrap: wrap;
+	min-height: var(--touch-min);
+}
+.set-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--fs-sheet-meta);
+	color: var(--text-color);
+}
+.set-control {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	max-width: 100%;
+	padding: 0 calc(var(--layout-unit) * 1.2);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	color: var(--text-color);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	touch-action: manipulation;
+}
+.set-control[type="checkbox"] {
+	width: var(--touch-min);
+	min-width: var(--touch-min);
+	accent-color: var(--accent);
+}
+.set-control[type="range"] { width: calc(var(--layout-unit) * 26); accent-color: var(--accent); }
+.set-control[type="color"] { width: calc(var(--layout-unit) * 10); padding: calc(var(--layout-unit) * 0.4); }
+.set-value {
+	flex: 0 0 auto;
+	min-width: calc(var(--layout-unit) * 9);
+	text-align: right;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	font-size: var(--fs-sheet-meta);
+	color: var(--muted);
+}
+.set-reveal {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 1.6);
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.8);
+	background: var(--surface);
+	color: var(--muted);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-appearance: none;
+	appearance: none;
+}
+/* The refusal line under a time field. Present in the markup and hidden until it
+   has something to say, so a value being typed does not reflow the sheet under
+   the finger typing it. Amber, not red: nothing is broken and nothing was lost —
+   the value simply is not on the wire yet. */
+.set-invalid {
+	display: none;
+	flex: 1 1 100%;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--amber);
+}
+.set-invalid.shown { display: block; }
+
+/* Full width under its row, because it is a sentence and the row is a control. */
+.set-help {
+	flex: 1 1 100%;
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	color: var(--faint);
+}
 
 .hs-chart { flex: 0 0 auto; display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.7); }
 .hs-head { display: flex; align-items: baseline; gap: calc(var(--layout-unit) * 1.4); min-width: 0; }

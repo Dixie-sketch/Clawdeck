@@ -2,12 +2,14 @@
 
 ## Threat model, in one paragraph
 
-Everything runs on one PC. The companion (`crabd`) listens on `127.0.0.1:2722` only, never on a
-LAN interface. It reads `~/.claude` (session transcripts, hook payloads, the usage endpoint's
-OAuth token) strictly read-only, never writes there, and never logs or transmits the token. The
-widget, the notifier and the glow are read-only consumers of the same localhost feed. Nothing in
-this repo makes a network request to anywhere but `127.0.0.1` and, for usage limits, Anthropic's
-own API with the user's own token. There is no telemetry, no crash reporting, no update check.
+Everything runs on one machine. The companion (`crabd`) listens on `127.0.0.1:9999` only, never
+on a LAN interface, and as of crabd 0.31.0 it also SERVES THE PANEL itself on that port, so the
+panel is an ordinary page in a browser rather than only a widget inside iCUE. It reads
+`~/.claude` (session transcripts, hook payloads, the usage endpoint's OAuth token) strictly
+read-only, never writes there, and never logs or transmits the token. The panel, the notifier
+and the glow are read-only consumers of the same localhost feed. Nothing in this repo makes a
+network request to anywhere but `127.0.0.1` and, for usage limits, Anthropic's own API with the
+user's own token. There is no telemetry, no crash reporting, no update check.
 
 The two things an attacker on this machine, or a web page you visit, could want are:
 
@@ -16,9 +18,34 @@ The two things an attacker on this machine, or a web page you visit, could want 
 
 ## What is enforced
 
-- **Origin gate on every route, reads and writes.** Any request carrying an `http(s)` `Origin`
-  header is refused with `403` and no CORS header, so a visited web page cannot read the state or
-  post an action through an ordinary cross-origin fetch. `docs/STATE-CONTRACT.md` "TRANSPORT".
+- **`Host` allowlist, ahead of every other gate (crabd 0.31.0).** A present `Host` whose host
+  part is not `localhost`, `127.0.0.1` or `[::1]`, or whose port part is present and is not the
+  bound port, is refused `403 {"error":"host not allowed"}` with no CORS header, on `GET`, `POST`
+  and `OPTIONS` alike; an absent `Host` (HTTP/1.0, a hand-rolled probe) is allowed. This is the
+  DNS-rebinding gate, and it is the only one that can be: a page at `http://evil.example:9999`
+  whose name re-resolves to `127.0.0.1` is SAME-ORIGIN with crabd as far as the browser is
+  concerned, so its `GET` carries no `Origin` at all and the origin allowlist has nothing to
+  refuse it with. `docs/STATE-CONTRACT.md` v0.31.0 §2.
+- **Origin allowlist on every route, reads and writes.** The only `http(s)` origins accepted are
+  the three spellings of this crabd's own bound port (`http://localhost:<port>`,
+  `http://127.0.0.1:<port>`, `http://[::1]:<port>`), matched exactly and case-insensitively.
+  Every other web origin - including the same host on a different port, and the same authority
+  over `https` - is refused `403` with no CORS header, so a visited web page cannot read the
+  state or post an action through a cross-origin fetch. `Access-Control-Allow-Origin: *` is
+  illegal on every route, method and status. `docs/STATE-CONTRACT.md` v0.31.0 §3.
+- **Every POST carries `X-SideCrab-Panel` (crabd 0.31.0).** Any non-empty value; a POST without
+  it is refused `403 {"error":"panel header required"}`, on every path including the unknown
+  ones. It is not a secret and the value is never read. What it does is make the request
+  NON-SIMPLE, so a browser must preflight it - and the preflight only lists the header for an
+  origin the allowlist already trusts or a non-web scheme, never for `null`.
+  `docs/STATE-CONTRACT.md` v0.31.0 §4.
+- **The panel crabd serves is confined to its own directory.** `GET /` serves `index.html`, and
+  only a path whose first segment is `styles`, `scripts`, `resources` or `mock` serves a file;
+  everything else under the panel root is `404`. One percent-decode, then a refusal of `..`
+  segments, backslashes, NULs, empty segments, dot-segments and surviving `%`; the resolved
+  candidate must sit under the resolved panel directory, which also refuses a symlink pointing
+  out of the tree. Static replies carry `X-Content-Type-Options: nosniff` and
+  `Cache-Control: no-store`, and the same origin gate as the API.
 - **Fixed vocabulary, never free text.** `POST /v1/action` accepts acknowledge, dismiss, pin,
   one of the configured continue prompts, and approve/deny. `reply` with arbitrary text answers
   `501` and will keep doing so until a supported injection mechanism exists.
@@ -33,11 +60,56 @@ The two things an attacker on this machine, or a web page you visit, could want 
   presence and lockout only). The widget holds it as an iCUE property, which no web page can
   read. Each pending request carries a `requestId` the tap must echo, checked under the same
   lock that applies the decision. A companion with no gate object answers `503`, never `204`.
-- **The optional long-lived limits token is DPAPI-protected.** `Install-SideCrab.ps1 -LimitsToken`
-  stores a `claude setup-token` value in `~/.sidecrab/limits-token.dpapi`, encrypted for the
-  current Windows user (no entropy); crabd decrypts it in memory per poll, sends it only to
-  Anthropic's usage endpoint over HTTPS, and never logs, serves or copies it. Revoke it from
-  your Anthropic account settings; delete the file to stop using it.
+  *(The iCUE-property sentence is the iCUE build's answer and only that. A panel served by
+  crabd in a browser has no iCUE properties; where it keeps the code, and why that guarantee
+  is weaker, is the next bullet. Everything else about the gate - the space, the compare, the
+  lockout, the `requestId`, the `503` - is the same on both.)*
+- **Where the browser panel keeps the pairing code (widget 0.30.0), and how that guarantee is
+  weaker.** The panel crabd serves stores the code in `localStorage` on the origin
+  `http://localhost:9999`, inside the one namespaced object it keeps its settings and display
+  state in. What that buys: only a page on the panel's own origin can read it, so no other page
+  the operator visits can - the same-origin policy is the mechanism, and it is the browser's,
+  not ours. A same-user local process can read it, but that was always true: the code is a file
+  at `~/.sidecrab/panel-token` that any such process can open, which is why it is a disclosed
+  residual below rather than a new one.
+
+  **This is weaker than the iCUE-property claim it replaces, and deliberately so.** An iCUE
+  property lives in a host process no web content can reach at all; `localStorage` is reachable
+  by any script that runs on that origin. So an XSS in the panel itself, or a browser extension
+  with storage access, could read the code - neither of which could touch the property form.
+  There is no version in which **the page itself holds the secret** that avoids this: a value
+  the page can send is a value the page can read.
+
+  **There is a version in which the page does not hold it, and it was not taken.** crabd could
+  mint an `HttpOnly` session cookie on the panel's own origin; the browser would attach it to
+  every `decide` and no script on the page - ours, an injected one, or an extension's - could
+  read it back. That is strictly stronger and it is the obvious next move. It is not this
+  change because it is a different feature: it needs a cookie the daemon issues and rotates, a
+  pairing flow that is a request rather than a value the operator types, and a `decide` wire
+  shape without a `token` member - and this port deliberately changed neither the pairing flow
+  nor the wire. Recorded as a residual below rather than done badly here.
+
+  What is unchanged is everything the code is one factor of. A `decide` still needs the code AND
+  a `requestId` that matches the request the panel is showing, checked under the lock that
+  applies the decision; ten rejects a minute lock the gate for a minute; the daemon is bound to
+  loopback and refuses every web origin but its own. Reading the code is not by itself a
+  decision, and the vectors that could read it are vectors that could already drive the panel.
+- **The optional long-lived limits token is protected by the platform's own store.** On
+  **Windows**, `Install-SideCrab.ps1 -LimitsToken` stores a `claude setup-token` value in
+  `~/.sidecrab/limits-token.dpapi`, encrypted for the current Windows user (no entropy). On
+  **macOS** (crabd 0.34.0), `setup/install.sh --limits-token` stores it as the login-Keychain
+  generic-password item `SideCrab limits token`, and the value travels in on `security -i`'s
+  **stdin**, hex-encoded - never in an argument list, because `ps` is world-readable there.
+  Either way crabd reads it fresh in memory per poll, sends it only to Anthropic's usage
+  endpoint over HTTPS, and never logs, serves or copies it. Neither command prints it back, and
+  `--status` reports presence only. Revoke it from your Anthropic account settings; delete the
+  file, or the Keychain item, to stop using it.
+- **Claude Code's own credential is read, never written or copied (crabd 0.34.0).** On macOS it
+  lives in the login Keychain as `Claude Code-credentials`, and crabd reads
+  `~/.claude/.credentials.json` first and that item second, through `/usr/bin/security`. A
+  Keychain that refuses the read is served as *unavailable* with a note naming the prompt to
+  approve - never as a guess, and never confused with "there are no credentials", because the
+  two have different fixes. `docs/STATE-CONTRACT.md` v0.34.0 §1, §2 and §4.
 - **Atomic config writes, bounded caches, never-500.** A failed config write cannot empty
   `config.json`; every ring and LRU is capped so a flood cannot grow memory; malformed input is
   answered with a 4xx and a sanitised body.
@@ -47,12 +119,51 @@ The two things an attacker on this machine, or a web page you visit, could want 
 - **A same-user local process can read the pairing code.** It can also read `~/.claude`, drive
   the terminal dialog and inject keystrokes, so it was never inside the threat model of a
   localhost service; the gate exists for the web-page vector, which it closes.
-- **`/v1/state` is readable by a forged `null` Origin** (the original SEC-4 read gate refuses
-  `http(s)` origins only). It discloses what your sessions are doing, not a way to act on them.
-- **queue-continue is always on and unauthenticated.** Bounded by the server-side whitelist: the
-  worst case is a canned "Continue" / "Run the tests" / "Commit + push" pushed into a live
-  session by a local process or a forged-origin page. Not remote code execution; still a nudge you
-  did not send.
+- **The browser panel holds the pairing code where its own page can read it** (widget 0.30.0).
+  `localStorage` on `http://localhost:9999`, so an XSS in the panel or an extension with
+  storage access could read it, where an iCUE property could not. An `HttpOnly` cookie minted
+  by crabd would avoid it and is the intended next move; it is a change to the pairing flow and
+  the `decide` wire shape, neither of which this port touched. See "Where the browser panel
+  keeps the pairing code" under **What is enforced** for the full argument and for what the
+  code is only one factor of.
+- **`/v1/state` is readable by a forged `null` Origin.** Still open, and still deliberate: a
+  QtWebEngine build that collapses its page to an opaque origin has no other value it could
+  send, so refusing `null` risks refusing the product on a build nobody has measured. (The one
+  build that HAS been measured reports `file://` - ORIGIN-b.) It discloses what your sessions
+  are doing, not a way to act on them.
+- ~~**A forged `null` Origin can WRITE - queue-continue, and any other POST.**~~ **CLOSED in
+  crabd 0.31.0 (2026-09-04)** by the panel header. A custom request header makes the POST
+  non-simple, so the browser must preflight it, and `do_OPTIONS` never lists
+  `X-SideCrab-Panel` for `Origin: null` - a forged-null page therefore comes back from its
+  preflight without permission to send the header its POST needs, while `null` READS stay
+  allowed. The iCUE build itself is unaffected because its origin was measured as `file://`,
+  not `null` (ORIGIN-b, `originsSeen` 2026-09-02), and a web page cannot forge that; a build
+  that reports `null` instead would keep its reads and lose its taps, which is the accepted
+  trade rather than an oversight. Pinned by `companion/tests/test_crabd_panel.py`:
+  `PanelPreflightTests.test_null_may_never_unlock_the_header`,
+  `PanelHeaderGateTests.test_a_post_without_the_header_is_refused_with_its_own_body` and
+  `.test_every_post_path_requires_it_including_the_unknown_ones`.
+- **queue-continue is still on and unauthenticated for a LOCAL process.** Bounded by the
+  server-side whitelist: the worst case is a canned "Continue" / "Run the tests" / "Commit +
+  push" pushed into a live session by something already running as you. Not remote code
+  execution; still a nudge you did not send. The browser half of this is now closed by the
+  header gate above.
+- ~~**A page whose own DNS re-resolves to 127.0.0.1 can read the feed.**~~ **CLOSED in crabd
+  0.31.0 (2026-09-04)** by the `Host` allowlist above. Nobody had written this one down, because
+  it costs nothing while the panel is a widget loaded from disk - and everything the moment
+  crabd serves a page on a real web origin, which is the same release. Pinned by
+  `companion/tests/test_crabd_panel.py` `HostAllowlistTests`:
+  `test_a_rebound_hostname_is_refused`, `test_a_loopback_name_on_the_wrong_port_is_refused`,
+  `test_the_host_gate_answers_before_the_origin_gate`.
+- **The panel lives on a real web origin, reachable by any browser on the machine.** That is the
+  new exposure and it is stated plainly: `http://localhost:9999` is a page anything can navigate
+  to. What that buys an attacker is bounded by the three gates. A page the operator opens cannot
+  READ the feed cross-origin (it is not on the origin allowlist), cannot WRITE (its preflight is
+  refused, so it never obtains the header), and cannot make itself same-origin by rebinding its
+  own name onto 127.0.0.1 (the `Host` gate). A same-user local process still can do all three -
+  it can also read `~/.claude`, drive the terminal dialog and inject keystrokes, so it was never
+  inside the threat model. Approvals additionally need the pairing code, a matching `requestId`, and
+  survive the lockout - unchanged.
 
 ## Closed
 
@@ -70,6 +181,8 @@ The full audit trail, including the findings that are now fixed (SEC-1 to SEC-5)
 
 Open a private report through GitHub's "Report a vulnerability" on
 <https://github.com/Dixie-sketch/Clawdeck/security>, or open an issue if the finding is not
-exploitable. Say what you observed, how to reproduce it, and which component and version
-(`widget/manifest.json` version, `crabd --version`). There is no bug bounty; there is a
+exploitable. Say what you observed, how to reproduce it, and which component and version: the
+widget's from `widget/manifest.json`, and crabd's from the `version` field of
+<http://127.0.0.1:9999/v1/health> or `VERSION` in `companion/crabd.py`. crabd takes no
+arguments, so there is no `--version` flag to run. There is no bug bounty; there is a
 maintainer who will read it.
