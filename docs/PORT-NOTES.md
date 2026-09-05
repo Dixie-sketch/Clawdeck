@@ -82,6 +82,16 @@ at baseline. Anything found later is added to the seam table below with its buck
   memUsedGB 68.2, memPct 53.3 and, on the second sample, cpuPct 15.1, agreeing with `vm_stat`
   and `sysctl` at the time; the fleet reader read `running` for a live agent, `stopped` for a
   loaded idle one and `absent` for an unregistered label, and asked nothing about glow.
+- **Suite isolation, re-proven after Phase 4 (2026-09-04).** A canary run of the companion,
+  setup and notifier suites left `~/.sidecrab`, `~/.claude/settings.json` and
+  `~/Library/LaunchAgents` byte-identical (mtimes and sizes compared before and after), and
+  the opt-in Keychain round trip left no item behind. One leak did happen earlier in the
+  day: while the Phase 1 transport tests were being written, a version of the module that
+  ran `main()` before its `setUpModule` repointed `PANEL_TOKEN_FILE` and the config path
+  wrote crabd's default `config.json` (`quietHours: null, allowReply: false`) into the real
+  `~/.sidecrab` at 16:01. The isolation was completed in the same commit and every module
+  now repoints all six path globals plus the Keychain kill switch; the file was left in
+  place for the installer to back up.
 - **launchctl output (Phase 3).** `launchctl print gui/<uid>/<label>` exits 0 for a loaded agent
   with tab-indented first-level lines (`state = running` plus `pid = N`, or `state = not running`);
   deeper sub-objects carry their own `state = active` lines, so only the first-level line counts.
