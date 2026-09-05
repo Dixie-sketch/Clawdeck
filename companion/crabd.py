@@ -3563,13 +3563,17 @@ def _darwin_sysctl(name: str) -> int | None:
 
 
 class DarwinPlatform:
-    """macOS: mach host statistics, launchd, and no long-lived token store.
+    """macOS: mach host statistics, launchd, and the login Keychain.
 
     The two host readers go through injectable seams (`load_info`, `vm_stats`, `sysctl`,
     `clk_tck`) rather than patched ctypes, for the same reason HostSampler takes
     callables: the arithmetic is the part with the traps in it, and it is unreachable if
     a test has to own a real kernel to get to it. Production passes nothing and the
     module-level `_darwin_*` helpers answer.
+
+    The Keychain is behind one more seam of the same kind (`security`), and for a sharper
+    reason: it is a SUBPROCESS holding two secrets, and a test that had to spawn the real
+    tool could neither run off macOS nor be trusted with the operator's own items.
     """
 
     name = "darwin"
@@ -4238,8 +4242,9 @@ class LimitsReader:
         # real reader must not be one forgotten patch away from writing the operator's
         # live last-good store (it happened - see LIMITS_CACHE_MIN_EPOCH).
         self._cache_file = Path(cache_file) if cache_file else None
-        # Both credential sources are the platform's: the CLI document is portable, the
-        # long-lived store is a DPAPI blob and exists on Windows only.
+        # Both credential sources are the platform's, and each has two shapes: the CLI
+        # document is a file everywhere and ALSO a login Keychain item on macOS, and the
+        # long-lived store is a DPAPI blob on Windows and a Keychain item on a Mac.
         self._platform = platform or PLATFORM
         self._lock = threading.Lock()
         self._cached: dict | None = None

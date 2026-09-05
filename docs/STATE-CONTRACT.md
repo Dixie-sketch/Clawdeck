@@ -19,7 +19,13 @@
 crabd `VERSION` → `0.34.0`. **No shape change.** No field is added, moved, renamed or
 removed on `/v1/state`, `/v1/action` or `/v1/config`; `schema` stays **5**. What changed is
 where two SECRETS are read from on macOS, and the wording of four `limits.note` strings.
-Windows is untouched: the same file, the same DPAPI, the same notes.
+
+**What Windows sees.** Nothing on the wire, and nothing it reads: the same file, the same
+DPAPI, the same notes, byte for byte. It does gain one ability it did not have — crabd on
+Windows can now WRITE `~/.sidecrab/limits-token.dpapi` itself, through
+`PLATFORM.store_limits_token` (CryptProtectData, atomic, mode 0600), where before only the
+PowerShell installer wrote it and crabd only read. Nothing calls that on Windows yet;
+`Install-SideCrab.ps1 -LimitsToken` is unchanged.
 
 ### 1. The two Keychain items
 
@@ -103,8 +109,15 @@ And one new note, macOS only, for a case that has no equivalent on Windows:
 > *"Claude credential is in the Keychain and crabd could not read it - approve the Keychain
 > prompt (Always Allow) or run claude in a terminal"* — `available: false`.
 
-It is DISTINCT from *"no Claude credentials on this machine - run /login"* on purpose. The
-item exists and this process was not allowed to see it: a LaunchAgent meets a Keychain
+It is raised **only when the tool ran and exited non-zero and non-44.** A `security` that
+never ran at all — no such binary, a refused spawn, a timeout, no login account to name the
+item with — is *not* this: crabd learned nothing about whether credentials exist, so it
+serves the ordinary *"no Claude credentials"* note and logs the failure's TYPE (there is no
+exit code to name). Telling an operator to approve a prompt that is never going to appear
+is worse than telling them nothing.
+
+The refusal itself is DISTINCT from *"no Claude credentials on this machine - run /login"*
+on purpose. The item exists and this process was not allowed to see it: a LaunchAgent meets a Keychain
 dialog the first time it reads (one "Always Allow" ends it), and in a session with no UI
 the read fails outright ("User interaction is not allowed"). The two failures have
 different actions attached, and an operator told to log in for a Keychain crabd could not
