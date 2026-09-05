@@ -75,12 +75,12 @@ the hook's decision. Unlike the curl hooks these are two-way: crabd answers.
   "Stop hook error occurred" and labels the nudge an error to the model; it is retained in crabd
   as an executable fallback only. This
   replaces the former `Stop` curl entry — crabd records the done-transition on this endpoint
-  now (docs\STATE-CONTRACT.md, v0.12.0 item 3). `timeout` 5 s bounds crabd's 2 s answer.
+  now (docs/STATE-CONTRACT.md, v0.12.0 item 3). `timeout` 5 s bounds crabd's 2 s answer.
 - **PermissionRequest → `/v1/hook/permission`.** crabd long-polls (up to 55 s) for an
   Approve/Deny tap from the widget, then returns
   `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"|"deny"}}}`.
   On no-tap / timeout / `panelApprovals` disabled it returns **no `hookSpecificOutput`** (`{}`), so
-  the terminal dialog appears exactly as today — it NEVER auto-allows (docs\STATE-CONTRACT.md,
+  the terminal dialog appears exactly as today — it NEVER auto-allows (docs/STATE-CONTRACT.md,
   v0.12.0 item 4). `timeout` 60 s sits just past crabd's 55 s poll.
 
 **Fail-open by design.** An HTTP hook whose endpoint is refused, errors, or times out
