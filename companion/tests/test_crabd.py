@@ -1379,7 +1379,7 @@ class LimitsTokenFallbackTests(unittest.TestCase):
             "accessToken": token, "expiresAt": int(time.time() * 1000) + expires_in_ms,
             "subscriptionType": "max", "rateLimitTier": "t"}}), encoding="utf-8")
 
-    def store_token(self, token="sk-ant-oat01-long"):
+    def store_token(self, token="sk-ant-oat01-longlonglong"):
         self.token_file.write_bytes(token.encode()[::-1])
 
     def test_a_fresh_cli_token_wins_even_when_a_long_lived_one_is_stored(self):
@@ -1394,8 +1394,8 @@ class LimitsTokenFallbackTests(unittest.TestCase):
         out = self.reader.get(time.time(), force=True)
         self.assertTrue(out["available"])
         self.assertEqual(out["tokenSource"], "sidecrab")
-        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-long"])
-        self.assertNotIn("sk-ant-oat01-long", json.dumps(out))
+        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-longlonglong"])
+        self.assertNotIn("sk-ant-oat01-longlonglong", json.dumps(out))
 
     def test_a_missing_cli_file_still_uses_the_long_lived_token(self):
         self.store_token()

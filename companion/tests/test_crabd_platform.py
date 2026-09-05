@@ -134,10 +134,10 @@ class PlatformSurfaceTests(unittest.TestCase):
 
         Today the split is: `cpu_times`, `memory`, `cli_credentials`,
         `read_limits_token`, `store_limits_token` and `limits_token_hint` are plain
-        instance methods on all three, everything else is static. Only DarwinPlatform needs the instance (the
-        32-bit mach counters are unwrapped against state it keeps, and the Keychain
-        runner and the item's service name are seams on it); the other two carry no state
-        and are instance methods anyway, so that this test keeps passing."""
+        instance methods on all three, everything else is static. Only DarwinPlatform
+        needs the instance (the 32-bit mach counters are unwrapped against state it keeps,
+        and the Keychain runner and the item's service name are seams on it); the other
+        two carry no state and are instance methods anyway, so this test keeps passing."""
         for name in sorted(self.SURFACE):
             with self.subTest(method=name):
                 kinds = {cls.__name__: type(inspect.getattr_static(cls, name)).__name__
@@ -437,7 +437,7 @@ class LimitsTokenPlatformTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "limits-token.dpapi"
-        self.path.write_bytes(b"  gnol-10tao-tna-ks  ")   # reversed, with padding
+        self.path.write_bytes(b"  gnolgnolgnol-10tao-tna-ks  ")   # reversed, with padding
         original = crabd._dpapi_unprotect
         self.addCleanup(lambda: setattr(crabd, "_dpapi_unprotect", original))
 
@@ -457,7 +457,7 @@ class LimitsTokenPlatformTests(unittest.TestCase):
         crabd._dpapi_unprotect = lambda blob: blob[::-1]
         self.assertEqual(
             crabd.read_limits_token(self.path, platform=crabd.WindowsPlatform()),
-            "sk-ant-oat01-long")
+            "sk-ant-oat01-longlonglong")
 
 
 class LimitsReaderPlatformTests(unittest.TestCase):
@@ -506,7 +506,7 @@ class LimitsReaderPlatformTests(unittest.TestCase):
         self.creds.write_text(_json.dumps({"claudeAiOauth": {
             "accessToken": "cli-token", "expiresAt": 1,
             "subscriptionType": "max", "rateLimitTier": "t"}}), encoding="utf-8")
-        self.token_file.write_bytes(b"sk-ant-oat01-long"[::-1])
+        self.token_file.write_bytes(b"sk-ant-oat01-longlonglong"[::-1])
 
     def reader(self, platform):
         return crabd.LimitsReader(cache_file=self.cache, platform=platform)
@@ -515,8 +515,8 @@ class LimitsReaderPlatformTests(unittest.TestCase):
         out = self.reader(crabd.WindowsPlatform()).get(1_800_000_000.0, force=True)
         self.assertTrue(out["available"])
         self.assertEqual(out["tokenSource"], "sidecrab")
-        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-long"])
-        self.assertNotIn("sk-ant-oat01-long", crabd.dump_state(out).decode())
+        self.assertEqual(self.seen, ["Bearer sk-ant-oat01-longlonglong"])
+        self.assertNotIn("sk-ant-oat01-longlonglong", crabd.dump_state(out).decode())
 
     def test_a_platform_with_no_store_says_expired_instead_of_using_the_bytes(self):
         out = self.reader(crabd.NullPlatform()).get(1_800_000_000.0, force=True)

@@ -291,7 +291,9 @@ class LimitsTokenStoreTests(KeychainCase):
         for argv, stdin, _timeout in fake.calls:
             for word in argv:
                 self.assertNotIn(GOOD_TOKEN, word)
-                for start in range(0, len(GOOD_TOKEN) - 12):
+                # -11, so the LAST full window is covered too: windows start at
+                # 0..len-12 inclusive.
+                for start in range(0, len(GOOD_TOKEN) - 11):
                     self.assertNotIn(GOOD_TOKEN[start:start + 12], word)
         self.assertEqual(fake.calls[0][0], ["-i"])
         self.assertIn(GOOD_TOKEN.encode("utf-8").hex(), fake.calls[0][1])
@@ -452,6 +454,34 @@ class LimitsTokenReadFailureTests(KeychainCase):
         self.assertIn("exit 1", noise)
         self.assertNotIn(GOOD_TOKEN, noise)
         self.assertNotIn("User interaction", noise)     # the tool's output, not ours
+
+    def test_a_stored_value_that_is_not_a_token_never_becomes_a_header(self):
+        """The far end of the store's own rule, and it is not the same question.
+
+        Whatever is in that item was put there by something ELSE - the installer, a
+        `security` command typed by hand, an older crabd, a person with a keychain
+        editor - and what crabd does with it is paste it into an `Authorization` header.
+        A value with a newline in it is header injection at that point, and one with a
+        space is simply not a token. Same check as the store, same answer: it is not a
+        token, so there is no token.
+        """
+        for bad in ("has space", "short", GOOD_TOKEN + "\nX-Evil: 1",
+                    GOOD_TOKEN + '"quoted'):
+            with self.subTest(stored=repr(bad)[:40]):
+                crabd._LOG_ONCE_SEEN.discard(crabd.LIMITS_TOKEN_LOG_KEY)
+                fake = self.with_item(crabd.KEYCHAIN_LIMITS_SERVICE, bad)
+                out, noise = self.capture(
+                    lambda: crabd.read_limits_token(None,
+                                                    platform=self.platform(fake)))
+                self.assertIsNone(out)
+                # Said once, and the value is not in it - the line names the rule.
+                self.assertEqual(noise.count("not a shape crabd will send"), 1, noise)
+                self.assertNotIn(bad, noise)
+
+    def test_a_usable_stored_token_still_comes_back(self):
+        fake = self.with_item(crabd.KEYCHAIN_LIMITS_SERVICE, GOOD_TOKEN)
+        self.assertEqual(crabd.read_limits_token(None, platform=self.platform(fake)),
+                         GOOD_TOKEN)
 
     def test_a_timeout_is_the_same_refusal(self):
         """`security` can block on a locked Keychain. The limits poll is on the builder's

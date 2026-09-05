@@ -192,6 +192,13 @@ KEYCHAIN_TIMEOUT_SEC = 5.0
 # MEASURED 2026-09-04: `security find-generic-password` exits 44 for an item that is not
 # there ("The specified item could not be found in the keychain"), on the argv form and
 # inside `security -i` alike. ABSENCE, not failure - it is answered silently.
+#
+# WHERE 44 COMES FROM, because it is not an errno and the arithmetic explains its
+# neighbours: the tool exits with the OSStatus truncated to its low byte.
+# errSecItemNotFound is -25300, and -25300 & 0xFF == 44; errSecInteractionNotAllowed is
+# -25308, and -25308 & 0xFF == 36, which is the code the refused-read note is written
+# against. Two OSStatus values 256 apart would collide here; none of the ones these two
+# reads can produce do.
 KEYCHAIN_ITEM_NOT_FOUND = 44
 #: What crabd is willing to STORE as a long-lived token: the SHAPE of a `claude
 #: setup-token` value (`sk-ant-oat01-...`), never decoded, never logged. The same
@@ -827,6 +834,7 @@ GET_HANGUP_LOG_KEY = "get-hangup"
 PANEL_READ_LOG_KEY = "panel-read"
 PANEL_TOO_BIG_LOG_KEY = "panel-too-big"
 PANEL_DIR_LOG_KEY = "panel-dir"
+ORIGIN_RECORD_LOG_KEY = "origin-record"
 CLI_CREDENTIALS_LOG_KEY = "cli-credentials"
 LIMITS_TOKEN_LOG_KEY = "limits-token"
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
@@ -3946,8 +3954,6 @@ class DarwinPlatform:
                       f"crabd: the login Keychain would not take the limits token "
                       f"({type(exc).__name__}); nothing was stored; this is logged once")
             return False
-        finally:
-            del command
         if code != 0:
             _log_once(LIMITS_TOKEN_LOG_KEY,
                       f"crabd: the login Keychain would not take the limits token "
@@ -4195,11 +4201,27 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
 
 def read_limits_token(path: Path = None, platform=None) -> str | None:
     """The long-lived usage token, or None. Reading it is the platform's job - the store
-    is a DPAPI blob on Windows and does not exist elsewhere yet - but this stays a module
-    function because it is pre-existing public API. Its name, signature and `path=`
-    override predate the platform seam and are pinned for the macOS store (Stage 4);
-    adding a seam under a name is not a reason to change the name."""
-    return (platform or PLATFORM).read_limits_token(path or LIMITS_TOKEN_FILE)
+    is a DPAPI blob on Windows and a login Keychain item on macOS - but this stays a
+    module function because it is pre-existing public API. Its name, signature and
+    `path=` override predate the platform seam; adding a seam under a name is not a
+    reason to change the name.
+
+    THE SHAPE IS CHECKED ON THE WAY OUT, not only on the way in. Whatever the store holds
+    was put there by something ELSE - the installer, a `security` command typed by hand,
+    an older crabd - and the very next thing that happens to it is that it becomes an
+    `Authorization` header. A value with a newline in it is header injection at that
+    point, and one with a space is simply not a token. Same rule as the store, and the
+    value is still never named in the line that says so.
+    """
+    token = (platform or PLATFORM).read_limits_token(path or LIMITS_TOKEN_FILE)
+    if token is None:
+        return None
+    if not _usable_limits_token(token):
+        _log_once(LIMITS_TOKEN_LOG_KEY,
+                  "crabd: the stored limits token is not a shape crabd will send (see "
+                  "LIMITS_TOKEN_RE); ignoring it; this is logged once")
+        return None
+    return token
 
 
 class LimitsReader:
@@ -6350,7 +6372,8 @@ class OriginRecorder:
     def record(self, origin, user_agent, now: float) -> None:
         """origin is the raw header value (str) or None for an absent header; user_agent
         likewise. Total by construction: it is called on every GET and POST before the
-        origin gate, so it must never raise into the request path. The (origin, source)
+        HOST and ORIGIN gates - a rebound page's origin is the reading this exists for -
+        so it must never raise into the request path. The (origin, source)
         pair is the key - source classifies the caller (browser/local/none) so the widget
         is separable from other no-Origin local processes."""
         origin_key = origin if isinstance(origin, str) else ORIGIN_ABSENT
@@ -7232,8 +7255,14 @@ class Handler(BaseHTTPRequestHandler):
                 # never reaches the origin gate below. Absent header -> None -> "none".
                 user_agent = self.headers.get("User-Agent")
                 recorder.record(origin, user_agent, time.time())
-            except Exception:   # noqa: BLE001 - a diagnostic must never fail a request
-                pass
+            except Exception as exc:    # noqa: BLE001 - never fail a request for this
+                # Swallowed because a DIAGNOSTIC must not take a request down with it -
+                # but said once, because a recorder that quietly stopped recording would
+                # make /v1/health's originsSeen an empty answer rather than a broken one,
+                # and that is the shape of failure this daemon forbids.
+                _log_once(ORIGIN_RECORD_LOG_KEY,
+                          f"crabd: the origin recorder raised {type(exc).__name__}; "
+                          f"originsSeen may be incomplete; this is logged once")
 
     def do_GET(self):
         # SEC-4 (v0.16.0). The reads are gated exactly like the writes. /v1/state serves
