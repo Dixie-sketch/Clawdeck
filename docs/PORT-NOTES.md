@@ -111,6 +111,14 @@ at baseline. Anything found later is added to the seam table below with its buck
 - **Existing hooks in the operator's `~/.claude/settings.json`**: one unrelated
   `UserPromptSubmit` command hook, no `statusLine`, no `allowedHttpHookUrls`. The installer
   must preserve that hook.
+- **App Nap and timer coalescing under the LaunchAgent (Phase 8) - MEASURED 2026-09-04.**
+  The open question `docs/GETTING-STARTED-MACOS-NOTES.md` carried, answered with the sampling
+  command that file prescribed: two minutes of `GET /v1/state` against the live
+  `com.sidecrab.crabd` agent produced **55 distinct `generatedAt` snapshots, max gap 3.0 s,
+  mean 2.19 s, none over 4 s**. crabd rebuilds every 2 s, so that is the healthy figure and
+  not a throttled one. **Decision: the plists carry no `ProcessType` key.** The default
+  scheduling stands; nothing is added on the strength of a forum post. If a later reading on
+  battery with the lid shut disagrees, it lands here first, then in the plist.
 
 ## Seams (filled from the read-through; line numbers as of the baseline commit 5366719)
 
@@ -942,4 +950,200 @@ the port.
 
 ## Decisions the brief asked for
 
-_(recorded per phase as they are made)_
+One line per decision, with the phase that made it and the document that carries the
+reasoning. Where two places state the same thing, the first named is the one to change first.
+
+### Transport (Phase 1)
+
+- **The port is 9999 and the bind stays loopback.** `DEFAULT_PORT = 9999`, overridable by
+  `CRABD_PORT`; `HOST = "127.0.0.1"` is a module literal with no environment read and no
+  config key, and a source-text test refuses `0.0.0.0`. 2722 was fine for a widget configured
+  once at a console; a page a person opens needs a number a person types.
+  `docs/STATE-CONTRACT.md` v0.31.0 §1.
+- **The Origin gate became an allowlist, and the `null` row was preserved.** The three
+  spellings of crabd's own bound origin are accepted and reflected exactly; every other
+  `http(s)` origin, including the same host on another port and the same authority over
+  `https`, is still 403, and `ACAO: *` is still illegal everywhere. `null`, `file://` and
+  `qrc://` keep their existing answers - refusing `null` would refuse a QtWebEngine build that
+  has no other value to send. `docs/STATE-CONTRACT.md` v0.31.0 §3, `SECURITY.md`.
+- **Every POST carries `X-SideCrab-Panel`, hooks and OTLP included.** Any non-empty value; a
+  POST without it is 403 `{"error":"panel header required"}` on every path including unknown
+  ones, and the origin gate answers first so a cross-site page never learns the header exists.
+  Both hook fragments carry it - on the curl line for a `command` hook, in the `headers` map
+  for an `http` one - and an OTLP exporter has to be told
+  (`OTEL_EXPORTER_OTLP_HEADERS=X-SideCrab-Panel=1`), which nothing in this repo writes.
+  `docs/STATE-CONTRACT.md` v0.31.0 §4, `hooks/README.md`.
+- **A `Host` allowlist runs ahead of every other gate.** It is the DNS-rebinding gate and the
+  only one that can be: a page whose name re-resolves to 127.0.0.1 is same-origin as far as the
+  browser is concerned, so its `GET` carries no `Origin` at all. Accepted: absent, and
+  `localhost` / `127.0.0.1` / `[::1]` with no port or with the bound port. Refused: everything
+  else, which by construction also refuses a port forward or a reverse proxy, because that is
+  the same shape as the attack. `docs/STATE-CONTRACT.md` v0.31.0 §2, `SECURITY.md`.
+- **Static serving is scoped to four first segments and capped at 64 MB.** `GET /` and
+  `/index.html` serve the panel; only a path whose first segment is `styles`, `scripts`,
+  `resources` or `mock` serves a file, so `/manifest.json`, `/translation.json`, `/DEV.md` and
+  `/tests/...` are 404. One percent-decode, then a refusal of `..`, backslashes, NULs, empty
+  and dot segments and surviving `%`, then a containment check against the resolved
+  `CRABD_PANEL_DIR`. One reply reads at most `PANEL_MAX_BYTES` = 64 MB, checked by `stat` before
+  the read - a limit on a directory the operator can point anywhere, not on the shipped panel.
+  `docs/STATE-CONTRACT.md` v0.31.0 §5.
+- **`SO_REUSEADDR` is a per-platform answer, not a constant.** `False` on Windows, where it
+  admits a second listener on a port already being listened on; `True` on macOS and Linux,
+  where it only buys a restart inside TIME_WAIT. A collision stays loud on all three.
+  `docs/STATE-CONTRACT.md` v0.31.0 §1.
+- **A held port is a loud stop that names the platform's own command.** crabd makes one bind
+  attempt on the port it was told to use, quotes what the OS said verbatim, and exits 1;
+  the hint is `lsof -nP -iTCP:<port> -sTCP:LISTEN` on macOS and Linux and
+  `Get-NetTCPConnection` on Windows. The refused alternative - bind the next port - is recorded
+  so it is not re-tried: it produces crabd up on 10000 while every hook and the panel still
+  address 9999. `docs/STATE-CONTRACT.md` v0.31.0 §1.
+
+### Host metrics (Phase 2)
+
+- **`nice` counts as busy time.** It is user-priority-lowered work actually running, so it is
+  folded into `user`; left out, a machine doing background work at nice priority under-reports
+  (the worked example is 50.0% with it and 40.0% without). Idle is folded into kernel for the
+  same reason the Win32 sampler expects it - unfolded, the sampler's A-08 branch serves `null`
+  on every pass on a healthy Mac. `docs/STATE-CONTRACT.md` v0.32.0 §2.
+- **The 32-bit mach counters are unwrapped before the sampler sees them.** They are `natural_t`
+  and wrap 2^32 after about 31 days of uptime at the measured rate, which would be one backwards
+  jump per bucket per month and a null gauge each time. Last raw value plus a lap count, kept
+  per bucket. A genuine backwards movement is indistinguishable from a wrap and is treated as
+  one - the honest trade is a single over-large window rather than a dead gauge on every
+  long-uptime machine. `docs/STATE-CONTRACT.md` v0.32.0 §3.
+- **`memUsedGB` is Activity Monitor's "Memory Used", not `top`'s.** App memory (internal minus
+  purgeable) plus wired plus compressed: 66.0 GiB of 128.0 on the machine measured, where
+  `top`'s total-minus-free is 99.3 GiB from the same page counts. The contract's promise for
+  this row has always been that it matches the OS's own monitor, and the figure an operator can
+  check against an app they already have open is the useful one. `free_count` and
+  `inactive_count` therefore do not enter the formula. `docs/STATE-CONTRACT.md` v0.32.0 §4.
+
+### Fleet (Phase 3)
+
+- **`fleet.glow` is served `absent` on macOS, and nothing is spawned for it.** There is no
+  lighting component on a Mac, so glow has no launchd label at all; an empty label
+  short-circuits to the sentinel the platform reads as `absent`. `absent` is the literally true
+  word - the query did not fail, the component is not there - and the KEY stays so the
+  document's shape is identical on both platforms. The panel's rendering of `absent` is
+  unchanged, so no widget update is implied. `docs/STATE-CONTRACT.md` v0.33.0 §3.
+
+### Secrets (Phase 4)
+
+- **Two login-Keychain generic-password items, and the store goes in on stdin.**
+  `Claude Code-credentials` (written by Claude Code) and `SideCrab limits token` (written by
+  `setup/install.sh --limits-token`), both with the login user name as the account. `ps` is
+  world-readable on macOS, so the write travels on `security -i`'s stdin, hex-encoded by `-X`,
+  with `-U` so a second token replaces the first. The read needs no secret in either direction.
+  `docs/STATE-CONTRACT.md` v0.34.0 §1 and §3.
+- **The file wins over the Keychain, the module carries a kill switch, and `CRABD_CLAUDE_HOME`
+  suppresses the Keychain entirely.** `~/.claude/.credentials.json` is read first because the
+  documentation makes it the CLI's own fallback and because asking the Keychain for an answer
+  crabd already has would raise a dialog for nothing. `KEYCHAIN_CREDENTIALS_ENABLED` gates all
+  three accesses - not only the credential one its name comes from - and every companion test
+  module sets it `False` in `setUpModule` exactly as it repoints the path globals. A custom
+  config dir keys a different Keychain entry whose name crabd cannot compose, so with
+  `CRABD_CLAUDE_HOME` set the Keychain is not consulted at all. `docs/STATE-CONTRACT.md`
+  v0.34.0 §2.
+- **The three "store a long-lived one" notes name the platform's own command.**
+  `Install-SideCrab.ps1 -LimitsToken` on Windows (unchanged), `setup/install.sh --limits-token`
+  on macOS, `(no long-lived token store on this platform)` anywhere else. A fourth note, macOS
+  only, separates "the Keychain refused this process" from "there are no credentials" - the two
+  have different actions attached, and it is raised only when `security` actually ran and exited
+  non-zero and non-44. `docs/STATE-CONTRACT.md` v0.34.0 §4.
+
+### The browser panel (Phase 6)
+
+- **One namespaced `localStorage` object on the panel's own origin, and the pairing guarantee is
+  weaker.** Settings, display state and the pairing code live under the single key `sidecrab`
+  (`PANEL_STORE_KEY`) rather than scattered keys, keeping the read-modify-write discipline the
+  iCUE `uniqueId` object already had. Only a page on the panel's origin can read it, but an XSS
+  in the panel or an extension with storage access could, where an iCUE property could not. The
+  stronger option - an `HttpOnly` cookie crabd mints - was named and not taken, because it is a
+  different pairing flow and a different `decide` wire shape. `SECURITY.md`, `widget/DEV.md`
+  v0.30.0.
+- **The sensors row keeps only the half a browser can fill.** No page can read a die
+  temperature, so `sensorsPlugin()` returns null, the two temperature cells never render and
+  both iCUE hints go with them. What is left is crabd's `host` block; an absent or all-null
+  block takes the whole row off the glass rather than showing zeros. `widget/DEV.md` v0.30.0.
+- **Every dev flag stays gated on `?mock=`.** The old ground for that gate - the iCUE origin
+  carries no query string - died the moment crabd served the panel at an addressable URL, and
+  `&ackflash=1` performs a real ack-all POST. The gate is kept and now pinned by a test rather
+  than by the comment. `widget/DEV.md` v0.30.0, and the traps list above.
+- **The standalone case: the companion is required and there is no fallback server.** The page
+  is served by crabd, so a page with no crabd is a page that did not load; a fresh navigation
+  gets a browser connection error and not a SideCrab screen. An already-open tab survives -
+  the poll fails, the crab goes worried and the stale banner names the time of the last good
+  document. `widget/DEV.md` v0.30.0.
+- **`manifest.json` and the strict-XML check are kept and kept passing.** The iCUE build is
+  still packageable from this tree - it is the same files - so the uppercase DOCTYPE, the
+  absent bare `&`, the CDATA block and the CI parse all stay. That parse is the only check that
+  has ever caught a blank-panel ship. One string changed: `<title>` is the literal `SideCrab`,
+  because `tr()` is substituted by nothing at all in a browser. `widget/DEV.md` v0.30.0.
+- **Keyboard equivalents for the four gestures, and no more.** `a` ack-all, `p` pin,
+  Delete/Backspace dismiss, `r` refresh, `s` settings, Escape closes - each calling the same
+  function its gesture calls, each inert behind a modifier, an autorepeat, an open sheet or a
+  focused input. Arrow-key navigation of the card grid was named and skipped: Tab already
+  reaches every card, and arrows would be a second traversal with its own wrap and column rules
+  on a grid whose column count is a media query. `widget/DEV.md` v0.30.0.
+
+### Notifications (Phase 7)
+
+- **The route is `osascript` with a constant AppleScript, and the text rides in argv.** Three
+  `-e` strings that never change, then `--`, then body, title and subtitle as positional
+  arguments - the same boundary Windows gets from base64, obtained by not building a script out
+  of operator text at all. Control bytes are stripped from every argument because `subprocess`
+  raises on a NUL and that is not one of the failures `show()` converts to `False`.
+  `notifier/README.md`, "macOS".
+- **No buttons, and three standing differences.** `display notification` has no action
+  affordance, so acknowledgement happens on the panel; the approval notification carries no
+  Approve/Deny either, which is the same deliberate rule as on Windows and not a platform
+  limitation. The two recorded residuals of the route are that notifications **stack** rather
+  than replace (no replacement identifier exists) and that the identity is **Script Editor's**,
+  so the per-app notification switch is Script Editor's. `notifier/README.md`, "macOS".
+
+### The installer (Phase 5)
+
+- **Python is detected by probing, never by path.** `$SIDECRAB_PYTHON`, then `python3.14`,
+  `python3.13`, `python3` across `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`, each asked
+  its version: Apple's `/usr/bin/python3` is 3.9.6 and is refused by version. The absolute path
+  it settles on is written into the plists, because a LaunchAgent does not inherit a login
+  `PATH`. `hooks/README.md`, "Installing the macOS fragment".
+- **The hook merge is entry-level on one marker, after a backup.**
+  `<path>.sidecrab-bak-YYYYMMDD-HHMMSS` before the first write; the marker is
+  `127.0.0.1:9999/v1/hook`, which the two `http` URLs contain as a prefix so one marker finds
+  both `command` and `url` entries. A hook hand-merged into one of our matcher groups stays, a
+  second run is byte-identical and takes no second backup, and a `settings.json` that does not
+  parse aborts the whole install before anything is written. `hooks/README.md`.
+- **`allowedHttpHookUrls` is extended, never created.** Both host forms are added when the key
+  already exists, because patterns match the URL as written and `127.0.0.1` and `localhost` are
+  different strings. Creating the key would switch the allowlist on and block every other http
+  hook the operator has. Uninstall removes ours and removes the whole key rather than leaving it
+  empty, because an empty list admits nothing. `hooks/README.md`.
+- **One LaunchAgent per component, and a disabled agent stays disabled.** `com.sidecrab.crabd`
+  always and `com.sidecrab.toast` with `--with-toast`; plists at
+  `~/Library/LaunchAgents/<label>.plist`, logs at `~/.sidecrab/logs/<label>.log` under mode
+  0700 because the log carries session titles and repo paths; loading is `launchctl bootout`
+  then `launchctl bootstrap gui/<uid>`. A label the operator disabled has its plist refreshed
+  and is not started, and `--force-enable` is the only override - the same trap Windows'
+  `Register-ScheduledTask -Force` has, which once resurrected the parked glow component.
+- **A restart refuses to start blind.** A foreign holder of port 9999 is refused before install
+  or update writes anything, and the refusal names the PID: a foreign process holding the port
+  is a different problem from a slow shutdown, and starting anyway is what produced a dark
+  panel. Wait budgets are counted in polls, not wall clock, because the sleep is injectable.
+- **`--doctor` is not read-only and says so.** It posts a real SessionStart / Notification /
+  SessionEnd cycle for the session id `smoke-test` to prove the write path end to end, and
+  probes the header gate by POSTing without `X-SideCrab-Panel` and expecting the 403. The cycle
+  clears its own row from a `finally`, but crabd persists every hook event, so a run leaves
+  three rows in `~/.sidecrab/history.jsonl`. `--status` writes nothing at all.
+
+### Scope (Phase 8)
+
+- **Windows is retained, and its CI job with it.** The iCUE widget and the PowerShell installer
+  stay in the tree and stay packageable; the Pester suite runs only on Windows, so the Windows
+  job in `.github/workflows/ci.yml` is kept deliberately rather than left behind. The macOS
+  installer's Python suite runs only in the macOS job, because its shell-wrapper tests need
+  `/bin/sh`. Nothing Windows was deleted at any point in the port.
+
+## Definition of done
+
+_(filled by the coordinator after the live install)_
