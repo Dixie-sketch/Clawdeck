@@ -3192,10 +3192,22 @@ def _run_security(argv: list[str], stdin_text: str | None, timeout: float):
     list is a broadcast: the store command therefore goes in on STDIN, to `security -i`,
     and the reads (whose argv names only the item, and whose secret comes back on stdout)
     are the only ones that use an argument list at all.
+
+    BYTES IN, BYTES OUT, decoded here with `errors="replace"`. `text=True` decodes with
+    the locale's codec and RAISES UnicodeDecodeError on a byte that codec cannot read -
+    and UnicodeDecodeError is a ValueError, which is in neither of the except tuples that
+    guard the two callers. It would come out of cli_credentials, out of the limits fetch,
+    and out of build() on the refresh thread. Nothing crabd asks for should produce one
+    (JSON payload, ASCII item names), and "should" is exactly why this is not left to the
+    locale: a Keychain item somebody else wrote is not crabd's to make promises about.
     """
-    proc = subprocess.run([SECURITY_BIN, *argv], input=stdin_text, capture_output=True,
-                          text=True, timeout=timeout, check=False)
-    return (proc.returncode, proc.stdout, proc.stderr)
+    proc = subprocess.run(
+        [SECURITY_BIN, *argv],
+        input=None if stdin_text is None else stdin_text.encode("utf-8"),
+        capture_output=True, timeout=timeout, check=False)
+    return (proc.returncode,
+            proc.stdout.decode("utf-8", errors="replace"),
+            proc.stderr.decode("utf-8", errors="replace"))
 
 
 class WindowsPlatform:

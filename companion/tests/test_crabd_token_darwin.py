@@ -33,6 +33,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -315,6 +316,67 @@ class LimitsTokenStoreTests(KeychainCase):
             with self.subTest(token=repr(bad)[:40]):
                 self.assertIs(self.store(fake, bad), False)
         self.assertEqual(fake.calls, [])
+
+
+class SecurityDecodeTests(unittest.TestCase):
+    """A byte on either stream that is not text cannot raise out of the seam.
+
+    `text=True` decodes with the locale's codec and RAISES UnicodeDecodeError on a byte
+    that codec cannot read - and UnicodeDecodeError is a ValueError, which is in neither
+    of the two except tuples that guard this. It would come out of `cli_credentials`, out
+    of `LimitsReader._fetch`, and out of `build()` on the refresh thread.
+
+    Nothing crabd asks for should produce one: the credential payload is JSON and the item
+    names are ASCII. "Should" is the word that makes it worth a test - this decode is on
+    the daemon's own poll path, and a keychain item somebody else wrote is not crabd's
+    to promise about.
+    """
+
+    def run_with(self, stdout: bytes, stderr: bytes = b""):
+        class Proc:
+            returncode = 0
+
+        proc = Proc()
+        proc.stdout, proc.stderr = stdout, stderr
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["kwargs"] = kwargs
+            return proc
+
+        with mock.patch("crabd.subprocess.run", new=fake_run):
+            return crabd._run_security(["find-generic-password"], None, 5.0), seen
+
+    def test_an_undecodable_byte_comes_back_replaced_rather_than_raising(self):
+        (code, out, err), _seen = self.run_with(b"good\xff", b"bad\xfe")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("good"))
+        self.assertTrue(err.startswith("bad"))
+        self.assertIn("�", out)
+        self.assertIn("�", err)
+
+    def test_the_command_is_written_as_bytes_so_nothing_decodes_on_the_way_in(self):
+        """The other direction of the same rule: the stdin the store sends is encoded
+        here, once, rather than left to whatever the locale is."""
+        _out, seen = self.run_with(b"")
+        self.assertNotIn("text", seen["kwargs"])
+        self.assertIsNone(seen["kwargs"]["input"])
+
+    def test_a_command_on_stdin_arrives_as_utf8_bytes(self):
+        class Proc:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["kwargs"] = kwargs
+            return Proc()
+
+        with mock.patch("crabd.subprocess.run", new=fake_run):
+            crabd._run_security(["-i"], "add-generic-password -a x\n", 5.0)
+        self.assertEqual(seen["kwargs"]["input"], b"add-generic-password -a x\n")
 
 
 class KeychainNameSafetyTests(KeychainCase):
