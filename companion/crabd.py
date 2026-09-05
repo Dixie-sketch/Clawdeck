@@ -3975,6 +3975,17 @@ class DarwinPlatform:
         if not KEYCHAIN_CREDENTIALS_ENABLED or self._custom_claude_home:
             return None
         code, out, why = self._keychain_read(KEYCHAIN_CREDENTIALS_SERVICE)
+        if code is None:
+            # The tool never RAN - no binary, a refused spawn, a timeout, no login
+            # account to name the item with - so crabd learned nothing about whether
+            # there are credentials. NOT the refusal below: "approve the Keychain prompt"
+            # would be advice about a dialog nobody is being shown, and the operator
+            # would wait for something that is never going to appear. One line naming the
+            # failure TYPE, since there is no exit code to name.
+            _log_once(CLI_CREDENTIALS_LOG_KEY,
+                      f"crabd: {SECURITY_BIN} could not be run ({why}); serving no "
+                      f"Claude credentials; this is logged once")
+            return None
         if code == KEYCHAIN_ITEM_NOT_FOUND:
             return None                 # no file and no item: nothing is logged in here
         if code != 0:

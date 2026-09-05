@@ -512,9 +512,16 @@ class KeychainRefusedTests(KeychainCase):
         # that could one day carry a value.
         self.assertNotIn("SecKeychainSearchCopyNext", noise)
 
-    def test_a_seam_that_cannot_be_run_at_all_is_the_same_refusal(self):
-        """A missing binary, a refused spawn, a `security` that never returns. All of
-        them are "there may be credentials and crabd could not get at them"."""
+    def test_a_seam_that_cannot_be_run_at_all_is_not_this_refusal(self):
+        """A missing binary, a refused spawn, a `security` that never returns: the tool
+        never RAN, so crabd learned nothing about whether credentials exist.
+
+        That is not the refusal above and must not wear its words. "Approve the Keychain
+        prompt (Always Allow)" would be advice about a dialog nobody is being shown, and
+        an operator following it would wait for something that is never going to appear.
+        The honest answer is the one for a machine crabd cannot read credentials off at
+        all, plus one log line naming the failure TYPE - there is no exit code to name.
+        """
         for blows_up in (FileNotFoundError(2, "no security"),
                          PermissionError(13, "denied"),
                          subprocess.TimeoutExpired("security", 5)):
@@ -524,8 +531,25 @@ class KeychainRefusedTests(KeychainCase):
                 out, noise = self.capture(
                     lambda: reader.get(1_800_000_000.0, force=True))
                 self.assertFalse(out["available"])
-                self.assertIn("Keychain", out["note"])
-                self.assertEqual(noise.count("would not hand over"), 1, noise)
+                self.assertIn("no Claude credentials", out["note"])
+                self.assertNotIn("Always Allow", out["note"])
+                self.assertEqual(noise.count("could not be run"), 1, noise)
+                self.assertIn(type(blows_up).__name__, noise)
+
+    def test_no_login_account_to_name_is_the_same_unasked_question(self):
+        """`pwd.getpwuid(os.getuid())` is the account half of both items, and where it
+        cannot be resolved there is no item to ask about. The query was never made, so
+        this is "crabd could not read credentials", never "crabd was refused"."""
+        original = crabd._login_account
+        self.addCleanup(lambda: setattr(crabd, "_login_account", original))
+        crabd._login_account = lambda: None
+        fake = FakeSecurity()
+        out, noise = self.capture(
+            lambda: self.reader(fake).get(1_800_000_000.0, force=True))
+        self.assertFalse(out["available"])
+        self.assertIn("no Claude credentials", out["note"])
+        self.assertEqual(fake.calls, [])         # nothing was spawned to be refused
+        self.assertEqual(noise.count("could not be run"), 1, noise)
 
 
 class KeychainKillSwitchTests(KeychainCase):
