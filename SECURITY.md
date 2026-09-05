@@ -181,6 +181,8 @@ The full audit trail, including the findings that are now fixed (SEC-1 to SEC-5)
 
 Open a private report through GitHub's "Report a vulnerability" on
 <https://github.com/Dixie-sketch/Clawdeck/security>, or open an issue if the finding is not
-exploitable. Say what you observed, how to reproduce it, and which component and version
-(`widget/manifest.json` version, `crabd --version`). There is no bug bounty; there is a
+exploitable. Say what you observed, how to reproduce it, and which component and version: the
+widget's from `widget/manifest.json`, and crabd's from the `version` field of
+<http://127.0.0.1:9999/v1/health> or `VERSION` in `companion/crabd.py`. crabd takes no
+arguments, so there is no `--version` flag to run. There is no bug bounty; there is a
 maintainer who will read it.
