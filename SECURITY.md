@@ -60,11 +60,10 @@ The two things an attacker on this machine, or a web page you visit, could want 
   presence and lockout only). The widget holds it as an iCUE property, which no web page can
   read. Each pending request carries a `requestId` the tap must echo, checked under the same
   lock that applies the decision. A companion with no gate object answers `503`, never `204`.
-  *(The iCUE-property sentence is being superseded: a panel served by crabd in a browser has no
-  iCUE properties to hold the code in. How the browser panel obtains it is decided in a later
-  phase of the macOS port, and this paragraph will be rewritten with that section. Everything
-  else about the gate - the space, the compare, the lockout, the `requestId`, the `503` - is
-  unchanged.)*
+  *(The iCUE-property sentence is the iCUE build's answer and only that. A panel served by
+  crabd in a browser has no iCUE properties; where it keeps the code, and why that guarantee
+  is weaker, is the next bullet. Everything else about the gate - the space, the compare, the
+  lockout, the `requestId`, the `503` - is the same on both.)*
 - **Where the browser panel keeps the pairing code (widget 0.30.0), and how that guarantee is
   weaker.** The panel crabd serves stores the code in `localStorage` on the origin
   `http://localhost:9999`, inside the one namespaced object it keeps its settings and display
@@ -95,11 +94,22 @@ The two things an attacker on this machine, or a web page you visit, could want 
   applies the decision; ten rejects a minute lock the gate for a minute; the daemon is bound to
   loopback and refuses every web origin but its own. Reading the code is not by itself a
   decision, and the vectors that could read it are vectors that could already drive the panel.
-- **The optional long-lived limits token is DPAPI-protected.** `Install-SideCrab.ps1 -LimitsToken`
-  stores a `claude setup-token` value in `~/.sidecrab/limits-token.dpapi`, encrypted for the
-  current Windows user (no entropy); crabd decrypts it in memory per poll, sends it only to
-  Anthropic's usage endpoint over HTTPS, and never logs, serves or copies it. Revoke it from
-  your Anthropic account settings; delete the file to stop using it.
+- **The optional long-lived limits token is protected by the platform's own store.** On
+  **Windows**, `Install-SideCrab.ps1 -LimitsToken` stores a `claude setup-token` value in
+  `~/.sidecrab/limits-token.dpapi`, encrypted for the current Windows user (no entropy). On
+  **macOS** (crabd 0.34.0), `setup/install.sh --limits-token` stores it as the login-Keychain
+  generic-password item `SideCrab limits token`, and the value travels in on `security -i`'s
+  **stdin**, hex-encoded - never in an argument list, because `ps` is world-readable there.
+  Either way crabd reads it fresh in memory per poll, sends it only to Anthropic's usage
+  endpoint over HTTPS, and never logs, serves or copies it. Neither command prints it back, and
+  `--status` reports presence only. Revoke it from your Anthropic account settings; delete the
+  file, or the Keychain item, to stop using it.
+- **Claude Code's own credential is read, never written or copied (crabd 0.34.0).** On macOS it
+  lives in the login Keychain as `Claude Code-credentials`, and crabd reads
+  `~/.claude/.credentials.json` first and that item second, through `/usr/bin/security`. A
+  Keychain that refuses the read is served as *unavailable* with a note naming the prompt to
+  approve - never as a guess, and never confused with "there are no credentials", because the
+  two have different fixes. `docs/STATE-CONTRACT.md` v0.34.0 §1, §2 and §4.
 - **Atomic config writes, bounded caches, never-500.** A failed config write cannot empty
   `config.json`; every ring and LRU is capped so a flood cannot grow memory; malformed input is
   answered with a 4xx and a sanitised body.
