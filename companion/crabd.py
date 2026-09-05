@@ -45,7 +45,7 @@ diagnostic lines to it and a maintainer GETs them back, because iCUE renders the
 a surface no devtools can reach. It is in-memory only, it feeds nothing, and nothing in
 here ever reads a stored line back into a decision.
 
-stdlib only, Python 3.13, Windows host. ~/.claude is read strictly read-only.
+stdlib only, Python 3.13, macOS and Windows hosts. ~/.claude is read strictly read-only.
 """
 
 from __future__ import annotations

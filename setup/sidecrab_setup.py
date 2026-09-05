@@ -1095,7 +1095,7 @@ def plist_document(spec: AgentSpec, python: str, repo_root, logs_dir) -> dict:
     """The LaunchAgent property list, as a dict. Pure.
 
     No ProcessType key on purpose: whether App Nap or timer coalescing touches a
-    KeepAlive agent on this hardware is UNMEASURED (docs/GETTING-STARTED-MACOS-NOTES.md
+    KeepAlive agent on this hardware is MEASURED on 2026-09-04 (max gap 3.0 s over two minutes, so no ProcessType key is needed) (docs/PORT-NOTES.md (Measurements)
     carries the command to measure it), and a guessed value would read as a finding.
     """
     log = str(Path(logs_dir) / f"{spec.label}.log")

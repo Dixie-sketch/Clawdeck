@@ -36,7 +36,7 @@ class PlistDocument(TempHome):
         self.assertEqual(doc["StandardOutPath"], str(self.home / ".sidecrab/logs/com.sidecrab.crabd.log"))
         self.assertEqual(doc["StandardErrorPath"], doc["StandardOutPath"])
         self.assertEqual(doc["EnvironmentVariables"], {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
-        # No ProcessType: whether App Nap touches a KeepAlive agent is unmeasured, and a
+        # No ProcessType: whether App Nap touches a KeepAlive agent is measured (see docs/PORT-NOTES.md), and a
         # guessed value here would be a claim this repo has not earned.
         self.assertNotIn("ProcessType", doc)
 
