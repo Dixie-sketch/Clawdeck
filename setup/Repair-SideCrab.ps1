@@ -433,7 +433,9 @@ foreach ($c in $spec) {
     $t = Get-ScheduledTask -TaskName $c.TaskName -ErrorAction SilentlyContinue
     if (-not $t) { continue }
     foreach ($a in @($t.Actions)) {
-        foreach ($p in @(Get-SideCrabCommandPath -Command "$($a.Arguments)")) {
+        # Execute is quoted in so a native task (the panel host's exe) is checked too; the
+        # python interpreter's path is 'unrelated' to the ownership test and never flagged.
+        foreach ($p in @(Get-SideCrabCommandPath -Command ('"{0}" {1}' -f $a.Execute, $a.Arguments))) {
             $wiring += [pscustomobject]@{ Source = "task $($c.TaskName)"; Path = $p }
         }
     }

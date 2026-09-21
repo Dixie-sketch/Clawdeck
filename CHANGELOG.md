@@ -8,13 +8,25 @@ detail of every additive field and is the source of truth; this file is the shor
 
 | Component | Version | Notes |
 |---|---|---|
-| widget (`widget/manifest.json`) | 0.28.2 | card type +17% (title 24.5 px, meta 18.4 px at 2560x720), titles wrap to two lines; question pinned at three whole lines; at most two subagent rows; badges keep their chip size. Plus 0.28.1: | idle blink every 8–10 s (was 60–180 s). Plus 0.28.0: | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
-| crabd (`companion/crabd.py`) | 0.30.0 | **the gauges stop dying every morning**: an optional long-lived token (`claude setup-token`, stored DPAPI-protected by `Install-SideCrab.ps1 -LimitsToken`) is used whenever the CLI token has expired; `limits.tokenSource` says which answered. Plus 0.29.0: | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
+| widget (`widget/manifest.json`) | 0.29.0 | **two hosts, one codebase**: a page served by crabd at `/panel/` runs standalone, reading its settings from the host's injected `window.__sidecrabHost`, fetching same-origin, with the property-to-config sync off; inside iCUE nothing changes. Plus 0.28.2: | card type +17% (title 24.5 px, meta 18.4 px at 2560x720), titles wrap to two lines; question pinned at three whole lines; at most two subagent rows; badges keep their chip size. Plus 0.28.1: | idle blink every 8–10 s (was 60–180 s). Plus 0.28.0: | **the finish dance**: shades on and a four-beat shimmy when a session lands `working -> done` after a real turn (20 s+), once per 30 s, never beside a waiting session. Plus 0.27.1: | **0.27.0 rendered blank inside iCUE** (property/function name collision, a parse-time SyntaxError); fixed by renaming the reader. Otherwise 0.27.0: | **Approval Pairing Code** property; `decide` carries the code + `requestId`; unpaired taps are refused locally with a notice; 403/409/429 answers named on the panel |
+| crabd (`companion/crabd.py`) | 0.31.0 | **the panel route and two gates**: `GET /panel/` serves the widget tree from a fixed allowlist with `frame-ancestors 'none'`; a Host allowlist (`421`) closes DNS rebinding; the origin gate allows exactly crabd's own origin. `decide` still needs the pairing code. Plus 0.30.0: | **the gauges stop dying every morning**: an optional long-lived token (`claude setup-token`, stored DPAPI-protected by `Install-SideCrab.ps1 -LimitsToken`) is used whenever the CLI token has expired; `limits.tokenSource` says which answered. Plus 0.29.0: | **SEC-a + WID-a closed**: `decide` requires the pairing code (`~/.sidecrab/panel-token`, minted on first start) and the pending request's `requestId`; `approvals` block in `/v1/state`; `panelToken` diagnostics in `/v1/health` |
+| panel host (`panel-host/`) | 0.1.0 | **new**: a .NET 10 WebView2 window pinned full-screen to the Xeneon Edge (by device id, never by index), topmost, tool window, never activates; re-pins on display, power and session events; its own fallback page while crabd is down. Replaces the iCUE widget as the host on iCUE 5.51.40 and newer |
 | notifier (`notifier/sidecrab_toast.py`) | 0.20.0 | shared DayLedger with the digest; budget-crossed toast; companion-gone-quiet toast |
 | lighting (`lighting/sidecrab_glow.py`) | parked | ships disabled: the Corsair SDK crashes in every non-interactive console context tested |
 | schema (`/v1/state`) | 5 | marks the last breaking shape; additive fields are feature-detected by presence |
 
 ## Highlights by wave (newest first)
+
+- **0.31.0 crabd / 0.29.0 widget / panel host 0.1.0 (2026-09-21)** - iCUE 5.51.40 added a widget
+  URL-permission layer that refuses every widget request to `127.0.0.1` and cannot keep a
+  loopback grant across a restart, so the panel now has a second host: crabd serves the same
+  widget tree at `/panel/` and `SideCrab.Panel` (a small WebView2 window, scheduled task
+  `SideCrab-panel`, `Install-SideCrab.ps1 -Panel`) shows it on the Edge with no iCUE in the
+  loop. Two gates came with the route (Host allowlist, same-origin allowlist), the pairing code
+  is read from `~/.sidecrab/panel-token` by the host itself, and `Update-SideCrab.ps1` rebuilds
+  and restarts the host, which replaces the re-import-at-the-desk step. The iCUE widget still
+  ships for older iCUE builds. The 0.28.3 manifest with a `permissions` entry was a scratch
+  build that never shipped: the entry works after an import and dies on the next iCUE start.
 
 - **0.30.0 crabd (2026-09-04)** - "token expired" every morning, fixed. The CLI's token lives
   ~6 h and only a terminal `claude` refreshes the file, so `claude setup-token` +

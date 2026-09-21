@@ -20,3 +20,7 @@ node_modules/
 
 # Local state never belongs in the repo
 *.log
+
+# .NET build output (panel-host)
+bin/
+obj/

@@ -75,7 +75,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.30.0"
+VERSION = "0.31.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -767,6 +767,37 @@ CROSS_SITE_REFUSED = b'{"error":"cross-site request refused"}'
 # A session id long enough to be a memory-growth vector rather than an identifier. Real
 # ones are 36-char UUIDs; this is generous enough that no legitimate id is refused.
 SESSION_ID_MAX = 200
+
+# ---------------------------------------------------------------- v0.31.0 the panel host
+# crabd serves the panel itself at GET /panel/ (contract v0.31.0), so a standalone host
+# window (panel-host/, WebView2) or any local browser can run the same widget/ tree that
+# ships inside the .icuewidget. Two gates come with it, both answered before any route:
+#
+#   1. Host allowlist (HOST_NOT_ALLOWED, 421). A DNS-rebinding page resolves its own name
+#      to 127.0.0.1 and then reads or drives crabd with a Host of `attacker.example:2722`
+#      - an Origin check cannot stop it (the page IS same-origin to itself), the Host
+#      header can. Only the two names that mean this socket are accepted, with the BOUND
+#      port, so a test instance on another port never accepts 2722's names.
+#   2. Same-origin allowlist. The panel's fetches carry `Origin: http://127.0.0.1:2722`
+#      (a real http origin, which SEC-1/SEC-4 refuse). Exactly the two origins that name
+#      this socket are allowed on top of the absent/null/non-web set; every other http(s)
+#      origin stays refused. See Handler._refused_origin.
+#
+# The file allowlist IS the traversal defence: a request path is looked up in this map
+# and never joined onto the filesystem, so `..`, encoded dots and absolute paths have
+# nothing to escape with - an unknown key is a 404. mock/ and translation.json are
+# deliberately absent: the ?mock= dev switches are unreachable from the served origin.
+HOST_NOT_ALLOWED = b'{"error":"host not allowed"}'
+PANEL_NOT_AVAILABLE = b'{"error":"panel not available"}'
+PANEL_DIR = Path(os.environ.get("CRABD_PANEL_DIR")
+                 or (Path(__file__).resolve().parent.parent / "widget"))
+PANEL_FILES = {
+    "index.html": ("index.html", "text/html; charset=utf-8"),
+    "styles/sidecrab.css": ("styles/sidecrab.css", "text/css; charset=utf-8"),
+    "scripts/sidecrab.js": ("scripts/sidecrab.js", "text/javascript; charset=utf-8"),
+    "resources/icon.svg": ("resources/icon.svg", "image/svg+xml"),
+}
+PANEL_ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 
 
 # ---------------------------------------------------------------- v0.24.0 constants
@@ -5126,14 +5157,17 @@ class OriginRecorder:
         # recency is the eviction order, exactly like the cumulative-series/delta-day caps.
         self._seen: "OrderedDict[tuple, list]" = OrderedDict()
 
-    def record(self, origin, user_agent, now: float) -> None:
+    def record(self, origin, user_agent, now: float, source_hint=None) -> None:
         """origin is the raw header value (str) or None for an absent header; user_agent
         likewise. Total by construction: it is called on every GET and POST before the
         origin gate, so it must never raise into the request path. The (origin, source)
         pair is the key - source classifies the caller (browser/local/none) so the widget
-        is separable from other no-Origin local processes."""
+        is separable from other no-Origin local processes. `source_hint` (v0.31.0) is
+        "panel" for a request the served panel made - its same-origin GETs carry no Origin
+        and would otherwise fold into whichever browser UA polled last."""
         origin_key = origin if isinstance(origin, str) else ORIGIN_ABSENT
-        source = _classify_ua_source(user_agent)
+        source = source_hint if isinstance(source_hint, str) and source_hint else \
+            _classify_ua_source(user_agent)
         ua = (user_agent[:ORIGIN_UA_MAX]
               if isinstance(user_agent, str) and user_agent.strip() else None)
         key = (origin_key, source)
@@ -5929,6 +5963,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_OPTIONS(self):
+        if not self._host_allowed():
+            self._send(421, HOST_NOT_ALLOWED)
+            return
         # No preflight, on ANY path, is answered with ACAO:* any more (SEC-1 for the
         # mutating paths, SEC-4 for the reads): that header is what invites the
         # cross-origin read. A real web page's preflight gets no ACAO at all, so its
@@ -5944,15 +5981,92 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    @classmethod
-    def _preflight_acao(cls, origin) -> str | None:
+    def _preflight_acao(self, origin) -> str | None:
         """The Access-Control-Allow-Origin for a preflight, PATH-INDEPENDENT since
         v0.16.0: reads and writes are gated alike, so the answer depends only on the
         Origin. A real web page is refused with no ACAO; the widget's opaque origin is
         reflected so its application/json preflight still succeeds - never "*"."""
-        if cls._is_web_origin(origin):
+        if self._refused_origin(origin):
             return None
         return origin if origin else None
+
+    # ------------------------------------------------------- v0.31.0 the two new gates
+
+    def _bound_port(self) -> int:
+        """The port THIS server bound - read off the socket, never the PORT constant, so
+        a test instance on an ephemeral port accepts its own names and not 2722's."""
+        try:
+            return int(self.server.server_address[1])
+        except Exception:   # noqa: BLE001 - a handler without a server (a bare double)
+            return PORT
+
+    def _own_names(self) -> frozenset:
+        port = self._bound_port()
+        return frozenset(f"{name}:{port}" for name in PANEL_ALLOWED_HOSTNAMES)
+
+    def _host_allowed(self) -> bool:
+        """The DNS-rebinding gate. True only for a Host that names this socket: one of
+        PANEL_ALLOWED_HOSTNAMES with the BOUND port, compared lower-cased. An absent Host
+        is refused too - every real client of crabd (curl, the CLI's http hooks, urllib,
+        PowerShell, every browser) sends one, and a request without it is not one of them."""
+        host = self.headers.get("Host")
+        if not isinstance(host, str):
+            return False
+        return host.strip().lower() in self._own_names()
+
+    def _refused_origin(self, origin) -> bool:
+        """The origin gate as it stands from v0.31.0. A present http(s) Origin is refused
+        (SEC-1 + SEC-4) UNLESS it is exactly one of this server's own origins -
+        `http://127.0.0.1:<bound port>` or `http://localhost:<bound port>` - which is what
+        the crabd-served panel sends on its own POSTs. Nothing wider: a different port,
+        a https scheme, a subdomain trick (`127.0.0.1.evil.example`) or a trailing path
+        are not this server's origin and stay refused. A DNS-rebinding page never reaches
+        here with an allowed value because its Host was refused first. Absent, `null` and
+        non-web origins are allowed exactly as before."""
+        if not self._is_web_origin(origin):
+            return False
+        o = origin.strip().lower()
+        if not o.startswith("http://"):
+            return True
+        return o[len("http://"):] not in self._own_names()
+
+    def _do_panel(self, path: str) -> None:
+        """GET /panel/... - the widget tree, served from a fixed allowlist (v0.31.0).
+
+        `path` is the request path with the `/panel/` prefix already stripped and an
+        empty string meaning the index. The lookup is a dict membership test on the
+        decoded path; the filesystem path comes from the allowlist VALUE, never from the
+        request, so there is no join for `..` to climb. Every answer carries
+        `Content-Security-Policy: frame-ancestors 'none'`: the panel carries Approve and
+        Deny, and a page that could frame it could click-jack a tap.
+        """
+        if path in ("", "index.html"):
+            key = "index.html"
+        else:
+            key = path
+        entry = PANEL_FILES.get(key)
+        if entry is None:
+            self._send(404, b'{"error":"not found"}')
+            return
+        rel, ctype = entry
+        target = PANEL_DIR / rel
+        try:
+            body = target.read_bytes()
+        except OSError:
+            # The tree is missing (a companion-only checkout) or unreadable. 404 with a
+            # named reason, never a 500: the panel host renders its own "not served" page
+            # off this status.
+            self._send(404, PANEL_NOT_AVAILABLE)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _record_origin(self, origin) -> None:
         """Feed the diagnostic origin recorder (ORIGIN-REC), before the origin gate so
@@ -5966,9 +6080,27 @@ class Handler(BaseHTTPRequestHandler):
                 # callers are separable. ATTACKER-CONTROLLED and DIAGNOSTIC ONLY - it
                 # never reaches the origin gate below. Absent header -> None -> "none".
                 user_agent = self.headers.get("User-Agent")
-                recorder.record(origin, user_agent, time.time())
+                recorder.record(origin, user_agent, time.time(),
+                                source_hint=self._panel_source_hint(origin))
             except Exception:   # noqa: BLE001 - a diagnostic must never fail a request
                 pass
+
+    def _panel_source_hint(self, origin):
+        """"panel" when the request came from the crabd-served panel page (v0.31.0): its
+        POSTs carry this server's own Origin, and its same-origin GETs carry no Origin
+        but a Referer under /panel/. DIAGNOSTIC ONLY, like everything the recorder holds -
+        the Referer is attacker-controlled and never reaches a gate."""
+        names = self._own_names()
+        if isinstance(origin, str) and origin.strip().lower()[len("http://"):] in names \
+                and origin.strip().lower().startswith("http://"):
+            return "panel"
+        referer = self.headers.get("Referer")
+        if isinstance(referer, str):
+            ref = referer.strip().lower()
+            for name in names:
+                if ref.startswith(f"http://{name}/panel"):
+                    return "panel"
+        return None
 
     def do_GET(self):
         # SEC-4 (v0.16.0). The reads are gated exactly like the writes. /v1/state serves
@@ -5978,9 +6110,15 @@ class Handler(BaseHTTPRequestHandler):
         # a present http(s) Origin is a real visited page and is refused; absent, "null"
         # and non-web origins (the QtWebEngine widget, curl, local tools) are allowed and
         # get their own origin reflected back.
+        # v0.31.0: the Host gate runs FIRST, before the recorder - a rebinding page's
+        # request is not evidence of anything the recorder exists to measure.
+        if not self._host_allowed():
+            self._acao = None
+            self._send(421, HOST_NOT_ALLOWED)
+            return
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._refused_origin(origin):
             self._acao = None
             self._send(403, CROSS_SITE_REFUSED)
             return
@@ -5988,7 +6126,19 @@ class Handler(BaseHTTPRequestHandler):
         split = urllib.parse.urlsplit(self.path)
         path = split.path.rstrip("/") or "/"
         try:
-            if path == "/v1/health":
+            if path == "/panel" or split.path.startswith("/panel/"):
+                # The bare /panel must redirect: the page's relative links (styles/,
+                # scripts/) resolve against the directory, so served without the slash
+                # they would resolve against /. Decoded once, so `%2e%2e` is `..` and
+                # misses the allowlist like any other unknown key.
+                if split.path == "/panel":
+                    self.send_response(301)
+                    self.send_header("Location", "/panel/")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self._do_panel(urllib.parse.unquote(split.path[len("/panel/"):]))
+            elif path == "/v1/health":
                 self._send(200, dump_state(self._health()))
             elif path == "/v1/state":
                 self._do_state()
@@ -6287,9 +6437,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if not self._host_allowed():
+            # Same drain-then-refuse shape as the origin branch below, same reason.
+            self._acao = None
+            self._read_body()
+            self._send(421, HOST_NOT_ALLOWED)
+            return
         origin = self.headers.get("Origin")
         self._record_origin(origin)
-        if self._is_web_origin(origin):
+        if self._refused_origin(origin):
             # Drain the body first so keep-alive framing survives, then refuse. Drained
             # on EVERY path, not just the mutating ones: a refused POST to an unknown
             # path still arrived with a body, and leaving it in the stream desynchronises

@@ -98,12 +98,13 @@ Describe 'SideCrab setup' {
             ($bad -join ' | ') | Should -Be ''
         }
 
-        It 'the ten setup scripts all exist' {
+        It 'the eleven setup scripts all exist' {
             foreach ($n in 'SideCrab.Common.ps1', 'Install-SideCrab.ps1',
                            'Uninstall-SideCrab.ps1', 'Update-SideCrab.ps1',
                            'Register-SideCrabAumid.ps1', 'Register-SideCrabProtocol.ps1',
                            'Test-SideCrab.ps1', 'Verify-PanelApproval.ps1',
-                           'Restore-SideCrab.ps1', 'Repair-SideCrab.ps1') {
+                           'Restore-SideCrab.ps1', 'Repair-SideCrab.ps1',
+                           'Build-SideCrabPanel.ps1') {
                 (Test-Path -LiteralPath (Join-Path $script:SetupDir $n)) | Should -BeTrue
             }
         }
@@ -111,26 +112,29 @@ Describe 'SideCrab setup' {
 
     Context 'component catalogue' {
 
-        It 'names the three components' {
-            (($script:Spec | ForEach-Object { $_.Key }) -join ',') | Should -Be 'crabd,glow,toast'
+        It 'names the four components' {
+            (($script:Spec | ForEach-Object { $_.Key }) -join ',') | Should -Be 'crabd,glow,toast,panel'
         }
 
         It 'maps each component to its SideCrab-* task name' {
             (script:One $script:Spec 'crabd').TaskName | Should -Be 'SideCrab-crabd'
             (script:One $script:Spec 'glow').TaskName  | Should -Be 'SideCrab-glow'
             (script:One $script:Spec 'toast').TaskName | Should -Be 'SideCrab-toast'
+            (script:One $script:Spec 'panel').TaskName | Should -Be 'SideCrab-panel'
         }
 
         It 'roots every script path under the supplied repo root' {
             (script:One $script:Spec 'crabd').Script | Should -Be 'C:\Fake\sidecrab\companion\crabd.py'
             (script:One $script:Spec 'glow').Script  | Should -Be 'C:\Fake\sidecrab\lighting\glow_launcher.pyw'
             (script:One $script:Spec 'toast').Script | Should -Be 'C:\Fake\sidecrab\notifier\sidecrab_toast.py'
+            (script:One $script:Spec 'panel').Script | Should -Be 'C:\Fake\sidecrab\panel-host\dist\SideCrab.Panel.exe'
         }
 
         It 'marks crabd required and the others optional' {
             (script:One $script:Spec 'crabd').Required | Should -BeTrue
             (script:One $script:Spec 'glow').Required  | Should -BeFalse
             (script:One $script:Spec 'toast').Required | Should -BeFalse
+            (script:One $script:Spec 'panel').Required | Should -BeFalse
         }
     }
 
@@ -228,7 +232,7 @@ Describe 'SideCrab setup' {
 
         It 'returns every known task name with -All' {
             $names = Get-SideCrabTaskName -Component $script:Spec -All
-            ($names -join ',') | Should -Be 'SideCrab-crabd,SideCrab-glow,SideCrab-toast'
+            ($names -join ',') | Should -Be 'SideCrab-crabd,SideCrab-glow,SideCrab-toast,SideCrab-panel'
         }
 
         It 'returns crabd alone for a bare install' {
@@ -243,7 +247,7 @@ Describe 'SideCrab setup' {
         It 'emits names unrolled, not nested one array deep' {
             # The trap this pins: a `, @(...)` return makes @(f).Count 1 forever.
             $names = @(Get-SideCrabTaskName -Component $script:Spec -All)
-            $names.Count      | Should -Be 3
+            $names.Count      | Should -Be 4
             $names[0]         | Should -Be 'SideCrab-crabd'
             ($names[0] -is [string]) | Should -BeTrue
         }
@@ -333,10 +337,11 @@ Describe 'SideCrab setup' {
             }
         }
 
-        It 'Install exposes -WithGlow, -WithToast and -Status' {
+        It 'Install exposes -WithGlow, -WithToast, -Panel and -Status' {
             $p = script:Get-ParamName $script:InstallAst
             $p | Should -Contain 'WithGlow'
             $p | Should -Contain 'WithToast'
+            $p | Should -Contain 'Panel'
             $p | Should -Contain 'Status'
         }
 
@@ -1652,6 +1657,106 @@ Describe 'SideCrab setup' {
         }
     }
 
+    Context 'panel host (crabd 0.31.0)' {
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @(
+                'Get-SideCrabComponentSpec', 'Select-SideCrabComponent',
+                'Get-SideCrabUninstallScope', 'Get-SideCrabResidueSpec', 'Get-SideCrabBackupPattern'
+            )
+            $script:PanelSpec   = @(Get-SideCrabComponentSpec -RepoRoot 'C:\Fake\sidecrab')
+            $script:CommonAst   = (script:Get-ScriptAst -Path $script:Common).Ast
+            $script:InstallText = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw -Encoding utf8
+            $script:UpdateText  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Update-SideCrab.ps1') -Raw -Encoding utf8
+            $script:SmokeText2  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrab.ps1') -Raw -Encoding utf8
+            $script:BuildPath   = Join-Path $script:SetupDir 'Build-SideCrabPanel.ps1'
+            function script:PanelRow { param([string] $Key) $script:PanelSpec | Where-Object { $_.Key -eq $Key } | Select-Object -First 1 }
+        }
+
+        It 'the catalogue names the panel as an optional, native, portless component' {
+            $p = script:PanelRow 'panel'
+            $p | Should -Not -BeNullOrEmpty
+            $p.TaskName | Should -Be 'SideCrab-panel'
+            $p.Required | Should -BeFalse
+            $p.Switch   | Should -Be '-Panel'
+            $p.Port     | Should -Be 0
+            $p.Launch   | Should -Be 'exe'
+            $p.Script   | Should -Be 'C:\Fake\sidecrab\panel-host\dist\SideCrab.Panel.exe'
+            $p.PyImport | Should -BeNullOrEmpty
+        }
+
+        It 'every python component says so, so the installer cannot run an exe through python' {
+            foreach ($k in 'crabd', 'glow', 'toast') { (script:PanelRow $k).Launch | Should -Be 'python' }
+        }
+
+        It 'a plan row carries Launch through, so the installer reads it off the plan' {
+            $plan = @(Select-SideCrabComponent -Spec $script:PanelSpec -Present @{ crabd = $true; panel = $true })
+            $row  = $plan | Where-Object { $_.Key -eq 'panel' }
+            $row.Launch   | Should -Be 'exe'
+            $row.Selected | Should -BeTrue
+            $row.Reason   | Should -Be 'auto-detected'
+        }
+
+        It '-Panel with no built exe is a problem naming the switch, not a silent skip' {
+            $plan = @(Select-SideCrabComponent -Spec $script:PanelSpec -Present @{ crabd = $true } -Requested @{ panel = $true })
+            ($plan | Where-Object { $_.Key -eq 'panel' }).Problem | Should -Match '-Panel'
+        }
+
+        It 'Register-SideCrabTask accepts a native Execute beside the python pair' {
+            $def = $script:CommonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+                   Where-Object { $_.Name -eq 'Register-SideCrabTask' } | Select-Object -First 1
+            $names = @($def.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+            $names | Should -Contain 'Execute'
+            $names | Should -Contain 'PythonExe'
+            $names | Should -Contain 'ScriptPath'
+        }
+
+        It 'the installer exposes -Panel, builds the exe when it is missing, and registers exe components natively' {
+            $ast = (script:Get-ScriptAst -Path (Join-Path $script:SetupDir 'Install-SideCrab.ps1')).Ast
+            @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) | Should -Contain 'Panel'
+            ($script:InstallText -match 'Build-SideCrabPanel\.ps1') | Should -BeTrue
+            ($script:InstallText -match "Launch -eq 'exe'")         | Should -BeTrue
+            ($script:InstallText -match '-Execute \$c\.Script')     | Should -BeTrue
+        }
+
+        It 'the updater rebuilds the panel host before restarting its task' {
+            ($script:UpdateText -match 'Build-SideCrabPanel\.ps1') | Should -BeTrue
+            ($script:UpdateText -match 'SideCrab\.Panel')          | Should -BeTrue
+        }
+
+        It 'the build script exists, publishes, and refuses a dotnet older than 10' {
+            (Test-Path -LiteralPath $script:BuildPath) | Should -BeTrue
+            $text = Get-Content -LiteralPath $script:BuildPath -Raw -Encoding utf8
+            ($text -match 'dotnet publish') | Should -BeTrue
+            ($text -match '-lt 10')         | Should -BeTrue
+        }
+
+        It '-TaskName SideCrab-panel removes the panel task and nothing else' {
+            $s = Get-SideCrabUninstallScope -Spec $script:PanelSpec -TaskName 'SideCrab-panel'
+            $s.Narrowed     | Should -BeTrue
+            $s.UnknownTask  | Should -BeFalse
+            $s.ComponentKey | Should -Be 'panel'
+            $s.Tasks        | Should -BeTrue
+            foreach ($f in 'Aumid', 'Protocol', 'Hooks', 'StatusLine', 'Approvals') { $s.$f | Should -BeFalse }
+        }
+
+        It 'the residue table names the panel settings file and the WebView2 profile' {
+            $rows = @(Get-SideCrabResidueSpec -SettingsPath 'C:\Fake\.claude\settings.json' `
+                                              -ConfigPath 'C:\Fake\.sidecrab\config.json' `
+                                              -ChainPath 'C:\Fake\.sidecrab\statusline-chain.json')
+            ($rows | Where-Object { $_.Key -eq 'panelsettings' }).Path        | Should -Be 'C:\Fake\.sidecrab\panel-settings.json'
+            ($rows | Where-Object { $_.Key -eq 'panelsettings' }).Disposition | Should -Be 'purge'
+            ($rows | Where-Object { $_.Key -eq 'panelprofile' }).Kind         | Should -Be 'cache'
+            ($rows | Where-Object { $_.Key -eq 'panelprofile' }).Path         | Should -Match 'SideCrab\\Panel$'
+        }
+
+        It 'the smoke test checks the panel route and does not fail an optional component that was never built' {
+            ($script:SmokeText2 -match '/panel/')                 | Should -BeTrue
+            ($script:SmokeText2 -match 'Content-Security-Policy') | Should -BeTrue
+            ($script:SmokeText2 -match 'not installed')           | Should -BeTrue
+        }
+    }
+
     Context 'doctor decisions (v0.15.0)' {
 
         BeforeAll {
@@ -2312,6 +2417,7 @@ Describe 'SideCrab setup' {
             (script:One $script:Spec 'crabd').Port | Should -Be 2722
             (script:One $script:Spec 'glow').Port  | Should -Be 0
             (script:One $script:Spec 'toast').Port | Should -Be 0
+            (script:One $script:Spec 'panel').Port | Should -Be 0
         }
 
         It 'a plan row carries the port through the selection step' {

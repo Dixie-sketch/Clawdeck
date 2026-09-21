@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The standalone panel host: a borderless WebView2 window pinned to the Xeneon Edge,
+       loading http://127.0.0.1:2722/panel/ from crabd. Framework-dependent on purpose
+       (the .NET 10 Desktop Runtime is a one-time install); a self-contained build is
+       ~150 MB for a kiosk window. Build with setup\Build-SideCrabPanel.ps1. -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- PerMonitorV2: the form's bounds are the monitor's PHYSICAL rectangle, so a 100%
+         Edge is 2560x720 exactly and a scaled one is corrected by ZoomFactor after the
+         page reports its own innerWidth (PanelForm.MeasureViewport). -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>SideCrab.Panel</AssemblyName>
+    <RootNamespace>SideCrab.Panel</RootNamespace>
+    <Version>0.1.0</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationIcon>..\..\notifier\sidecrab.ico</ApplicationIcon>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- The WPF assembly inside the WebView2 package is never used; excluding it silences
+         the MSB3277 WindowsBase unification warning on the WinForms-only build. -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+</Project>

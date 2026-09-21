@@ -175,7 +175,7 @@ if ($DryRun) {
 
     $widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
     if ($widget) {
-        Write-Row 'INFO' 'widget manifest' "$widget - the copy IMPORTED into iCUE is what shows Approve/Deny, not this file"
+        Write-Row 'INFO' 'widget manifest' "$widget - inside iCUE the copy IMPORTED is what shows Approve/Deny, not this file; the standalone panel host (SideCrab-panel) serves this tree from crabd and reads the pairing code itself"
     }
 }
 

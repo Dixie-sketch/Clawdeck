@@ -2,6 +2,23 @@
 
 ## Engineering notes
 
+- **iCUE 5.51.40 blocks the widget's loopback requests (2026-09-21).** The build added a widget
+  URL-permission layer: every widget request to `127.0.0.1:2722` fails inside iCUE
+  (`net::ERR_ACCESS_DENIED`, then `net::ERR_BLOCKED_BY_CLIENT` after the grant is rebuilt), and a
+  manifest `permissions` entry `{"type":"url","domain":"127.0.0.1","port":2722}` works after an
+  import and dies on the next iCUE start, because iCUE saves the grant (`UrlPermissionInfo`,
+  cereal v500, `%APPDATA%\Corsair\CUE5\widgets\WidgetPermissionData`) with the host only and
+  a loopback grant needs the port. A `sidecrab.localhost` domain dies the same way. Not fixable
+  from the widget side; the standalone panel host (`panel-host/`, crabd 0.31.0 `/panel/`) is the
+  answer on that build. Re-test each iCUE release: the day a grant survives a restart, the widget
+  path is back. **Open:** CPU and GPU temperatures came from iCUE's sensor plugin and have no
+  source in the standalone host (the row hides itself). HWiNFO shared memory is the candidate;
+  anything that loads WinRing0 is not (vulnerable-driver blocklist).
+- **ORIGIN-b, revisited (2026-09-21).** The panel now has a second, non-opaque origin: crabd's own
+  (`http://127.0.0.1:2722`), allowlisted exactly in 0.31.0 and labelled `source: "panel"` in
+  `originsSeen`. The `file://`-only allowlist idea for the iCUE widget stays deferred as written
+  below; the pairing code remains the fix on both hosts.
+
 - **Browser verification must pin its own target.** Any automated or agent-driven visual check of
   the widget has to open its own tab against an explicit local URL (`widget/index.html`, or the
   `?mock=` fixtures) rather than reusing whatever page a shared browser session happens to have

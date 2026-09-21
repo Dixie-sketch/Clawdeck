@@ -14,6 +14,75 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.31.0 (2026-09-21 — TRANSPORT: the panel route, the Host allowlist, the same-origin allowlist; schema stays 5)
+
+crabd `VERSION` → `0.31.0`, widget `0.29.0`, panel host `0.1.0`. No field is added to or removed
+from `/v1/state`. Three transport changes, all so the panel can run OUTSIDE iCUE: iCUE 5.51.40
+added a widget URL-permission layer that refuses every widget request to `127.0.0.1` and saves
+its grant without the port a loopback grant needs, so the widget cannot reach crabd on that build
+(README, "iCUE 5.51.40 and newer").
+
+### 1. `GET /panel/` — crabd serves the widget tree
+
+| Request | Answer |
+|---|---|
+| `GET /panel` | `301` to `/panel/` (the page's relative `styles/` and `scripts/` links need the directory) |
+| `GET /panel/`, `GET /panel/index.html` | `200` `text/html; charset=utf-8`, the shipped `widget/index.html` |
+| `GET /panel/styles/sidecrab.css`, `/panel/scripts/sidecrab.js`, `/panel/resources/icon.svg` | `200` with the file's content type |
+| anything else under `/panel/` (`mock/`, `translation.json`, `manifest.json`, `..`, encoded dots, absolute paths) | `404` |
+| the widget tree missing beside `companion/` | `404 {"error":"panel not available"}`, never a 500 |
+
+Every `/panel/` answer carries `Content-Security-Policy: frame-ancestors 'none'`,
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The
+allowlist is a fixed map from request path to file: the request is never joined onto the
+filesystem, so a traversal has nothing to climb. `mock/` is deliberately absent, which keeps the
+`?mock=` dev switches unreachable from the served origin. The route sits behind the same read gate
+as every other GET.
+
+### 2. Host allowlist — every method, before anything else
+
+A request whose `Host` is not exactly `127.0.0.1:<bound port>` or `localhost:<bound port>`
+(lower-cased, port included, the port read off the socket crabd actually bound) is answered
+`421 {"error":"host not allowed"}` on GET, POST and OPTIONS, with the POST body drained so
+keep-alive framing survives. An absent `Host` is refused too. This closes DNS rebinding: a page at
+`attacker.example` that resolves its name to `127.0.0.1` is same-origin to itself, so no Origin
+check can stop it, but its `Host` names the attacker. Every real client of crabd (curl, the CLI's
+http hooks, urllib, PowerShell, every browser) already sends a matching Host; nothing that worked
+before this release is refused by it.
+
+### 3. Same-origin allowlist on the origin gate
+
+The v0.16.0 gate refused every present `http(s)` `Origin`. The panel crabd serves sends its own
+origin on every POST, so exactly the two origins that name this socket are now allowed and
+reflected:
+
+| Request `Origin` | Answer |
+|---|---|
+| `http://127.0.0.1:<bound port>` or `http://localhost:<bound port>` | handled normally; reflected in `Access-Control-Allow-Origin` + `Vary: Origin` |
+| any other `http(s)` origin: another port, `https`, no port, `127.0.0.1.evil.example`, a trailing path, `[::1]`, `0.0.0.0` | `403 {"error":"cross-site request refused"}`, no ACAO, exactly as before |
+| `null`, absent, and non-web schemes (`file://`, `qrc://`) | unchanged |
+
+**`decide` still needs the pairing code and the `requestId`.** Same origin is a transport fact,
+not a credential: a decide from the panel's own origin with no code is `403 pairing code
+required`, with a wrong code `403 pairing code rejected`. In the standalone host the code reaches
+the page from `~/.sidecrab/panel-token` through the host's injected
+`window.__sidecrabHost.props.panelToken`, which no web page can read. crabd still never serves it.
+
+### 4. The widget in a standalone host (widget 0.29.0)
+
+The widget detects the host from its own address: served over `http(s)` from a `/panel` path means
+crabd served it. In that mode `baseUrl()` is `window.location.origin` (same-origin fetches, no
+`crabdPort` guess); `getIcueProperty()` reads `window.__sidecrabHost.props`, one object the host
+injects before any script runs (never bare globals, so a prop cannot collide with a function name
+the way 0.27.0's did), and otherwise returns each reader's default; `uniqueId` is the constant
+`standalone`; the Sensors bridge is simply absent, so the temperature row hides itself; and the
+property-to-config sync is OFF, so `~/.sidecrab/config.json` is the one master for quiet hours,
+toast, digest and budget. Inside iCUE nothing changes.
+
+`/v1/health.originsSeen` (diagnostic, not part of this contract) gains `source: "panel"` for a
+request that came from the served panel: an `Origin` equal to crabd's own, or a `Referer` under
+`/panel/`.
+
 ## v0.30.0 (2026-09-04 — ADDITIVE: `limits.tokenSource`; the long-lived limits token; schema stays 5)
 
 crabd `VERSION` → `0.30.0`. One additive member, one new optional file, no wire change on any

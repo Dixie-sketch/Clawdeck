@@ -21,9 +21,12 @@
          FAIL naming the PID that holds the port, not a pass: health-by-HTTP cannot
          tell who answered. Exits non-zero when that check does not stand.
 
-    THE WIDGET IS NOT UPDATED BY THIS SCRIPT. The Xeneon Edge widget is installed
+    THE iCUE WIDGET IS NOT UPDATED BY THIS SCRIPT. The Xeneon Edge widget is installed
     into iCUE by importing the .icuewidget package; pulling the repo changes the
-    source in widget\, never what iCUE is running.
+    source in widget\, never what iCUE is running. THE STANDALONE PANEL HOST IS: when
+    SideCrab-panel is registered its exe is rebuilt from the pulled source
+    (setup\Build-SideCrabPanel.ps1) before the restart, and the window reloads the
+    widget tree crabd serves - no desk-side import.
 
 .EXAMPLE
     pwsh -File .\setup\Update-SideCrab.ps1
@@ -139,6 +142,35 @@ $registered = @($states | Where-Object Registered)
 $portByTask = @{}
 foreach ($c in $spec) { $portByTask[$c.TaskName] = [int] $c.Port }
 
+# ---- 1b. rebuild the panel host on the code that was just pulled
+# The python tasks re-read their scripts on restart; the panel task runs a COMPILED exe, so a
+# restart alone would run last week's host. Stopped first because dotnet publish cannot
+# overwrite a running exe. A failed build is loud and leaves the old exe, which the restart
+# below then starts: stale but working beats dark.
+$panelSpec  = @($spec | Where-Object { $_.Key -eq 'panel' })[0]
+$panelState = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+if ($SkipRestart) {
+    Write-Step 'panel:   rebuild skipped (-SkipRestart)'
+} elseif ($panelState.Registered -and $panelState.State -ne 'Disabled') {
+    if ($PSCmdlet.ShouldProcess($panelSpec.TaskName, 'Rebuild the panel host')) {
+        Stop-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline -and
+               @(Get-Process -Name 'SideCrab.Panel' -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Path -eq $panelSpec.Script }).Count -gt 0) {
+            Start-Sleep -Milliseconds 300
+        }
+        & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "the panel host did not rebuild (exit $LASTEXITCODE); $($panelSpec.TaskName) restarts on the previous exe"
+        } else {
+            Write-Step "panel:   host rebuilt - $($panelSpec.Script)"
+        }
+    }
+} else {
+    Write-Step "panel:   $($panelSpec.TaskName) not registered or disabled - not rebuilt"
+}
+
 if ($SkipRestart) {
     Write-Step 'tasks:   restart skipped (-SkipRestart)'
 } elseif ($registered.Count -eq 0) {
@@ -250,7 +282,7 @@ foreach ($proto in @(Get-SideCrabProtocolState -RepoRoot $RepoRoot)) {
 }
 
 Write-Host ''
-Write-Warning 'The WIDGET is not updated by this script. The Xeneon Edge widget updates only by importing the .icuewidget package into iCUE - a repo pull changes widget\ source, not what iCUE is running.'
+Write-Warning 'The iCUE WIDGET is not updated by this script: it changes only by importing the .icuewidget package into iCUE. The standalone panel host (SideCrab-panel), where installed, was rebuilt and restarted above.'
 Write-Host 'Verify with: pwsh -File setup\Test-SideCrab.ps1'
 Write-Host 'Done.'
 

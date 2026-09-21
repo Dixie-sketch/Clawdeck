@@ -31,6 +31,7 @@
       -TaskName SideCrab-crabd   its task + the hooks, the status line and panelApprovals
       -TaskName SideCrab-toast   its task + the AUMID and the two button schemes
       -TaskName SideCrab-glow    its task, and nothing else
+      -TaskName SideCrab-panel   its task, and nothing else (panel-settings.json is data: -Purge)
     A name the catalogue does not know removes that task and nothing else. Without -TaskName
     every surface goes. (The switch used to narrow the TASK deletion alone and then strip the
     hooks, status line and approvals regardless - the ownership table is

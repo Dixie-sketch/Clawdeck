@@ -23,6 +23,10 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Companion (crabd)
         run: python -m unittest discover -s companion/tests -t companion/tests
 
@@ -43,6 +47,11 @@ jobs:
 
       - name: Widget manifest parses
         run: python -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
+
+      - name: Panel host (build + unit tests)
+        run: |
+          dotnet build panel-host/SideCrab.Panel/SideCrab.Panel.csproj -c Release --nologo
+          dotnet test panel-host/SideCrab.Panel.Tests/SideCrab.Panel.Tests.csproj -c Release --nologo
 
       - name: Setup scripts (Pester)
         shell: pwsh

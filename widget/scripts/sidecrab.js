@@ -847,7 +847,58 @@ function onIcueInitialized() { applyProperties(); }
    references icueEvents at all. */
 icueEvents = { onDataUpdated: onIcueDataUpdated, onICUEInitialized: onIcueInitialized };
 
+/* ---------------------------------------------------- two hosts, one codebase (v0.29.0)
+
+   The panel runs in TWO hosts from this one tree: inside iCUE as the .icuewidget
+   (file:// page, properties injected as `let` globals, the Sensors plugin on
+   window.plugins), and STANDALONE, served by crabd itself at /panel/ inside the
+   panel-host window (panel-host/, WebView2) or any local browser. iCUE 5.51.40
+   added a widget URL-permission layer that refuses every widget request to
+   127.0.0.1 and cannot be made to persist a loopback grant, which is why the
+   second host exists.
+
+   Detection is the page's own address: served over http(s) from a /panel path
+   means crabd served it. The host window may also set window.__sidecrabHost
+   BEFORE any script runs ({ kind: 'standalone', props: {...} }); its `props` play
+   the part iCUE's property sheet plays, keyed by the same names, and are read
+   FIRST by getIcueProperty. Nothing else about the widget forks: absent props
+   read as their defaults, the Sensors bridge is simply absent (the row hides
+   itself, as it does in any browser), and every fetch is same-origin.
+
+   THE 0.27.1 TRAP DOES NOT APPLY HERE, and that is deliberate: props live on ONE
+   object, never as bare globals, so a prop named like a function cannot collide
+   with it at parse time. Do not "simplify" the host script to `let` globals. */
+function standaloneHost() {
+	if (typeof window === 'undefined') return null;
+	var h = window.__sidecrabHost;
+	if (h && typeof h === 'object' && h.kind === 'standalone') return h;
+	try {
+		var p = window.location.protocol, path = window.location.pathname || '';
+		if ((p === 'http:' || p === 'https:') && /^\/panel(\/|$)/.test(path)) return { kind: 'standalone', props: {} };
+	} catch (e) { /* no location (a test double) */ }
+	return null;
+}
+
+function isStandalone() { return standaloneHost() !== null; }
+
 function getIcueProperty(name) {
+	var host = standaloneHost();
+	if (host) {
+		var props = host.props && typeof host.props === 'object' ? host.props : {};
+		if (Object.prototype.hasOwnProperty.call(props, name)) {
+			var pv = props[name];
+			if (pv !== undefined && pv !== null && pv !== '') return pv;
+		}
+		/* The one prop with no sensible default: uniqueId keys the vendor-storage
+		   prefs (pins, filter, density). A fixed key means the standalone panel
+		   remembers them across restarts; a plain browser with no host object gets
+		   the same key, which is fine - it is one operator's panel either way. */
+		if (name === 'uniqueId') return 'standalone';
+		/* NEVER fall through to the global probe: there are no iCUE globals in this
+		   host, and a page global that happens to share a prop's name is not a
+		   setting. */
+		return undefined;
+	}
 	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
 		var value = window[name];
 		if (value !== undefined && value !== null && value !== '') return value;
@@ -1015,6 +1066,10 @@ function logLine(msg) {
 /* ------------------------------------------------------------------- polling */
 
 function baseUrl() {
+	/* Standalone: crabd served this page, so crabd is this page's origin. Same-origin
+	   fetches carry no CORS round trip and no crabdPort guess; a panel opened under
+	   the localhost name talks to localhost, exactly as crabd's allowlist expects. */
+	if (isStandalone()) return window.location.origin;
 	var port = strProp('crabdPort', '2722').replace(/[^0-9]/g, '');
 	if (!port) port = '2722';
 	return 'http://127.0.0.1:' + port;
@@ -6190,6 +6245,11 @@ function scheduleConfigSync() {
 /* One debounce, one POST per key. keep400 says what a 400 MEANS for that key —
    see syncConfigKey. */
 function syncConfig() {
+	/* Standalone (v0.29.0): there is no property sheet, so config.json is the ONE
+	   master for quiet hours, toast and budget and nothing is pushed from here.
+	   Without this guard the defaults below would POST on every boot and silently
+	   CLEAR an operator's hand-edited quietHours and budget. */
+	if (isStandalone()) return;
 	syncConfigKey('quietHours', desiredQuietConfig(), false);
 	syncConfigKey('toast', desiredToastConfig(), true);
 	/* keep400, same as toast and for the same reason: a pre-0.10.0 crabd answers
@@ -8173,6 +8233,8 @@ function init() {
 	});
 
 	ui.ready = true;
+	/* iCUE evaluates tr() in <title>; a browser renders the literal. */
+	if (isStandalone()) { try { document.title = 'SideCrab'; } catch (e) {} }
 	applyProperties();
 	tick();
 	poll();

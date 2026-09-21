@@ -167,6 +167,58 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
 
+## v0.29.0 — two hosts, one codebase: the panel served by crabd
+
+iCUE 5.51.40 refuses every widget request to `127.0.0.1` (a URL-permission layer that cannot
+keep a loopback grant across a restart), so from this release the same `widget/` tree also runs
+**standalone**: crabd 0.31.0 serves it at `http://127.0.0.1:2722/panel/` (index, the stylesheet,
+the script and the icon, from a fixed allowlist), and `panel-host/` is a WebView2 window that
+shows that URL full-screen on the Edge. Nothing forks: one tree, one `index.html`, one script.
+
+### What the host supplies, and how the widget knows
+
+- **Detection** is the page's own address: served over `http(s)` from a `/panel` path means crabd
+  served it (`standaloneHost()` / `isStandalone()`). The host window may also set
+  `window.__sidecrabHost` before any script runs, `{ kind: 'standalone', version, props: {...} }`.
+- **Properties.** `getIcueProperty(name)` reads `__sidecrabHost.props[name]` first (the same
+  names as the `x-icue-property` metas, from `~/.sidecrab/panel-settings.json` `props`), returns
+  `'standalone'` for `uniqueId` so the vendor-storage prefs persist, and otherwise `undefined`, so
+  every `strProp` / `boolProp` default applies. **It never falls through to the global probe** in
+  this host: there are no iCUE globals, and a page global that happens to share a prop's name is
+  not a setting. The props are ONE object on purpose: the 0.27.1 `let`-global collision cannot
+  happen to a property that lives on an object.
+- **The pairing code** arrives as `props.panelToken`, read by the host from
+  `~/.sidecrab/panel-token`. Nothing to paste; a plain browser at `/panel/` has no code and its
+  Approve/Deny taps are refused, which is the honest state.
+- **`baseUrl()`** is `window.location.origin`: same-origin fetches, no `crabdPort` guess. A POST
+  carries `Origin: http://127.0.0.1:2722`, which crabd 0.31.0 allowlists exactly.
+- **The Sensors bridge** is absent (`window.plugins` does not exist), so the temperature row hides
+  itself exactly as it does in a dev browser; the host CPU and memory figures from `/v1/state`
+  still render. There is no sensor source in this host yet (BACKLOG).
+- **The property-to-config sync is OFF** (`syncConfig()` returns at once). There is no property
+  sheet, so `config.json` is the one master for quiet hours, toast, digest and budget; without the
+  guard the defaults would POST on every boot and clear an operator's hand-edited quiet hours.
+- `document.title` is set to `SideCrab`, because a browser renders `tr('SideCrab')` literally.
+
+### Working on it off-glass
+
+Open `http://127.0.0.1:2722/panel/` in any Chromium browser sized to 2560x720 against a running
+crabd: that IS the standalone host, minus the pinned window. The `?mock=` fixtures are deliberately
+not served (the allowlist has no `mock/`), so mock work stays on `python -m http.server 8765` as
+before. To measure the real window, put `"devtoolsPort": 9224` in `panel-settings.json` and
+restart `SideCrab-panel`; Chromium's remote-debugging endpoint is then on that loopback port
+(`http://127.0.0.1:9224/json/list`) for `Runtime.evaluate` and `Page.captureScreenshot`. Take it
+out again afterwards. The host logs every load, refused navigation, re-pin and viewport reading to
+`~/.sidecrab/logs/panel.log`; the line to trust is
+`viewport: 2560x720 css px, dpr 1, zoom 1, window 2560x720 physical`.
+
+### Verified
+
+`node --check`, `test_ordering.js` 140/140, strict-XML parse, JSON parse of every fixture plus
+manifest and translation, `icuewidget validate widget` (the known `icueEvents` warning only). Live:
+the page loaded in `SideCrab.Panel` on the Edge at 2560x720 css px, dpr 1, and its requests show
+in crabd's `originsSeen` as `source: "panel"`.
+
 ## v0.28.2 — the cards get readable: +17% type, two-line titles, and what paid for it
 
 Operator's ask: "make the font slightly larger on the agent cards or easier to read".

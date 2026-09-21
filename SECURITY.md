@@ -18,7 +18,21 @@ The two things an attacker on this machine, or a web page you visit, could want 
 
 - **Origin gate on every route, reads and writes.** Any request carrying an `http(s)` `Origin`
   header is refused with `403` and no CORS header, so a visited web page cannot read the state or
-  post an action through an ordinary cross-origin fetch. `docs/STATE-CONTRACT.md` "TRANSPORT".
+  post an action through an ordinary cross-origin fetch. The one exception since crabd 0.31.0 is
+  crabd's own origin (`http://127.0.0.1:<port>` and `http://localhost:<port>`, the bound port),
+  which the panel crabd serves at `/panel/` sends on its POSTs; every other `http(s)` origin stays
+  refused. `docs/STATE-CONTRACT.md` "TRANSPORT" and v0.31.0.
+- **Host allowlist on every method (crabd 0.31.0).** A `Host` other than `127.0.0.1:<port>` or
+  `localhost:<port>`, or none at all, is answered `421` before anything else runs. A DNS-rebinding
+  page is same-origin to itself, so the origin gate cannot see it; its `Host` gives it away.
+- **The served panel cannot be framed.** Every `/panel/` answer carries
+  `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, because the page
+  carries Approve and Deny. The route serves a fixed allowlist of four files by exact name and
+  never joins a request path onto the filesystem.
+- **The standalone host's window is locked to the panel.** `SideCrab.Panel` cancels any navigation
+  that is not `http://127.0.0.1:<port>/panel/…` or its own fallback page, refuses new windows,
+  disables host objects, web messages, autofill and the context menu, and injects the pairing code
+  as one JSON object (never as bare globals) that no other page ever loads.
 - **Fixed vocabulary, never free text.** `POST /v1/action` accepts acknowledge, dismiss, pin,
   one of the configured continue prompts, and approve/deny. `reply` with arbitrary text answers
   `501` and will keep doing so until a supported injection mechanism exists.

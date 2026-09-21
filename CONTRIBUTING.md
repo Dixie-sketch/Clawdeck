@@ -12,7 +12,10 @@ merged is to follow the rules it was built with. They are short.
   but talk about it first.
 - **No new runtime dependencies without a reason.** The companion, notifier and hooks are
   standard-library Python on purpose: users install one thing (Python 3.13) and nothing else.
-  The one pinned dependency is `cuesdk` for the parked glow component.
+  The one pinned dependency is `cuesdk` for the parked glow component. The standalone panel
+  host (`panel-host/`) is the deliberate exception: a small C# WinForms app on the .NET 10
+  Desktop Runtime and the WebView2 Runtime, optional, built only by users who ask for it with
+  `Install-SideCrab.ps1 -Panel`.
 
 ## The four rules
 
@@ -43,6 +46,7 @@ python -m unittest discover lighting\tests
 python -m unittest discover -s hooks\tests -t hooks\tests
 node widget\tests\test_ordering.js
 pwsh -File .\setup\tests\RunTests.ps1
+dotnet test panel-host\SideCrab.Panel.Tests      # the panel host's pure decisions (needs the .NET 10 SDK)
 ```
 
 CI runs the same on every push and pull request. A PR needs green CI.
@@ -55,6 +59,10 @@ that reports success forever.
 
 - `widget/DEV.md` is the developer guide: fixtures, the `?mock=` URL switches, the density and
   slot variants, and the traps that have bitten before.
+- The widget runs in two hosts from one tree: inside iCUE, and standalone at
+  `http://127.0.0.1:2722/panel/` (crabd 0.31.0 serves it; `panel-host/` shows it). Anything that
+  reads an iCUE property or the Sensors plugin goes through `getIcueProperty()` /
+  `sensorsPlugin()`, which already know which host they are in. Do not add a third path.
 - iCUE parses `widget/index.html` as **strict XML**. The CLI validator does not catch a bare `&`
   or an unclosed void element, so run this before packaging:
 
@@ -72,7 +80,8 @@ that reports success forever.
   user-facing, `docs/STATE-CONTRACT.md` if it is on the wire, `CHANGELOG.md` for anything a user
   would notice.
 - Bump the version of the component you changed (`widget/manifest.json`, `VERSION` in
-  `companion/crabd.py`, `__version__` in `notifier/sidecrab_toast.py`).
+  `companion/crabd.py`, `__version__` in `notifier/sidecrab_toast.py`, `Program.Version` and the
+  csproj `<Version>` in `panel-host/SideCrab.Panel/`).
 - Comments earn their place by stopping a future reader from making a mistake: a trap with its
   mechanism and symptom, a measured number with its provenance, a deliberate non-action. Cut the
   narration.

@@ -3193,7 +3193,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.30.0")
+        self.assertEqual(crabd.VERSION, "0.31.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5957,7 +5957,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.30.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.31.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -11182,3 +11182,242 @@ class ContextWindowSerializationTests(TempProjects):
         row = self.row("claude-fable-5", models=self.catalog({"claude-fable-5": 200000}))
         served = json.loads(crabd.dump_state({"sessions": [row]}).decode("utf-8"))
         self.assertEqual(served["sessions"][0]["contextWindowTokens"], 200000)
+
+
+class PanelRouteAndHostGateTests(ServedOverASocket):
+    """v0.31.0 transport: GET /panel/ from a fixed allowlist, the Host allowlist on every
+    method, and the same-origin allowlist on the origin gate. The panel host
+    (panel-host/) loads http://127.0.0.1:2722/panel/ and its fetches carry that origin,
+    which SEC-1/SEC-4 refused outright before this release."""
+
+    def setUp(self):
+        super().setUp()
+        self.panel_dir = Path(tempfile.mkdtemp(prefix="sidecrab-panel-"))
+        for sub in ("styles", "scripts", "resources", "mock"):
+            (self.panel_dir / sub).mkdir()
+        (self.panel_dir / "index.html").write_text(
+            "<!DOCTYPE html><html><body>panel</body></html>", encoding="utf-8")
+        (self.panel_dir / "styles" / "sidecrab.css").write_text("body{}", encoding="utf-8")
+        (self.panel_dir / "scripts" / "sidecrab.js").write_text("var x=1;", encoding="utf-8")
+        (self.panel_dir / "resources" / "icon.svg").write_text("<svg/>", encoding="utf-8")
+        # NOT on the allowlist - present on disk so a 404 proves the list, not the tree.
+        (self.panel_dir / "translation.json").write_text("{}", encoding="utf-8")
+        (self.panel_dir / "mock" / "mock-state-normal.json").write_text("{}", encoding="utf-8")
+        self._saved_panel_dir = crabd.PANEL_DIR
+        crabd.PANEL_DIR = self.panel_dir
+        self.addCleanup(setattr, crabd, "PANEL_DIR", self._saved_panel_dir)
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.panel_dir, True))
+
+    def own(self, name="127.0.0.1"):
+        return f"http://{name}:{self.port}"
+
+    def ack(self, headers):
+        body = json.dumps({"sessionId": self.SID, "action": "ack"}).encode()
+        return self.client.post("/v1/action", body, headers=headers)
+
+    # ---- GET /panel/ -----------------------------------------------------------------
+
+    def test_panel_index_is_served_with_the_frame_ancestors_policy(self):
+        reply = self.client.get("/panel/")
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.headers.get("Content-Type"), "text/html; charset=utf-8")
+        self.assertIn(b"panel", reply.body)
+        self.assertEqual(reply.headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        self.assertEqual(reply.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(reply.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(reply.headers.get("Cache-Control"), "no-store")
+        css = self.client.get("/panel/styles/sidecrab.css")
+        self.assertEqual((css.status, css.headers.get("Content-Type")),
+                         (200, "text/css; charset=utf-8"))
+        js = self.client.get("/panel/scripts/sidecrab.js")
+        self.assertEqual((js.status, js.headers.get("Content-Type")),
+                         (200, "text/javascript; charset=utf-8"))
+        self.assertEqual(self.client.get("/panel/index.html").status, 200)
+
+    def test_the_bare_panel_path_redirects_to_the_directory(self):
+        """Relative stylesheet and script links resolve against the directory; served
+        without the slash they would resolve against / and 404."""
+        reply = self.client.get("/panel")
+        self.assertEqual(reply.status, 301)
+        self.assertEqual(reply.headers.get("Location"), "/panel/")
+
+    def test_panel_serves_the_allowlist_and_nothing_else_on_disk(self):
+        for path in ("/panel/translation.json", "/panel/mock/mock-state-normal.json",
+                     "/panel/manifest.json", "/panel/DEV.md", "/panel/styles/",
+                     "/panel/styles", "/panel/index.html/"):
+            reply = self.client.get(path)
+            self.assertEqual(reply.status, 404, path)
+
+    def test_panel_cannot_be_walked_out_of(self):
+        """The allowlist is the traversal defence: the request path is a dict KEY, never a
+        filesystem join, so there is nothing for `..` to climb."""
+        marker = b"def do_GET"       # crabd's own source, two directories up
+        for path in ("/panel/../companion/crabd.py",
+                     "/panel/styles/../../companion/crabd.py",
+                     "/panel/%2e%2e/companion/crabd.py",
+                     "/panel/..%2fcompanion%2fcrabd.py",
+                     "/panel/..%5ccompanion%5ccrabd.py",
+                     "/panel/C:/Windows/win.ini",
+                     "/panel//etc/passwd",
+                     "/panel/scripts/..%2f..%2fcompanion/crabd.py"):
+            reply = self.client.get(path)
+            self.assertEqual(reply.status, 404, path)
+            self.assertNotIn(marker, reply.body, path)
+            self.assertNotIn(b"[fonts]", reply.body, path)     # win.ini
+
+    def test_a_missing_widget_tree_is_a_404_not_a_500(self):
+        crabd.PANEL_DIR = self.panel_dir / "does-not-exist"
+        reply = self.client.get("/panel/")
+        self.assertEqual(reply.status, 404)
+        self.assertEqual(json.loads(reply.body), {"error": "panel not available"})
+
+    def test_panel_is_gated_like_every_other_read(self):
+        reply = self.client.get("/panel/", headers={"Origin": "https://evil.example"})
+        self.assertEqual(reply.status, 403)
+        self.assertEqual(json.loads(reply.body), {"error": "cross-site request refused"})
+
+    # ---- the Host allowlist -------------------------------------------------------------
+
+    def test_a_host_outside_the_allowlist_is_refused_on_every_method(self):
+        """DNS rebinding: the page resolves attacker.example to 127.0.0.1 and its Host
+        names the attacker. 421 on GET, POST and OPTIONS, the POST body drained so the
+        keep-alive connection still frames the next request."""
+        bad = (f"evil.example:{self.port}", f"127.0.0.1:{self.port + 1}", "127.0.0.1",
+               "localhost", f"127.0.0.1.evil.example:{self.port}", f"[::1]:{self.port}",
+               f"127.0.0.1:{self.port}.evil.example", "")
+        body = json.dumps({"sessionId": self.SID, "action": "ack"}).encode()
+        for host in bad:
+            get = self.client.get("/v1/state", headers={"Host": host})
+            self.assertEqual(get.status, 421, host)
+            self.assertEqual(json.loads(get.body), {"error": "host not allowed"}, host)
+            self.assertIsNone(get.headers.get("Access-Control-Allow-Origin"), host)
+            post = self.client.post("/v1/action", body, headers={"Host": host})
+            self.assertEqual(post.status, 421, host)
+            opt = self.client.request("OPTIONS", "/v1/action", headers={"Host": host})
+            self.assertEqual(opt.status, 421, host)
+            panel = self.client.get("/panel/", headers={"Host": host})
+            self.assertEqual(panel.status, 421, host)
+        # nothing was applied, and the connection still works afterwards
+        self.assertEqual(self.hooks.snapshot(), {})
+        self.assertEqual(self.client.get("/v1/health").status, 200)
+
+    def test_a_host_naming_this_socket_is_allowed_under_both_loopback_names(self):
+        for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}",
+                     f"LOCALHOST:{self.port}", f" 127.0.0.1:{self.port} "):
+            reply = self.client.get("/v1/health", headers={"Host": host})
+            self.assertEqual(reply.status, 200, host)
+
+    def test_the_allowlist_is_keyed_on_the_bound_port_not_the_production_one(self):
+        """A test instance on an ephemeral port must not accept 2722's names, and the
+        production instance must not accept a test port's."""
+        self.assertNotEqual(self.port, 2722)
+        reply = self.client.get("/v1/health", headers={"Host": "127.0.0.1:2722"})
+        self.assertEqual(reply.status, 421)
+
+    def test_a_request_with_no_host_header_at_all_is_refused(self):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.putrequest("GET", "/v1/health", skip_host=True)
+            conn.endheaders()
+            response = conn.getresponse()
+            self.assertEqual(response.status, 421)
+            self.assertEqual(json.loads(response.read()), {"error": "host not allowed"})
+        finally:
+            conn.close()
+
+    # ---- the same-origin allowlist ---------------------------------------------------
+
+    def test_the_panels_own_origin_may_read_and_write_and_is_reflected(self):
+        for origin in (self.own("127.0.0.1"), self.own("localhost")):
+            read = self.client.get("/v1/state", headers={"Origin": origin})
+            self.assertEqual(read.status, 200, origin)
+            self.assertEqual(read.headers.get("Access-Control-Allow-Origin"), origin)
+            self.assertEqual(read.headers.get("Vary"), "Origin")
+            write = self.ack({"Origin": origin})
+            self.assertEqual(write.status, 204, origin)
+            self.assertEqual(write.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertTrue(self.hooks.snapshot()[self.SID]["acked"])
+
+    def test_every_other_http_origin_is_still_refused(self):
+        """THE test the change owes: the allowlist is exactly this socket's origin and
+        nothing wider. Each of these is one edit away from an allowed value."""
+        others = (f"http://127.0.0.1:{self.port + 1}",          # another port
+                  f"https://127.0.0.1:{self.port}",             # another scheme
+                  "http://127.0.0.1", "http://localhost",       # no port
+                  f"http://127.0.0.1.evil.example:{self.port}",  # subdomain trick
+                  f"http://evil.example:{self.port}",           # rebinding name
+                  "http://evil.example", "https://evil.example",
+                  f"http://[::1]:{self.port}",                  # IPv6 loopback
+                  f"http://127.0.0.1:{self.port}/",             # a trailing path
+                  f"http://127.0.0.1:{self.port}/panel/",
+                  f"http://127.0.0.1:{self.port}@evil.example",  # userinfo trick
+                  f"http://127.0.0.1:0{self.port}",             # a leading zero
+                  f"http://127.1:{self.port}",                  # shorthand loopback
+                  f"http://0.0.0.0:{self.port}")
+        for origin in others:
+            read = self.client.get("/v1/state", headers={"Origin": origin})
+            self.assertEqual(read.status, 403, origin)
+            self.assertIsNone(read.headers.get("Access-Control-Allow-Origin"), origin)
+            write = self.ack({"Origin": origin})
+            self.assertEqual(write.status, 403, origin)
+            self.assertEqual(json.loads(write.body),
+                             {"error": "cross-site request refused"}, origin)
+            self.assertIsNone(write.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertEqual(self.hooks.snapshot(), {})     # nothing was applied
+
+    def test_a_preflight_reflects_the_own_origin_and_no_other_web_origin(self):
+        own = self.client.request("OPTIONS", "/v1/action", headers={"Origin": self.own()})
+        self.assertEqual(own.status, 204)
+        self.assertEqual(own.headers.get("Access-Control-Allow-Origin"), self.own())
+        other = self.client.request("OPTIONS", "/v1/action",
+                                    headers={"Origin": "http://evil.example"})
+        self.assertEqual(other.status, 204)
+        self.assertIsNone(other.headers.get("Access-Control-Allow-Origin"))
+
+    def test_null_and_absent_origins_are_unchanged(self):
+        """The iCUE widget (null) and every local tool (absent) keep working exactly as
+        before: the allowlist ADDS the panel's origin, it removes nothing."""
+        null = self.ack({"Origin": "null"})
+        self.assertEqual((null.status, null.headers.get("Access-Control-Allow-Origin")),
+                         (204, "null"))
+        absent = self.ack({})
+        self.assertEqual(absent.status, 204)
+        self.assertIsNone(absent.headers.get("Access-Control-Allow-Origin"))
+
+    def test_the_own_origin_still_needs_the_pairing_code_to_decide(self):
+        """Same origin is a transport fact, not a credential. The gates on `decide` run
+        unchanged: no code -> 403, a wrong code -> 403, never 204."""
+        self.builder.permissions = crabd.PermissionBroker()
+        self.builder.panel_token = crabd.PanelToken(None, "K7QXM2PDAB")
+        self.addCleanup(setattr, self.builder, "panel_token", None)
+        self.addCleanup(setattr, self.builder, "permissions", None)
+        base = {"sessionId": self.SID, "action": "decide", "decision": "allow",
+                "requestId": "0123456789abcdef"}
+        no_code = self.client.post("/v1/action", json.dumps(base).encode(),
+                                   headers={"Origin": self.own()})
+        self.assertEqual(no_code.status, 403)
+        self.assertEqual(json.loads(no_code.body), {"error": "pairing code required"})
+        wrong = self.client.post("/v1/action",
+                                 json.dumps(dict(base, token="AAAAA-AAAAA")).encode(),
+                                 headers={"Origin": self.own()})
+        self.assertEqual(wrong.status, 403)
+        self.assertEqual(json.loads(wrong.body), {"error": "pairing code rejected"})
+
+    def test_origins_seen_labels_the_panels_requests_as_source_panel(self):
+        """The panel's same-origin GETs carry no Origin and its POSTs carry crabd's own
+        origin; both land in /v1/health.originsSeen under source "panel" so the panel's
+        traffic is readable beside the notifier's and a browser's. Diagnostic only."""
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Edg/153 SideCrab.Panel/0.1.0"
+        self.client.get("/v1/state", headers={"Referer": self.own() + "/panel/", "User-Agent": ua})
+        self.ack({"Origin": self.own(), "User-Agent": ua})
+        rows = {(e["origin"], e["source"]): e
+                for e in self.client.get("/v1/health").json()["originsSeen"]}
+        self.assertIn((crabd.ORIGIN_ABSENT, "panel"), rows)
+        self.assertIn((self.own(), "panel"), rows)
+        self.assertEqual(rows[(self.own(), "panel")]["userAgent"], ua[:crabd.ORIGIN_UA_MAX])
+        # a browser with a foreign referer is NOT the panel
+        self.client.get("/v1/state", headers={"Referer": "http://evil.example/panel/", "User-Agent": ua})
+        rows = {(e["origin"], e["source"]): e
+                for e in self.client.get("/v1/health").json()["originsSeen"]}
+        self.assertIn((crabd.ORIGIN_ABSENT, "browser"), rows)

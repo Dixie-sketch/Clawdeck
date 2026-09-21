@@ -126,6 +126,13 @@ Write-Host ''
 foreach ($component in (Get-SideCrabComponentSpec -RepoRoot $RepoRoot)) {
     $state = Get-SideCrabTaskState -TaskName $component.TaskName
     if (-not $state.Registered) {
+        # An optional component whose script (or built exe) is not on disk was never
+        # installed, which is a choice, not a fault. Present-but-unregistered still fails.
+        if (-not $component.Required -and -not (Test-Path -LiteralPath $component.Script)) {
+            Add-Result -Check "task $($component.Key)" -Pass $true `
+                       -Detail "$($component.TaskName) not installed ($($component.Switch) to add it) - n/a"
+            continue
+        }
         Add-Result -Check "task $($component.Key)" -Pass $false -Detail "$($component.TaskName) not registered"
         continue
     }
@@ -152,6 +159,49 @@ if (-not $health.Reachable) {
 } else {
     Add-Result -Check 'health' -Pass ($health.Ok -and [bool] $health.Version) `
                -Detail "ok=$($health.Ok) crabd $($health.Version)"
+}
+
+# -- 2b. the panel route (crabd 0.31.0) ------------------------------------------------
+# crabd serves the widget tree at /panel/ for the standalone panel host. A 404 with health ok
+# is a companion-only checkout (no widget\ beside companion\) or a crabd older than 0.31.0,
+# either of which leaves the host window on its "not reachable" page forever.
+if (-not $health.Reachable) {
+    Add-Result -Check 'panel route' -Pass $false -Detail 'crabd unreachable - not evaluated'
+} else {
+    try {
+        $pr  = Invoke-WebRequest -Uri "$BaseUri/panel/" -UseBasicParsing -TimeoutSec 5 -SkipHttpErrorCheck -ErrorAction Stop
+        $csp = "$($pr.Headers['Content-Security-Policy'])"
+        $prc = [int] $pr.StatusCode
+        $ok  = ($prc -eq 200) -and ($csp -match "frame-ancestors 'none'")
+        Add-Result -Check 'panel route' -Pass $ok `
+                   -Detail "GET /panel/ -> $prc, CSP '$csp'$(if ($prc -eq 404) { ' - widget\ tree missing, or crabd older than 0.31.0' })"
+    } catch {
+        Add-Result -Check 'panel route' -Pass $false -Detail "GET /panel/ failed - $($_.Exception.Message)"
+    }
+}
+
+# -- 2c. the panel host's viewport (SideCrab-panel) ------------------------------------
+# The host logs `viewport: WxH css px ... window PWxPH physical` after every load and re-pin.
+# The pairs must agree, or the page is drawn scaled and the 2560x720 layout is not what is on
+# the glass. Judged only when the panel task is registered and enabled.
+$panelSpec  = @(Get-SideCrabComponentSpec -RepoRoot $RepoRoot | Where-Object { $_.Key -eq 'panel' })[0]
+$panelState = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+$panelLog   = Join-Path (Split-Path -Parent $ConfigPath) 'logs\panel.log'
+if (-not $panelState.Registered -or $panelState.State -eq 'Disabled') {
+    Add-Result -Check 'panel viewport' -Pass $true -Detail "$($panelSpec.TaskName) not installed or disabled - n/a"
+} elseif (-not (Test-Path -LiteralPath $panelLog)) {
+    Add-Result -Check 'panel viewport' -Pass $false -Detail "$panelLog missing - the host has never logged a load"
+} else {
+    $vline = @(Get-Content -LiteralPath $panelLog -Tail 400 | Where-Object { $_ -match 'viewport: ' }) | Select-Object -Last 1
+    if (-not $vline) {
+        Add-Result -Check 'panel viewport' -Pass $false -Detail 'no viewport line in panel.log yet - the panel has not loaded'
+    } elseif ($vline -match 'viewport: (\d+)x(\d+) css px.*window (\d+)x(\d+) physical') {
+        $same = ([int] $Matches[1] -eq [int] $Matches[3]) -and ([int] $Matches[2] -eq [int] $Matches[4])
+        Add-Result -Check 'panel viewport' -Pass $same `
+                   -Detail "$($Matches[1])x$($Matches[2]) css px on a $($Matches[3])x$($Matches[4]) window$(if (-not $same) { ' - scaled; the host corrects the zoom on its next check' })"
+    } else {
+        Add-Result -Check 'panel viewport' -Pass $false -Detail "unparseable viewport line: $vline"
+    }
 }
 
 # -- 3. /v1/state shape and freshness --------------------------------------------------

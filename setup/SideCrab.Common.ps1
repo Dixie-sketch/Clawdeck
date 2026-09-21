@@ -24,6 +24,10 @@ function Get-SideCrabComponentSpec {
         [pscustomobject]@{
             Key         = 'crabd'
             TaskName    = 'SideCrab-crabd'
+            # 'python' = the task runs Script under the resolved interpreter; 'exe' = Script IS
+            # the executable and runs directly (the panel host). Read off the plan by the
+            # installer, never inferred from the extension.
+            Launch      = 'python'
             Script      = (Join-Path $RepoRoot 'companion\crabd.py')
             Required    = $true
             Switch      = $null
@@ -46,6 +50,7 @@ function Get-SideCrabComponentSpec {
         [pscustomobject]@{
             Key         = 'glow'
             TaskName    = 'SideCrab-glow'
+            Launch      = 'python'
             Port        = 0
             # glow_launcher.pyw, NOT sidecrab_glow.py: cuesdk hard-crashes (0xC000001D) under a
             # console-less pythonw; the launcher hands off to python.exe with CREATE_NO_WINDOW.
@@ -69,6 +74,7 @@ function Get-SideCrabComponentSpec {
         [pscustomobject]@{
             Key         = 'toast'
             TaskName    = 'SideCrab-toast'
+            Launch      = 'python'
             Script      = (Join-Path $RepoRoot 'notifier\sidecrab_toast.py')
             # The two *_handler.pyw files are deliberately NOT here: the shell launches them as
             # their own processes on a button press, so their mtime says nothing about the age
@@ -82,6 +88,24 @@ function Get-SideCrabComponentSpec {
             PyImport    = $null
             PyRequires  = $null
             Description = 'SideCrab toast - raises Windows notifications from crabd state.'
+        }
+        [pscustomobject]@{
+            Key         = 'panel'
+            TaskName    = 'SideCrab-panel'
+            # A NATIVE exe, not a Python script: the task runs it directly. It exists only
+            # after setup\Build-SideCrabPanel.ps1 (dotnet publish), so presence on disk means
+            # "built" and -Panel builds it first. The window loads /panel/ from crabd (0.31.0+)
+            # and pins itself to the Xeneon Edge; it replaces the iCUE widget as the host on a
+            # PC where iCUE 5.51.40 or newer blocks widget requests to 127.0.0.1.
+            Launch      = 'exe'
+            Script      = (Join-Path $RepoRoot 'panel-host\dist\SideCrab.Panel.exe')
+            WatchFiles  = @((Join-Path $RepoRoot 'panel-host\dist\SideCrab.Panel.exe'))
+            Required    = $false
+            Port        = 0
+            Switch      = '-Panel'
+            PyImport    = $null
+            PyRequires  = $null
+            Description = 'SideCrab panel - the standalone panel window on the Xeneon Edge (WebView2), loading /panel/ from crabd.'
         }
     )
 }
@@ -128,6 +152,7 @@ function Select-SideCrabComponent {
         [pscustomobject]@{
             Key         = $c.Key
             TaskName    = $c.TaskName
+            Launch      = $c.Launch
             Script      = $c.Script
             Required    = $c.Required
             Switch      = $c.Switch
@@ -676,11 +701,20 @@ function Register-SideCrabTask {
        resurrect it silently. #>
     param(
         [Parameter(Mandatory)][string] $TaskName,
-        [Parameter(Mandatory)][string] $PythonExe,
-        [Parameter(Mandatory)][string] $ScriptPath,
+        # EITHER the python pair (PythonExe + ScriptPath) OR a native -Execute, run directly
+        # (the panel host's exe). Checked below rather than with parameter sets so the AST
+        # lift in setup\tests keeps working on a plain param block.
+        [string] $PythonExe,
+        [string] $ScriptPath,
+        [string] $Execute,
+        [string] $Argument = '',
         [string] $Description = 'SideCrab component.',
         [switch] $ForceEnable
     )
+
+    if (-not $Execute -and -not ($PythonExe -and $ScriptPath)) {
+        throw 'Register-SideCrabTask needs -Execute, or both -PythonExe and -ScriptPath'
+    }
 
     # Read the prior state BEFORE the -Force write - after it, the disabled flag is gone.
     $prior    = Get-SideCrabTaskState -TaskName $TaskName
@@ -688,9 +722,18 @@ function Register-SideCrabTask {
                                                -PriorState "$($prior.State)" `
                                                -ForceEnable $ForceEnable.IsPresent
 
-    $action = New-ScheduledTaskAction -Execute $PythonExe `
-                                      -Argument ('"{0}"' -f $ScriptPath) `
-                                      -WorkingDirectory (Split-Path -Parent $ScriptPath)
+    $action = if ($Execute) {
+        if ($Argument) {
+            New-ScheduledTaskAction -Execute $Execute -Argument $Argument `
+                                    -WorkingDirectory (Split-Path -Parent $Execute)
+        } else {
+            New-ScheduledTaskAction -Execute $Execute -WorkingDirectory (Split-Path -Parent $Execute)
+        }
+    } else {
+        New-ScheduledTaskAction -Execute $PythonExe `
+                                -Argument ('"{0}"' -f $ScriptPath) `
+                                -WorkingDirectory (Split-Path -Parent $ScriptPath)
+    }
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     # ExecutionTimeLimit 0 = never kill it; these are daemons, not jobs.
     $settings = New-ScheduledTaskSettingsSet `
@@ -1703,7 +1746,15 @@ function Get-SideCrabResidueSpec {
         }
         [pscustomobject]@{
             Key = 'logs'; Path = (Join-Path $stateDir 'logs'); Kind = 'log'; Disposition = 'purge'
-            Why = 'notifier and ack-handler logs; the only account of what a toast did'
+            Why = 'notifier, ack-handler and panel-host logs; the only account of what a toast or the panel window did'
+        }
+        [pscustomobject]@{
+            Key = 'panelsettings'; Path = (Join-Path $stateDir 'panel-settings.json'); Kind = 'data'; Disposition = 'purge'
+            Why = "the standalone panel host's settings (crabd port, which display, the widget props) - the operator's, like config.json"
+        }
+        [pscustomobject]@{
+            Key = 'panelprofile'; Path = (Join-Path $env:LOCALAPPDATA 'SideCrab\Panel'); Kind = 'cache'; Disposition = 'purge'
+            Why = "the panel host's WebView2 profile (cache plus the vendor-storage prefs: pins, filter, density); rebuilt on the next start"
         }
         [pscustomobject]@{
             Key = 'backups'; Path = (Join-Path (Split-Path -Parent $SettingsPath) (Get-SideCrabBackupPattern -SettingsPath $SettingsPath))
