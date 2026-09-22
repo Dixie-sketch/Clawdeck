@@ -110,14 +110,22 @@ public sealed class PanelLogicTests
 
     // ---- the host script ---------------------------------------------------------------
 
+    /// <summary>The JSON object out of the injected script, without the frame guard
+    /// around it. Built from the same constants the host uses, so a change to the guard
+    /// is a change in one place.</summary>
+    private static string Payload(string script) =>
+        script[PanelLogic.HostScriptPrefix.Length..^PanelLogic.HostScriptSuffix.Length];
+
     [TestMethod]
     public void The_host_script_is_one_object_with_the_props_and_the_pairing_code()
     {
         var props = new Dictionary<string, object?> { ["clock24"] = true, ["accentColor"] = "#BE7E6E", ["toastThreshold"] = 120L };
         var script = PanelLogic.HostScript(props, "K7QXM-2PDAB\n", "0.1.0");
-        StringAssert.StartsWith(script, "window.__sidecrabHost = ");
-        Assert.IsTrue(script.EndsWith(";"), script);
-        using var doc = JsonDocument.Parse(script["window.__sidecrabHost = ".Length..^1]);
+        // SCA-022: the assignment is inside a top-frame guard, so a child document the
+        // page embeds runs the script and assigns nothing.
+        StringAssert.StartsWith(script, "if (window.top === window) { window.__sidecrabHost = ");
+        Assert.IsTrue(script.EndsWith("; }"), script);
+        using var doc = JsonDocument.Parse(Payload(script));
         var root = doc.RootElement;
         Assert.AreEqual("standalone", root.GetProperty("kind").GetString());
         Assert.AreEqual("0.1.0", root.GetProperty("version").GetString());
@@ -132,10 +140,10 @@ public sealed class PanelLogicTests
     public void No_pairing_code_means_no_panelToken_prop_at_all()
     {
         var script = PanelLogic.HostScript(new Dictionary<string, object?>(), null, "0.1.0");
-        using var doc = JsonDocument.Parse(script["window.__sidecrabHost = ".Length..^1]);
+        using var doc = JsonDocument.Parse(Payload(script));
         Assert.IsFalse(doc.RootElement.GetProperty("props").TryGetProperty("panelToken", out _));
         var blank = PanelLogic.HostScript(new Dictionary<string, object?>(), "   ", "0.1.0");
-        using var doc2 = JsonDocument.Parse(blank["window.__sidecrabHost = ".Length..^1]);
+        using var doc2 = JsonDocument.Parse(Payload(blank));
         Assert.IsFalse(doc2.RootElement.GetProperty("props").TryGetProperty("panelToken", out _));
     }
 
@@ -148,7 +156,7 @@ public sealed class PanelLogicTests
         Assert.IsFalse(script.Contains("</script>", StringComparison.OrdinalIgnoreCase), script);
         Assert.IsFalse(script.Contains("<script", StringComparison.OrdinalIgnoreCase), script);
         // It is still exactly one JSON object followed by a semicolon, and it round-trips.
-        using var doc = JsonDocument.Parse(script["window.__sidecrabHost = ".Length..^1]);
+        using var doc = JsonDocument.Parse(Payload(script));
         Assert.AreEqual(evil, doc.RootElement.GetProperty("props").GetProperty("textColor").GetString());
         Assert.AreEqual(evil, doc.RootElement.GetProperty("props").GetProperty("panelToken").GetString());
     }
@@ -191,7 +199,7 @@ public sealed class PanelLogicTests
             Assert.AreEqual(90L, s.Props["toastThreshold"]);
             Assert.AreEqual("#112233", s.Props["accentColor"]);
             Assert.IsFalse(s.Props.ContainsKey("panelToken"));   // the code comes from panel-token only
-            Assert.IsFalse(s.Props.ContainsKey("nested"));        // not a property type iCUE has
+            Assert.IsFalse(s.Props.ContainsKey("nested"));        // not a property type the sheet ever had
             Assert.AreEqual(0, logged.Count);
         }
         finally { File.Delete(path); }
@@ -580,13 +588,18 @@ public sealed class SettingsBridgeTests
         // "IT" appears in half the title bars on a working desktop; a substring match on
         // it would point the operator at whatever happened to be enumerated first.
         var req = Req("IT", @"C:\IT", "it");
-        var other = Win(1, "chrome", "IT department - Google Chrome");
-        Assert.AreEqual(0, PanelLogic.ScoreWindow(other, req));
-        Assert.AreEqual("no-match", PanelLogic.SelectWindow(new[] { other }, req).Reason);
+        var term = Win(1, "pwsh", "IT department", "ConsoleWindowClass");
+        Assert.AreEqual(0, PanelLogic.ScoreWindow(term, req));
+        Assert.AreEqual("no-match", PanelLogic.SelectWindow(new[] { term }, req).Reason);
 
         // Same title at full length is a match, on the same window.
         var full = Req("IT department", @"C:\IT", "it");
-        Assert.AreEqual(PanelLogic.FocusScoreTitleContains, PanelLogic.ScoreWindow(other, full));
+        Assert.AreEqual(PanelLogic.FocusScoreTitleExact, PanelLogic.ScoreWindow(term, full));
+
+        // SCA-023: the same full-length title on a browser is still nothing. The window
+        // was RETYPED here, from chrome to a console, because a browser can no longer
+        // score at all - see the SCA-023 test for why that changed.
+        Assert.AreEqual(0, PanelLogic.ScoreWindow(Win(2, "chrome", "IT department"), full));
     }
 
     [TestMethod]

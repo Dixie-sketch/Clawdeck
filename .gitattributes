@@ -10,6 +10,5 @@
 # Binary assets
 *.png binary
 *.ico binary
-*.icuewidget binary
 *.jpg binary
 *.gif binary

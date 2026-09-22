@@ -49,8 +49,8 @@
 	   to fit the sensors row — see .zone-limits. */
 	--spark-h: calc(var(--layout-unit) * 7.4);
 
-	/* Runtime values written by JS from the iCUE properties. Declared here so the
-	   widget renders correctly in a plain browser where iCUE injects nothing. */
+	/* Runtime values written by JS from the host-injected settings. Declared here so
+	   the page renders correctly where nothing is injected. */
 	--text-color: #EDE7DF;
 	/* v0.26.0 (AUD-F1): #CC785C -> #BE7E6E. The old default sat on TOP of the
 	   mascot — oklch H 39.15 against Claw'd's 39.51, 0.36 degrees apart — so every
@@ -64,7 +64,7 @@
 	   amber 172) and buying crab separation in lightness would have spent the
 	   alert-vs-brand separation the same audit demands. Hue and chroma are free;
 	   lightness is not. Contrast on --surface is unchanged at 5.5:1.
-	   THE DEFAULT ONLY — iCUE's accentColor property still overwrites this at
+	   THE DEFAULT ONLY — a saved accentColor still overwrites this at
 	   runtime (setVar in sidecrab.js), and the same default is restated in
 	   index.html's property meta; all three move together or the panel renders one
 	   colour in a browser and another on the glass.
@@ -360,7 +360,7 @@ body.quiet .crab.waveonce .arm-right { animation: none; }
    feed it is all placeholder: four "--" stats, two empty gauge tracks and an
    axis with no series. Hidden, not greyed — a row of dashes is the panel
    claiming to report a figure it does not have, and six of them is what makes an
-   otherwise fine display look broken. The SENSORS row stays: iCUE feeds it, not
+   otherwise fine display look broken. The SENSORS row stays: the companion feeds it, not
    the companion, so it is real data on a panel that has none of the other kind.
    The two headers go with their blocks — a "Limits" heading over nothing is a
    promise the zone cannot keep, and both are tap targets for sheets that would
@@ -370,12 +370,20 @@ body.connecting .gauge,
 body.connecting .gauge-extra,
 body.connecting .limits-note,
 body.connecting .today,
-body.connecting .grid-head { display: none; }
+/* SCA-018. The head KEEPS ITS VIEW CHIPS while the feed is not answering, and
+   loses everything else in it. Hiding the whole row was what stranded a panel saved
+   on Burn, Week or Detail: the view it was showing had no data to draw, and the one
+   control that could have taken the operator back to the Sessions page - which is
+   where the companion-setup message lives - was hidden with the row. Everything
+   else here does go: the label and its hint open the Today timeline, and the filter,
+   density and History chips are all controls over data there is none of. */
+body.connecting .grid-head > :not(.view-chip) { display: none; }
+body.connecting .grid-head { justify-content: flex-end; }
 /* The row is the only thing left in the zone, so its separator has nothing above
    it to separate from, and it centres in the space the hidden blocks left. */
 body.connecting .zone-limits { justify-content: center; }
 body.connecting .sensors.shown { margin-top: 0; padding-top: 0; border-top: 0; }
-/* ...and with no sensor reading either — a dev browser, or a machine iCUE reports
+/* ...and with no sensor reading either — a dev browser, or a machine the companion reports
    no temperature for — the zone has nothing at all in it, so it is not a zone.
    Dropped outright rather than left as an empty column between two rules, and the
    two survivors take the 36 / 64 split the 1200px breakpoint already uses. */
@@ -745,6 +753,12 @@ body.quiet .crab.juggling .juggle { display: none; }
 .moon-chip[data-quiet="off"] { color: var(--accent); border-color: var(--accent); }
 .moon-chip[data-quiet="on"] .moon-mode,
 .moon-chip[data-quiet="off"] .moon-mode { color: var(--text-color); }
+/* SCA-027: a request the companion has not confirmed. Deliberately NOT the accent
+   the two settled states wear - the whole point is that it does not yet look like
+   one of them - and deliberately not a spinner either, because the confirmation
+   arrives on the feed and a spinner would keep turning on a companion that is gone. */
+.moon-chip[data-quiet="pending"] { color: var(--faint); border-color: var(--faint); }
+.moon-chip[data-quiet="pending"] .moon-mode { color: var(--faint); font-style: italic; }
 
 /* ---------- the touch-diagnostics indicator (v0.23.0) ---------- */
 
@@ -1191,7 +1205,7 @@ body.limits-two-extras .stat {
 }
 body.limits-two-extras .spark-wrap { display: none; }
 
-/* ---------- hardware sensors row (iCUE Sensors plugin) ---------- */
+/* ---------- hardware sensors row (fed by the companion) ---------- */
 
 /* display:none until JS has a real reading in hand. Nothing about the layout
    reserves space for it, so a machine with no sensors is not paying a gap. */
@@ -1250,7 +1264,7 @@ body.limits-two-extras .spark-wrap { display: none; }
 	color: var(--sensor-color, var(--text-color));
 }
 
-/* THE SENSOR NAME (v0.21.0). iCUE's own label for the sensor the operator picked,
+/* THE SENSOR NAME (v0.21.0). The companion's own label for the sensor,
    beside the number it produced. It exists because the two failures look
    identical from the far side of a desk: a bridge that has stopped answering and
    a CPU cell pointed at a hub temperature that genuinely never moves. The
@@ -1663,7 +1677,7 @@ body.quiet .card.writing.w2 .dot { transform: none; }
    idiom this panel reserves for the alert flash, and it sat inches from the amber
    spine of a waiting card. Two further reasons the literal had to go: it was a
    hardcoded copy of the pre-AUD-F1 accent, so it went stale the moment the token
-   moved, and it never tracked the iCUE accentColor override at all — a user who
+   moved, and it never tracked the saved accentColor override at all — a user who
    picked a green accent got a green chip on an orange plate. The neutral wash is
    the same rgba(237, 231, 223, ...) the sheet buttons use. */
 .card-turn {
@@ -2951,6 +2965,17 @@ body.pinflash-frozen .card-pin.pin-confirm-off {
 	color: var(--faint);
 }
 .sheet-approval-threshold.shown { display: block; }
+/* MF-017. The companion's verdict on whether a tap on Approve will be taken. Amber
+   rather than red: nothing is broken, something is not set up, and the line says
+   which. Hidden entirely while the companion says `ready` or says nothing. */
+.sheet-approval-ready {
+	display: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.04em;
+	color: var(--amber);
+}
+.sheet-approval-ready.shown { display: block; }
 .sheet.approval-expired .sheet-approval-left { color: var(--red); }
 /* Past the hold the buttons are still LIVE, and that is deliberate: the panel's
    clock is not crabd's, so a countdown this widget cannot verify must not take a
@@ -2973,7 +2998,7 @@ body.pinflash-frozen .card-pin.pin-confirm-off {
    decision, and a warm plate under the safe option is the worst place on the glass
    to spend the alert idiom. It stays FILLED (that is what makes it primary) and
    keeps the accent border. The old rgba(204, 120, 92, 0.16) was also a hardcoded
-   copy of the pre-AUD-F1 accent that never tracked the iCUE override. */
+   copy of the pre-AUD-F1 accent that never tracked the saved override. */
 .sheet-btn-deny { flex: 1 1 calc(var(--layout-unit) * 20); border-color: var(--accent); color: var(--text-color); background: rgba(237, 231, 223, 0.16); }
 .sheet-btn-approve { flex: 1 1 calc(var(--layout-unit) * 20); border-color: var(--amber); color: var(--amber); }
 .sheet.busy .sheet-approval-actions { opacity: 0.5; pointer-events: none; }
@@ -3845,6 +3870,74 @@ body.quiet .core-sessions { color: var(--muted); }
 .set-status[data-kind="ok"] { color: var(--green); }
 .set-status[data-kind="pending"] { color: var(--faint); }
 .set-status[data-kind="err"] { color: var(--red); }
+
+/* MF-001. A heading across both columns of the sheet grid, because the two halves
+   of this sheet write to two different places and the boundary has to be visible. */
+.set-section {
+	grid-column: 1 / -1;
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 1.4);
+	min-width: 0;
+	margin-top: calc(var(--layout-unit) * 1.4);
+	padding-bottom: calc(var(--layout-unit) * 0.4);
+	border-bottom: 1px solid var(--surface-line);
+}
+.set-section:first-child { margin-top: 0; }
+.set-section-head {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--text-color);
+}
+.set-section-note {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* The companion's Save is a second sticky bar and must not stack on top of the
+   panel one, so it is an ordinary row in the flow. */
+.set-actions-cfg { position: static; }
+.set-text {
+	flex: 0 0 calc(var(--layout-unit) * 12);
+	min-width: 0;
+	min-height: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 1.2);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--text-color);
+	background: transparent;
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.6);
+}
+.set-text:focus { outline: 1px solid var(--accent); }
+/* MF-001. The per-project continue vocabulary, read-only: it is edited in the
+   companion's config file, and the note under it says so. */
+.set-prompts {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.4);
+	min-width: 0;
+	margin-top: calc(var(--layout-unit) * 1.2);
+}
+.set-prompt {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.set-foot-ready { grid-column: 1 / -1; white-space: normal; }
+.set-foot-ready.bad { color: var(--amber); }
 /* Where a save goes, on its own line: it is a path, and a path that shared the
    status line would push the status off the end of it. */
 .set-foot {
@@ -3864,7 +3957,7 @@ body.quiet .core-sessions { color: var(--muted); }
 
    Two controls, one vocabulary. In the sheet it is a .sheet-btn in a row of its own
    below the pin row; on the Detail page it is a .head-chip beside Back. Both are
-   BUILT by JS and only when the panel host's bridge exists, so in iCUE neither the
+   BUILT by JS and only when the panel host offers the capability, so elsewhere neither the
    markup nor these rules ever match anything.
 
    The status line is duplicated for a measured reason, not for symmetry: the shared
@@ -3937,7 +4030,7 @@ body.quiet .core-sessions { color: var(--muted); }
    against the bridge row's 13.5, and the 18 px is exactly what pays for the extra
    cell beside it: with 13.5 the four cells paint 550.5 px of 561.9 and leave 11.4,
    which is less than the out-of-flow chevron's own clear column needs. The cap can
-   come down here and not there because the two rows carry different labels: iCUE
+   come down here and not there because the two rows carry different labels: the retired bridge
    hands back an operator-chosen sensor name ("CPU Package", 87.0 px), while HWiNFO's
    is "CPU (Tctl/Tdie)", which this block shortens to "Tctl/Tdie" - 9 characters,
    inside 79.2 px with room. Scoped to the row's own class so a row the bridge owns
@@ -4205,15 +4298,91 @@ body[data-grid-view="detail"] .grid-view[data-view="detail"] { display: flex; }
 	color: var(--text-color);
 	white-space: pre-wrap;
 }
+/* MF-002: the line now carries a control, so it is a row rather than one string.
+   The text keeps the ellipsis it had; the button does not shrink, because a target
+   that narrows with its neighbour's text is a target that can stop being tappable. */
 .dv-queued {
 	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.2);
+	min-width: 0;
 	font-family: var(--font-mono);
 	font-size: var(--fs-meta);
+	color: var(--accent);
+}
+.dv-queued > span {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dv-btn {
+	flex: 0 0 auto;
+	min-height: var(--touch-min);
+	padding: 0 calc(var(--layout-unit) * 1.6);
+	font-family: var(--font-mono);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.06em;
+	color: var(--muted);
+	background: transparent;
+	border: 1px solid var(--surface-line);
+	border-radius: calc(var(--layout-unit) * 0.6);
+	cursor: pointer;
+	touch-action: manipulation;
+}
+.dv-btn:active { background: rgba(237, 231, 223, 0.16); }
+
+/* MF-002. The sheet's own queued row, above the continue buttons: the thing being
+   cancelled sits with the thing that created it. */
+.sheet-queued {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 1.2);
+	min-width: 0;
+	margin-bottom: calc(var(--layout-unit) * 0.8);
+}
+.sheet-queued-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
 	color: var(--accent);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+.sheet-btn-cancel { flex: 0 0 auto; }
+
+/* MF-008. Where each number on this panel came from and how old it is: a name, the
+   companion's own words about it, and an age. Three columns so the ages line up -
+   a column of ages that did not would be a list nobody scans. */
+.hs-source {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 1.4);
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-status);
+	color: var(--muted);
+}
+.hs-source.bad { color: var(--amber); }
+.hs-source-name {
+	flex: 0 0 calc(var(--layout-unit) * 16);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.hs-source.bad .hs-source-name { color: var(--amber); }
+.hs-source-state {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.hs-source-age { flex: 0 0 auto; color: var(--faint); }
 .dv-approval {
 	flex: 0 1 auto;
 	min-height: 0;

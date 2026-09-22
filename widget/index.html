@@ -3,225 +3,18 @@
 <head>
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>tr('SideCrab')</title>
+	<!-- CLEAN-07 (v0.32.0). The title is STATIC and is the first thing in the file
+	     that names the product: the retired host parsed this document as strict XML
+	     and wanted a tr() call here, so the real title was written by script after
+	     first paint and a browser tab read "tr('SideCrab')" until it ran. Nothing
+	     repairs this at runtime any more; if it is wrong it is wrong in the file.
+	     Everything else that used to live in this head - the vendor property and
+	     group metadata, the inline vendor API wrappers and the widget
+	     preview - went with the vendor host. The settings surface is the on-glass
+	     sheet and the panel host's own settings file. -->
+	<title>SideCrab</title>
 	<link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
 	<link rel="stylesheet" href="styles/sidecrab.css" />
-	<meta name="x-icue-widget-preview" content="resources/preview.png" />
-
-	<meta name="x-icue-property" content="crabdPort" data-label="tr('crabd Port')" data-type="textfield" data-default="'2722'" />
-	<!-- The approval PAIRING CODE (v0.27.0, closes SEC-a). crabd mints it once into
-	     ~/.sidecrab/panel-token and requires it on every Approve/Deny; a widget
-	     property is the one place a web page the operator visits cannot read, which
-	     is the whole point. Read it with `Install-SideCrab.ps1 -PairingCode`. A
-	     textfield because that is a property type the import validator has accepted;
-	     the value is compared case- and hyphen-insensitively. -->
-	<meta name="x-icue-property" content="panelToken" data-label="tr('Approval Pairing Code')" data-type="textfield" data-default="''" />
-	<meta name="x-icue-property" content="clock24" data-label="tr('24-Hour Clock')" data-type="switch" data-default="false" />
-	<meta name="x-icue-property" content="alertFlash" data-label="tr('Flash On New Alert')" data-type="switch" data-default="true" />
-
-	<!-- The wardrobe switch (v0.11.0). The accessory system is "auto" (the crab
-	     dresses for what the sessions are doing) or "plain" (never any accessory),
-	     and it is declared as a SWITCH because switch/slider/textfield/color are the
-	     property types this widget has ever had confirmed on the Edge — guessing an
-	     enum type the import validator does not know would fail at the console, not
-	     here. The reader (crabStyle() in sidecrab.js) accepts the WORDS 'auto' and
-	     'plain' as well as the boolean, so a later enum control needs no code. -->
-	<meta name="x-icue-property" content="crabStyle" data-label="tr('Crab Accessories')" data-type="switch" data-default="true" />
-
-	<meta name="x-icue-property" content="quietEnabled" data-label="tr('Quiet Hours')" data-type="switch" data-default="false" />
-	<meta name="x-icue-property" content="quietStart" data-label="tr('Quiet Start (HH:MM)')" data-type="textfield" data-default="'22:00'" />
-	<meta name="x-icue-property" content="quietEnd" data-label="tr('Quiet End (HH:MM)')" data-type="textfield" data-default="'07:00'" />
-
-	<!-- THE MASTER TOAST SWITCH (label re-checked v0.20.0, CD-26). It reads as a
-	     global mute and, as of the notifier's v0.20.0 change, that is exactly what
-	     it is: `toast.enabled` gates EVERY SideCrab toast — waiting sessions,
-	     permission requests, the daily digest and the budget crossing alike — not
-	     only the waiting-session ones it used to gate.
-	     The label is therefore correct as written and is deliberately unchanged;
-	     what is new is that its correctness now depends on the notifier honouring
-	     the key globally. If that ever narrows again, this label and the group
-	     info line below are the two places that go wrong, and they go wrong
-	     silently, so they are named here.
-	     No per-property description attribute is invented for this: switch,
-	     slider, textfield, color and sensors-combobox with data-label are the only
-	     shapes this widget has ever had accepted by the import validator, and the
-	     group `info` is where per-group prose is contractually allowed. -->
-	<meta name="x-icue-property" content="toastEnabled" data-label="tr('Desktop Toast Alerts')" data-type="switch" data-default="true" />
-	<meta name="x-icue-property" content="toastThreshold" data-label="tr('Toast After')" data-type="slider" data-default="120" data-min="30" data-max="600" data-step="10" data-unit-label="'s'" />
-
-	<!-- The APPROVAL toast threshold (v0.16.0): how long a permission request may
-	     sit undecided before the notifier toasts it. A separate control from the
-	     one above because it is a different question, and it needs a range the
-	     other cannot give it: the contract allows 5 to 3600 s here and the shipped
-	     default is 20, which is below the waiting toast's own 30 s floor.
-	     The slider stops at 300 rather than the contract ceiling: a permission
-	     request is something the operator is already blocked on, so five minutes is
-	     past the far end of useful, and a slider that must travel an hour to be set
-	     is a slider nobody sets. Step 5 keeps every position a whole number of the
-	     unit shown beside it.
-	     THE SEQUENCING, which is the load bearing part: the value is written to
-	     crabd only once this control has actually been moved. crabd preserves the
-	     on-disk value when the key is omitted, and sending the default on every
-	     save would quietly delete a value hand-edited into config.json. See
-	     noteApprovalThreshold() in scripts/sidecrab.js. -->
-	<meta name="x-icue-property" content="approvalThreshold" data-label="tr('Approval Toast After')" data-type="slider" data-default="20" data-min="5" data-max="300" data-step="5" data-unit-label="'s'" />
-
-	<!-- The budget slider is in THOUSANDS of output tokens, not raw ones: the
-	     control renders its own value beside its unit label, and "5000000 tokens"
-	     is not a figure anyone reads on a settings panel. 100 (100k) is the
-	     contract's own floor; 20000 (20M) is the top of the plausible range
-	     rather than the contract's 100M ceiling, because a slider that must
-	     travel a thousand steps to reach a usable value is a slider nobody sets.
-	     The step is 100, so every position is a whole 100k. -->
-	<meta name="x-icue-property" content="budgetEnabled" data-label="tr('Daily Token Budget')" data-type="switch" data-default="false" />
-	<meta name="x-icue-property" content="budgetTokens" data-label="tr('Budget Per Day')" data-type="slider" data-default="5000" data-min="100" data-max="20000" data-step="100" data-unit-label="'k out'" />
-
-	<meta name="x-icue-property" content="cpuTempSensor" data-label="tr('CPU Temperature Sensor')" data-type="sensors-combobox" data-default="plugins.Sensorsdataprovider.getDefaultSensorIdBlock('temperature', 'cpu-temp')" />
-	<meta name="x-icue-property" content="gpuTempSensor" data-label="tr('GPU Temperature Sensor')" data-type="sensors-combobox" data-default="plugins.Sensorsdataprovider.getDefaultSensorIdBlock('temperature', 'gpu-temp')" />
-
-	<!-- TOUCH DIAGNOSTICS (v0.23.0). Default OFF, and a switch rather than anything
-	     cleverer because switch/slider/textfield/color/sensors-combobox are the
-	     property types this widget has ever had accepted by the import validator.
-	     It is in a group of its own so it cannot be mistaken for a feature: turning
-	     it on installs a document-level, capture-phase, PASSIVE event recorder and
-	     ships what it records to the companion, and turning it off REMOVES those
-	     listeners rather than muting them. Nothing about the panel's behaviour
-	     changes in either state — that is proved, not asserted, and the proof is in
-	     widget/DEV.md under v0.23.0. -->
-	<meta name="x-icue-property" content="touchDiag" data-label="tr('Touch Diagnostics')" data-type="switch" data-default="false" />
-
-	<!-- The chime (lane B). A session moving INTO needs_input plays a short
-	     two-note chime; the gates are in chimeDecision and the sound is in
-	     playChime. These two are properties as well as panel-settings props
-	     because the on-glass settings sheet is standalone-only, and a panel inside
-	     iCUE with a chime it cannot turn off is a control nobody can reach.
-	     The READERS are chimeOn() and chimeLevel(): a function may never share a
-	     property's name, because iCUE injects each property as a same-named global
-	     with let semantics and the collision is a parse error, not a warning
-	     (0.27.0 shipped blank on exactly that). -->
-	<meta name="x-icue-property" content="chime" data-label="tr('Chime On New Question')" data-type="switch" data-default="true" />
-	<meta name="x-icue-property" content="chimeVolume" data-label="tr('Chime Volume')" data-type="slider" data-default="60" data-min="0" data-max="100" data-step="5" data-unit-label="'%'" />
-
-	<meta name="x-icue-property" content="textColor" data-label="tr('Text Color')" data-type="color" data-default="'#EDE7DF'" />
-	<!-- The accent default is stated in THREE places — here, :root in sidecrab.css,
-	     and the strProp fallback in sidecrab.js — and they move together: iCUE
-	     writes this one over the CSS at runtime, so a mismatch renders one colour in
-	     a browser and another on the glass. v0.26.0 value and the measurements
-	     behind it: the AUD-F1 note on the accent token in sidecrab.css. -->
-	<meta name="x-icue-property" content="accentColor" data-label="tr('Accent Color')" data-type="color" data-default="'#6F94CC'" />
-	<meta name="x-icue-property" content="backgroundColor" data-label="tr('Background Color')" data-type="color" data-default="'#0F0E0D'" />
-	<meta name="x-icue-property" content="transparency" data-label="tr('Background Transparency')" data-type="slider" data-default="0" data-min="0" data-max="100" data-step="1" data-unit-label="'%'" />
-
-	<script id="x-icue-groups" type="application/json">
-	[
-		{
-			"title": "tr('SideCrab')",
-			"properties": ["crabdPort", "clock24", "alertFlash", "crabStyle", "quietEnabled", "quietStart", "quietEnd", "toastEnabled", "toastThreshold", "approvalThreshold", "budgetEnabled", "budgetTokens"],
-			"info": "tr('Claude Code session data comes from the SideCrab companion service on 127.0.0.1. The clock and the hardware sensors work without it. Desktop Toast Alerts is a master switch: turning it off silences every SideCrab toast, not only waiting sessions.')"
-		},
-		{
-			"title": "tr('Hardware Sensors')",
-			"properties": ["cpuTempSensor", "gpuTempSensor"],
-			"info": "tr('The sensor row is hidden entirely when iCUE reports no sensors, so the panel never shows a blank or invalid temperature. Pick a DIFFERENT sensor for each: importing the widget resets both of these, and one sensor selected twice would read the same temperature in both cells. The panel labels each reading with the name iCUE gives that sensor, and says so rather than printing the same number twice.')"
-		},
-		{
-			"title": "tr('Diagnostics')",
-			"properties": ["touchDiag"],
-			"info": "tr('Turn this on only while investigating touch problems, then turn it off. While it is on the panel records every touch, pen and mouse event it receives and sends the log to the SideCrab companion, and a small dim counter appears beside the clock so you can see it is recording. It changes nothing else about how the panel behaves. Leave it off for normal use.')"
-		},
-		{
-			"title": "tr('Widget Personalization')",
-			"properties": ["textColor", "accentColor", "backgroundColor", "transparency"]
-		}
-	]
-	</script>
-
-	<!-- iCUE plugin wrappers, bundled LOCALLY per the Corsair sensors reference
-	     ("copy common/plugins into your widget folder; do not reference iCUE
-	     installation paths"). Inline rather than script src because iCUE serves
-	     widgets from a file:// GUID folder where QtWebEngine silently refuses to
-	     execute a wrapper loaded by src — inline satisfies the same instruction:
-	     nothing here resolves against an iCUE-owned path, so no iCUE-injected
-	     global can shadow it. SimpleSensorApiWrapper extends the base, so the base
-	     must be declared first.
-	     The CDATA wrapper is load-bearing, not decoration: iCUE parses this file
-	     as strict XML, where the wrapper's own logical-AND is a raw ampersand and
-	     an illegal token. The two marker lines are line comments to JavaScript and
-	     markup to XML.
-
-	     v0.18.0 — THE FROZEN-SENSOR FIX. Three departures from the reference text,
-	     each one a defect the reference has and this panel was living with:
-
-	     1. THE ORDERING RACE, and the one that freezes a panel. The reference calls
-	        the plugin method BEFORE putting the request in pendingRequests. Qt
-	        delivers a signal synchronously whenever the connection is direct and
-	        the provider can answer without going to hardware — a warm cache, which
-	        is exactly what a sensor provider has after its first read. The
-	        asyncResponse callback then runs INSIDE method.call, finds an empty map,
-	        and drops the answer; the promise sits until the 5 s timeout and
-	        rejects. First read (cold, genuinely async) resolves and paints a number;
-	        every read after it is dropped, so the number never moves. Registering
-	        BEFORE the call makes a synchronous answer land in a map that already
-	        has somewhere to put it.
-	     2. requestId TYPE. The map is keyed by a JS number and the bridge may hand
-	        the id back as a string or a double; a Map lookup is strict, so a
-	        round-trip through the transport that changes the type misses silently
-	        and every request times out. Both sides go through Number().
-	     3. A THROWING method (an older provider missing one) left a pending entry
-	        to time out 5 s later with the real error lost. It rejects now, with the
-	        reason.
-	     Rejections carry a `code` ("timeout" / "call") so a caller can classify one
-	     without matching on message text. -->
-	<script>
-	//<![CDATA[
-	class IcueWidgetApiWrapper {
-	  constructor(plugin, timeoutMs = 5000) {
-	    this.plugin = plugin; this.timeoutMs = timeoutMs;
-	    this.pendingRequests = new Map(); this.nextRequestId = 0;
-	    if (this.plugin && this.plugin.asyncResponse)
-	      this.plugin.asyncResponse.connect(this._handleAsyncResponse.bind(this));
-	  }
-	  _nextRequestId() { return this.nextRequestId++; }
-	  _handleAsyncResponse(requestId, value) {
-	    const key = Number(requestId);
-	    const pending = this.pendingRequests.get(key);
-	    if (!pending) return;
-	    clearTimeout(pending.timeoutId);
-	    this.pendingRequests.delete(key);
-	    pending.resolve(value);
-	  }
-	  request(method, ...args) {
-	    return new Promise((resolve, reject) => {
-	      const requestId = this._nextRequestId();
-	      const timeoutId = setTimeout(() => {
-	        if (this.pendingRequests.has(requestId)) {
-	          this.pendingRequests.delete(requestId);
-	          const err = new Error("Request timeout"); err.code = "timeout"; reject(err);
-	        }
-	      }, this.timeoutMs);
-	      this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
-	      try { method.call(this.plugin, requestId, ...args); }
-	      catch (e) {
-	        clearTimeout(timeoutId);
-	        this.pendingRequests.delete(requestId);
-	        const err = e instanceof Error ? e : new Error(String(e)); err.code = "call"; reject(err);
-	      }
-	    });
-	  }
-	}
-	class SimpleSensorApiWrapper extends IcueWidgetApiWrapper {
-	  constructor(plugin, timeoutMs = 5000) { super(plugin, timeoutMs); }
-	  getSensorValue(sensorId)      { return this.request(this.plugin.getSensorValue, sensorId); }
-	  getSensorUnits(sensorId)      { return this.request(this.plugin.getSensorUnits, sensorId); }
-	  getSensorName(sensorId)       { return this.request(this.plugin.getSensorName, sensorId); }
-	  getSensorDeviceName(sensorId) { return this.request(this.plugin.getSensorDeviceName, sensorId); }
-	  getSensorType(sensorId)       { return this.request(this.plugin.getSensorType, sensorId); }
-	  getSensorKind(sensorId)       { return this.request(this.plugin.getSensorKind, sensorId); }
-	  getAllSensorIds()              { return this.request(this.plugin.getAllSensorIds); }
-	  sensorIsConnected(sensorId)   { return this.request(this.plugin.sensorIsConnected, sensorId); }
-	}
-	//]]>
-	</script>
 </head>
 <body>
 	<div id="flash" class="flash" aria-hidden="true"></div>
@@ -651,7 +444,7 @@
 				<!-- lane C: the canvas renderer. It paints the SAME art on the SAME
 				     half-cell grid as the SVG above (viewBox 0 -4 52 44, every rect
 				     transcribed, every colour read from the SVG's own computed custom
-				     properties so an iCUE accent override still wins), and it is a pure
+				     properties so a saved accent override still wins), and it is a pure
 				     OBSERVER: the data-mood and data-acc attributes and the trick classes
 				     on #crab stay the one source of truth, so nothing else in the widget
 				     knows this exists.
@@ -749,7 +542,7 @@
 
 					     SHOWN ONLY where a setting can be saved or previewed: the
 					     standalone host, and mock mode for an off-glass look. Inside
-					     iCUE the property sheet is the settings surface and a widget
+					     the retired host the property sheet was the settings surface and a widget
 					     cannot write a property back, so a gear there would be a
 					     control that silently does nothing. -->
 					<button type="button" id="gearChip" class="gear-chip" aria-label="Panel settings">
@@ -763,8 +556,8 @@
 					</button>
 				</div>
 				<div id="clockDate" class="clock-date">&#160;</div>
-				<!-- Fleet dots (v0.6.0): SideCrab watching its own two Scheduled Tasks,
-				     glow and toast. Ambient, not an alert - the whole row is muted and
+				<!-- Fleet dots (v0.6.0; the glow dot went with the RGB path in v0.32.0): SideCrab
+				     watching its own notifier task. Ambient, not an alert - the whole row is muted and
 				     nothing here ever pulses, because a stopped helper is a thing to
 				     notice on the next walk past, not a thing to interrupt for.
 				     crabd is deliberately absent from the row: if the panel is showing
@@ -786,9 +579,6 @@
 				     The room was always there: the row uses ~160 px of a 462 px
 				     column even after this change. -->
 				<div id="fleet" class="fleet">
-					<span class="fleet-item" id="fleetGlow" data-state="unknown">
-						<span class="fleet-k">glow</span><span class="fleet-dot"></span>
-					</span>
 					<span class="fleet-item" id="fleetToast" data-state="unknown">
 						<span class="fleet-k">toast</span><span class="fleet-dot"></span>
 					</span>
@@ -875,8 +665,9 @@
 				     and not slot-conditional: the hierarchy is wrong at every size.
 				     The class is also what the two-extras collapse hides (AUD-F2) —
 				     the demoted pair is the pair the zone can afford to lose.
-				     (No token names in here: a double hyphen is illegal inside an XML
-				     comment and the strict parse is one of this widget's gates.) -->
+				     (Token names are still spelled out rather than written literally:
+				     the strict-XML gate that forced it is retired, but rewriting these
+				     comments buys nothing and the names are correct as prose.) -->
 				<div class="today-grid">
 					<div class="stat"><span class="stat-v" id="statOut">--</span><span class="stat-k">out</span></div>
 					<div class="stat meta"><span class="stat-v" id="statIn">--</span><span class="stat-k">in</span></div>
@@ -911,16 +702,16 @@
 				</div>
 			</div>
 
-			<!-- Hardware sensors (iCUE Sensors data provider) and, since v0.21.0, the
+			<!-- Hardware sensors and, since v0.21.0, the
 			     host CPU/memory figures the companion serves. The row starts hidden
 			     and is only revealed once it has something real to say, so a dev
-			     browser or a machine iCUE reports no sensors for shows nothing at all
+			     browser or a machine the companion reports no sensors for shows nothing at all
 			     rather than a placeholder that reads as a broken temperature.
 			     ONE LINE, and that is a measured constraint rather than a style: the
 			     Limits zone had 20.0 px of vertical slack left on ?mock=rework after
 			     the v0.17.0 trim, and one more line of meta type costs more than that.
 			     Everything added here therefore rides inside the existing line box.
-			     The sensor NAME (v0.21.0) is the label iCUE itself gives the selected
+			     The sensor NAME (v0.21.0) is the label the companion gives the selected
 			     sensor. It exists because a wrong SELECTION and a frozen bridge look
 			     identical on the glass — the operator's cpuTempSensor and gpuTempSensor
 			     both held one hub sensor id, and the panel had no way to say so. -->
@@ -1011,9 +802,17 @@
 			     operator came back. A zero-height flex child still resolves its tracks
 			     to a list of lengths, so the count survives. See the lane C block at the
 			     end of the stylesheet. -->
-			<div id="viewBurn" class="grid-view" data-view="burn" aria-hidden="true"></div>
-			<div id="viewWeek" class="grid-view" data-view="week" aria-hidden="true"></div>
-			<div id="viewDetail" class="grid-view" data-view="detail" aria-hidden="true"></div>
+			<!-- SCA-007. aria-hidden and inert are the DEFAULT VIEW's state, not a
+			     property of these elements: the panel boots on Sessions, so the three
+			     alternates start hidden from the accessibility tree and out of the tab
+			     order. applyGridView owns both attributes from the first render on and
+			     moves them with the visible view, including the narrow fallback where
+			     the stylesheet shows the cards whatever the stored view says. Without
+			     it a visible Burn page stayed aria-hidden while the invisible card grid
+			     behind it went on taking Tab and opening sheets nobody could see. -->
+			<div id="viewBurn" class="grid-view" data-view="burn" aria-hidden="true" inert></div>
+			<div id="viewWeek" class="grid-view" data-view="week" aria-hidden="true" inert></div>
+			<div id="viewDetail" class="grid-view" data-view="detail" aria-hidden="true" inert></div>
 		</section>
 
 	</div>
@@ -1023,8 +822,8 @@
 	     sheet the user just opened with a finger must never render at ambient
 	     brightness. Every control is sized from the touch-min token (48 px
 	     floor) because this panel is driven by a fingertip, not a mouse.
-	     NB: XML comments cannot contain a double hyphen, so CSS custom property
-	     names are spelled out here rather than written literally. -->
+	     (The spelled-out custom property names are a leftover of the retired
+	     strict-XML parse and are left as prose.) -->
 	<!-- Four modes on one panel, switched by data-mode. "action" is v0.2.0
 	     unchanged (question, then the ack/reply buttons) and is reached only from a
 	     needs_input card; "detail" is the read-only variant every other card
@@ -1044,6 +843,11 @@
 	     attribute gating the same region two ways. -->
 	<div id="sheet" class="sheet" data-mode="action" data-tl-view="today" aria-hidden="true">
 		<div id="sheetBackdrop" class="sheet-backdrop"></div>
+		<!-- SCA-008. The dialog's accessible name is the ACTIVE MODE's title and is
+		     written by setSheetLabel on every open; this attribute is only the value
+		     before the first one. One panel serves nine modes, so a fixed "Session
+		     actions" announced the settings sheet and the week drill under a name
+		     neither of them has. -->
 		<div class="sheet-panel" role="dialog" aria-modal="true" tabindex="-1" aria-label="Session actions">
 			<div class="sheet-head">
 				<div class="sheet-titles">
@@ -1091,7 +895,7 @@
 				     a clock this panel cannot verify must not take a control away. -->
 				<span id="sheetApprovalLeft" class="sheet-approval-left"></span>
 				<!-- The EFFECTIVE approval-toast threshold (v0.17.0). The setting lives
-				     on an iCUE slider, and a widget cannot write iCUE properties — so
+				     on the retired host's slider, which a widget could not write — so
 				     when the operator has set approvalThresholdSec in config.json the
 				     slider still reads its own default and there was no surface anywhere
 				     that said which figure was actually in force. crabd now serves the
@@ -1103,6 +907,11 @@
 				     and this line says so instead. Presence-gated on the seed, so an
 				     older crabd (no `toast` block) renders nothing at all here. -->
 				<span id="sheetApprovalThreshold" class="sheet-approval-threshold"></span>
+				<!-- MF-017. The companion's own verdict on whether a tap on Approve
+				     will be accepted, with the repair for the state it is in. Empty
+				     and unshown while the companion says `ready` or says nothing at
+				     all: a decision that is going to work needs no line about itself. -->
+				<span id="sheetApprovalReady" class="sheet-approval-ready"></span>
 			</div>
 			<!-- Burn-by-session (v0.4.0), a third mode of the same panel rather than a
 			     second sheet: one backdrop, one close button, one set of close
@@ -1207,7 +1016,7 @@
 			<!-- Panel settings (lane B), the eighth mode of the same panel. Empty
 			     markup on purpose, the host-history region's idiom: JS builds the
 			     rows, so thirty controls are thirty things that cannot be an
-			     unclosed element in a file iCUE parses as strict XML. It carries no
+			     unclosed element in this file. It carries no
 			     session, so every session-scoped sync is skipped; the region
 			     collapses in every other mode, so nothing else is disturbed. -->
 			<div id="sheetSettings" class="sheet-settings"></div>

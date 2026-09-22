@@ -7,7 +7,8 @@
     Answers one question - "is the thing you just updated actually working?" - by checking
     the whole chain a real session travels: the three Scheduled Tasks, crabd's own health,
     the shape and freshness of /v1/state, a full hook round trip, the config file, the toast
-    identity, the status-line chain wiring and the panel-approval posture (informational while
+    identity, the status-line chain wiring, the served panel assets' version, the absence of
+    any retired component's task, and the panel-approval posture (informational while
     approvals are OFF; a FAIL when they are ON and the PermissionRequest hook cannot reach crabd).
     Prints a PASS/FAIL table and exits 0 ONLY when every row passes.
 
@@ -137,11 +138,10 @@ foreach ($component in (Get-SideCrabComponentSpec -RepoRoot $RepoRoot)) {
         continue
     }
     if ($state.State -eq 'Disabled') {
-        # A DISABLED task is a stated decision (Disable-ScheduledTask), not a fault - the
-        # glow is parked this way while the SDK's headless crash stands (docs/BACKLOG.md).
+        # A DISABLED task is a stated decision (Disable-ScheduledTask), not a fault.
         # A crashed-but-enabled task still fails below; only deliberate disablement passes.
         Add-Result -Check "task $($component.Key)" -Pass $true `
-                   -Detail "$($component.TaskName) disabled - deliberate (see docs/BACKLOG.md)"
+                   -Detail "$($component.TaskName) disabled - deliberate"
         continue
     }
     $running = $state.State -eq 'Running'
@@ -181,29 +181,30 @@ if (-not $health.Reachable) {
 }
 
 # -- 2c. the panel host's viewport (SideCrab-panel) ------------------------------------
-# The host logs `viewport: WxH css px ... window PWxPH physical` after every load and re-pin.
-# The pairs must agree, or the page is drawn scaled and the 2560x720 layout is not what is on
-# the glass. Judged only when the panel task is registered and enabled.
+# The host logs one line per load, re-pin and hidden state, each carrying `pid N, started <iso>`
+# (contract C7). THE LINE MUST BE THE RUNNING PROCESS'S: panel.log is append-only across
+# restarts, and a good line from a run that ended days ago used to certify a host that had
+# since started and never drawn anything (SCA-004). The decision is pure and lives in
+# Get-SideCrabViewportVerdict; this only gathers the three facts it needs.
 $panelSpec  = @(Get-SideCrabComponentSpec -RepoRoot $RepoRoot | Where-Object { $_.Key -eq 'panel' })[0]
 $panelState = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
 $panelLog   = Join-Path (Split-Path -Parent $ConfigPath) 'logs\panel.log'
-if (-not $panelState.Registered -or $panelState.State -eq 'Disabled') {
-    Add-Result -Check 'panel viewport' -Pass $true -Detail "$($panelSpec.TaskName) not installed or disabled - n/a"
-} elseif (-not (Test-Path -LiteralPath $panelLog)) {
-    Add-Result -Check 'panel viewport' -Pass $false -Detail "$panelLog missing - the host has never logged a load"
-} else {
-    $vline = @(Get-Content -LiteralPath $panelLog -Tail 400 | Where-Object { $_ -match 'viewport: ' }) | Select-Object -Last 1
-    if (-not $vline) {
-        Add-Result -Check 'panel viewport' -Pass $false -Detail 'no viewport line in panel.log yet - the panel has not loaded'
-    } elseif ($vline -match 'viewport: (\d+)x(\d+) css px.*window (\d+)x(\d+) physical') {
-        # Within 2 px is the same size: a 150% monitor corrected by zoom reads back 2561 for 2560.
-        $same = ([math]::Abs([int] $Matches[1] - [int] $Matches[3]) -le 2) -and ([math]::Abs([int] $Matches[2] - [int] $Matches[4]) -le 2)
-        Add-Result -Check 'panel viewport' -Pass $same `
-                   -Detail "$($Matches[1])x$($Matches[2]) css px on a $($Matches[3])x$($Matches[4]) window$(if (-not $same) { ' - scaled; the host corrects the zoom on its next check' })"
-    } else {
-        Add-Result -Check 'panel viewport' -Pass $false -Detail "unparseable viewport line: $vline"
-    }
-}
+# try/catch around the process probe: .Path and .StartTime both throw on a process this
+# account cannot open, and a smoke test must produce a FAIL row, never a crashed run.
+$panelPid   = 0
+$panelStart = [datetime]::MinValue
+try {
+    $panelProc = @(Get-Process -Name 'SideCrab.Panel' -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Path -eq $panelSpec.Script }) | Select-Object -First 1
+    if ($panelProc) { $panelPid = [int] $panelProc.Id; $panelStart = $panelProc.StartTime }
+} catch { }
+$vpLines = if (Test-Path -LiteralPath $panelLog) { @(Get-Content -LiteralPath $panelLog -Tail 400) } else { @() }
+$vp = Get-SideCrabViewportVerdict -Lines $vpLines `
+        -Registered ([bool] $panelState.Registered) -Disabled ($panelState.State -eq 'Disabled') `
+        -ProcessId $panelPid -ProcessStart $panelStart
+# The state is in the detail, not folded into the pass/fail: 'hidden' and 'stale' are different
+# faults with different fixes, and a bare FAIL used to hide which one it was.
+Add-Result -Check 'panel viewport' -Pass $vp.Pass -Detail "[$($vp.State)] $($vp.Detail)"
 
 # -- 3. /v1/state shape and freshness --------------------------------------------------
 $state = Get-StateDocument
@@ -405,26 +406,6 @@ if (-not (Test-Path -LiteralPath $notifierPy)) {
     }
 }
 
-# -- 6b. the glow accepts what crabd is serving ----------------------------------------
-# Same bug class as row 6, found in the glow on 2026-08-26 (ACCEPTED_SCHEMAS stopped at 3
-# while crabd served 5 - Running task, dark forever). One row per consumer, no exceptions.
-$glowPy = Join-Path $RepoRoot 'lighting\decision.py'
-if (-not (Test-Path -LiteralPath $glowPy)) {
-    Add-Result -Check 'glow schema' -Pass $true -Detail 'glow not present - n/a'
-} elseif ($null -eq $state) {
-    Add-Result -Check 'glow schema' -Pass $false -Detail 'no state document to compare against'
-} else {
-    $gpy = Get-Content -LiteralPath $glowPy -Raw -Encoding utf8
-    if ($gpy -match 'ACCEPTED_SCHEMAS\s*=\s*frozenset\(\{([0-9,\s]+)\}\)') {
-        $gaccepted = @($Matches[1] -split ',' | Where-Object { $_.Trim() } | ForEach-Object { [int] $_.Trim() })
-        $glive     = [int] $state.schema
-        Add-Result -Check 'glow schema' -Pass ($gaccepted -contains $glive) `
-                   -Detail "crabd serves $glive; glow accepts $($gaccepted -join ',')$(if ($gaccepted -notcontains $glive) { ' - it will never light' })"
-    } else {
-        Add-Result -Check 'glow schema' -Pass $false -Detail 'could not read ACCEPTED_SCHEMAS from decision.py'
-    }
-}
-
 # -- 7. toast identity -----------------------------------------------------------------
 $aumid = Get-SideCrabAumidState -RepoRoot $RepoRoot
 $toastInstalled = (Get-SideCrabTaskState -TaskName 'SideCrab-toast').Registered
@@ -551,6 +532,31 @@ if ($pa.Enabled) {
     Add-Result -Check 'panel approvals' -Pass $true `
                -Detail "$paMsg; $wiringMsg; $tokMsg; never verified on a live prompt - run setup\Verify-PanelApproval.ps1 -DryRun before enabling"
 }
+
+# -- 10. the panel assets have a version this checkout can name --------------------------
+# The version of the tree crabd serves at /panel/. An absent or malformed widgetersion.json
+# means the release identity of the thing on the glass is unknown, which is a FAIL and not a
+# shrug: "unknown" was printed as a blank for months while the number came from a package
+# manifest describing a copy nobody here installed.
+$wv = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
+Add-Result -Check 'widget version' -Pass $wv.Present -Detail $wv.Reason
+
+# -- 11. no retired component's task survives in this checkout ---------------------------
+# A retired component's catalogue row is gone, which is exactly what makes a leftover task
+# invisible to everything else here. Registered AND owned by this checkout is the fault; a
+# same-named task running code from somewhere else is another install's and not ours to judge.
+$retiredRows = @()
+foreach ($r in @(Get-SideCrabRetiredComponentSpec)) {
+    $rs = Get-SideCrabTaskState -TaskName $r.TaskName
+    if ($rs.Registered -and (Test-SideCrabTaskIsOurs -Action "$($rs.Action)" -RepoRoot $RepoRoot)) {
+        $retiredRows += "$($r.TaskName) still registered ($($rs.State)) from this checkout - run Install-SideCrab.ps1 or Update-SideCrab.ps1 to retire it"
+    } elseif ($rs.Registered) {
+        $retiredRows += "$($r.TaskName) registered but owned elsewhere - left alone"
+    }
+}
+$retiredOwned = @($retiredRows | Where-Object { $_ -match 'still registered' })
+Add-Result -Check 'retired glow' -Pass ($retiredOwned.Count -eq 0) `
+           -Detail $(if ($retiredRows.Count) { $retiredRows -join '; ' } else { 'no retired component task on this machine' })
 
 # ------------------------------------------------------------------------------ verdict
 

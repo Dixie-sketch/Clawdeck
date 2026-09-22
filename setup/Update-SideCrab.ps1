@@ -21,12 +21,18 @@
          FAIL naming the PID that holds the port, not a pass: health-by-HTTP cannot
          tell who answered. Exits non-zero when that check does not stand.
 
-    THE iCUE WIDGET IS NOT UPDATED BY THIS SCRIPT. The Xeneon Edge widget is installed
-    into iCUE by importing the .icuewidget package; pulling the repo changes the
-    source in widget\, never what iCUE is running. THE STANDALONE PANEL HOST IS: when
-    SideCrab-panel is registered its exe is rebuilt from the pulled source
-    (setup\Build-SideCrabPanel.ps1) before the restart, and the window reloads the
-    widget tree crabd serves - no desk-side import.
+    THE PANEL HOST IS PART OF THE VERDICT (SCA-003). It is a compiled exe, so a pull alone
+    does not change it: when SideCrab-panel is registered and enabled its exe is rebuilt from
+    the pulled source (setup\Build-SideCrabPanel.ps1) before the restart. A rebuild that
+    FAILS, or a panel task that does not come back Running, now makes this script exit
+    non-zero and names the version still on disk. It used to warn and exit 0 as long as crabd
+    was healthy - so an update that left last week's host running, or no host at all, read as
+    a success and said "rebuilt".
+
+    THE PRIOR WORKING HOST IS LEFT IN PLACE on a failed build. Stale but working beats dark,
+    and the message says which version is actually running so the operator is not guessing.
+
+    The panel assets crabd serves at /panel/ come from the pulled tree and need no rebuild.
 
 .EXAMPLE
     pwsh -File .\setup\Update-SideCrab.ps1
@@ -47,6 +53,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
+
+$RetiredPath = Join-Path $HOME '.sidecrab\state\retired.json'
 
 function Write-Step { param([string] $Message) Write-Host "  $Message" }
 
@@ -149,9 +157,17 @@ foreach ($c in $spec) { $portByTask[$c.TaskName] = [int] $c.Port }
 # below then starts: stale but working beats dark.
 $panelSpec  = @($spec | Where-Object { $_.Key -eq 'panel' })[0]
 $panelState = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+# The panel is IN SCOPE for this update when its task is registered and not parked. Said once
+# here so the rebuild, the restart and the final verdict cannot disagree about it.
+$panelInScope = [bool] ($panelState.Registered -and $panelState.State -ne 'Disabled')
+# Read BEFORE the build: on a failure this is the version still on disk, and the operator is
+# owed the number rather than "the previous exe".
+$hostBefore   = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
+$hostFailed   = $false
+
 if ($SkipRestart) {
     Write-Step 'panel:   rebuild skipped (-SkipRestart)'
-} elseif ($panelState.Registered -and $panelState.State -ne 'Disabled') {
+} elseif ($panelInScope) {
     if ($PSCmdlet.ShouldProcess($panelSpec.TaskName, 'Rebuild the panel host')) {
         Stop-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(15)
@@ -162,9 +178,15 @@ if ($SkipRestart) {
         }
         & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "the panel host did not rebuild (exit $LASTEXITCODE); $($panelSpec.TaskName) restarts on the previous exe"
+            # A FAILURE, NOT A WARNING (SCA-003). The old exe is still there and the restart
+            # below starts it, so the panel is not dark - but it is running code this update
+            # did not ship, and calling that a successful update is the defect.
+            $hostFailed = $true
+            $still = if (Test-Path -LiteralPath $panelSpec.Script) { $hostBefore } else { 'NONE - the exe is gone' }
+            Write-Host "  FAIL:    the panel host did not rebuild (exit $LASTEXITCODE). Retained host version: $still. The pulled source is NOT running on the glass." -ForegroundColor Red
         } else {
-            Write-Step "panel:   host rebuilt - $($panelSpec.Script)"
+            $after = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
+            Write-Step "panel:   host rebuilt - $($panelSpec.Script) ($hostBefore -> $after)"
         }
     }
 } else {
@@ -178,8 +200,8 @@ if ($SkipRestart) {
 } else {
     foreach ($s in $registered) {
         if ($s.State -eq 'Disabled') {
-            # Same rule the installer follows: a disabled task is a decision (glow parked on
-            # the headless SDK crash, docs/BACKLOG.md). Restarting it would start it.
+            # Same rule the installer follows: a disabled task is a decision the operator made
+            # with Disable-ScheduledTask. Restarting it would start it.
             Write-Step "tasks:   '$($s.TaskName)' disabled - left alone (Enable-ScheduledTask to un-park)"
             continue
         }
@@ -205,6 +227,8 @@ foreach ($s in @($states | Where-Object { -not $_.Registered })) {
 # and answered while SideCrab-crabd was dead in Ready (2026-08-27); the task state alone passes a
 # Running process that never bound the port.
 $verifyFailed = $false
+# The host build failure above is part of THIS verdict, not a separate warning stream.
+if ($hostFailed) { $verifyFailed = $true }
 if ($WhatIfPreference) {
     Write-Step 'health:  not polled (-WhatIf)'
 } else {
@@ -243,8 +267,31 @@ if ($WhatIfPreference) {
     }
 }
 
-$widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
-Write-Step "widget:  manifest $(if ($widget) { $widget } else { 'unknown' })"
+# ---- 3b. did the panel host actually come back? (SCA-003)
+# A rebuilt exe that will not start is the same outcome as a build that failed: the glass is
+# showing something other than what this update shipped. Only asked when the panel was in
+# scope - a machine with no panel task is not failing anything.
+if (-not $WhatIfPreference -and -not $SkipRestart -and $panelInScope) {
+    $panelAfter = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+    $panelRun   = Get-SideCrabRunStateDecision -Registered ([bool] $panelAfter.Registered) -State "$($panelAfter.State)"
+    if ($panelRun.Fault) {
+        $verifyFailed = $true
+        $retained = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
+        Write-Host "  FAIL:    $($panelSpec.TaskName) $($panelRun.Reason). Host version on disk: $retained. Diagnose with: pwsh -File setup\Repair-SideCrab.ps1" -ForegroundColor Red
+    } else {
+        Write-Step "panel:   $($panelSpec.TaskName) $($panelRun.Verdict) after restart"
+    }
+}
+
+# ---- retire the tasks of components this product no longer ships (CLEAN-06)
+foreach ($r in @(Invoke-SideCrabRetirement -RepoRoot $RepoRoot -RetiredPath $RetiredPath -WhatIf:$WhatIfPreference)) {
+    if ($r.Verdict -eq 'already-retired') { continue }
+    Write-Step "retired: $($r.TaskName) - $($r.Detail)"
+}
+
+$ver = Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script
+Write-Step "version: crabd $($ver.Crabd)  |  widget $($ver.Widget)  |  host $($ver.Host)"
+foreach ($n in @($ver.Notes)) { Write-Host "           $n" -ForegroundColor DarkGray }
 
 # Read-only: a pull can move the repo or the icon out from under a registered IconUri, and
 # a stale key is invisible until a toast renders with no icon. Re-registering is the
@@ -282,11 +329,11 @@ foreach ($proto in @(Get-SideCrabProtocolState -RepoRoot $RepoRoot)) {
 }
 
 Write-Host ''
-Write-Warning 'The iCUE WIDGET is not updated by this script: it changes only by importing the .icuewidget package into iCUE. The standalone panel host (SideCrab-panel), where installed, was rebuilt and restarted above.'
 Write-Host 'Verify with: pwsh -File setup\Test-SideCrab.ps1'
-Write-Host 'Done.'
+if ($verifyFailed) { Write-Host 'FAILED - see the FAIL line(s) above.' -ForegroundColor Red } else { Write-Host 'Done.' }
 
-# Exit non-zero when the post-restart check did not stand up. A restart that left nothing
-# serving used to end in "Done." and exit 0 - which is how ~6 minutes of dark panel went
-# unnoticed on 2026-08-27. The row above says what; this makes it impossible to miss.
+# Exit non-zero when ANY of the post-restart checks did not stand up: crabd's health, the
+# panel host's build, and the panel task coming back. A restart that left nothing serving used
+# to end in "Done." and exit 0 - which is how ~6 minutes of dark panel went unnoticed on
+# 2026-08-27 - and a failed host build did the same until SCA-003.
 exit ([int] $verifyFailed)

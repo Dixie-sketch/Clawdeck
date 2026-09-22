@@ -3,19 +3,16 @@
 [![CI](https://github.com/Dixie-sketch/Clawdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/Dixie-sketch/Clawdeck/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)](#what-you-need)
-[![iCUE](https://img.shields.io/badge/iCUE-5.44%2B-yellow.svg)](#what-you-need)
 
 **An ambient Claude Code status panel for the Corsair Xeneon Edge.**
 
 > **New here?** Read [**Getting started**](docs/GETTING-STARTED.md): a 20-minute walkthrough from
 > nothing installed to a working panel, with what you should see at each step.
 
-> **Changed in 0.29.0 (2026-09-21): SideCrab moved from the iCUE widget to a standalone panel.**
-> iCUE 5.51.40 blocks the widget's requests to the companion and there is no fix on the widget's
-> side, so the panel now runs in a small window of our own on the Xeneon Edge, with no iCUE in the
-> loop. The widget still ships for iCUE builds before 5.51.40. Read
-> [**Install notes: moving to the standalone panel**](docs/UPGRADING-TO-STANDALONE.md) for a fresh
-> install or an upgrade from the widget.
+> **SideCrab is a standalone application.** It installs as three pieces of its own and needs no
+> other desktop software. If you ran the old widget, read
+> [**Install notes: moving to the standalone panel**](docs/UPGRADING-TO-STANDALONE.md); the widget
+> and why it went are recorded in the maintainers' history.
 
 SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on
 your PC. Session cards, rate-limit gauges with a reset countdown, today's token burn, a clock, a
@@ -23,7 +20,7 @@ your PC. Session cards, rate-limit gauges with a reset countdown, today's token 
 ask you something, you find out from across the room instead of by cycling through terminal
 windows. Then you can answer it from the panel.
 
-![The panel](store/shots/01-panel.png)
+![The panel](docs/images/panel.png)
 
 ---
 
@@ -32,46 +29,46 @@ windows. Then you can answer it from the panel.
 | | Required | Notes |
 |---|---|---|
 | **Operating system** | **Windows 10 or 11** | Windows only. The companion is a Windows service and the notifier uses Windows toasts. There is no macOS or Linux build. |
-| **Corsair iCUE** | **5.44 to 5.51.39** for the widget | The original host is an iCUE *widget*. Double-clicking the package to import it needs iCUE 5.46.67 or newer; on older iCUE you import from inside the app. **On iCUE 5.51.40 or newer the widget cannot reach the companion** (see "iCUE 5.51.40 and newer" under Known caveats): run the standalone panel host instead, which needs no iCUE at all. |
-| **A display iCUE calls `dashboard_lcd`** | The **Xeneon Edge** (2560 × 720) | The panel is designed full-screen for the Edge. Smaller iCUE slots get a reduced layout. |
+| **A Corsair Xeneon Edge** | 2560 × 720 | The panel is laid out full-screen for the Edge and pins itself to it by device id. It runs on another display, at a reduced layout. |
 | **Claude Code** | Installed and used on the **same PC** | The companion reads Claude Code's local session data. It cannot see sessions on other machines. |
 | **PowerShell 7** (`pwsh`) | For the companion installer | Not Windows PowerShell 5.1. |
 | **Python 3.13** | For the companion | A real install on `PATH`. The Microsoft Store "python" alias stub is rejected, because it cannot host a background service. |
-| **.NET 10 SDK** and the **WebView2 Runtime** | Standalone panel host only | The SDK builds the host once (`Install-SideCrab.ps1 -Panel` runs the build); the Desktop Runtime it installs runs it. WebView2 ships with Windows 11 and most Windows 10 installs. |
+| **.NET 10 SDK** and the **WebView2 Runtime** | For the panel host | The installer builds the host once, which needs the SDK; the Desktop Runtime it installs is what runs it afterwards. WebView2 ships with Windows 11 and most Windows 10 installs. Pass `-SkipPanel` to install the companion and notifier without it. |
 
 Everything runs on one PC and talks only over `127.0.0.1`. Nothing is sent anywhere.
 
 ---
 
-## Three ways to run it
+## What gets installed
 
-**Standalone panel host + companion (recommended, no iCUE in the loop).** Run the small local
-service, `crabd`, on the PC where you use Claude Code. It serves the panel page itself at
-`http://127.0.0.1:2722/panel/`, and a small window (`SideCrab.Panel`, .NET 10 + WebView2) shows it
-full-screen on the Xeneon Edge: borderless, always on top, never steals focus, no taskbar entry,
-pinned to the Edge by its device id and re-pinned after sleep and display changes. Live session
-cards, limit gauges with a depletion forecast, burn history and an optional daily token budget, a
-daily recap with a drillable week strip, and alerts when a session is waiting on you. The one
-thing missing is the CPU and GPU temperatures, which came from iCUE's sensor plugin and have no
-source here yet. This works on any iCUE version, and with no iCUE at all.
+Three pieces, all of them yours, all on one PC:
 
-**iCUE widget + companion (iCUE 5.44 to 5.51.39).** The original host: the same panel imported
-into iCUE as a widget on the Edge, with the temperature row. It cannot reach the companion on iCUE
-5.51.40 or newer.
+**The companion** (`crabd`, the `SideCrab-crabd` task). A small local service on the PC where you
+use Claude Code. It reads Claude Code's own session data, serves `/v1/state` on
+`http://127.0.0.1:2722`, and serves the panel page itself at `/panel/`.
 
-**Widget only.** Install the widget and run nothing else. You get the crab, the clock, and the
-CPU and GPU temperatures your iCUE sensors expose. No setup, no background process. Claude Code
-data is simply absent, and the panel says so.
+**The panel host** (`SideCrab.Panel`, the `SideCrab-panel` task). A .NET 10 + WebView2 window that
+shows that page full-screen on the Xeneon Edge: borderless, always on top, never steals focus, no
+taskbar entry, pinned to the Edge by device id and re-pinned after sleep and display changes. It
+owns its own settings and reads the approval pairing code itself.
+
+**The notifier** (`SideCrab-toast`). Windows toasts when a session needs you, with Acknowledge and
+Snooze buttons that reach back into the panel.
+
+You get live session cards, limit gauges with a depletion forecast, burn history and an optional
+daily token budget, a daily recap with a drillable week strip, and alerts when a session is
+waiting on you. CPU and GPU readings come through the companion from HWiNFO and `nvidia-smi`; see
+[Sensors](#sensors). Pass `-SkipPanel` or `-SkipToast` to install less.
 
 ---
 
 ## How it works
 
 ```
-Claude Code hooks ──POST──▶  crabd (127.0.0.1:2722)  ◀──poll── SideCrab widget (iCUE / Xeneon Edge)
-~/.claude usage + JSONL ──▶  one /v1/state JSON feed  ──write─▶ /v1/action · /v1/config
-                             + blocking hook answers  ◀──poll── notifier (Windows toasts)
-                             + GET /panel/ (the same widget) ◀── SideCrab.Panel (standalone host, WebView2)
+Claude Code hooks ──POST──▶  crabd (127.0.0.1:2722)  ──write─▶ /v1/action · /v1/config
+~/.claude usage + JSONL ──▶  one /v1/state JSON feed  ◀──poll── notifier (Windows toasts)
+                             + blocking hook answers
+                             + GET /panel/ (the page)  ◀── SideCrab.Panel (Xeneon Edge, WebView2)
 ```
 
 1. **Claude Code tells crabd what is happening.** The installer adds a few *hooks* to your
@@ -82,10 +79,9 @@ Claude Code hooks ──POST──▶  crabd (127.0.0.1:2722)  ◀──poll─�
    finished, needs input), reads your rate limits from the same local credentials Claude Code
    uses, and reads the session transcripts read-only for token burn and elapsed time. It serves all
    of that as one JSON document on `http://127.0.0.1:2722/v1/state`.
-3. **The widget draws it.** Every three seconds the iCUE widget polls that URL and repaints. The
-   crab's posture is the summary: calm when all is well, alert when something waits on you, worried
-   when the feed is stale or gone. The standalone host loads the very same page from crabd at
-   `/panel/`, so there is one panel, not two.
+3. **The panel draws it.** The panel host loads the page from crabd at `/panel/` and repaints as
+   each new picture arrives. The crab's posture is the summary: calm when all is well, alert when
+   something waits on you, worried when the feed is stale or gone.
 4. **Taps go back the same way.** Acknowledge, dismiss, pin, "Continue", and (if you turn it on)
    approve or deny go to crabd on localhost. Nothing free-text is ever sent to a session.
 
@@ -102,30 +98,34 @@ em-dash, never as zero. A green-looking panel always means the data is fresh.
 
 ## Install
 
-The order changed in 0.29.0: the companion comes first, the standalone panel host is the
-recommended second step, and the iCUE widget is the alternative for iCUE builds before 5.51.40.
-[Install notes](docs/UPGRADING-TO-STANDALONE.md) has the same steps with what you should see, and
-the upgrade path from the widget.
+One command installs all three pieces.
+[Install notes](docs/UPGRADING-TO-STANDALONE.md) has the same steps with what you should see at
+each one, and the upgrade path from the old widget.
 
-### Step 1 — the companion (10 minutes)
+### Step 1 — install (15 minutes)
 
-Open PowerShell 7 on the PC where you run Claude Code (add `-Panel` to the install line to do
-Step 2 in the same run):
+Open PowerShell 7 on the PC where you run Claude Code:
 
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
 cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1 -WithToast
+pwsh -File .\setup\Install-SideCrab.ps1
 ```
 
 The installer:
 
-- registers a logon Scheduled Task for `crabd` (and the notifier if you asked for it), and starts it,
+- builds the panel host (`panel-host\dist\SideCrab.Panel.exe`) when it is not there yet. This
+  needs the .NET 10 SDK. Without it the build fails, the installer says so and carries on with the
+  companion and the notifier; pass `-SkipPanel` to stop being offered it,
+- registers a logon Scheduled Task per component and starts each one,
 - backs up `~/.claude/settings.json`, then merges in the SideCrab hook entries. Re-running never
   duplicates them and other hooks are left alone,
 - registers the toast identity and the `sidecrab-ack:` handler for the notifier, under `HKCU`,
   no elevation needed,
-- asks whether to enable panel approvals. Say no until you have read the section below.
+- leaves panel approvals **off**. Read [Approvals](#approving-from-the-panel) before turning them on.
+
+Add `-WhatIf` to see every one of those without performing any of it. Nothing is built and
+nothing is registered under `-WhatIf`.
 
 Then check it:
 
@@ -134,21 +134,16 @@ pwsh -File .\setup\Install-SideCrab.ps1 -Status   # read-only status of every pi
 pwsh -File .\setup\Test-SideCrab.ps1              # end-to-end smoke test, PASS/FAIL table
 ```
 
-Start a Claude Code session. Within a few seconds a card for it appears on the panel.
+Start a Claude Code session. Within a few seconds a card for it appears, and the panel is
+full-screen on the Xeneon Edge.
 
-### Step 2 — the standalone panel host (5 minutes, recommended)
+If another application is still drawing its own dashboard on that screen, turn that dashboard off
+for the Edge in whatever put it there.
 
-Works on any iCUE version and on a PC with no iCUE at all. It needs the companion from Step 1 and
-the .NET 10 SDK once.
+### Step 2 — the panel host's settings (optional)
 
-```powershell
-pwsh -File .\setup\Install-SideCrab.ps1 -Panel      # builds panel-host\dist\SideCrab.Panel.exe, registers SideCrab-panel, starts it
-```
-
-Within a few seconds the panel appears full-screen on the Xeneon Edge. If iCUE is still drawing
-its own dashboard on that screen, turn that dashboard off in iCUE for the Edge (the Edge tile's
-screen or dashboard settings); iCUE keeps running your fans and lighting. Settings live in
-`~/.sidecrab/panel-settings.json` (optional; every key has a default):
+Settings live in `~/.sidecrab/panel-settings.json`. Every key has a default, so the file is
+optional:
 
 ```jsonc
 {
@@ -158,23 +153,15 @@ screen or dashboard settings); iCUE keeps running your fans and lighting. Settin
 }
 ```
 
-`props` take the same names as the widget's iCUE settings (`clock24`, `alertFlash`, `crabStyle`,
-`textColor`, `accentColor`, `backgroundColor`, `transparency`, `touchDiag`). Quiet hours, toast,
-digest and budget are not props here: `config.json` is their one home in this host. The pairing
-code for approvals is read from `~/.sidecrab/panel-token` by the host itself. The host logs what
-it did to `~/.sidecrab/logs/panel.log`: which display it picked, the viewport it measured, every
-re-pin.
+`props` are the panel's own display settings: `clock24`, `alertFlash`, `crabStyle`, `textColor`,
+`accentColor`, `backgroundColor`, `transparency`, `touchDiag`. Quiet hours, toast, digest and
+budget are **not** props: `~/.sidecrab/config.json` is their one home. See
+[Configuration](#configuration).
 
-### Step 3 — the iCUE widget instead (iCUE 5.44 to 5.51.39 only)
-
-1. Download `SideCrab-<version>.icuewidget` from the
-   [releases page](https://github.com/Dixie-sketch/Clawdeck/releases).
-2. Import it into iCUE: double-click the file (iCUE 5.46.67+), or in iCUE open the Xeneon Edge's
-   dashboard editor and import the widget from the file.
-3. Place it **full-screen** on the Xeneon Edge, and pick a CPU and a GPU sensor in its settings.
-
-The widget stops reaching the companion the day iCUE updates itself past 5.51.39; switch to Step 2
-when that happens.
+The pairing code for approvals is read from `~/.sidecrab/panel-token` by the host itself; there is
+nothing to paste anywhere. The host logs what it did to `~/.sidecrab/logs/panel.log`: which display
+it picked, the viewport it measured, every re-pin, and every period it spent hidden because the
+target display was absent.
 
 ### Keeping the limit gauges alive (recommended)
 
@@ -195,15 +182,20 @@ stored; `Test-SideCrab.ps1` shows which token is answering.
 ### Updating, uninstalling
 
 ```powershell
-git -C C:\Dev\sidecrab pull
-pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # restarts the tasks on the new code
+pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # pulls, rebuilds the host, restarts the tasks, verifies
 pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1   # removes tasks, hooks and both registry keys
 ```
 
-The iCUE widget updates separately: import the new `.icuewidget` from the releases page. The two
-sides are built to tolerate a version gap, so updating one before the other is fine. The
-standalone panel host needs no import: `Update-SideCrab.ps1` rebuilds it from the pulled source
-and restarts it, and the window reloads the page crabd serves.
+`Update-SideCrab.ps1` fast-forwards the checkout, rebuilds the panel host from the pulled source,
+restarts the tasks and then verifies that the companion answers and that both tasks came back
+Running. It **exits non-zero** when any of that fails, and names the host version still on disk so
+you know what is actually running. There is nothing to import and nothing to update by hand.
+
+An uninstall removes wiring and keeps your data. It prints what it left behind and the command
+that removes it. `-Purge` additionally deletes `~/.sidecrab`: your settings, your history, **and
+the two credential files** (the approval pairing code and the stored limits token). Backups of
+`settings.json` are never removed at any switch; prune them with
+`Restore-SideCrab.ps1 -PruneOlderThan`.
 
 ---
 
@@ -222,9 +214,8 @@ and restarts it, and the window reloads the page crabd serves.
   Claude Code's telemetry is flowing to the companion.
 - **The week strip** is the daily recap: sessions, commits in your configured repos, tokens.
 - **The hardware row** shows the CPU temperature with the sensor's own name beside it, the
-  graphics card's temperature and utilisation, and memory. Inside iCUE the temperatures come from
-  the Sensors plugin you picked in the widget settings; in the standalone host they come from the
-  companion, which reads HWiNFO's shared memory and `nvidia-smi` (see "Temperatures" below). Tap
+  graphics card's temperature and utilisation, and memory. They come from the companion, which
+  reads HWiNFO's shared memory and `nvidia-smi` (see [Sensors](#sensors)). Tap
   the row for the last ten minutes and for everything the row has no width for: the VRM, each
   drive, motherboard and chipset, CPU package power, every fan and pump, the card's VRAM and power
   draw, and what the whole machine is doing with its disks, network and memory. With no HWiNFO
@@ -246,6 +237,8 @@ and restarts it, and the window reloads the page crabd serves.
 | **Filter and density chips** (top right) | Show only waiting / working / finished; comfortable or compact cards |
 | **View chips** at the right of the Sessions header, or **swipe** across that header | Sessions, Burn, Week or Detail; the choice is remembered |
 | **Bring to front** in a card's sheet, or the chip beside Back on the Detail page (standalone host) | Puts that session's window in front on your main display; the panel keeps its hands off the keyboard |
+| **Cancel** beside a queued prompt | Removes it, or says it was already sent |
+| **Pull down** from the top edge | Fetches fresh state now, or restarts a live connection that has gone quiet |
 | **Tap the gear** beside the clock (standalone host) | The panel's settings sheet: clock format, alert flash, crab accessories, colours, transparency, the chime and Test chime |
 | **Tap the hardware row** | Ten minutes of CPU, memory, GPU utilisation and disk throughput, plus every other sensor the row has no width for |
 
@@ -308,17 +301,16 @@ clicks anything inside one. A session's multiple-choice question is answered in 
 you; getting the right window in front of you is the whole of what this control does. Approve and
 Deny are not an exception to that rule: a tool permission request is a question Claude Code asks
 outside the session's own prompt, over a channel built for an answer, which is why the panel can
-answer it and nothing else. In iCUE the control is not there at all, because the widget has no host
-to ask.
+answer it and nothing else.
 
-### Live updates, settings on the glass, and the chime (standalone host)
+### Live updates, settings on the glass, and the chime
 
 **The panel updates itself.** The companion pushes each new picture over `GET /v1/events` as it
 has one, so a question that needs you appears on the glass when it is asked rather than up to
 three seconds later. If that connection drops (you restart or update the companion) the panel
 goes back to asking every three seconds and keeps trying the faster route in the background;
 nothing to restart, nothing to configure. The worried crab and the "data as of" banner still mean
-exactly what they meant. Inside iCUE the widget polls as it always has.
+exactly what they meant.
 
 **Settings on the glass.** Tap the gear beside the clock for a sheet with the things you would
 otherwise edit by hand: the 24-hour clock, the flash on a new alert, the crab's accessories,
@@ -328,7 +320,6 @@ restart and no reload. It is written to `~/.sidecrab/panel-settings.json`, the s
 still edit by hand; the sheet leaves everything else in it alone. Two things are deliberately not
 on the sheet: the companion's port and the monitor, because a mistake in either leaves you with a
 window you cannot see, and the approval pairing code, which is never handed to the page at all.
-Inside iCUE there is no gear: iCUE's own property panel is where those settings live.
 
 **The chime.** When a session stops and asks you something, the panel plays a short two-note
 chime. Once, for that question: not again while it waits, not for a question that was already
@@ -337,6 +328,51 @@ land together. It is silent during quiet hours. It is on by default; turn it off
 volume in the settings sheet, where **Test chime** plays it at whatever the slider says. It needs
 the standalone panel host; a browser tab at the panel's address plays it only after you have
 tapped something on the page, which is the browser's own rule about sound.
+
+### Panel settings and companion settings
+
+Tap the gear to open **Panel settings**. It has two halves and they save to different places, which
+the sheet says on each one. **This panel** holds the clock format, the alert flash, the crab
+accessories, the chime and its volume, touch diagnostics and the colours, stored on this machine by
+the panel host. **Companion** holds quiet hours, desktop toasts and their two thresholds, the daily
+digest and the daily token budget, sent to the companion. Only what you change is sent, so opening
+the sheet and saving cannot overwrite a value you edited in the config file by hand; if the companion
+declines or corrects part of a save, its own words appear beside the Save button. The continue
+prompts this session is offered are listed below the companion half, read-only: they are edited in
+the config file.
+
+### Cancelling a queued continue
+
+A queued prompt has a **Cancel** beside it, on the session sheet and on the Detail page. It answers
+with what happened: **cancelled**, **already sent at 14:32** (the session picked it up first), or
+**nothing queued**.
+
+### Sources and approval readiness
+
+Open the hardware row for the last ten minutes of CPU and memory and, when the companion provides
+it, a **Sources** list: which feed each number comes from (hooks, transcripts, the status line, the
+limits token, telemetry, HWiNFO, the GPU), whether it is fresh, and how old it is. A reading the
+companion cannot take is absent, never a zero. When approvals are turned on in the companion, the
+approval sheet and the settings sheet show whether this panel is ready to decide and, if not, why:
+approvals off, no pairing code minted, or this panel not paired. The pairing code is never shown.
+
+### The tray icon and the display picker
+
+The panel host puts an icon in the notification area of the display you work on. Its first line says
+what the panel is doing: the display it is on, or that it is hidden and why. The menu offers
+**Status and diagnostics** (version, process id, uptime, display, whether the page is loaded, the
+last failure, the restart policy, the log path), **Open the log folder**, **Reload the panel**,
+**Re-pin now**, **Pause** (hide until you resume), **Show the panel on...** and **Quit until next
+logon**. Nothing in the menu takes the keyboard from what you are typing.
+
+**Show the panel on...** lists every monitor with its full device id, size, position, scaling and
+which one is primary. Picking one applies it at once and asks, on your primary display, whether to
+keep it; with no answer in ten seconds it goes back on its own, so a mistaken pick can never leave you
+without a way back. The pick writes `display.deviceId` in `panel-settings.json` and nothing else. The
+panel is never parked on your primary display by accident: when nothing matches the configured id,
+the size fallback skips the primary and refuses to choose between two matching monitors. A host that
+starts with its monitor unplugged stays hidden, keeps looking every five seconds, and comes back when
+the monitor does.
 
 ### Temperatures (standalone host, optional)
 
@@ -374,11 +410,11 @@ pwsh -File .\setup\Install-SideCrab.ps1 -WithApprovals   # 1. arm it (prints the
 pwsh -File .\setup\Install-SideCrab.ps1 -PairingCode     #    ...or print the code again later
 ```
 
-2. In iCUE, open the SideCrab widget's settings and paste the code into **Approval Pairing
-   Code**. With the standalone panel host there is nothing to paste: it reads the code from
-   `~/.sidecrab/panel-token` itself. 3. Tap Approve or Deny on the next request. A tap without the code, or with a wrong
-   one, is refused and the terminal dialog keeps the decision, exactly as if the panel were not
-   there.
+2. Nothing to paste: the panel host reads the pairing code from `~/.sidecrab/panel-token` itself.
+   `Install-SideCrab.ps1 -Status` reports the readiness the companion itself declares - `off`,
+   `no-token`, `unverified` or `ready` - so you can see the gate's real state rather than infer it.
+3. Tap Approve or Deny on the next request. A tap without the code, or with a wrong one, is
+   refused and the terminal dialog keeps the decision, exactly as if the panel were not there.
 
 ---
 
@@ -389,7 +425,7 @@ settings sheet.
 
 ```jsonc
 {
-  "quietHours": { "start": "22:00", "end": "07:00" },  // dim panel, no glow, no toasts
+  "quietHours": { "start": "22:00", "end": "07:00" },  // dim panel, no toasts, no chime
   "toast":  { "enabled": true, "thresholdSec": 120, "approvalThresholdSec": 20 },
   "digest": { "enabled": false, "time": "09:00" },     // one "yesterday" toast per day
   "budget": { "dailyOutputTokens": 5000000 },          // null to clear; one toast on crossing
@@ -435,11 +471,10 @@ guarantees are worth reading rather than assuming:
 - **crabd never decides on its own.** There is no code path that answers "allow" without a
   `decide` request arriving on localhost first. The normal source of that request is a tap on
   the panel.
-- **Only a paired panel can decide (crabd 0.29.0 / widget 0.27.0).** crabd mints a
-  ten-character **pairing code** into `~/.sidecrab/panel-token` on first start, and every
-  Approve or Deny must carry it. The code lives in the widget's iCUE settings, or in the
-  standalone host's injected page object, which no web page can read, so a page you visit that
-  forges the widget's `null` Origin, or a DNS-rebinding page, gets a `403` (or a `421`) and
+- **Only a paired panel can decide.** crabd mints a ten-character **pairing code** into
+  `~/.sidecrab/panel-token` on first start, and every Approve or Deny must carry it. The code
+  lives in the panel host's injected page object, which no web page can read, so a page you visit
+  that forges the panel's Origin, or a DNS-rebinding page, gets a `403` (or a `421`) and
   nothing else. Ten wrong codes in a minute lock the gate for a minute. Each tap also names
   the exact request it saw (`requestId`), so a tap can never land on a request that replaced
   it. This closed the SEC-a and WID-a findings recorded in [`SECURITY.md`](SECURITY.md).
@@ -468,11 +503,10 @@ guarantees are worth reading rather than assuming:
 | No chime when a session asks a question | Quiet hours, the chime setting is off, or the page is not running in the panel host | Gear beside the clock: Test chime; `~/.sidecrab/logs/panel.log` says what the host loaded |
 | Panel is fine but no session cards | Hooks are not firing | Check `~/.claude/settings.json` has the SideCrab entries; re-run the installer, which merges them idempotently |
 | Limit gauges show an em-dash and "token expired" | The CLI's access token in `~/.claude` has passed its ~6 h life and nothing has refreshed it | Store a long-lived token once (below), or run any `claude` command in a terminal to refresh the file |
-| Temperatures frozen or wrong | The wrong iCUE sensor is selected | The row names the sensor it reads. Pick the right one in the widget settings |
-| Widget dark since an iCUE update, companion healthy | iCUE 5.51.40 or newer refuses the widget's requests to `127.0.0.1` | Run the standalone panel host: `Install-SideCrab.ps1 -Panel` (Step 3) |
+| Temperatures frozen or wrong | HWiNFO is publishing a stale reading | The row names the sensor it reads and dims a stale one; relaunch HWiNFO |
 | The Edge shows "SideCrab companion not reachable" | The panel host is up, crabd is not, or is older than 0.31.0 | `Update-SideCrab.ps1`; the host retries every 5 s by itself |
 | The panel host window is on the wrong screen, or nowhere | The Edge was not found by device id or by its 2560x720 size | Read `~/.sidecrab/logs/panel.log` (it lists every display); set `display.deviceId` in `panel-settings.json` |
-| The panel host looks scaled or cropped | The Edge is not at 100% scale | The host corrects its zoom from the measured viewport; `Test-SideCrab.ps1` has a `panel viewport` row |
+| The panel host looks scaled or cropped | The Edge is not at 100% scale | The host corrects its zoom from the measured viewport; `Test-SideCrab.ps1` has a `panel viewport` row that judges only the line the running host wrote |
 | "No usable python.exe found" | Only the Store alias stub is on `PATH` | Install Python 3.13 from python.org and tick "Add to PATH" |
 | A finished session still reads "working" | A session was killed by an app restart, so no end hook fired | It clears itself within 15 minutes; taps on it are refused rather than queued |
 | Something else | | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL table for every piece |
@@ -485,15 +519,11 @@ guarantees are worth reading rather than assuming:
   hours.** Both are HWiNFO's terms, not ours: the panel dims stale readings and says so, and the
   `SideCrab-hwinfo` relaunch task works around the limit; the Pro licence removes it and covers
   commercial use.
-- **iCUE 5.51.40 and newer block the widget.** That build added a widget URL-permission layer:
-  every request the widget makes to `127.0.0.1` is refused inside iCUE, and a manifest
-  permissions entry works after an import and dies on the next iCUE start, because iCUE saves the
-  grant without the port a loopback grant needs. Nothing in the widget can change that. The
-  standalone panel host exists for exactly this; the widget stays in the release for older iCUE
-  builds.
-- **The glow is parked.** The Corsair SDK crashes in every non-interactive console context tested,
-  so the `SideCrab-glow` task ships disabled on purpose, and the panel's fleet dot honestly shows
-  it stopped. The installer will not re-enable it on a re-run.
+- **RGB lighting is retired, not parked.** SideCrab drives no lighting. An existing
+  `SideCrab-glow` task from an older install is unregistered once by the installer or the updater
+  and recorded in `~/.sidecrab/state/retired.json`; its log is kept. Optional RGB in future would
+  need a different provider and its own hardware evidence, and none is selected. See
+  the maintainers' history.
 - **The status-line feed is a fallback, not a replacement.** It fires only in an interactive
   terminal session. The credential-based limits path works regardless.
 - **Cost figures need telemetry.** `costUSD` appears only when Claude Code's OTLP telemetry is
@@ -526,14 +556,13 @@ the four rules every change is held to.
 
 | Path | What |
 |---|---|
-| `widget/` | The panel: HTML/CSS/JS, one tree for both hosts. Packaged to `.icuewidget` with Corsair's WidgetBuilder CLI (`icuewidget validate widget` · `icuewidget package widget`) for iCUE, and served as-is by crabd at `/panel/` for the standalone host. Dev notes in `widget/DEV.md` |
+| `widget/` | The panel page: HTML/CSS/JS, served as-is by crabd at `/panel/`. Its version is `widget/version.json`; nothing packages it. Dev notes in `widget/DEV.md` |
 | `panel-host/` | **SideCrab.Panel**: the standalone host, a .NET 10 WinForms + WebView2 kiosk window pinned to the Xeneon Edge. `setup\Build-SideCrabPanel.ps1` publishes it; `SideCrab.Panel.Tests` covers its navigation lock, display selection and script injection |
 | `companion/` | **crabd**: hook receiver, session state machine, limits + burn reader, history, `/v1/state` |
 | `notifier/` | Native Windows toasts: waiting session, permission request, daily digest, budget crossed, companion gone quiet |
-| `lighting/` | **sidecrab-glow**: pulses Corsair RGB while a session waits (parked, see above) |
 | `hooks/` | The Claude Code hook fragment and the status-line command that feed crabd |
 | `setup/` | Install / update / uninstall / smoke-test / verification scripts |
-| `docs/` | [Getting started](docs/GETTING-STARTED.md) · [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings |
+| `docs/` | [Getting started](docs/GETTING-STARTED.md) · [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings · the maintainers' history |
 
 Design rules that drive most decisions: **honest failure** (unknown is `null` or an em-dash,
 never `0`, never a stale value re-served), **every alert must survive a healthy night** (each
@@ -546,7 +575,7 @@ Tests, all headless:
 ```powershell
 python -m unittest discover -s companion\tests -t companion\tests
 python -m unittest discover -s notifier\tests  -t notifier\tests
-python -m unittest discover lighting\tests
+python -m unittest discover -s hooks\tests     -t hooks\tests
 pwsh -File .\setup\tests\RunTests.ps1
 node widget\tests\test_ordering.js
 dotnet test panel-host\SideCrab.Panel.Tests
@@ -557,5 +586,5 @@ dotnet test panel-host\SideCrab.Panel.Tests
 ## License
 
 MIT. See [`LICENSE`](LICENSE). SideCrab is an independent hobby project and is not affiliated with
-or endorsed by Anthropic or Corsair; *Claude* and *Claude Code* are Anthropic's marks and *iCUE* and
-*Xeneon* are Corsair's, named here only to say what the panel works with.
+or endorsed by Anthropic or Corsair; *Claude* and *Claude Code* are Anthropic's marks and *Xeneon*
+is Corsair's, named here only to say which display the panel is built for.

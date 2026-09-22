@@ -7,24 +7,22 @@ merged is to follow the rules it was built with. They are short.
 
 - **Open an issue first for anything bigger than a typo.** A short description of what and why
   saves both of us a rewrite. Bug reports and feature requests have templates.
-- **Windows only, and that is deliberate.** iCUE is Windows-only and so is the Xeneon Edge
-  integration. PRs that add a macOS or Linux path for the companion are welcome in principle,
-  but talk about it first.
+- **Windows only, and that is deliberate.** The companion is a Windows service, the notifier
+  raises Windows toasts and the panel host is a Windows window. PRs that add a macOS or Linux
+  path for the companion are welcome in principle, but talk about it first.
 - **No new runtime dependencies without a reason.** The companion, notifier and hooks are
   standard-library Python on purpose: users install one thing (Python 3.13) and nothing else.
-  The one pinned dependency is `cuesdk` for the parked glow component. The standalone panel
-  host (`panel-host/`) is the deliberate exception: a small C# WinForms app on the .NET 10
-  Desktop Runtime and the WebView2 Runtime, optional, built only by users who ask for it with
-  `Install-SideCrab.ps1 -Panel`.
+  The panel host (`panel-host/`) is the deliberate exception: a small C# WinForms app on the
+  .NET 10 Desktop Runtime and the WebView2 Runtime, part of the default install and declinable
+  with `Install-SideCrab.ps1 -SkipPanel`.
 
 ## The four rules
 
-1. **Contract first.** The widget and the companion ship separately and are never guaranteed to
-   be the same version. Any change to what `/v1/state`, `/v1/action` or `/v1/config` carries
-   lands in [`docs/STATE-CONTRACT.md`](docs/STATE-CONTRACT.md) *first*, then in both sides.
-   Additive fields are detected by presence; `schema` is bumped only for a breaking shape, and a
-   breaking shape strands every installed widget until someone re-imports it at the desk. Avoid
-   it.
+1. **Contract first.** The panel page, the companion and the host are versioned separately and
+   are never guaranteed to be the same version. Any change to what `/v1/state`, `/v1/action` or
+   `/v1/config` carries lands in [`docs/STATE-CONTRACT.md`](docs/STATE-CONTRACT.md) *first*, then
+   in both sides. Additive fields are detected by presence; `schema` is bumped only for a
+   breaking shape, which strands every consumer that has not updated. Avoid it.
 2. **Honest failure.** Unknown is `null`, `available: false`, or an em-dash. Never `0`, never a
    stale value re-served as if fresh. If your change can be wrong, make it say so.
 3. **Every alert must survive a healthy night.** A new threshold, gate or toast is answered by a
@@ -36,13 +34,13 @@ merged is to follow the rules it was built with. They are short.
 
 ## Running the tests
 
-Everything is headless: the Corsair SDK sits behind an adapter, toast emission sits behind an
-adapter, and no test posts to a live crabd or depends on the wall clock.
+Everything is headless: toast emission sits behind an adapter, the setup suite lifts its pure
+decisions out by AST and installs nothing, and no test posts to a live crabd or depends on the
+wall clock.
 
 ```powershell
 python -m unittest discover -s companion\tests -t companion\tests
 python -m unittest discover -s notifier\tests  -t notifier\tests
-python -m unittest discover lighting\tests
 python -m unittest discover -s hooks\tests -t hooks\tests
 node widget\tests\test_ordering.js
 pwsh -File .\setup\tests\RunTests.ps1
@@ -55,23 +53,21 @@ CI runs the same on every push and pull request. A PR needs green CI.
 watch a test fail; then fix it and watch the test pass. A gate whose test cannot fail is a gate
 that reports success forever.
 
-## Working on the widget
+## Working on the panel page
 
 - `widget/DEV.md` is the developer guide: fixtures, the `?mock=` URL switches, the density and
   slot variants, and the traps that have bitten before.
-- The widget runs in two hosts from one tree: inside iCUE, and standalone at
-  `http://127.0.0.1:2722/panel/` (crabd 0.31.0 serves it; `panel-host/` shows it). Anything that
-  reads an iCUE property or the Sensors plugin goes through `getIcueProperty()` /
-  `sensorsPlugin()`, which already know which host they are in. Do not add a third path.
-- iCUE parses `widget/index.html` as **strict XML**. The CLI validator does not catch a bare `&`
-  or an unclosed void element, so run this before packaging:
-
-  ```powershell
-  python -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read())"
-  ```
-
-- Package with Corsair's WidgetBuilder CLI: `icuewidget validate widget` then
-  `icuewidget package widget`. Do not commit the `.icuewidget`; releases attach it.
+- `widget/` is the live asset tree, served as-is by crabd at `http://127.0.0.1:2722/panel/` and
+  shown by `panel-host/`. There is nothing to package and nothing to import.
+- Its version is `widget/version.json`. CI parses that file and parses `widget/index.html` as
+  HTML; both are merge gates.
+- **Nothing in current product surface may name the retired vendor integration.** CI greps the
+  tree for its names and fails on a hit; the exact pattern and the exemptions are in
+  `.github/workflows/ci.yml`, step "No retired vendor integration in current surface". Dated
+  history under `docs/history/`, `docs/findings/`, `CHANGELOG.md`, `docs/BACKLOG.md`,
+  `widget/DEV.md`, `docs/notes/` and `setup/tests/` are exempt: they are the record, and
+  rewriting a record is falsifying it. If you find something historically useful, move it to
+  `docs/history/` with a date and a sentence saying why, and delete the instruction.
 
 ## Pull requests
 
@@ -79,9 +75,10 @@ that reports success forever.
 - Update the docs that describe what you changed in the same PR: the README if it is
   user-facing, `docs/STATE-CONTRACT.md` if it is on the wire, `CHANGELOG.md` for anything a user
   would notice.
-- Bump the version of the component you changed (`widget/manifest.json`, `VERSION` in
+- Bump the version of the component you changed (`widget/version.json`, `VERSION` in
   `companion/crabd.py`, `__version__` in `notifier/sidecrab_toast.py`, `Program.Version` and the
-  csproj `<Version>` in `panel-host/SideCrab.Panel/`).
+  csproj `<Version>` in `panel-host/SideCrab.Panel/`). They move independently;
+  `Install-SideCrab.ps1 -Status` prints all three side by side.
 - Comments earn their place by stopping a future reader from making a mistake: a trap with its
   mechanism and symptom, a measured number with its provenance, a deliberate non-action. Cut the
   narration.

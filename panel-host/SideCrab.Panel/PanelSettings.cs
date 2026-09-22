@@ -4,7 +4,7 @@ namespace SideCrab.Panel;
 
 /// <summary>What the host reads from <c>~/.sidecrab</c>: the optional
 /// <c>panel-settings.json</c> (crabd port, which display, and the widget props that stand
-/// in for iCUE's property sheet) and the pairing code in <c>panel-token</c>. Every key is
+/// in for the retired property sheet) and the pairing code in <c>panel-token</c>. Every key is
 /// optional; an absent or malformed file is the defaults, logged, never a crash.
 ///
 /// <code>
@@ -85,8 +85,13 @@ public sealed class PanelSettings
             {
                 if (d.TryGetProperty("deviceId", out var id))
                     deviceId = id.ValueKind == JsonValueKind.String ? id.GetString() : null;
-                if (d.TryGetProperty("width", out var dw) && dw.TryGetInt32(out var wv) && wv > 0) w = wv;
-                if (d.TryGetProperty("height", out var dh) && dh.TryGetInt32(out var hv) && hv > 0) h = hv;
+                // SCA-029: the ValueKind guard the sibling numbers already had. TryGetInt32
+                // THROWS InvalidOperationException on a non-number, and the throw landed in
+                // the file-level catch below, which answers with the whole file defaulted:
+                // a quoted "720" in a hand-edited display block took crabdPort and every
+                // widget prop down with it. Only the wrong dimension defaults now.
+                w = Dimension(d, "width", w, settingsPath, log);
+                h = Dimension(d, "height", h, settingsPath, log);
             }
 
             var props = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -121,5 +126,17 @@ public sealed class PanelSettings
             log($"panel-settings.json ignored ({ex.GetType().Name}: {ex.Message}); using defaults");
             return new PanelSettings { Source = "defaults (panel-settings.json unreadable)" };
         }
+    }
+
+    /// <summary>One display dimension, or the default for THAT dimension with the
+    /// rejected property named. Bounded at 32768 px: a positive integer that is not a
+    /// monitor size is still a value nothing will ever match.</summary>
+    private static int Dimension(JsonElement display, string key, int fallback, string path, Action<string> log)
+    {
+        if (!display.TryGetProperty(key, out var v)) return fallback;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) && n is > 0 and <= 32768) return n;
+        log($"panel-settings.json: display.{key} is not a usable number " +
+            $"({v.ValueKind}); using {fallback}. Everything else in {path} is unchanged.");
+        return fallback;
     }
 }

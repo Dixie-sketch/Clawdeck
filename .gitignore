@@ -7,7 +7,6 @@ venv/
 
 # Build output
 dist/
-*.icuewidget
 
 # Editors / OS
 .vscode/

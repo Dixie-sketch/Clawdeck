@@ -44,8 +44,8 @@ The two things an attacker on this machine, or a web page you visit, could want 
 - **A `decide` needs the pairing code and the request id (crabd 0.29.0).** crabd mints a
   ten-symbol code into `~/.sidecrab/panel-token` (2^50 space, constant-time compare, ten
   rejects a minute lock the gate for a minute; the code is never served, `/v1/health` reports
-  presence and lockout only). The widget holds it as an iCUE property, which no web page can
-  read. Each pending request carries a `requestId` the tap must echo, checked under the same
+  presence and lockout only). The panel host holds it in an injected page object, which no web
+  page can read. Each pending request carries a `requestId` the tap must echo, checked under the same
   lock that applies the decision. A companion with no gate object answers `503`, never `204`.
 - **The optional long-lived limits token is DPAPI-protected.** `Install-SideCrab.ps1 -LimitsToken`
   stores a `claude setup-token` value in `~/.sidecrab/limits-token.dpapi`, encrypted for the

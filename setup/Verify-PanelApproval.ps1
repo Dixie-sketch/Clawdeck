@@ -174,9 +174,7 @@ if ($DryRun) {
     else                        { Write-Row 'INFO' 'panelApprovals' 'disabled - step 1 below turns it on' }
 
     $widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
-    if ($widget) {
-        Write-Row 'INFO' 'widget manifest' "$widget - inside iCUE the copy IMPORTED is what shows Approve/Deny, not this file; the standalone panel host (SideCrab-panel) serves this tree from crabd and reads the pairing code itself"
-    }
+    Write-Row 'INFO' 'widget version' "$($widget.Reason) - the panel host serves this tree from crabd and reads the pairing code itself"
 }
 
 # ------------------------------------------------------------------------------ procedure

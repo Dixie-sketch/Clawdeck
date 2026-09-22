@@ -11,18 +11,17 @@ tour.
 
 ## 0. What you are installing
 
-Two things, in this order since 0.29.0:
+Three things, and one command installs all of them:
 
 1. **The companion (`crabd`).** A small background service on the PC where you use Claude Code.
    It reads what Claude Code is doing and serves it, and the panel page itself, over `127.0.0.1`
    only. Nothing leaves your machine.
-2. **The standalone panel host.** A small window of our own that shows the panel full-screen on the
-   Xeneon Edge: the crab, the clock, your sessions and limits. No iCUE involved.
+2. **The panel host.** A window of SideCrab's own that shows the panel full-screen on the
+   Xeneon Edge: the crab, the clock, your sessions and limits.
+3. **The notifier.** Windows toasts when a session has been waiting on you.
 
-The **iCUE widget** is the older host: the same panel imported into iCUE. It still works on iCUE
-builds before 5.51.40 and adds a CPU and GPU temperature row; section 3b covers it. On 5.51.40 or
-newer it cannot reach the companion, which is why the host exists
-([install notes](UPGRADING-TO-STANDALONE.md)).
+SideCrab needs no other desktop software. If you are coming from the old widget, read the
+[install notes](UPGRADING-TO-STANDALONE.md).
 
 ---
 
@@ -34,40 +33,42 @@ line. The expected answer is beside it.
 | Check | Run | You want |
 |---|---|---|
 | Windows | `[Environment]::OSVersion.Version` | Major version 10 (Windows 10 or 11) |
-| iCUE | Optional. Open iCUE, Settings, About | Only needed for the widget path (section 3b), and only 5.44 to 5.51.39 |
 | Claude Code | `claude --version` | A version number. If it says "not recognized", install Claude Code first and sign in once |
 | PowerShell 7 | `$PSVersionTable.PSVersion` | 7.x |
 | Python | `python --version` | `Python 3.13.x`. If a Microsoft Store window opens instead, you have the Store alias, not Python: install from python.org and tick "Add python.exe to PATH" |
 | Git | `git --version` | Any version |
-| .NET 10 SDK | `dotnet --version` | `10.0.x`. Builds the panel host once; install from dotnet.microsoft.com |
+| .NET 10 SDK | `dotnet --version` | `10.0.x`. Builds the panel host once; install from dotnet.microsoft.com. Without it, install with `-SkipPanel` and you get the companion and the notifier |
+| WebView2 Runtime | `(Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Name pv).pv` | A version. It ships with Windows 11 and most Windows 10 installs; otherwise install the Evergreen WebView2 Runtime from Microsoft. The panel host is a WebView2 window |
 
 Not on Windows? SideCrab cannot run: the companion is a Windows service and the host is a Windows
-window; there is no other build. No iCUE is fine.
+window; there is no other build.
 
 ---
 
-## 2. Install the companion (10 minutes)
+## 2. Install (15 minutes)
 
 In PowerShell 7:
 
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
 cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1 -WithToast -Panel
+pwsh -File .\setup\Install-SideCrab.ps1
 ```
 
-`-Panel` builds and starts the standalone panel host in the same run (section 3 explains what
-it is; drop the switch to do it later). `-WithToast` also installs the notifier, which raises a Windows notification when a session has
-been waiting on you for a while. Leave it off if you do not want toasts.
+All three components are installed by default. Add `-SkipPanel` or `-SkipToast` to leave one out,
+and `-WhatIf` to see every step without performing any of it.
 
 The installer prints one line per thing it does. It:
 
-- registers a Scheduled Task that starts `crabd` at logon, and starts it now,
+- builds the panel host, `panel-host\dist\SideCrab.Panel.exe` (the .NET 10 SDK does the work,
+  once). If the build fails it says so and carries on with the other two,
+- registers a Scheduled Task per component that starts it at logon, and starts it now,
 - backs up `~/.claude/settings.json`, then adds the SideCrab hooks to it. Your other hooks are
   untouched, and running the installer twice never duplicates anything,
 - registers the notifier's identity, under your user account only. No admin prompt,
-- builds the panel host (the .NET 10 SDK does the work, once) and starts it on the Edge,
-- asks about **panel approvals**. Answer **no** for now; section 6 covers it.
+- leaves **panel approvals** off. Section 6 covers turning them on,
+- unregisters the `SideCrab-glow` task if an old install left one, and records that in
+  `~/.sidecrab/state/retired.json`. Its log is kept.
 
 Then check the result:
 
@@ -76,66 +77,39 @@ pwsh -File .\setup\Install-SideCrab.ps1 -Status
 pwsh -File .\setup\Test-SideCrab.ps1
 ```
 
-**What you should see:** `-Status` shows the crabd task Running and health `ok`. The smoke test
-prints a table with every row PASS. A FAIL row names what is wrong and what to do.
+**What you should see:** `-Status` shows each task Running and health `ok`, then one line with
+the three versions - companion, panel assets and panel host - and the approvals readiness the
+companion itself reports. The smoke test prints a table with every row PASS. A FAIL row names
+what is wrong and what to do.
 
 ---
 
-## 3. The standalone panel host (recommended)
+## 3. The panel on the Edge
 
-This is the host that replaced the iCUE widget in 0.29.0 (the
-[install notes](UPGRADING-TO-STANDALONE.md) say why). If you passed `-Panel` in section 2 it is
-already running; otherwise, one command:
-
-```powershell
-pwsh -File .\setup\Install-SideCrab.ps1 -Panel
-```
-
-It builds `panel-host\dist\SideCrab.Panel.exe` (the .NET 10 SDK does the work, once), registers
-a `SideCrab-panel` task that starts at logon, and starts it now.
+Section 2 already built and started the panel host, so there is nothing more to run.
 
 **What you should see:** within a few seconds the panel fills the Xeneon Edge: the crab, the clock,
 and your sessions once you start one. The window has no border, sits above everything on that
 screen, never takes focus from what you are typing, and comes back by itself after the display
-sleeps or the resolution changes. If iCUE is still drawing its own dashboard on the Edge, turn
-that dashboard off for the Edge in iCUE (fans and lighting keep working). If the Edge instead
-shows "SideCrab companion not reachable", the companion is down or older than 0.31.0: run
-`Update-SideCrab.ps1`; the host retries every 5 seconds.
+sleeps or the resolution changes. If something else is still drawing its own dashboard on the
+Edge, turn that dashboard off for the Edge wherever you set it up. If the Edge instead shows
+"SideCrab companion not reachable", the companion is down: run `Update-SideCrab.ps1`; the host
+retries every 5 seconds.
+
+If the panel is nowhere, read `~/.sidecrab/logs/panel.log`. It lists every display the host saw,
+which one it picked, the viewport it measured, and every period it spent hidden because the
+target display was absent.
 
 Once the panel is on the Edge, tap the **gear beside the clock**. That is where the panel's
 colours, the clock format, the chime and the rest live, and it writes them to
 `~/.sidecrab/panel-settings.json` for you (the README lists the keys if you prefer the file). Try
 **Test chime** first: if you hear nothing, the page is not running in the panel host, and
 `~/.sidecrab/logs/panel.log` says what it loaded. Temperatures need one more thing, HWiNFO;
-section 3c.
+section 3b.
 
 ---
 
-## 3b. The iCUE widget instead (iCUE 5.44 to 5.51.39 only)
-
-Only for iCUE builds before 5.51.40; on 5.51.40 or newer the widget cannot reach the companion, so do
-section 3 instead. Otherwise:
-
-1. Go to the [releases page](https://github.com/Dixie-sketch/Clawdeck/releases) and
-   download the newest `SideCrab-<version>.icuewidget` (companion-only releases, named
-   `crabd-…`, carry no widget file; pick the newest release that has one).
-2. Double-click the file. iCUE 5.46.67 or newer imports it directly. On an older iCUE, open the
-   Xeneon Edge's dashboard editor in iCUE and use its import option to pick the file.
-3. In iCUE, put the widget on the Xeneon Edge and make it **full-screen**. It is designed for the
-   whole 2560 × 720 display.
-
-**What you should see:** the crab, a large clock, and a line saying Claude Code stats need the
-companion. Temperatures appear once you pick sensors: open the widget's settings in iCUE and
-choose a CPU and a GPU sensor. Each reading shows the sensor's name beside it, so a wrong pick is
-obvious.
-
-If the panel is completely blank, with no crab and no clock, the widget did not load. Re-import
-the newest release; if it stays blank, [open an issue](https://github.com/Dixie-sketch/Clawdeck/issues)
-with your iCUE version.
-
----
-
-## 3c. Temperatures: HWiNFO (optional)
+## 3b. Temperatures: HWiNFO (optional)
 
 The companion reads hardware sensors from **HWiNFO**, a separate, free download from `hwinfo.com`
 (free for non-commercial use; the Pro licence covers commercial use). Install it, then:
@@ -194,7 +168,7 @@ at the hook rows.
 
 ## 4b. Keep the limit gauges alive (two commands, once)
 
-The LIMITS gauges read Claude Code's own sign-in token, which expires about six hours after the
+The LIMITS gauges read Claude Code's own sign-in token, which expires some hours (about eight on a current build) after the
 last time a terminal `claude` made a request. If you mostly use the desktop app, the gauges will
 show "token expired" by the next morning. Fix it once:
 
@@ -258,20 +232,22 @@ and Deny buttons, and a tap decides it. This is off by default because it is a r
 control, and it needs a one-time pairing so that only your panel, not a web page you happen to
 visit, can decide.
 
-1. Print the pairing code the companion made for this PC:
+1. There is nothing to pair by hand. The companion mints a pairing code into
+   `~/.sidecrab/panel-token` on first start and the panel host reads it itself. To look at it:
 
    ```powershell
    pwsh -File .\setup\Install-SideCrab.ps1 -PairingCode
    ```
 
-2. In iCUE, open the widget's settings and paste the code into **Approval Pairing Code**. With
-   the standalone panel host there is nothing to paste: it reads the code from
-   `~/.sidecrab/panel-token` itself.
-3. Turn approvals on:
+2. Turn approvals on:
 
    ```powershell
    pwsh -File .\setup\Install-SideCrab.ps1 -WithApprovals
    ```
+
+3. Check that the gate is really armed. `Install-SideCrab.ps1 -Status` prints the readiness the
+   companion itself reports: `off`, `no-token`, `unverified` or `ready`. Only `ready` means a tap
+   would be honoured.
 
 4. Prove it on a throwaway session before you trust it. Open `claude` in an empty folder, ask
    it to run a command your settings do not pre-allow, and when the card shows the request,
@@ -300,6 +276,10 @@ approvals" section has the full guarantees.
 | Pull down from the top | Refresh now |
 | Tap the gear beside the clock | The panel's settings: clock format, colours, the chime, Test chime |
 | Tap the hardware row | Ten minutes of CPU, memory, GPU and disk, plus every other sensor |
+| Tap **Sessions**, **Burn**, **Week** or **Detail** at the top right | Switch the view; a swipe across that header steps through them |
+| Tap **Cancel** beside a queued step | Withdraw it; the panel says if the session already took it |
+| Tap **Bring to front** in a card's sheet | Put that session's window in front on your main display |
+| Tap the SideCrab icon in the notification area | Status, logs, reload, re-pin, pause, the display picker, quit until next logon |
 
 The crab is the summary. Calm means nothing needs you. Alert with a glow means a session is
 waiting. Worried and grey means the data is stale: the companion stopped, or the feed is older
@@ -307,17 +287,31 @@ than 30 seconds. The panel never shows old numbers as if they were fresh.
 
 ---
 
+### The tray icon
+
+The panel host puts an icon in the notification area of the display you work on. Its first line
+says what the panel is doing. The menu opens a status window (display, page loaded, last failure,
+restart policy, log path), the log folder, a reload, a re-pin, a pause, the display picker and a
+quit until your next sign-in. Pick a display from **Show the panel on...**: it applies at once and
+asks on your main display whether to keep it, and reverts by itself after ten seconds if you do not
+answer.
+
+### Settings on the glass, and cancelling a queued step
+
+The gear opens two halves: this panel's own look and chime, saved by the panel host, and the
+companion's quiet hours, toasts, digest and budget, sent to the companion. Only the values you change
+are sent. A queued next step has a Cancel beside it; it tells you if the session already took it.
+
 ## 8. Updating and removing
 
 ```powershell
-git -C C:\Dev\sidecrab pull
 pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1
 ```
 
-That updates the companion, and, if you installed it, rebuilds and restarts the standalone panel
-host too. The iCUE widget updates separately: download the new `.icuewidget` from the releases
-page and import it again. The two sides tolerate a version gap, so the order does not matter.
-After an import, check the widget's settings; iCUE can reset them, including the pairing code.
+That pulls the new code, rebuilds the panel host from it, restarts every registered task and then
+verifies that the companion answers and that the tasks came back Running. **It exits non-zero if
+any of that fails**, and names the host version still on disk, so a partly-failed update cannot
+read as a success. There is nothing to import and nothing to update by hand.
 
 To remove everything the installer added, including the hooks in `~/.claude/settings.json`:
 
@@ -325,7 +319,9 @@ To remove everything the installer added, including the hooks in `~/.claude/sett
 pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1
 ```
 
-Remove the widget from the Edge in iCUE as you would any other widget.
+That removes wiring and keeps your data, then prints what it left behind. Add `-Purge` to delete
+`~/.sidecrab` as well: your settings, your history, **and the two credential files** - the
+approval pairing code and the stored limits token. Backups of `settings.json` survive either way.
 
 ---
 
@@ -333,15 +329,17 @@ Remove the widget from the Edge in iCUE as you would any other widget.
 
 | You see | Try |
 |---|---|
-| Blank panel, no crab | Re-import the newest `.icuewidget`; then open an issue with your iCUE version |
+| Blank panel, no crab | `~/.sidecrab/logs/panel.log` says what the host loaded; then open an issue with that log |
 | Worried grey crab, "data as of HH:MM" | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
 | No session cards | `Test-SideCrab.ps1`; check `~/.claude/settings.json` still has the SideCrab hooks |
 | Gauges show a dash and "token expired" | The CLI token lives ~6 h. Store a long-lived one: `claude setup-token`, then `Install-SideCrab.ps1 -LimitsToken` (README, "Keeping the limit gauges alive") |
-| Temperatures frozen or wrong | Pick the right sensor in the widget's settings; the row names the one it reads |
-| The widget went dark after an iCUE update, and `Test-SideCrab.ps1` is all PASS | iCUE 5.51.40 or newer blocks the widget. Do section 3 |
+| Temperatures frozen or wrong | HWiNFO is publishing a stale reading; the row names the sensor it reads and dims a stale one. Relaunch HWiNFO |
 | The Edge says "SideCrab companion not reachable" | `Update-SideCrab.ps1`; the panel host retries on its own every 5 s |
 | The panel host is on the wrong screen, or not showing | `~/.sidecrab/logs/panel.log` lists every display it saw; set `display.deviceId` in `panel-settings.json` |
-| "not paired" or "pairing code wrong" on Approve | Re-paste the code from `-PairingCode` into the widget's settings |
+| "not paired" or "pairing code wrong" on Approve | The host did not read the code. `Install-SideCrab.ps1 -Status` shows the readiness; `~/.sidecrab/logs/panel.log` shows what the host loaded |
+| Gauges dark, "limits token rejected" | The stored long-lived token is not accepted. Mint a fresh one: `claude setup-token`, then `Install-SideCrab.ps1 -LimitsToken` |
+| Bring to front says "no window found for this session" | The host looks at your main display only. A session in the Claude desktop app answers "brought the Claude app to the front": pick the session in its sidebar |
+| The panel is on the wrong screen | Tap the SideCrab icon in the notification area and use **Show the panel on...**; it reverts by itself after ten seconds if you do not keep the choice |
 | Anything else | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL row for every piece |
 
 Still stuck? [Open an issue](https://github.com/Dixie-sketch/Clawdeck/issues) with the smoke-test

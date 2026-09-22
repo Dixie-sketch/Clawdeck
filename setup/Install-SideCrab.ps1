@@ -1,14 +1,13 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Installs the SideCrab companion: logon Scheduled Tasks for crabd (and, when
-    present, glow and toast), plus the Claude Code hook entries that feed them.
+    Installs SideCrab: logon Scheduled Tasks for the companion, the notifier and the panel
+    host, plus the Claude Code hook entries that feed them.
 
 .DESCRIPTION
     Idempotent parts, any of which can be run alone:
       1. Scheduled Tasks - one per selected component, started at logon, hidden,
-         restarting on failure. crabd is always installed; glow and toast are
-         optional (see COMPONENTS). Installing toast also makes two HKCU registrations:
+         restarting on failure. Installing toast also makes two HKCU registrations:
          SideCrab's own toast identity (setup\Register-SideCrabAumid.ps1) so notifications
          are attributed to SideCrab rather than to Windows PowerShell, and the toast's
          button protocols (setup\Register-SideCrabProtocol.ps1) - 'sidecrab-ack:' for
@@ -21,47 +20,43 @@
          can restore it. Skip with -SkipStatusLine.
       4. Sets ~/.sidecrab/config.json panelApprovals.enabled. DEFAULT is FALSE (panel approval
          off); -WithApprovals turns it on and prints a one-line security notice.
+      5. Retires the task of any component this product no longer ships (setup\SideCrab.Common.ps1,
+         Get-SideCrabRetiredComponentSpec), once, and records it in ~/.sidecrab/state/retired.json.
 
     Re-running is safe: tasks are re-registered from scratch and the hook merge is
     matched on the crabd URL, so entries are never duplicated and other hooks are
     left untouched. A task the operator DISABLED stays disabled across a re-run - it is
     re-registered (paths stay current) and put straight back into Disabled, and it is not
-    started; -ForceEnable is the deliberate override. The prior status line is saved only when it is not already ours, so a
-    re-run never captures our own command. settings.json is backed up (timestamped) before
-    any write.
+    started; -ForceEnable is the deliberate override. The prior status line is saved only when
+    it is not already ours, so a re-run never captures our own command. settings.json is
+    backed up (timestamped) before any write.
 
-    COMPONENTS
-      crabd  always installed          companion\crabd.py
-      glow   -WithGlow, or auto        lighting\glow_launcher.pyw
-      toast  -WithToast, or auto       notifier\sidecrab_toast.py
-      panel  -Panel, or auto (built)   panel-host\dist\SideCrab.Panel.exe
+    COMPONENTS - THE SUPPORTED INSTALL IS ALL THREE
+      crabd  always            companion\crabd.py
+      toast  default           notifier\sidecrab_toast.py        decline with -SkipToast
+      panel  default, built    panel-host\dist\SideCrab.Panel.exe  decline with -SkipPanel
+
+    -WithToast and -Panel are still accepted and no longer change what is installed: all
+    three are the default. What they still do is make the component EXPLICIT, and an explicit
+    component fails loudly instead of being skipped - a missing notifier script is an error
+    rather than a skip, and a panel host that will not build aborts the install rather than
+    warning. Pass -SkipToast / -SkipPanel to install less.
 
     THE PANEL HOST is the standalone window that shows the panel full-screen on the Xeneon
-    Edge without iCUE (crabd 0.31.0 serves the page at /panel/). It is a compiled exe that
-    only exists after setup\Build-SideCrabPanel.ps1, so -Panel builds it first when it is
-    missing (the .NET 10 SDK is required for that; the Desktop Runtime to run it) and a
-    later plain re-run keeps it because the exe is present. The pairing code is read from
-    ~/.sidecrab/panel-token by the host itself - nothing to paste.
+    Edge (crabd serves the page at /panel/). It is a compiled exe, so the installer runs
+    setup\Build-SideCrabPanel.ps1 when it is missing - which needs the .NET 10 SDK; the
+    Desktop Runtime is enough to run it afterwards. A build failure on the DEFAULT path warns,
+    skips the panel and installs the rest; on an explicit -Panel it throws. The pairing code
+    is read from ~/.sidecrab/panel-token by the host itself - nothing to paste anywhere.
 
-    With no switches, an optional component is installed when its script file
-    exists and skipped when it does not. Passing -WithGlow / -WithToast for a
-    script that is missing is an error, not a silent skip.
-
-    GLOW ALSO HAS TO IMPORT. Its script file existing is what auto-selects it, and that says
-    nothing about whether cuesdk is installed - without it the launcher starts, raises
-    ImportError and exits, leaving a Registered task that has never controlled a light. So
-    `import cuesdk` is run under the interpreter the task will use, before the task is
-    registered. Auto-detected + not importable = SKIPPED with the pip line, because
-    auto-detection is an inference and the failed import refutes it. -WithGlow + not importable
-    = registered anyway, loudly: an explicit switch is an instruction, and failing the whole
-    install (crabd included) over a lighting dependency would be the worse outcome.
+    -WhatIf DESCRIBES THE BUILD AND DOES NOT RUN IT. dotnet publish writes bin/, obj/ and
+    dist/ into the checkout, so a dry run that performed it was changing the tree it claimed
+    not to touch (SCA-015).
 
 .EXAMPLE
     pwsh -File .\setup\Install-SideCrab.ps1
 .EXAMPLE
-    pwsh -File .\setup\Install-SideCrab.ps1 -WithGlow -WithToast
-.EXAMPLE
-    pwsh -File .\setup\Install-SideCrab.ps1 -Panel   # build + register the standalone panel host
+    pwsh -File .\setup\Install-SideCrab.ps1 -SkipPanel   # companion + notifier only
 .EXAMPLE
     pwsh -File .\setup\Install-SideCrab.ps1 -WithApprovals   # turn ON panel approval
 .EXAMPLE
@@ -86,16 +81,18 @@ param(
     [switch] $SkipTask,
     [switch] $SkipHooks,
     [switch] $SkipStatusLine,
-    [switch] $WithGlow,
+    # Both components are installed by default. The switch makes one EXPLICIT: a component
+    # asked for by name fails the install rather than being skipped (see the header).
     [switch] $WithToast,
-    # The standalone panel host (WebView2 window on the Xeneon Edge). Builds the exe when it
-    # is missing, then registers SideCrab-panel beside the others.
     [switch] $Panel,
+    # Decline a default component. -SkipPanel is the escape for a PC with no .NET 10 SDK.
+    [switch] $SkipToast,
+    [switch] $SkipPanel,
     [switch] $WithApprovals,
     [switch] $ForceEnable,
     [switch] $Status,
-    # Prints the approval pairing code (crabd 0.29.0) and exits. The code goes into iCUE's
-    # widget settings under "Approval Pairing Code"; Approve/Deny taps are refused without it.
+    # Prints the approval pairing code (crabd 0.29.0) and exits. The panel host reads the
+    # code from ~/.sidecrab/panel-token itself; this is for checking a pairing by eye.
     [switch] $PairingCode,
     # Prompts for a long-lived Claude token (from `claude setup-token`) and stores it
     # DPAPI-protected for crabd's limit gauges (crabd 0.30.0), then exits. Without it the
@@ -112,6 +109,7 @@ $ErrorActionPreference = 'Stop'
 $HookUrlMarker = '127.0.0.1:2722/v1/hook'
 $TokenPath     = Join-Path (Split-Path -Parent $ConfigPath) 'panel-token'
 $LimitsTokenPath = Join-Path (Split-Path -Parent $ConfigPath) 'limits-token.dpapi'
+$RetiredPath   = Join-Path (Split-Path -Parent $ConfigPath) 'state\retired.json'
 
 function Write-Step { param([string] $Message) Write-Host "  $Message" }
 
@@ -154,14 +152,16 @@ function Merge-HookFragment {
 function Get-ComponentPlan {
     <# Catalogue -> filesystem probe -> decision. The decision itself is pure and
        lives in Select-SideCrabComponent; this is the thin impure wrapper. #>
-    param([string] $RepoRoot, [bool] $WithGlow, [bool] $WithToast, [bool] $WithPanel)
+    param([string] $RepoRoot, [bool] $WithToast, [bool] $WithPanel,
+          [bool] $SkipToast = $false, [bool] $SkipPanel = $false)
 
     $spec = Get-SideCrabComponentSpec -RepoRoot $RepoRoot
     $present = @{}
     foreach ($c in $spec) { $present[$c.Key] = [bool](Test-Path -LiteralPath $c.Script) }
 
     @(Select-SideCrabComponent -Spec $spec -Present $present `
-                               -Requested @{ glow = $WithGlow; toast = $WithToast; panel = $WithPanel })
+                               -Requested @{ toast = $WithToast; panel = $WithPanel } `
+                               -Declined  @{ toast = $SkipToast; panel = $SkipPanel })
 }
 
 function Show-Status {
@@ -305,7 +305,7 @@ function Show-Status {
     # by -PairingCode, so a status paste into a ticket never carries it.
     $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
     if ($tok.Present) {
-        Write-Step "pairing: code present ($TokenPath) - the panel host reads it itself; for the iCUE widget print it with -PairingCode and enter it under widget settings > Approval Pairing Code"
+        Write-Step "pairing: code present ($TokenPath) - the panel host reads it itself; print it with -PairingCode only if you need to check a pairing by eye"
     } else {
         Write-Step "pairing: NO code yet ($TokenPath) - crabd 0.29.0+ mints it on first start; until it exists Approve/Deny taps are refused"
     }
@@ -318,37 +318,75 @@ function Show-Status {
         Write-Step "limits:  no long-lived token - gauges read ~/.claude/.credentials.json, which expires ~6 h after the last terminal claude call; store one with -LimitsToken"
     }
 
-    # the standalone panel host (crabd 0.31.0): built or not, and which settings it reads.
+    # the standalone panel host: built or not, and which settings it reads.
     $panelRow = @($Plan | Where-Object { $_.Key -eq 'panel' })[0]
     $panelSettings = Join-Path (Split-Path -Parent $ConfigPath) 'panel-settings.json'
     if ($panelRow.Present) {
         $ps = if (Test-Path -LiteralPath $panelSettings) { $panelSettings } else { 'defaults (no panel-settings.json)' }
         Write-Step "panel:   host built ($($panelRow.Script)); settings $ps"
     } else {
-        Write-Step 'panel:   host not built - pass -Panel to build and register it (needs the .NET 10 SDK)'
+        Write-Step 'panel:   host not built - a plain re-run builds it (needs the .NET 10 SDK), or pass -SkipPanel to install without it'
     }
 
-    $widget = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
-    if ($widget) { Write-Step "widget:  manifest $widget (installed into iCUE by import, not by this script; the panel host serves the same tree from crabd)" }
+    # ---- the three versions, from the three artefacts, one line
+    # THREE SEPARATE READS ON PURPOSE. The companion's version is a constant in its source,
+    # the panel assets' is a file in the checkout and the host's is the file version of a
+    # compiled exe - so "SideCrab x.y.z" is not a thing that exists, and printing one number
+    # for three independently shipped pieces is how a stale one hides.
+    $ver = Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelRow.Script
+    Write-Step "version: crabd $($ver.Crabd)  |  widget $($ver.Widget)  |  host $($ver.Host)"
+    foreach ($n in @($ver.Notes)) { Write-Host "           $n" -ForegroundColor DarkGray }
+
+    # ---- approvals readiness, as the companion itself reports it (contract C4)
+    # Read from /v1/state rather than re-derived here: the companion is the only thing that
+    # knows whether a token matched, and a second opinion computed from config.json would go
+    # green on a box where the real gate is shut.
+    Write-Step "approv:  readiness $(Get-SideCrabApprovalReadiness -BaseUri ($health.Uri -replace '/v1/health$', ''))"
 
     Write-Host 'Nothing was changed.'
 }
 
 # ------------------------------------------------------------------------------ run
 
-# -Panel builds the host first when its exe is missing: presence on disk is what selects the
-# component, and a first -Panel run has nothing on disk yet. The read-only paths (-Status,
-# -PairingCode, -LimitsToken) never build.
-if ($Panel -and -not $Status -and -not $PairingCode -and -not $LimitsToken) {
-    $panelExe = @(Get-SideCrabComponentSpec -RepoRoot $RepoRoot | Where-Object { $_.Key -eq 'panel' })[0].Script
-    if (-not (Test-Path -LiteralPath $panelExe)) {
-        & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
-        if ($LASTEXITCODE -ne 0) { throw 'the panel host did not build - see the lines above (the .NET 10 SDK is required)' }
+$plan = Get-ComponentPlan -RepoRoot $RepoRoot -WithToast $WithToast.IsPresent `
+                          -WithPanel $Panel.IsPresent `
+                          -SkipToast $SkipToast.IsPresent -SkipPanel $SkipPanel.IsPresent
+
+# The panel host is a COMPILED exe, so "install the panel" starts with a build. Built here,
+# before the task loop, because the exe's presence is what the loop registers.
+#
+# BEHIND ShouldProcess (SCA-015). dotnet publish restores packages and writes bin\, obj\ and
+# panel-host\dist\ into the checkout - a dry run that performed it was modifying the tree it
+# had just promised not to touch. -WhatIf now prints the line and returns.
+#
+# A FAILED BUILD IS FATAL ONLY WHEN THE PANEL WAS ASKED FOR BY NAME. On the default path a
+# PC without the .NET 10 SDK should still get its companion and notifier, so the failure
+# warns, drops the panel from the plan and the install carries on; -Panel is an instruction,
+# and an instruction that cannot be carried out stops the run.
+if (-not $Status -and -not $PairingCode -and -not $LimitsToken -and -not $SkipTask) {
+    $panelRow = @($plan | Where-Object { $_.Key -eq 'panel' })[0]
+    if ($panelRow.Selected -and -not $panelRow.Present) {
+        if ($PSCmdlet.ShouldProcess($panelRow.Script, 'Build the panel host (dotnet publish)')) {
+            & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
+            if ($LASTEXITCODE -ne 0) {
+                if ($panelRow.Requested) {
+                    throw 'the panel host did not build - see the lines above (the .NET 10 SDK is required). Re-run with -SkipPanel to install without it.'
+                }
+                Write-Host '    panel    did NOT build - installing without it. Install the .NET 10 SDK and re-run, or pass -SkipPanel to stop being told.' -ForegroundColor Yellow
+                $panelRow.Selected = $false
+                $panelRow.Reason   = 'build-failed'
+            } else {
+                $panelRow.Present = $true
+            }
+        } else {
+            # -WhatIf: the build did not run, so the exe is still absent and the task loop
+            # must not claim it will register one.
+            Write-Step "panel:   would build $($panelRow.Script) (dotnet publish) - nothing was built"
+            $panelRow.Selected = $false
+            $panelRow.Reason   = 'whatif-not-built'
+        }
     }
 }
-
-$plan = Get-ComponentPlan -RepoRoot $RepoRoot -WithGlow $WithGlow.IsPresent `
-                          -WithToast $WithToast.IsPresent -WithPanel $Panel.IsPresent
 
 if ($LimitsToken) {
     Write-Host 'Long-lived limits token for the SideCrab gauges.'
@@ -365,7 +403,7 @@ if ($PairingCode) {
     $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
     if ($tok.Present) {
         Write-Host "Approval pairing code: $($tok.Code)"
-        Write-Host "The standalone panel host reads it from the file by itself. For the iCUE widget, enter it under the widget's settings > Approval Pairing Code. Approve/Deny taps are refused until it matches."
+        Write-Host 'The panel host reads this from ~/.sidecrab/panel-token by itself - printed here only so you can check a pairing by eye. Approve/Deny taps are refused until it matches.'
         exit 0
     }
     Write-Host "No pairing code at $TokenPath - crabd 0.29.0 or newer mints one on its first start. Start (or update) crabd, then run this again."
@@ -394,35 +432,6 @@ if (-not $SkipTask) {
     foreach ($c in @($plan | Where-Object Selected)) {
         Write-Step "$($c.Key.PadRight(8)) $($c.Script)  [$($c.Reason)]"
 
-        # DOES ITS BINDING ACTUALLY IMPORT? Only glow declares one (cuesdk). Its script file
-        # existing is what auto-selects it, and that says nothing about the SDK: without cuesdk
-        # the launcher starts, raises ImportError, exits, and the task sits there Registered and
-        # green having never controlled a light. Run under the SAME interpreter the task will
-        # use - a different python on PATH is a different set of site-packages.
-        if ($c.PyImport) {
-            # try/catch as well as the exit code: with
-            # $PSNativeCommandUseErrorActionPreference on (it is $false by default on 7.6.4,
-            # measured 2026-08-27, but a profile can set it), a non-zero native exit THROWS
-            # under $ErrorActionPreference='Stop' - and a failed import check must report a
-            # missing SDK, never abort the whole install.
-            $importable = $false
-            try {
-                & $python -c "import $($c.PyImport)" 2>&1 | Out-Null
-                $importable = ($LASTEXITCODE -eq 0)
-            } catch { $importable = $false }
-            $pre = Get-SideCrabGlowPreflight -Selected $true -Requested $c.Requested `
-                                             -Importable $importable -Module $c.PyImport `
-                                             -RequirementsPath $c.PyRequires
-            if ($pre.Status -ne 'ok') {
-                Write-Host "    $($c.Key.PadRight(8)) $($pre.Reason)" -ForegroundColor Yellow
-                Write-Host "    $(''.PadRight(8)) fix: $($pre.Command)" -ForegroundColor Yellow
-            }
-            if (-not $pre.Install) {
-                Write-Host "    $($c.Key.PadRight(8)) NOT registered - pass $($c.Switch) to install it anyway" -ForegroundColor Yellow
-                continue
-            }
-        }
-
         if ($PSCmdlet.ShouldProcess($c.TaskName, 'Register scheduled task')) {
             if ($c.Launch -eq 'exe') {
                 # A native exe (the panel host): the task runs it directly, no interpreter.
@@ -438,8 +447,8 @@ if (-not $SkipTask) {
                 Start-ScheduledTask -TaskName $c.TaskName
                 Write-Step "task:    '$($c.TaskName)' started"
             } else {
-                # Loud on purpose: the operator disabled this for a reason (glow: docs/BACKLOG.md),
-                # and a silent "registered" line would read as if it were running.
+                # Loud on purpose: the operator disabled this deliberately, and a silent
+                # "registered" line would read as if it were running.
                 Write-Host "    task:    '$($c.TaskName)' LEFT DISABLED and not started - it was disabled before this run. Pass -ForceEnable to re-enable it." -ForegroundColor Yellow
             }
         }
@@ -457,6 +466,14 @@ if (-not $SkipTask) {
     }
     foreach ($c in @($plan | Where-Object { -not $_.Selected })) {
         Write-Step "$($c.Key.PadRight(8)) skipped ($($c.Reason)) - $($c.Script)"
+    }
+
+    # ---- retire the tasks of components this product no longer ships (CLEAN-06)
+    # Touches only the names in Get-SideCrabRetiredComponentSpec and only when their action
+    # runs code out of THIS checkout. It never starts anything and never removes a log.
+    foreach ($r in @(Invoke-SideCrabRetirement -RepoRoot $RepoRoot -RetiredPath $RetiredPath -WhatIf:$WhatIfPreference)) {
+        if ($r.Verdict -eq 'already-retired') { continue }
+        Write-Step "retired: $($r.TaskName) - $($r.Detail)"
     }
 } else {
     Write-Step 'task:    skipped (-SkipTask)'
@@ -533,9 +550,9 @@ if ($PSCmdlet.ShouldProcess($ConfigPath, 'Configure panelApprovals')) {
         Write-Host '  SECURITY: panel approvals are ON. Approve/Deny taps on the on-glass widget can now allow or reject tool calls; crabd holds each permission prompt up to 55s, NEVER auto-allows, and falls back to the terminal dialog on no-tap. Disable with Uninstall-SideCrab.ps1 or by setting panelApprovals.enabled=false.' -ForegroundColor Yellow
         $tok = Get-SideCrabPanelToken -TokenPath $TokenPath
         if ($tok.Present) {
-            Write-Host "  PAIRING: taps are only honoured with the pairing code. Enter $($tok.Code) in iCUE > widget settings > Approval Pairing Code (print it again any time with -PairingCode)." -ForegroundColor Yellow
+            Write-Host "  PAIRING: taps are only honoured with the pairing code, and the panel host reads it from $TokenPath itself - there is nothing to paste." -ForegroundColor Yellow
         } else {
-            Write-Host "  PAIRING: no code yet at $TokenPath - crabd 0.29.0+ mints it on first start. Re-run with -PairingCode once crabd is up, then enter the code in iCUE > widget settings." -ForegroundColor Yellow
+            Write-Host "  PAIRING: no code yet at $TokenPath - crabd 0.29.0+ mints it on first start, and the panel host picks it up from there. Approve/Deny taps are refused until it exists." -ForegroundColor Yellow
         }
     } else {
         # Default OFF. Only WRITE false when the key is absent, so a plain re-run does not

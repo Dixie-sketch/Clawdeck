@@ -38,53 +38,54 @@ learn nothing else about the panel, you learn what a waving crab means.
 
 ## 2. Platform facts
 
-- A widget is an HTML/CSS/JS folder (`index.html` + `manifest.json`) rendered by iCUE's
-  Chromium-based QtWebEngine, packaged to a `.icuewidget` bundle by the **WidgetBuilder CLI**
-  (`icuewidget init/validate/package`) and installed by double-click into a recent iCUE. Device
-  target `dashboard_lcd`, full-screen, landscape 2560×720.
-- Widgets **cannot read local files.** They can make HTTP requests and consume iCUE data-provider
-  plugins (sensors, media, FPS). Everything Claude-specific therefore arrives over localhost HTTP
-  from the companion service (§3).
-- Because QtWebEngine tracks an older Chromium, the widget is deliberately zero-framework and
-  conservative in its CSS, and every font and asset is bundled — it must render fully offline.
-- Corsair's widget documentation (spec, plugins, controls) is the reference for the device target
-  and the manifest schema.
+- The panel is an HTML/CSS/JS tree served by the companion at `/panel/` and shown by a native
+  host window (WebView2, .NET 10) pinned to the Xeneon Edge: full-screen, landscape 2560×720,
+  borderless, always on top, never focus-stealing.
+- **The page reads no local files.** Everything it shows arrives over localhost HTTP from the
+  companion (§3), including hardware readings, which the companion sources from HWiNFO's shared
+  memory and `nvidia-smi`.
+- The page is deliberately zero-framework, conservative in its CSS, and ships every font and
+  asset, so it renders fully offline.
+- The host owns the display decisions the page cannot make: which monitor, what zoom, and
+  whether to show at all when the target display is absent. It writes each of those to
+  `~/.sidecrab/logs/panel.log` with its own pid and start time, so evidence can always be tied
+  to the run that produced it.
+- SideCrab's original host was a vendor widget frame, retired on 2026-09-21: the maintainers' history.
 
 ---
 
-## 3. Architecture — four components, one repo
+## 3. Architecture — three components, one repo
 
 ```
-Claude Code                              companion "crabd"              iCUE / Xeneon Edge
-───────────                              ─────────────────              ──────────────────
-hooks (Notification, Stop,   ──POST──▶   localhost HTTP service  ◀─poll── SideCrab widget
-  SessionStart/End, Subagent)            - session state machine         (HTML/JS, 2560×720)
-statusline document          ──POST──▶   - limits/usage reader     ──────▶ GET /v1/state (3 s)
-OTLP metrics + logs          ──POST──▶   - token/cost aggregator   ◀────── POST /v1/action
-Stop + PermissionRequest     ◀─answer─   - history + recap                 POST /v1/config
-  (blocking http hooks)                  - control surface
-~/.claude usage + transcripts ──read──▶       ▲        ▲
-git (per-session cwd)         ──read──▶  poll │        │ poll
-                                    sidecrab-glow   notifier
-                                   (RGB lighting)  (Windows toast)
+Claude Code                              companion "crabd"           panel host / Xeneon Edge
+───────────                              ─────────────────           ───────────────────────
+hooks (Notification, Stop,   ──POST──▶   localhost HTTP service  ◀───── SideCrab.Panel
+  SessionStart/End, Subagent)            - session state machine       (WebView2, 2560×720)
+statusline document          ──POST──▶   - limits/usage reader     ──────▶ GET /panel/
+OTLP metrics + logs          ──POST──▶   - token/cost aggregator   ──────▶ GET /v1/state, /v1/events
+Stop + PermissionRequest     ◀─answer─   - history + recap         ◀────── POST /v1/action
+  (blocking http hooks)                  - control surface        ◀────── POST /v1/config
+~/.claude usage + transcripts ──read──▶       ▲
+HWiNFO shared memory, nvidia-smi ─read▶  poll │
+git (per-session cwd)         ──read──▶     notifier
+                                        (Windows toast)
 ```
 
-Both glow and notifier are **standalone and read-only** consumers. Either can be absent without
-breaking anything else.
+The notifier is a **standalone and read-only** consumer. It can be absent without breaking
+anything else.
 
-The widget is no longer purely a consumer: since v0.12.0 it also **writes** — settings via
+The panel is not purely a consumer: since v0.12.0 it also **writes** — settings via
 `POST /v1/config`, and per-session actions (acknowledge, dismiss, a queued continue prompt,
 approve/deny) via `POST /v1/action`. Everything remains localhost-only.
 
-### 3.1 The widget — `widget/`
+### 3.1 The panel page — `widget/`
 
-Static HTML/CSS/JS. Polls `http://127.0.0.1:2722/v1/state` and renders §4 from a single JSON
-document — everything in one round trip, so there is exactly one thing that can be stale and
-exactly one place staleness is judged.
+Static HTML/CSS/JS, served by the companion at `/panel/`. It takes `http://127.0.0.1:2722/v1/state`
+as a single JSON document and renders §4 from it — everything in one round trip, so there is
+exactly one thing that can be stale and exactly one place staleness is judged. `GET /v1/events`
+pushes each new picture as the companion has one; the three-second poll is the fallback.
 
-**The widget must be useful on its own.** Someone who installs it from the store and never runs the
-companion still gets the clock, the crab, and whatever iCUE's own sensor providers expose. The
-companion-fed zones degrade to an honest "no companion" state rather than an empty panel.
+Its version is `widget/version.json`, independent of the companion's and the host's.
 
 ### 3.2 The companion — `companion/` (crabd)
 
@@ -110,25 +111,30 @@ A small local service on the machine running Claude Code. It:
   survive restarts. Served back by `GET /v1/history?day=`.
 - **Answers blocking hooks.** `Stop` (to deliver a queued continue prompt) and `PermissionRequest`
   (to let the panel approve or deny) are `type-http` hooks that crabd answers directly. See §4.7.
-- **Watches its own fleet** — the Scheduled Task state of the glow and the notifier.
+- **Watches its own fleet** — the Scheduled Task state of the notifier and the panel host.
 - **Serves `/v1/state`** with a monotonic `generatedAt`, and accepts `POST /v1/config` on a
   strict key whitelist. Binds `127.0.0.1` only.
 
 It reads `~/.claude` strictly read-only and never logs, serves or persists the OAuth token.
 
-### 3.3 The glow — `lighting/`
+### 3.3 The panel host — `panel-host/`
 
-An optional consumer that pulses Corsair RGB terracotta while a session is unacknowledged and
-waiting, and hands the lights straight back to your own iCUE profile the moment the alert clears.
-Quiet hours, acknowledgement, and a dead feed all release the lights. The decision is a pure
-function, so it is fully tested without a Corsair device in the room.
+A native Windows window (.NET 10 WinForms + WebView2) that loads `/panel/` and pins itself to the
+Xeneon Edge by device id, re-pinning after sleep and display changes. It owns what the page
+cannot: the monitor, the zoom correction, its own settings file
+(`~/.sidecrab/panel-settings.json`), and the approval pairing code, which it reads from
+`~/.sidecrab/panel-token` and never hands to the page as readable data.
 
-**Parked, and honestly so.** The Corsair SDK crashes in every non-interactive console context
-tested — `pythonw`, a hidden child process, and a hidden new console all fault at handshake; only
-an interactive console degrades gracefully. The `SideCrab-glow` Scheduled Task is therefore
-**disabled on purpose**, the installer no longer overturns that on re-run, and the panel's fleet
-dot shows it stopped rather than pretending otherwise. It needs a newer SDK, a visible tray-mode
-process, or a Corsair fix.
+**It says what it did, per run.** Every load, re-pin and hidden period is written to
+`~/.sidecrab/logs/panel.log` with the host's pid and start time, so a check can tell this run's
+evidence from a previous run's. That binding is what the `panel viewport` smoke row judges
+(SCA-004); without it a good line from last week certified a host that had drawn nothing.
+
+**RGB is retired.** An earlier component drove Corsair lighting from the same feed and never
+worked in a non-interactive console. It is retired as a product direction, not parked as a bug:
+`lighting/` is gone, the catalogue has no glow row, and the installer unregisters an existing
+`SideCrab-glow` task once and records it. Optional RGB in future needs a different provider and
+its own hardware evidence.
 
 ### 3.4 The notifier — `notifier/`
 
@@ -157,10 +163,10 @@ Three zones, left to right.
 **content/idle** (everything working, or nothing active) · **waving/alert** (a session needs input)
 · **asleep** (quiet hours) · **worried** (feed stale or companion down). Below it, the clock: big
 HH:MM, subtle seconds, a date line, and two small labelled **fleet dots** (`g`, `t`) reporting
-whether the glow and the notifier are actually running — green running, amber stopped, grey
+whether the notifier and the panel host are actually running — green running, amber stopped, grey
 absent or unknown. Colour is never the only carrier: the letter and the dot shape say it too. crabd
 has no dot, because if the panel is rendering at all, crabd is up. The crab and clock are what make
-the widget worth the screen even with zero sessions.
+the panel worth the screen even with zero sessions.
 
 **4.2 Limits and burn zone (~620 px).** Two horizontal gauges — **5-hour window** and **weekly
 limit** — each with percent used, resets-at time, a colour ramp (calm → amber ≥70% → red ≥90%), a
@@ -187,7 +193,7 @@ drills into that day's history.
 the panel edge glows, the crab waves, the card pulses at the top of the grid, and (optionally) the
 panel flashes once on the transition. A live permission request additionally colours the card and
 the panel edge, because it is a hard stop rather than a question that can wait. Everything settles
-into a steady indication — nothing blinks forever. Quiet hours suppress the flash, the glow and the
+into a steady indication — nothing blinks forever. Quiet hours suppress the flash, the chime and the
 pulse; the card still renders, because a question keeps waiting whether or not you want to be
 shouted at about it.
 
@@ -237,9 +243,10 @@ original.
 
 ## 5. Process — contract first
 
-`widget/` and `companion/` are a producer and a consumer that ship separately: the widget is
-imported into iCUE by hand (or installed from the store), the companion is updated by pulling the
-repo. They therefore cannot assume they are the same version, ever.
+`widget/`, `companion/` and `panel-host/` are versioned independently and updated by one
+`Update-SideCrab.ps1` run, which pulls the repo, rebuilds the host and restarts the tasks. They
+therefore cannot assume they are the same version, ever. `Install-SideCrab.ps1 -Status` prints
+all three side by side rather than inventing one product version.
 
 [`STATE-CONTRACT.md`](STATE-CONTRACT.md) is the contract between them, and it is the source of
 truth for both sides. **A change lands there first, then in both implementations.** The rules that
@@ -262,17 +269,18 @@ fall out of that:
 
 | Path | What |
 |---|---|
-| `widget/` | The iCUE widget — HTML/CSS/JS, packaged with the WidgetBuilder CLI |
-| `companion/` | crabd — the local service and the `/v1/state` feed |
-| `lighting/` | sidecrab-glow — optional RGB alert |
+| `widget/` | The panel page — HTML/CSS/JS, served at `/panel/`; version in `widget/version.json` |
+| `companion/` | crabd — the local service, the `/v1/state` feed and the `/panel/` asset route |
+| `panel-host/` | SideCrab.Panel — the native window on the Xeneon Edge |
 | `notifier/` | Optional Windows toast notifier + Acknowledge handler |
 | `hooks/` | The Claude Code hook fragment and the chained statusline command that feed crabd |
 | `setup/` | Install/update/uninstall/smoke-test/verification scripts |
-| `docs/` | This document, the state contract, the backlog, spikes |
+| `docs/` | This document, the state contract, the backlog, spikes, and `history/` |
 
-`icuewidget validate` passing is the merge gate for widget changes; releases attach the packaged
-`.icuewidget`. Install is one script: register the Scheduled Tasks, merge the hook entries, import
-the widget into iCUE.
+The merge gates for the page are an HTML parse of `widget/index.html` and a parse of
+`widget/version.json`, plus a tree-wide check that no current surface names the retired vendor
+integration. Install is one script: build the host, register the Scheduled Tasks, merge the hook
+entries. There is nothing to package and nothing to import.
 
 ---
 
@@ -280,13 +288,14 @@ the widget into iCUE.
 
 | Stage | Content |
 |---|---|
-| **Shipped — the panel** | Widget on glass, all zones live; crabd with hooks, limits, burn, forecast, recap, history and fleet; notifier with five toasts; honest-failure behaviour verified on device |
+| **Shipped — the panel** | Panel on glass in the native host, all zones live; crabd with hooks, limits, burn, forecast, recap, history and fleet; notifier with five toasts; honest-failure behaviour verified on device |
 | **Shipped — the control surface** | Settings from the panel; pins, the day drill and four touch gestures; queued continue prompts; panel approvals (default off); statusline ingest and the OTLP receiver, both with explicit provenance |
 | **Needs a live turn, not more code** | Panel approvals have never been exercised against a real CLI approval — the response shape was settled by reading the shipped binary's schema, and `setup\Verify-PanelApproval.ps1` carries the procedure. Until that runs with the operator present, approvals stay off by default and the feature is "written, not proven" |
 | **Verify before relying on** | The statusline path works when invoked but **this host never invokes it** — the status line appears to render only in an interactive terminal, so OAuth stays the live source here. It is a fallback-grade feed until confirmed on a plain terminal session, and the OAuth path stays regardless |
-| **Parked** | The glow, on the Corsair SDK's non-interactive crash (§3.3) · real tap-to-reply, on a supported external send into a live session — the spike found none that is safe, and `POST /v1/action` answers `501` for `reply` until that changes |
-| **Next** | Standalone-widget polish for store users who never install the companion; making the Python suite pytest-clean before publication; packaging and update ergonomics |
-| **Watch list** | Cloud sessions (no stable endpoint) · other machines · marketplace distribution |
+| **Retired** | RGB lighting (§3.3), as a product direction, not a bug awaiting a fix |
+| **Parked** | Real tap-to-reply, on a supported external send into a live session — the spike found none that is safe, and `POST /v1/action` answers `501` for `reply` until that changes |
+| **Next** | Making the Python suite pytest-clean; packaging and update ergonomics, so a supported Windows account can install without a build SDK |
+| **Watch list** | Cloud sessions (no stable endpoint) · other machines · distribution |
 
 ---
 
@@ -296,21 +305,23 @@ the widget into iCUE.
   module; degrades to burn-only with the gauges em-dashed, never to invented numbers.
 - **Hooks are best-effort** — a killed terminal fires nothing. The companion also ages sessions by
   transcript mtime, so a session cannot sit "working" forever because a hook never arrived.
-- **QtWebEngine quirks.** Zero-framework, conservative CSS, tested on the real device early rather
-  than late.
-- **Widget sandbox limits on localhost fetch** were verified with a spike before the full widget
-  was built; the documented plugin/data-provider path is the fallback.
-- **Corsair SDK coverage varies by device.** Some lighting (notably case RGB behind a hub) is not
-  exposed as addressable. The glow treats "connected but nothing to pulse" as its own degraded
-  state and re-enumerates, rather than pretending it painted something. Separately, the SDK does
-  not survive a non-interactive console at all, which is why the glow is parked (§3.3).
+- **Browser-engine quirks.** Zero-framework, conservative CSS, tested on the real device early
+  rather than late.
+- **The host can be alive and showing nothing.** If the target display is absent, the window
+  hides on purpose rather than appearing somewhere unexpected. That is a reportable state, not a
+  pass and not a crash, and both `panel.log` and the `panel viewport` smoke row name it as
+  itself (SCA-004).
+- **A native build can fail while the companion stays healthy.** `Update-SideCrab.ps1` therefore
+  counts a failed rebuild, and a panel task that does not come back, as a failed update: it exits
+  non-zero and names the host version still on disk (SCA-003). The prior working exe is left in
+  place — stale but working beats dark, as long as nobody is told it was rebuilt.
 - **Blocking hooks sit in Claude Code's critical path.** `Stop` and `PermissionRequest` are
   answered by crabd, so a companion that hangs would stall a turn. Both are bounded well inside the
   CLI's own timeout, and every failure mode — unreachable, malformed, disabled, timed out —
   resolves to the same pass-through the CLI would take on its own. A hook that cannot decide must
   never be a hook that blocks.
 - **The installer must not overturn the operator's own state.** A `-Force` re-registration writes
-  an enabled task, which once resurrected the deliberately-disabled glow straight back into its
-  crash. Re-registration now reads the prior state first and restores what the installer does not
+  an enabled task, which once resurrected a task the operator had deliberately disabled and then
+  started it. Re-registration now reads the prior state first and restores what the installer does not
   own; an explicit switch is the only way to overturn it. "Idempotent" has to include the human's
   edits, not just the file's contents.

@@ -2,14 +2,16 @@ namespace SideCrab.Panel;
 
 internal static class Program
 {
-    public const string Version = "0.3.0";
+    public const string Version = "0.4.0";
 
     [STAThread]
     private static int Main(string[] args)
     {
         var opts = HostOptions.Parse(args);
         var dir = opts.SideCrabDir ?? PanelSettings.SideCrabDir;
-        var log = new Log(Path.Combine(dir, "logs", "panel.log"));
+        // SCA-031: per-instance file. The kiosk keeps the bare panel.log name the setup
+        // lane's smoke check reads.
+        var log = new Log(Path.Combine(dir, "logs", PanelLogic.LogFileName(opts.Windowed, opts.Profile)));
         if (opts.Error is not null)
         {
             log.Write("args: " + opts.Error);
@@ -27,7 +29,7 @@ internal static class Program
         // the worktree was impossible without stopping the operator's panel. The scheduled
         // task NEVER passes --windowed (see Install-SideCrab.ps1), so the pinned instance
         // always takes the bare name and the guard on the Edge is untouched.
-        using var mutex = new Mutex(initiallyOwned: true, name: PanelLogic.MutexName(opts.Windowed), out var first);
+        using var mutex = new Mutex(initiallyOwned: true, name: PanelLogic.MutexName(opts.Windowed, opts.Profile), out var first);
         if (!first)
         {
             log.Write("another SideCrab.Panel is already running in this session; exiting 3");
@@ -46,9 +48,11 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             log.Write("unhandled (domain): " + e.ExceptionObject);
 
+        var startedAt = DateTime.Now;
         log.Write($"SideCrab.Panel {Version} starting; pid {Environment.ProcessId}; settings dir {dir}; " +
-                  $"args: {string.Join(' ', args)}");
-        Application.Run(new PanelForm(opts, dir, log));
+                  $"profile {PanelLogic.ProfileName(opts.Windowed, opts.Profile)}; " +
+                  $"args: {PanelLogic.EscapeForLog(string.Join(' ', args), 300)}");
+        Application.Run(new PanelForm(opts, dir, log, startedAt));
         log.Write("exit 0");
         return 0;
     }
@@ -63,6 +67,9 @@ public sealed class HostOptions
     public int DevToolsPort { get; private set; }
     public bool Windowed { get; private set; }
     public string? SideCrabDir { get; private set; }
+    /// <summary>SCA-024: names the WebView2 user-data folder and the log file, so a
+    /// second host can be run for native QA without sharing either with the kiosk.</summary>
+    public string? Profile { get; private set; }
     public string? Error { get; private set; }
 
     public static HostOptions Parse(string[] args)
@@ -95,6 +102,10 @@ public sealed class HostOptions
                 case "--sidecrab-dir":
                     o.SideCrabDir = Next();
                     if (string.IsNullOrWhiteSpace(o.SideCrabDir)) o.Error = "--sidecrab-dir needs a path";
+                    break;
+                case "--profile":
+                    o.Profile = Next();
+                    if (string.IsNullOrWhiteSpace(o.Profile)) o.Error = "--profile needs a name";
                     break;
                 default:
                     o.Error = "unknown argument " + args[i];

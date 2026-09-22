@@ -5,13 +5,14 @@
 
 .DESCRIPTION
     `dotnet publish` of the WebView2 kiosk window that shows the panel full-screen on the
-    Xeneon Edge without iCUE. Framework-dependent: the PC needs the .NET 10 Desktop Runtime
-    to RUN it and the .NET 10 SDK to BUILD it; the WebView2 Runtime ships with Windows 11
-    and with most Windows 10 installs.
+    Xeneon Edge. Framework-dependent: the PC needs the .NET 10 Desktop Runtime to RUN it and
+    the .NET 10 SDK to BUILD it; the WebView2 Runtime ships with Windows 11 and with most
+    Windows 10 installs.
 
-    Install-SideCrab.ps1 -Panel runs this when the exe is missing, and Update-SideCrab.ps1
-    runs it before restarting the panel task, so the running window is always the checked-
-    out code. Run it by hand after editing anything under panel-host\.
+    Install-SideCrab.ps1 runs this when the exe is missing, and Update-SideCrab.ps1 runs it
+    before restarting the panel task, so the running window is always the checked-out code.
+    Both treat a non-zero exit as a failure of the whole operation (SCA-003). Run it by hand
+    after editing anything under panel-host\.
 
     Output: panel-host\dist\SideCrab.Panel.exe (dist\ is gitignored). Exit code 0 only when
     the exe exists afterwards.

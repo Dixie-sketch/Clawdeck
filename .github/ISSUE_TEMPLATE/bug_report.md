@@ -13,9 +13,8 @@ labels: bug
 2.
 
 **Versions**
-- Widget (`widget/manifest.json` or the iCUE widget list):
-- Companion: output of `pwsh -File .\setup\Install-SideCrab.ps1 -Status`
-- iCUE version:
+- All three, from `pwsh -File .\setup\Install-SideCrab.ps1 -Status` (it prints the companion,
+  the panel assets and the panel host on one line):
 - Windows version:
 - Python version (`python --version`):
 

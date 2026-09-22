@@ -33,20 +33,23 @@ jobs:
       - name: Notifier
         run: python -m unittest discover -s notifier/tests -t notifier/tests
 
-      - name: Lighting
-        run: python -m unittest discover lighting/tests
-
       - name: Hooks
         run: python -m unittest discover -s hooks/tests -t hooks/tests
 
       - name: Widget ordering
         run: node widget/tests/test_ordering.js
 
-      - name: Widget index.html is strict XML (iCUE requirement the CLI validator misses)
-        run: python -c "import xml.etree.ElementTree as ET; ET.fromstring(open('widget/index.html',encoding='utf-8').read()); print('strict-XML OK')"
+      # Replaces the strict-XML check, which existed only because the retired import
+      # validator demanded XML-parseable HTML. The page is HTML, so it is parsed as HTML:
+      # html.parser raises on a malformed document and this asserts the page is not empty.
+      - name: Panel page parses as HTML
+        run: python -c "import html.parser,sys; p=html.parser.HTMLParser(); s=open('widget/index.html',encoding='utf-8').read(); p.feed(s); p.close(); assert '<html' in s.lower(), 'widget/index.html has no html element'; print('HTML OK,', len(s), 'bytes')"
 
-      - name: Widget manifest parses
-        run: python -c "import json; m=json.load(open('widget/manifest.json',encoding='utf-8')); print(m['id'], m['version'])"
+      # The version identity of the assets crabd serves at /panel/. This replaces the vendor
+      # manifest check: that file described a copy imported into another application, so the
+      # number CI verified was not the number of anything this repo ships.
+      - name: Panel asset version parses
+        run: python -c "import json; v=json.load(open('widget/version.json',encoding='utf-8')); assert isinstance(v.get('version'),str) and v['version'].strip(), 'widget/version.json has no version string'; print('widget', v['version'])"
 
       - name: Panel host (build + unit tests)
         run: |

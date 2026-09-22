@@ -733,7 +733,7 @@ class Sec1OriginGateLiveFireTests(LiveFireServed):
     (Origin: null), curl-fed ingest hooks and the CLI's own HTTP hooks (no Origin), and
     local tools. Proven on /v1/action queue-continue, the live control path SEC-3 flags.
 
-    The policy and its measured basis: the widget runs from an iCUE-served file/qrc page
+    The policy and its measured basis: the widget runs from an the previous host's file/qrc page
     inside QtWebEngine (Chromium), whose cross-origin fetch serializes its Origin to
     exactly "null" (widget/scripts/sidecrab.js sets no Origin - the browser does, and an
     opaque origin has no other serialization). So the gate fails OPEN for absent/null and
@@ -764,30 +764,37 @@ class Sec1OriginGateLiveFireTests(LiveFireServed):
         self.assertIsNone(reply.headers.get("Access-Control-Allow-Origin"))
         self.assertEqual(self.row()["queuedContinue"]["prompt"], "Continue")
 
-    def test_a_null_origin_the_widget_case_works_and_is_reflected(self):
-        """Proof (c): the widget's Origin: null is allowed and queues, and the reply
-        reflects `null` (never `*`) so the widget's cors-mode fetch can read the status
-        it optimistically rolled forward - an unreadable reply rolls the tap back."""
-        reply = self.qc({"Origin": "null"})
+    def test_the_panels_own_origin_works_and_is_reflected(self):
+        """Proof (c): the panel page's Origin is this server's own, and the reply
+        reflects it (never `*`) so the page's cors-mode fetch can read the status it
+        optimistically rolled forward - an unreadable reply rolls the tap back.
+
+        CLEAN-04 (2026-09-21): `Origin: null` used to be the case proven here, for the
+        the previous host's file/qrc page. That page is retired and null is now refused."""
+        origin = "http://127.0.0.1:%d" % self.port
+        reply = self.qc({"Origin": origin})
         self.assertEqual(reply.status, 204)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
         self.assertNotEqual(reply.headers.get("Access-Control-Allow-Origin"), "*")
         self.assertEqual(self.row()["queuedContinue"]["prompt"], "Continue")
+        self.assertEqual(self.qc({"Origin": "null"}).status, 403)
 
     def test_options_on_a_mutating_path_never_advertises_wildcard(self):
         """Proof (d): OPTIONS no longer answers ANY preflight with ACAO:*. A web page's
         preflight gets no ACAO; the widget's null origin is reflected so its
         application/json preflight still passes. v0.16.0 (SEC-4) extends the same answer
         to the READ paths, which used to be preflighted with the wildcard."""
-        evil = self.client.request("OPTIONS", "/v1/action",
-                                   headers={"Origin": "https://evil.example"})
-        self.assertIsNone(evil.headers.get("Access-Control-Allow-Origin"))
-        widget = self.client.request("OPTIONS", "/v1/action", headers={"Origin": "null"})
-        self.assertEqual(widget.headers.get("Access-Control-Allow-Origin"), "null")
-        self.assertEqual(widget.headers.get("Access-Control-Allow-Methods"),
+        origin = "http://127.0.0.1:%d" % self.port
+        for refused in ("https://evil.example", "null"):
+            evil = self.client.request("OPTIONS", "/v1/action",
+                                       headers={"Origin": refused})
+            self.assertIsNone(evil.headers.get("Access-Control-Allow-Origin"), refused)
+        panel = self.client.request("OPTIONS", "/v1/action", headers={"Origin": origin})
+        self.assertEqual(panel.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertEqual(panel.headers.get("Access-Control-Allow-Methods"),
                          "GET, POST, OPTIONS")
-        state = self.client.request("OPTIONS", "/v1/state", headers={"Origin": "null"})
-        self.assertEqual(state.headers.get("Access-Control-Allow-Origin"), "null")
+        state = self.client.request("OPTIONS", "/v1/state", headers={"Origin": origin})
+        self.assertEqual(state.headers.get("Access-Control-Allow-Origin"), origin)
         evil_read = self.client.request("OPTIONS", "/v1/state",
                                         headers={"Origin": "https://evil.example"})
         self.assertIsNone(evil_read.headers.get("Access-Control-Allow-Origin"))
@@ -1049,7 +1056,7 @@ class QueuedContinueOnTheRowTests(LiveFireServed):
     def test_the_schema_number_did_not_move(self):
         """Additive means additive: the widget's acceptance test is 1 <= schema <= 5 and
         an unknown KEY is ignored, never rejected. A bump here costs a console-bound
-        .icuewidget re-import at the operator's desk."""
+        the old widget package re-import at the operator's desk."""
         self.assertEqual(self.rebuild()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
 
@@ -1067,7 +1074,7 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.33.0")
+        self.assertEqual(crabd.VERSION, "0.34.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),
@@ -1166,13 +1173,13 @@ class Sec4ReadGateLiveFireTests(LiveFireServed):
     but it could read everything, from a tab in the background, for as long as it stayed
     open.
 
-    The gate is the SAME predicate, so the widget is unaffected: an opaque QtWebEngine
-    origin serializes to exactly "null", which is not a web origin and is allowed. The
-    two proofs that matter are both below - evil is refused, and the widget still works.
+    The gate is the SAME predicate, so the panel is unaffected: it is served by crabd
+    and its Origin is this server's own. The two proofs that matter are both below -
+    evil is refused, and the panel still works. CLEAN-04 (2026-09-21) retired the
+    `null` and non-web allowance the previous host's page needed.
     """
 
     EVIL = {"Origin": "https://evil.example"}
-    WIDGET = {"Origin": "null"}
     READS = ("/v1/state", "/v1/health")
 
     def day(self):
@@ -1209,22 +1216,26 @@ class Sec4ReadGateLiveFireTests(LiveFireServed):
 
     # -- THE WIDGET MUST KEEP WORKING
 
-    def test_the_widget_null_origin_still_reads_state_and_can_use_the_reply(self):
+    def panel(self):
+        return {"Origin": "http://127.0.0.1:%d" % self.port}
+
+    def test_the_panel_origin_reads_state_and_can_use_the_reply(self):
         """The proof that this fix is shippable. The widget's fetch is cors-mode from an
         opaque origin, so it needs a 200 AND an ACAO its own browser will accept - which
         for an opaque origin is the literal string `null`, never the wildcard."""
-        reply = self.client.get("/v1/state", headers=self.WIDGET)
+        reply = self.client.get("/v1/state", headers=self.panel())
         self.assertEqual(reply.status, 200)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"),
+                         self.panel()["Origin"])
         self.assertEqual(reply.headers.get("Vary"), "Origin")
         self.assertEqual(json.loads(reply.body)["schema"], 5)
 
-    def test_a_widget_style_read_works_on_every_route(self):
+    def test_a_panel_style_read_works_on_every_route(self):
         for path in self.READS + (f"/v1/history?day={self.day()}",):
-            reply = self.client.get(path, headers=self.WIDGET)
+            reply = self.client.get(path, headers=self.panel())
             self.assertEqual(reply.status, 200, path)
             self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"),
-                             "null", path)
+                             self.panel()["Origin"], path)
 
     def test_a_read_with_no_origin_still_works_and_gets_no_acao(self):
         """curl, Test-SideCrab, Repair-SideCrab and every local tool. A non-browser
@@ -1234,14 +1245,14 @@ class Sec4ReadGateLiveFireTests(LiveFireServed):
         self.assertIsNone(reply.headers.get("Access-Control-Allow-Origin"))
         self.assertEqual(json.loads(reply.body)["schema"], 5)
 
-    def test_a_non_web_scheme_origin_is_allowed_like_null(self):
-        """file:// and qrc:// are what a locally-served page reports where the browser
-        does not collapse it to `null`. Neither is the visited-page vector."""
-        for origin in ("file://", "qrc://icue/widget"):
+    def test_null_and_the_non_web_schemes_are_refused(self):
+        """CLEAN-04: these were allowed for the previous host's file/qrc page. That page is
+        gone, and `null` is the one origin a sandboxed iframe on a visited page can
+        forge - so the allowance closed with the page that needed it."""
+        for origin in ("null", "file://", "qrc://sidecrab/widget"):
             reply = self.client.get("/v1/state", headers={"Origin": origin})
-            self.assertEqual(reply.status, 200, origin)
-            self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"),
-                             origin, origin)
+            self.assertEqual(reply.status, 403, origin)
+            self.assertIsNone(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     # -- the sweep: no wildcard survives anywhere
 
@@ -1256,7 +1267,7 @@ class Sec4ReadGateLiveFireTests(LiveFireServed):
         writes = ("/v1/action", "/v1/config", "/v1/hook", "/v1/statusline",
                   "/v1/metrics", "/v1/logs", "/v1/hook/stop")
         seen = []
-        for headers in ({}, self.WIDGET, self.EVIL):
+        for headers in ({}, self.panel(), self.EVIL):
             for path in reads:
                 seen.append(("GET", path,
                              self.client.get(path, headers=dict(headers))))

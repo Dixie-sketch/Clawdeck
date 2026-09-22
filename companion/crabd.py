@@ -14,7 +14,7 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               toast, digest, the burn budget, panel
                                               approvals, the reply gate
   5. `git log` in today's session cwds     -> recap.commits, recap.week[].commits
-  6. `schtasks /query` on the SideCrab tasks -> fleet (glow / toast)
+  6. `schtasks /query` on the SideCrab tasks -> fleet (the notifier)
   7. ~/.sidecrab/history.jsonl             -> replayed at startup so doneToday, the
                                               per-session events ring and recap.week
                                               survive a crabd restart
@@ -25,7 +25,7 @@ breaking shape; the v0.6.x through v0.28.0 fields ride on it additively) on
                                               api_error events onto the session rings
  10. GetSystemTimes / GlobalMemoryStatusEx (v0.22.0) -> `host`: this machine's CPU
                                               utilization and memory, for the panel
-                                              beside the iCUE temperature sensors
+                                              beside the HWiNFO temperature sensors
  11. GET /v1/models on the same OAuth token (v0.28.0) -> the context WINDOW size behind
                                               contextWindowTokens, for a model id that
                                               carries no [1m]/[200k] marker (which is
@@ -37,9 +37,9 @@ quiet; reply is 501, see below), answers the Stop and PermissionRequest hooks on
 /v1/hook/stop and /v1/hook/permission, plus quietHours / toast / digest / budget
 writes on /v1/config.
 
-/v1/panel-log (v0.24.0) is a SIDE CHANNEL, not a source: the widget POSTs short
-diagnostic lines to it and a maintainer GETs them back, because iCUE renders the widget on
-a surface no devtools can reach. It is in-memory only, it feeds nothing, and nothing in
+/v1/panel-log (v0.24.0) is a SIDE CHANNEL, not a source: the panel POSTs short
+diagnostic lines to it and a maintainer GETs them back, because the panel host renders it
+on a surface no devtools can reach. It is in-memory only, it feeds nothing, and nothing in
 here ever reads a stored line back into a decision.
 
 stdlib only, Python 3.13, Windows host. ~/.claude is read strictly read-only.
@@ -73,11 +73,11 @@ from pathlib import Path, PureWindowsPath
 # VERSIONING REWORK section of docs/STATE-CONTRACT.md. Additive fields (contextTokens,
 # fleet, everything after) ship under this same number and are found by FIELD PRESENCE;
 # only a change that alters or removes an existing field bumps it, and that bump costs a
-# coordinated deploy. The lesson that bought this: crabd redeploys over RDP, the widget
-# does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
-# schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
+# coordinated deploy. The lesson that bought this: crabd and the panel page do not
+# redeploy together, so shipping schema N+1 dead-feeds the on-glass panel until the page
+# crabd serves has been updated too.
 SCHEMA_BREAKING = 5
-VERSION = "0.33.0"
+VERSION = "0.34.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -87,17 +87,25 @@ PORT = int(os.environ.get("CRABD_PORT") or 2722)
 SIDECRAB_DIR = Path.home() / ".sidecrab"
 USER_CONFIG_FILE = SIDECRAB_DIR / "config.json"
 # The panel pairing code (v0.29.0, closes SEC-a + WID-a). A 10-symbol secret crabd mints
-# once and keeps in the user's profile; the widget presents it on every `decide`. It is the
-# one thing a web page the operator visits cannot obtain: iCUE widget PROPERTIES are not
-# reachable from a browser, and a forged `Origin: null` buys nothing without it. Same-user
-# local processes can read the file - they can also drive the terminal dialog, so they were
-# never in the threat model. Crockford-style alphabet (no I, L, O, U) so a code read off a
-# terminal and typed into iCUE's settings cannot be mis-transcribed.
+# once and keeps in the user's profile; the panel presents it on every `decide`. It is the
+# one thing a web page the operator visits cannot obtain. Same-user local processes can
+# read the file - they can also drive the terminal dialog, so they were never in the
+# threat model. Crockford-style alphabet (no I, L, O, U) so a code read off a terminal and
+# typed into the panel cannot be mis-transcribed.
 PANEL_TOKEN_FILE = SIDECRAB_DIR / "panel-token"
 PANEL_TOKEN_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+# SCA-005: where an unusable pairing file is kept when a new code is minted over it.
+PANEL_TOKEN_UNUSABLE_SUFFIX = ".unusable"
 PANEL_TOKEN_LEN = 10                 # 32^10 = 2^50 - hopeless to guess at loopback speed once
 PANEL_TOKEN_MAX_FAILURES = 10        # ...the lockout below bounds the rate anyway
 PANEL_TOKEN_WINDOW_SEC = 60.0
+# C4 / MF-017: the readiness probe's OWN budget, counting ATTEMPTS rather than failures.
+# Separate from the decide lockout on purpose - a panel checking whether it is paired
+# must not be able to lock the operator out of Approve and Deny, and a wrong code here
+# must not be cheaper than a wrong code there. Five a minute against 32^10 is not a
+# guessing route.
+PANEL_TOKEN_PROBE_MAX = 5
+PANEL_TOKEN_PROBE_WINDOW_SEC = 60.0
 PANEL_TOKEN_LOCKOUT_SEC = 60.0
 # v0.7.0 history persistence. Like LIMITS_CACHE_FILE this is a module GLOBAL naming a
 # real file under ~, and HistoryLog resolves it per call - so the test module can patch
@@ -199,13 +207,17 @@ _FORECAST_PROTECTED_KEYS = ("fiveHour", "weekly")
 FORECAST_DROP_EPS = 1e-9
 
 # fleet: SideCrab watching its own Scheduled Tasks. crabd is deliberately absent from
-# the list - if the widget is reading this document, crabd is running.
-FLEET_TASKS = (("glow", "SideCrab-glow"), ("toast", "SideCrab-toast"))
+# the list - if the panel is reading this document, crabd is running.
+# `glow` left this tuple with the RGB retirement (CLEAN-05, 2026-09-21). A component that
+# no longer ships would have reported `absent` or a permanently `stopped` task forever,
+# and a health indicator that can only ever say one thing is a fault light nobody can
+# clear. The key simply stops being served; see docs/history/RGB-retired-2026-09-21.md.
+FLEET_TASKS = (("toast", "SideCrab-toast"),)
 FLEET_REFRESH_SEC = 60       # contract: cached ~60 s
 FLEET_POLL_SEC = 5.0
 FLEET_TIMEOUT_SEC = 10       # contract
-# Measured 2026-08-26 on the Windows host: `schtasks /query /tn SideCrab-glow /fo csv /nh` exits 0
-# with '"\SideCrab-glow","N/A","Running"' - the status is the THIRD csv field.
+# Measured 2026-08-26 on the Windows host: `schtasks /query /tn SideCrab-toast /fo csv /nh`
+# exits 0 with '"\SideCrab-toast","N/A","Running"' - the status is the THIRD csv field.
 FLEET_STATUS_COL = 2
 FLEET_STATUS_MAP = {"running": "running", "ready": "stopped",
                     "queued": "stopped", "disabled": "stopped"}
@@ -215,7 +227,7 @@ FLEET_STATUS_MAP = {"running": "running", "ready": "stopped",
 # because a task that exists and cannot be read is NOT the same claim as an absent one.
 FLEET_ABSENT_MARKERS = ("cannot find", "does not exist")
 
-# --- v0.22.0 `host`: the machine's own CPU and memory, beside the iCUE temperatures.
+# --- v0.22.0 `host`: the machine's own CPU and memory, beside the HWiNFO temperatures.
 # Sampled on the BUILDER's existing pass (REFRESH_INTERVAL_SEC, 2 s) rather than a
 # thread of its own - an ambient gauge does not need better resolution than that, and a
 # thread is one more thing that can wedge while the number it feeds keeps being served.
@@ -730,10 +742,15 @@ GET_HANGUP_LOG_KEY = "get-hangup"
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
 STATE_NOT_BUILT = b'{"error":"state not built yet"}'
-# Bound on the once-log key set. The keys are literals in this file, so this can only be
-# reached by a future caller passing a computed key - and a growing set in a process that
-# runs for weeks is the leak this cap exists to refuse.
+# Bound on the once-log key sets. TWO sets, not one (SCA-032): the keys in this file are
+# literals and their cap is really a leak guard, but the per-project config validators
+# build keys out of OPERATOR DATA, and a config with enough distinct bad entries used to
+# consume the single global cap and take every later first-time diagnostic with it -
+# measured by the audit at 64 warnings from one synthetic config, after which an injected
+# unreadable-transcript exception incremented the skip counter and printed nothing. A
+# fixed failure class must still get its one line however badly the config is typed.
 LOG_ONCE_MAX_KEYS = 64
+LOG_ONCE_MAX_CONFIG_KEYS = 64
 # Depth bound for the sanitising second pass at the serializer. Deep enough for anything
 # the contract can produce (the deepest real path is limits.extra[].label at 3) and
 # shallow enough that a self-referential structure cannot recurse the daemon to death.
@@ -784,7 +801,7 @@ SESSION_ID_MAX = 200
 # ---------------------------------------------------------------- v0.31.0 the panel host
 # crabd serves the panel itself at GET /panel/ (contract v0.31.0), so a standalone host
 # window (panel-host/, WebView2) or any local browser can run the same widget/ tree that
-# ships inside the .icuewidget. Two gates come with it, both answered before any route:
+# ships with the panel host. Two gates come with it, both answered before any route:
 #
 #   1. Host allowlist (HOST_NOT_ALLOWED, 421). A DNS-rebinding page resolves its own name
 #      to 127.0.0.1 and then reads or drives crabd with a Host of `attacker.example:2722`
@@ -793,8 +810,9 @@ SESSION_ID_MAX = 200
 #      port, so a test instance on another port never accepts 2722's names.
 #   2. Same-origin allowlist. The panel's fetches carry `Origin: http://127.0.0.1:2722`
 #      (a real http origin, which SEC-1/SEC-4 refuse). Exactly the two origins that name
-#      this socket are allowed on top of the absent/null/non-web set; every other http(s)
-#      origin stays refused. See Handler._refused_origin.
+#      this socket are allowed, beside a request with no Origin header at all - which is
+#      every native client. Since v0.34.0 (provisional) nothing else is: `null` and the
+#      non-web schemes went with the retired vendor page. See Handler._refused_origin.
 #
 # The file allowlist IS the traversal defence: a request path is looked up in this map
 # and never joined onto the filesystem, so `..`, encoded dots and absolute paths have
@@ -883,10 +901,9 @@ def sse_frame(event: str, data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------- v0.24.0 constants
-# The panel diagnostics log channel (POST/GET /v1/panel-log). The widget renders inside
-# iCUE on the Xeneon Edge, where no devtools can be attached - a console.log has nowhere
-# to go, so the widget ships short lines here instead and a maintainer reads them over
-# HTTP. These four bounds are the entire flood posture: there is no rate limit because
+# The panel diagnostics log channel (POST/GET /v1/panel-log). The panel renders on the
+# Xeneon Edge, where no devtools can be attached - a console.log has nowhere to go, so the
+# page ships short lines here instead and a maintainer reads them over HTTP. These four bounds are the entire flood posture: there is no rate limit because
 # the ring itself is the bound.
 PANEL_LOG_MAX_LINES = 500          # the ring; oldest evicted first, counted in droppedTotal
 PANEL_LOG_MAX_PER_POST = 50        # lines past this in ONE body are dropped, not a 400
@@ -954,22 +971,40 @@ def _classify_ua_source(user_agent) -> str:
 
 # --------------------------------------------------------------------------- utils
 
-_LOG_ONCE_SEEN: set[str] = set()
+_LOG_ONCE_SEEN: set[str] = set()            # keys that are literals in this file
+_LOG_ONCE_CONFIG_SEEN: set[str] = set()     # keys built from the operator's config
+_LOG_ONCE_SUPPRESSED: set[str] = set()      # which sets have already said they are full
 _LOG_ONCE_LOCK = threading.Lock()
 
 
-def _log_once(key: str, message: str) -> None:
+def _log_once(key: str, message: str, config: bool = False) -> None:
     """One honest stderr line the FIRST time a swallowed failure happens, then silence.
 
     Every catch added in v0.20.0 reports through here. A swallowed exception that logs
     NOTHING is the failure mode the honest-failure rule exists to forbid; one that logs
     on every pass is a 2 s heartbeat of noise for a transcript line that will never be
     read again, and noise is how a real signal gets ignored.
+
+    `config=True` marks a key built from operator data (a repo name, a path) and sends
+    it to its own bounded set (SCA-032). The two sets never share a budget, so no
+    quantity of malformed config can silence the first report of an unrelated transcript,
+    sampler or build failure. A set that fills says so once, and that notice is itself
+    one of the once-lines rather than a per-pass complaint.
     """
+    seen = _LOG_ONCE_CONFIG_SEEN if config else _LOG_ONCE_SEEN
+    cap = LOG_ONCE_MAX_CONFIG_KEYS if config else LOG_ONCE_MAX_KEYS
+    label = "config" if config else "internal"
     with _LOG_ONCE_LOCK:
-        if key in _LOG_ONCE_SEEN or len(_LOG_ONCE_SEEN) >= LOG_ONCE_MAX_KEYS:
+        if key in seen:
             return
-        _LOG_ONCE_SEEN.add(key)
+        if len(seen) >= cap:
+            if label in _LOG_ONCE_SUPPRESSED:
+                return
+            _LOG_ONCE_SUPPRESSED.add(label)
+            message = (f"crabd: more than {cap} distinct {label} diagnostics - the rest "
+                       f"are suppressed for the life of this process")
+        else:
+            seen.add(key)
     print(message, file=sys.stderr, flush=True)
 
 
@@ -1266,7 +1301,7 @@ def quiet_state(config, now: float) -> dict | None:
     fabricated window. An overnight range (start > end) wraps across midnight.
 
     `active` is THE EFFECTIVE ANSWER (v0.23.0), schedule and override resolved together
-    here and nowhere else. Every consumer - the widget's dim and glow, the notifier's
+    here and nowhere else. Every consumer - the panel's dim, the notifier's
     four suppression sites, the crab's nightcap - reads this one boolean, so an operator
     tapping "quiet for 2h" on the panel reaches all of them without any of them learning
     what an override is.
@@ -1564,15 +1599,22 @@ class UserConfig:
 
     # ---- lane D (v0.33.0, provisional): a continue vocabulary per project ----
 
-    def _project_list(self, raw, where: str) -> list[str]:
+    def _project_list(self, raw, where: str) -> list[str] | None:
         """One project's prompts, validated exactly as continue_extras validates the
         global list - strings only, whitespace collapsed, CONTINUE_PROMPT_MAX, deduped,
-        capped. A value that is not a list is empty, never an error: the rest of the
-        operator's config must survive one bad key."""
+        capped.
+
+        None means MALFORMED and [] means "the operator wrote an empty list", and
+        SCA-011 is what the difference costs: an empty list is a deliberate instruction
+        - this project gets no path extras - and collapsing the two made `[]` vanish and
+        the less-specific entry apply instead. A malformed value is still not an error;
+        the rest of the operator's config must survive one bad key.
+        """
         if not isinstance(raw, list):
             _log_once("cfgproj:" + where,
-                      f"crabd: config.json {where} is not a list - ignored")
-            return []
+                      f"crabd: config.json {where} is not a list - ignored",
+                      config=True)
+            return None
         out: list[str] = []
         dropped = False
         for entry in raw:
@@ -1591,7 +1633,7 @@ class UserConfig:
             _log_once("cfgprojdrop:" + where,
                       f"crabd: config.json {where} - some entries dropped (strings "
                       f"only, 1..{CONTINUE_PROMPT_MAX} chars, deduped, "
-                      f"{CONTINUE_PROMPTS_PROJECT_CAP} max)")
+                      f"{CONTINUE_PROMPTS_PROJECT_CAP} max)", config=True)
         return out
 
     def _projects_parsed(self, now: float) -> tuple[dict, list]:
@@ -1614,6 +1656,11 @@ class UserConfig:
                 return self._projects
 
         by_repo: dict[str, list[str]] = {}
+        # Tracked SEPARATELY from by_repo (SCA-011): the first-wins rule is about the
+        # KEY, and a first key whose list is empty or malformed still owns the name.
+        # Keying the collision test off by_repo let a later `EXAMPLE` win over an earlier
+        # `Example: []`, which is the documented rule read backwards.
+        seen_repo: set[str] = set()
         raw_repo = data.get("continuePromptsByRepo")
         if raw_repo is not None and not isinstance(raw_repo, dict):
             _log_once("cfgrepo:type", "crabd: config.json continuePromptsByRepo is "
@@ -1626,13 +1673,15 @@ class UserConfig:
                                            "has a blank key - ignored")
                 continue
             folded = name.casefold()
-            if folded in by_repo:
+            if folded in seen_repo:
                 _log_once("cfgrepo:dup:" + folded,
                           f"crabd: config.json continuePromptsByRepo has two keys that "
-                          f"differ only in case ({name}) - the first one is used")
+                          f"differ only in case ({name}) - the first one is used",
+                          config=True)
                 continue
+            seen_repo.add(folded)
             prompts = self._project_list(value, f"continuePromptsByRepo[{name}]")
-            if prompts:
+            if prompts is not None:
                 by_repo[folded] = prompts
 
         by_path: list[tuple[str, str, list[str]]] = []
@@ -1648,11 +1697,16 @@ class UserConfig:
             if not root or not os.path.isabs(root):
                 _log_once("cfgpath:rel:" + str(key)[:64],
                           f"crabd: config.json continuePromptsByPath key {key!r} is "
-                          f"not an absolute path - ignored")
+                          f"not an absolute path - ignored", config=True)
                 continue
             norm = os.path.normcase(os.path.normpath(root))
             prompts = self._project_list(value, f"continuePromptsByPath[{root}]")
-            if prompts:
+            # An EMPTY list is kept and a MALFORMED one is not (SCA-011). The empty list
+            # is precedence-bearing: continue_session_extras stops at the longest
+            # matching prefix, so an empty entry there is how an operator says "this
+            # subtree gets none of the parent's extras". A malformed value carries no
+            # such instruction and must not suppress the parent by accident.
+            if prompts is not None:
                 # Matched at a path BOUNDARY, never as a bare string prefix: without
                 # the separator, C:\Dev\side would own C:\Dev\sidecrab as well.
                 boundary = norm if norm.endswith(os.sep) else norm + os.sep
@@ -2580,6 +2634,12 @@ class TranscriptStore:
         self.projects_dir = projects_dir
         self.files: dict[str, FileFacts] = {}
         self._lock = threading.Lock()
+        # C3: the scan's own verdict. `last_scan_at` is set on every pass, ok or not, so
+        # a builder that stopped calling scan() is a different fact from a projects
+        # directory that cannot be listed.
+        self.last_scan_at: float | None = None
+        self.last_scan_ok = False
+        self.last_scan_note: str | None = None
 
     def snapshot(self) -> list["FileFacts"]:
         """The FileFacts to build from, as a list taken under the lock. Callers iterate
@@ -2591,8 +2651,12 @@ class TranscriptStore:
         cutoff = now - TRANSCRIPT_WINDOW_SEC
         try:
             projects = [p for p in self.projects_dir.iterdir() if p.is_dir()]
-        except OSError:
+        except OSError as exc:
+            self.last_scan_at, self.last_scan_ok = now, False
+            self.last_scan_note = (f"{self.projects_dir} could not be listed "
+                                   f"({type(exc).__name__})")
             return
+        self.last_scan_at, self.last_scan_ok, self.last_scan_note = now, True, None
         # Held across the whole scan, not per-mutation: the delete sweep at the end is
         # only correct against the `seen` set THIS pass built, so a second scan
         # interleaving with it would evict files it had just admitted. The work inside is
@@ -2697,6 +2761,7 @@ class HookTracker:
 
     def __init__(self, history: "HistoryLog | None" = None) -> None:
         self._lock = threading.Lock()
+        self.last_at = 0.0                      # C3: when a hook last arrived
         self.sessions: dict[str, dict] = {}
         self.count = 0
         # (epoch, sessionId) per observed transition INTO `done`. Kept beside the
@@ -2753,6 +2818,7 @@ class HookTracker:
         now = time.time()
         with self._lock:
             self.count += 1
+            self.last_at = now                  # C3: the hooks source's own clock
             row = self.sessions.setdefault(session_id, self._blank(now))
             row["at"] = now
             cwd = payload.get("cwd")
@@ -3328,6 +3394,27 @@ class LimitsReader:
             self._cached = result
             self._fetched_at = now
         return result
+
+    def health(self, now: float) -> dict | None:
+        """C3's `limitsToken` entry, or None before the first fetch - which is the
+        contract's "a source crabd cannot judge is absent from the object". Read off
+        this reader's own state; it never triggers a fetch, so putting it in a build
+        costs nothing and cannot spend the endpoint's rate budget.
+        """
+        with self._lock:
+            if not self._fetched_at:
+                return None
+            cached = self._cached or {}
+            ok = bool(cached.get("available"))
+            last_good = self._last_good_at or None
+            note = cached.get("note")
+            backoff = self._backoff_until > now
+        if not ok and not note:
+            note = "the usage endpoint did not answer"
+        return {"ok": ok, "lastAt": last_good, "note": note,
+                # A reading being SERVED from last-good while the endpoint is locked out
+                # is still a source that is not currently answering.
+                "backoff": backoff}
 
     def _serve_during_backoff(self, now: float, fallback: dict | None = None) -> dict:
         if self._last_good and now - self._last_good_at < LIMITS_LAST_GOOD_MAX_AGE:
@@ -4021,6 +4108,7 @@ class OtlpReceiver:
         # carried a cost point, which answers a different question: health is asking
         # whether the exporter is pointed at this port at all.
         self.documents = 0
+        self.last_at: float | None = None       # C3: when a document last arrived
         # Injected by main(): a callable (session_id, text) -> bool that appends to the
         # session's ring. None (a unit test) just counts.
         self._on_event = on_event
@@ -4033,6 +4121,7 @@ class OtlpReceiver:
         type, or carry metrics crabd has no interest in."""
         with self._lock:
             self.documents += 1
+            self.last_at = now
         taken = 0
         for metric in self._walk(doc, "resourceMetrics", "scopeMetrics", "metrics"):
             if metric.get("name") != OTLP_COST_METRIC:
@@ -4161,6 +4250,7 @@ class OtlpReceiver:
         """-> how many api_error events were routed to a session ring."""
         with self._lock:
             self.documents += 1
+            self.last_at = now
         taken = 0
         for record in self._walk(doc, "resourceLogs", "scopeLogs", "logRecords"):
             if taken >= OTLP_EVENTS_PER_EXPORT:
@@ -4427,7 +4517,7 @@ class RecapReader:
 # -------------------------------------------------------------------------- fleet
 
 class FleetReader:
-    """`fleet` - SideCrab observing its own Scheduled Tasks (glow, toast).
+    """`fleet` - SideCrab observing its own Scheduled Tasks (the notifier).
 
     Four outcomes, and the difference between the last two is the whole point:
       running  - schtasks reports Running
@@ -4542,7 +4632,7 @@ def _filetime(ft: _FILETIME) -> int:
 
 
 class HostSampler:
-    """`host` - the machine's own CPU and memory, for the panel beside the iCUE sensors.
+    """`host` - the machine's own CPU and memory, beside the HWiNFO sensors.
 
     CPU IS A DELTA, AND THAT IS THE ONLY HARD THING IN HERE. GetSystemTimes returns
     three CUMULATIVE FILETIMEs (idle, kernel, user) counted since boot, so one reading
@@ -4787,6 +4877,25 @@ HWINFO_NOTE_ABSENT = ("HWiNFO not running, its Sensors window closed, "
 HWINFO_NOTE_STALE = ("HWiNFO stopped publishing (free build 12-hour limit): "
                      "relaunch HWiNFO")
 HWINFO_NOTE_UNREADABLE = "unreadable"
+
+# ---- C3 / MF-008: the windows `sources` judges each feed against ----
+# Every one of these was chosen by asking the §3.4 question - would it fire on a healthy
+# night? - and the answer for all of them is no, because the event-driven sources are
+# only judged while a session is actually running.
+# No transcript has advanced in this long, so nothing is expected from the hooks, the
+# status line or the telemetry exporter and their silence is correct.
+SOURCE_IDLE_SEC = 900.0
+# How long crabd must have been up before it will say the hooks are not arriving. Hook
+# rows do not survive a restart, so a crabd restarted mid-turn legitimately holds none
+# until that turn's Stop - and a turn can run a long time.
+SOURCE_HOOK_GRACE_SEC = 900.0
+# The CLI's OTLP exporter batches; this is many intervals, not one.
+SOURCE_OTLP_FRESH_SEC = 900.0
+# The transcript scan runs at the top of every build (2 s), so a scan this old means the
+# builder thread itself stopped, not that the disk is slow.
+SOURCE_SCAN_FRESH_SEC = 60.0
+# Six HWiNFO poll intervals with no completed read: the sampler thread, not the mapping.
+SOURCE_HWINFO_SAMPLER_SEC = HWINFO_POLL_SEC * 6
 HWINFO_LOG_KEY = "host-hwinfo"
 
 # SENSOR_READING_TYPE -> the widget's fixed vocabulary. 4 (current) and 8 (other) both
@@ -4873,6 +4982,16 @@ LOAD_NET_PSEUDO = ("loopback", "isatap", "teredo", "pseudo", "tunnel", "vetherne
                    "virtual", "miniport", "filter", "qos", "bluetooth", "vpn", "tap-")
 PDH_FMT_DOUBLE = 0x00000200
 PDH_MORE_DATA = 0x800007D2       # PDH_MORE_DATA, returned by the sizing call
+# v0.34.0 (provisional), SCA-010. The two CStatus codes that mean "this reading is
+# good". PDH_CSTATUS_NEW_DATA (1) is documented as valid CHANGED data and is what a
+# rate counter can answer on a sample where the value moved; treating it as a failure
+# threw away a successful reading, and on a wildcard array it silently under-summed
+# the interfaces that reported it. Anything else - PDH_CSTATUS_INVALID_DATA on the
+# first collect included - still serves null.
+# https://learn.microsoft.com/en-us/windows/win32/perfctrs/checking-pdh-interface-return-values
+PDH_CSTATUS_VALID_DATA = 0x00000000
+PDH_CSTATUS_NEW_DATA = 0x00000001
+PDH_SUCCESS_STATUSES = frozenset((PDH_CSTATUS_VALID_DATA, PDH_CSTATUS_NEW_DATA))
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
@@ -5127,6 +5246,10 @@ class HwinfoReader:
         self._lock = threading.Lock()
         self._sensors: list = []
         self._source = self.unavailable(HWINFO_NOTE_ABSENT)
+        # SCA-009: the reading's OWN clock, kept so get() can age it at consumption
+        # time, and the heartbeat that says when this reader last reached a verdict.
+        self._poll_epoch: float | None = None
+        self._read_at: float | None = None
         self._due = 0.0
 
     @staticmethod
@@ -5134,9 +5257,49 @@ class HwinfoReader:
         return {"provider": "hwinfo", "pollTime": None, "ageSec": None,
                 "stale": False, "available": False, "note": note}
 
-    def get(self) -> tuple[list, dict]:
+    def get(self, now: float | None = None) -> tuple[list, dict]:
+        """The cached reading, AGED WHERE IT IS SERVED (SCA-009).
+
+        The sampler thread and the builder thread are independent, and when the sampler
+        stops advancing - the thread dies, the section stops being readable, HWiNFO's
+        free build hits its twelve-hour limit mid-run - the `ageSec` and `stale` it
+        computed at read time freeze with it. The audit built 90 s later and got a new
+        generatedAt beside ageSec 0.0 and stale false: the exact independent-worker
+        failure the contract says must produce a growing age. Age is a property of the
+        READING, not of when the reading was taken, so it is derived from the stored
+        poll time on every serve. No hardware is touched here - this is arithmetic.
+        """
+        if now is None:
+            now = time.time()
         with self._lock:
-            return list(self._sensors), dict(self._source)
+            sensors, source = list(self._sensors), dict(self._source)
+            poll_epoch = self._poll_epoch
+        # None is every unavailable path: there is no reading to age, and inventing one
+        # would be the zero-for-absent the honesty rule forbids.
+        if poll_epoch is None:
+            return sensors, source
+        age = round(max(0.0, now - poll_epoch), 1)
+        stale = age > HWINFO_STALE_SEC
+        source["ageSec"] = age
+        source["stale"] = stale
+        source["note"] = HWINFO_NOTE_STALE if stale else None
+        return sensors, source
+
+    def heartbeat(self) -> float | None:
+        """When read() last reached a verdict, or None before the first one. This is the
+        SAMPLER's liveness, which is a different question from the reading's age: a
+        sampler that stopped running and a sensor section that stopped being written
+        both freeze `pollTime`, and only this tells them apart."""
+        with self._lock:
+            return self._read_at
+
+    def _remember(self, poll_epoch, now: float) -> None:
+        """Called by read() on every path, OUTSIDE the caller's lock (poll() releases
+        before it reads). `_lock` is not reentrant, so this must never be reached from
+        inside a critical section."""
+        with self._lock:
+            self._poll_epoch = poll_epoch
+            self._read_at = now
 
     def poll(self, now: float) -> bool:
         with self._lock:
@@ -5156,8 +5319,10 @@ class HwinfoReader:
             _log_once(HWINFO_LOG_KEY,
                       f"crabd: HWiNFO shared memory raised {type(exc).__name__}; "
                       f"serving no sensors")
+            self._remember(None, now)
             return [], self.unavailable(HWINFO_NOTE_UNREADABLE)
         if opened is None:
+            self._remember(None, now)
             return [], self.unavailable(HWINFO_NOTE_ABSENT)
         try:
             blob, size = opened
@@ -5166,13 +5331,16 @@ class HwinfoReader:
             _log_once(HWINFO_LOG_KEY,
                       f"crabd: HWiNFO shared memory parse raised "
                       f"{type(exc).__name__}; serving no sensors")
+            self._remember(None, now)
             return [], self.unavailable(HWINFO_NOTE_UNREADABLE)
         if not parsed["ok"]:
+            self._remember(None, now)
             return [], self.unavailable(parsed["note"] or HWINFO_NOTE_UNREADABLE)
         # A poll time in the future is a clock that moved, not a reading from ahead;
         # clamped to 0 so `ageSec` stays a duration rather than going negative.
         age = round(max(0.0, now - parsed["pollTime"]), 1)
         stale = age > HWINFO_STALE_SEC
+        self._remember(parsed["pollTime"], now)
         return parsed["sensors"], {
             "provider": "hwinfo",
             "pollTime": _utc_iso(parsed["pollTime"]),
@@ -5480,7 +5648,7 @@ class PdhRates:
             value = _PDH_FMT_COUNTERVALUE()
             status = pdh.PdhGetFormattedCounterValue(handle, PDH_FMT_DOUBLE, None,
                                                      ctypes.byref(value))
-            if status == 0 and value.CStatus == 0:
+            if status == 0 and value.CStatus in PDH_SUCCESS_STATUSES:
                 out[key] = _lane_a_bps(value.doubleValue)
         for key, handle in self._net:
             out[key] = self._sum_instances(handle)
@@ -5513,7 +5681,7 @@ class PdhRates:
                 continue
             if any(marker in name for marker in LOAD_NET_PSEUDO):
                 continue
-            if item.FmtValue.CStatus != 0:
+            if item.FmtValue.CStatus not in PDH_SUCCESS_STATUSES:
                 continue
             value = _finite_number(item.FmtValue.doubleValue)
             if value is None:
@@ -5720,10 +5888,25 @@ class ContinueQueue:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._queued: dict[str, tuple[str, float]] = {}
+        # MF-002. Two records the cancel path needs, and neither is served:
+        #   _claimed   - a Stop hook has taken this prompt and is answering with it. The
+        #                send has not returned yet, so the item is still in _queued
+        #                (CRB-F5 keeps it there until the answer is on the socket), but
+        #                it can no longer be cancelled.
+        #   _delivered - the last prompt actually sent, so a cancel that lost the race
+        #                says "already delivered, at this time" instead of the "nothing
+        #                queued" that reads as though the tap never happened.
+        self._claimed: dict[str, tuple[str, float]] = {}
+        self._delivered: dict[str, tuple[str, float]] = {}
 
     def queue(self, session_id: str, prompt: str, now: float) -> None:
         with self._lock:
             self._queued[session_id] = (prompt, now)
+            # A new tap is a new bet: whatever was claimed or delivered before is not
+            # what this item is, and leaving either behind would let a cancel of THIS
+            # prompt be answered with the previous one's delivery.
+            self._claimed.pop(session_id, None)
+            self._delivered.pop(session_id, None)
 
     def peek(self, session_id: str, now: float) -> str | None:
         with self._lock:
@@ -5741,6 +5924,54 @@ class ContinueQueue:
         if entry is None or now - entry[1] > CONTINUE_TTL_SEC:
             return None
         return entry[0]
+
+    def claim(self, session_id: str, now: float) -> str | None:
+        """Peek, and mark the item as SPOKEN FOR (MF-002). The Stop hook calls this
+        instead of peek: from here the prompt is on its way into the answer, and a
+        cancel arriving afterwards has lost - it must say so rather than delete an item
+        that is about to be delivered anyway and report a success that never happened.
+
+        The claim is released by release() when the send fails, and consumed by
+        drain_if() when it succeeds. Both of those pair with this call by prompt text,
+        the same comparison drain_if already relies on.
+        """
+        with self._lock:
+            entry = self._queued.get(session_id)
+            if entry is None or now - entry[1] > CONTINUE_TTL_SEC:
+                return None
+            self._claimed[session_id] = (entry[0], now)
+            return entry[0]
+
+    def release(self, session_id: str, prompt: str) -> None:
+        """Undo a claim whose send never reached the socket. CRB-F5 keeps the prompt for
+        the next Stop, so the cancel path must stop calling it delivered."""
+        with self._lock:
+            claimed = self._claimed.get(session_id)
+            if claimed is not None and claimed[0] == prompt:
+                del self._claimed[session_id]
+
+    def cancel(self, session_id: str, now: float) -> tuple[str, str | None, float]:
+        """-> (verdict, prompt, at). MF-002.
+
+        "cancelled" - a live queued item was removed; `prompt` is what it said.
+        "delivered" - a Stop hook already has it; `at` is when it was taken. A CLAIMED
+                      item counts as delivered: the answer is being written as this
+                      runs, and there is no point at which crabd could take it back.
+        "nothing"   - nothing queued, nothing recently delivered. An EXPIRED item lands
+                      here and is deleted: the card stopped showing it at the ten-minute
+                      mark, so it is not what the operator is cancelling.
+        """
+        with self._lock:
+            claimed = self._claimed.get(session_id)
+            if claimed is not None:
+                return "delivered", claimed[0], claimed[1]
+            entry = self._queued.pop(session_id, None)
+            if entry is not None and now - entry[1] <= CONTINUE_TTL_SEC:
+                return "cancelled", entry[0], entry[1]
+            sent = self._delivered.get(session_id)
+            if sent is not None and now - sent[1] <= CONTINUE_TTL_SEC:
+                return "delivered", sent[0], sent[1]
+            return "nothing", None, 0.0
 
     def drain_if(self, session_id: str, prompt: str, now: float) -> str | None:
         """Drain, but ONLY the prompt the caller is holding. CD-30 (v0.21.0).
@@ -5763,6 +5994,11 @@ class ContinueQueue:
             if entry is None or entry[0] != prompt:
                 return None
             del self._queued[session_id]
+            claimed = self._claimed.get(session_id)
+            if claimed is not None and claimed[0] == prompt:
+                del self._claimed[session_id]
+            # The delivery record, for a cancel that arrives after this (MF-002).
+            self._delivered[session_id] = (prompt, now)
         return None if now - entry[1] > CONTINUE_TTL_SEC else entry[0]
 
     def entry(self, session_id: str, now: float) -> dict | None:
@@ -5786,9 +6022,13 @@ class ContinueQueue:
 
     def prune(self, now: float) -> None:
         with self._lock:
-            for sid in [s for s, (_, at) in self._queued.items()
-                        if now - at > CONTINUE_TTL_SEC]:
-                del self._queued[sid]
+            # Every one of the three ages out on the same window (MF-002): past it a
+            # delivery is history the operator cannot be cancelling, and a claim that
+            # old belongs to a Stop hook that is long gone.
+            for store in (self._queued, self._claimed, self._delivered):
+                for sid in [s for s, (_, at) in store.items()
+                            if now - at > CONTINUE_TTL_SEC]:
+                    del store[sid]
 
 
 # ------------------------------------------------------------- panel approvals
@@ -5820,19 +6060,43 @@ class PanelToken:
         self._lock = threading.Lock()
         self._failures: list[float] = []
         self._locked_until = 0.0
+        # C4 / MF-017: the readiness probe's attempt ring and the last time a code
+        # matched. IN MEMORY ONLY - a restart returns to unverified, because what was
+        # verified was a panel this process can no longer see.
+        self._probes: list[float] = []
+        self._verified_at = 0.0
 
     @classmethod
     def load_or_create(cls, path: Path) -> "PanelToken":
         """Read the code off disk, minting one when the file is missing or unusable.
         Atomic write (tmp + os.replace) so a crash mid-write cannot leave a truncated
-        code that the next start would silently replace with a different one."""
+        code that the next start would silently replace with a different one.
+
+        IT NEVER RAISES (SCA-005). main() calls this before the listener exists and
+        outside every try/except crabd has, so an exception here does not cost the
+        operator their approvals - it costs them the companion, the panel and the feed
+        with it, on a machine where approvals are very likely disabled anyway. The two
+        ways it used to raise are both closed: the file is read as BYTES, because a text
+        read of an encoding-corrupted or UTF-16 pairing file raises UnicodeDecodeError
+        and the OSError catch never covered it; and a mint that cannot be written returns
+        a token with NO code rather than propagating. No code is fail-closed - verify()
+        can then answer only missing or rejected, never ok - which is the posture the
+        whole class exists to keep.
+        """
         code = None
         try:
-            code = cls.normalize(path.read_text(encoding="utf-8"))
+            # errors="replace" rather than a second decode attempt: the code is ten
+            # symbols of [0-9A-HJ-NP-TV-Z], so any byte sequence that is not that file
+            # fails FORMAT below whatever it decodes to, and guessing an encoding would
+            # only invent a code the operator never saw.
+            code = cls.normalize(path.read_bytes().decode("utf-8", "replace"))
         except OSError:
             code = None
-        if not code or not cls.FORMAT.match(code):
-            code = cls.generate()
+        if code and cls.FORMAT.match(code):
+            return cls(path, code)
+        cls._quarantine(path)
+        code = cls.generate()
+        try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(cls.display(code) + "\n", encoding="utf-8")
@@ -5841,7 +6105,36 @@ class PanelToken:
             except OSError:
                 pass
             os.replace(tmp, path)
+        except OSError as exc:
+            print(f"crabd: the panel pairing file {path} could not be written "
+                  f"({type(exc).__name__}); panel approvals are unavailable until it "
+                  f"can be - everything else is serving normally",
+                  file=sys.stderr, flush=True)
+            return cls(path, None)
         return cls(path, code)
+
+    @staticmethod
+    def _quarantine(path: Path) -> None:
+        """Keep an unusable pairing file beside itself before minting over it.
+
+        A MISSING file is the ordinary first start and moves nothing. A file that exists
+        but cannot be used is the operator's - they may have written the code down, and
+        a silent overwrite would make "the code on my desk does not work" unanswerable.
+        One quarantine name, deliberately: a second unusable file replaces the first
+        rather than growing a pile of them in ~/.sidecrab.
+        """
+        keep = path.with_name(path.name + PANEL_TOKEN_UNUSABLE_SUFFIX)
+        try:
+            # is_file, not exists: a `panel-token` that is somehow a DIRECTORY must not
+            # be renamed as though it were the operator's code.
+            if not path.is_file():
+                return
+            os.replace(path, keep)
+        except OSError:
+            return              # an unwritable directory; the mint reports it instead
+        print(f"crabd: the panel pairing file was unusable and has been kept as "
+              f"{keep.name}; a new code was minted - pair the panel again",
+              file=sys.stderr, flush=True)
 
     @staticmethod
     def generate() -> str:
@@ -5875,6 +6168,34 @@ class PanelToken:
                 self._locked_until = now + PANEL_TOKEN_LOCKOUT_SEC
                 self._failures.clear()
                 return "locked"
+            return "rejected"
+
+    @property
+    def verified_at(self) -> float | None:
+        with self._lock:
+            return self._verified_at or None
+
+    def verify_code(self, presented, now: float) -> str:
+        """The READINESS probe (C4): does this code match, deciding nothing.
+
+        -> "ok" | "rejected" | "rate-limited". It has no path to the permission broker
+        at all, so it cannot allow or deny; the worst a caller who reaches it can learn
+        is whether a code they already hold is the right one, five times a minute.
+
+        A match records `verified_at` and is what turns readiness from unverified into
+        ready. It deliberately does NOT clear the decide lockout: the two budgets are
+        independent, so neither route can spend or clear the other's.
+        """
+        with self._lock:
+            self._probes = [t for t in self._probes
+                            if now - t < PANEL_TOKEN_PROBE_WINDOW_SEC]
+            if len(self._probes) >= PANEL_TOKEN_PROBE_MAX:
+                return "rate-limited"
+            self._probes.append(now)
+            if self._code is not None and isinstance(presented, str) and \
+                    hmac.compare_digest(self.normalize(presented), self._code):
+                self._verified_at = now
+                return "ok"
             return "rejected"
 
     def status(self, now: float) -> dict:
@@ -6254,12 +6575,12 @@ def _panel_log_lines(value) -> list[str] | None:
 class PanelLog:
     """The panel diagnostics ring (v0.24.0) - POST /v1/panel-log in, GET the same out.
 
-    WHY IT EXISTS. The widget is rendered by iCUE on the Xeneon Edge, a surface no
-    devtools can attach to, so `console.log` has nowhere to go. The question this week
-    is which input events iCUE actually delivers to the glass: a TAP is proven (panel
-    approvals were verified live on 2026-08-27), while swipe, long-press and multi-touch
-    are unknown. The only way to find out is for the widget to say what it saw, over the
-    same loopback port everything else already rides, and for a maintainer to read it.
+    WHY IT EXISTS. The panel renders on the Xeneon Edge, a surface no devtools can
+    attach to, so `console.log` has nowhere to go. The open question is which input
+    events actually reach the glass: a TAP is proven (panel approvals were verified live
+    on 2026-08-27), while swipe, long-press and multi-touch are unknown. The only way to
+    find out is for the page to say what it saw, over the same loopback port everything
+    else already rides, and for a maintainer to read it.
 
     IN MEMORY ONLY, AND THAT IS A DECISION, not an omission. Nothing here touches disk
     and nothing survives a crabd restart. This is a scratch channel for a live debugging
@@ -6617,13 +6938,33 @@ class StateBuilder:
                     row["sub_active"] += 1
                     row["sub_files"].append(facts)
             else:
-                row["title"] = facts.title()
-                row["title_source"] = facts.title_source()
-                row["cwd"] = facts.last_cwd
-                row["model"] = facts.last_model
-                row["speed"] = facts.last_speed
-                row["question"] = facts.question
-                row["question_ts"] = facts.question_ts
+                # SCA-001 (P1): ONE main file owns this session's identity, picked by a
+                # deterministic latest rule, and cwd, model, title and the title's
+                # provenance all come from THAT file. A session id can own a main
+                # transcript under two project directories - its cwd moved - and the
+                # enumeration order over them is arbitrary, so last-writer-wins served
+                # whichever the scan happened to reach last. The audit got the OLD
+                # project's cwd, repo and title beside the NEW project's newest
+                # transcript and live hook; and since v0.33.0 that cwd is what the
+                # per-project continue allowlist is keyed on, so the old project's
+                # prompts were accepted and the current project's refused with a 400.
+                # The chain is TOTAL - newest record, then mtime, then path - because a
+                # partial order would let two files trade places between passes and the
+                # served cwd flip on alternate polls.
+                rank = (facts.last_ts, facts.mtime, str(facts.path))
+                if rank > row["main_rank"]:
+                    row["main_rank"] = rank
+                    row["main_ts"] = facts.last_ts
+                    row["title"] = facts.title()
+                    row["title_source"] = facts.title_source()
+                    row["cwd"] = facts.last_cwd
+                    row["model"] = facts.last_model
+                    row["speed"] = facts.last_speed
+                    row["question"] = facts.question
+                    row["question_ts"] = facts.question_ts
+                # AGGREGATED across every main file, deliberately and unchanged: labels,
+                # usage records, the context figure and the turn clock are facts about
+                # the SESSION, not about which file currently owns its identity.
                 # .labels()/.usage_records() hand back COPIES taken under the file's own
                 # lock. Iterating the live dicts raced refresh() on another thread - the
                 # half of CRB-F2 the store lock never covered (FileFacts.__init__).
@@ -6659,8 +7000,16 @@ class StateBuilder:
 
         for sid, row in hook_rows.items():
             entry = per_session.setdefault(sid, self._blank_session())
-            if entry["cwd"] is None:
-                entry["cwd"] = row.get("cwd")
+            hook_cwd = row.get("cwd")
+            # SCA-001: joined when the hook is AUTHORITATIVE - either no main transcript
+            # gave a cwd, or the hook is more recent than the record the metadata came
+            # from. A session that moved has its live hook in the new project while a
+            # stale main file still sits in the old one, and the allowlist follows this
+            # cwd. On an ordinary session the hook agrees with the transcript and this
+            # writes the same string back.
+            if hook_cwd and (entry["cwd"] is None
+                             or row.get("at", 0.0) > entry["main_ts"]):
+                entry["cwd"] = hook_cwd
 
         burn, session_output = self._burn(requests, request_owner, now)
         # Attached HERE rather than inside _burn: the budget is a config fact, and _burn
@@ -6678,6 +7027,9 @@ class StateBuilder:
         cost = self.otlp.cost_today(now) if self.otlp else None
         burn["costUSD"] = cost
         burn["costSource"] = BURN_COST_SOURCE_OTLP if cost is not None else None
+        # C3: the newest TRANSCRIPT activity, which is evidence a session is running
+        # that does not come from the hooks - so it can be used to judge them.
+        last_activity = max((row["mtime"] for row in per_session.values()), default=0.0)
         sessions = self._sessions(per_session, hook_rows, session_output, now)
         # The tracker owns the history file but only the builder reads transcripts, so
         # the title a history line carries comes from here, one pass behind at worst.
@@ -6706,8 +7058,8 @@ class StateBuilder:
             "continuePrompts": self.config.continue_extras(now),
             # v0.29.0 (additive): whether taps may decide, and that `decide` now needs
             # the pairing code + requestId. Presence-detected by the widget.
-            "approvals": {"enabled": self.config.panel_approvals(now),
-                          "tokenRequired": True},
+            # v0.34.0 (provisional) adds readiness and verifiedAt - see _approvals_block.
+            "approvals": self._approvals_block(now),
             # v0.18.0: the toast settings, for the same reason continuePrompts rides here
             # - /v1/config is POST-only, so the feed is the widget's ONLY read path to
             # config.json. Always present; `approvalThresholdSec` inside it is not, and
@@ -6726,13 +7078,155 @@ class StateBuilder:
         # report on, while `host` is a capability the panel simply does or does not have.
         host = self._host.sample()
         # ---- lane A: sensors / gpu / load join the same block ----
-        host = self._lane_a_host(host)
+        host = self._lane_a_host(host, now)
         if host is not None:
             document["host"] = host
+        # C3 / MF-008. Built from `host` rather than by re-reading the samplers, so the
+        # verdict and the reading it judges can never disagree. Last, because it reads
+        # what everything above produced.
+        sources = self._sources_block(now, host, last_activity)
+        if sources:
+            document["sources"] = sources
         return document
 
+    @staticmethod
+    def _source_entry(now: float, at: float | None, ok: bool, note: str | None) -> dict:
+        """One `sources` member from an epoch. Absent stays absent: a source that has
+        never produced carries lastAt null and ageSec null rather than a zero."""
+        return {"ok": bool(ok),
+                "lastAt": _utc_iso(at) if at else None,
+                "ageSec": round(max(0.0, now - at), 1) if at else None,
+                "note": note if not ok else None}
+
+    def _sources_block(self, now: float, host: dict | None,
+                       last_activity: float) -> dict:
+        """`sources` - one freshness verdict per feed (C3 / MF-008).
+
+        A fresh overall document can sit on top of a source that stopped: the builder
+        runs every two seconds whatever the hooks, the status line or the sensors are
+        doing, and until now `host.sensorsSource` was the only thing that said so.
+
+        TWO RULES, and both are about not crying wolf:
+
+          - a source crabd CANNOT JUDGE is absent from the object - never a false ok and
+            never a false failure. The status line and the OTLP exporter are optional
+            wiring an operator may simply not have done, and "never seen" does not tell
+            that apart from "broken", so they appear only once they have spoken.
+          - a source that is quiet because there is NOTHING TO REPORT is ok. Hooks, the
+            status line and telemetry are event-driven: on a night with nobody working,
+            silence is the correct reading, and a panel that goes amber every night is a
+            panel nobody looks at. `last_activity` is the newest transcript mtime, which
+            is evidence of a live session that does NOT come from the hooks, so it can
+            be used to judge them.
+
+        Replayed against the live companion before shipping - up 2 h, 7 hooks, no status
+        line, no telemetry, HWiNFO publishing - this block reports hooks ok, transcripts
+        ok, limitsToken ok, hwinfo ok, gpu as nvidia-smi found it, and no statusline or
+        otlp key at all. Nothing in it fires on a healthy night.
+        """
+        sources: dict[str, dict] = {}
+        expecting = bool(last_activity) and now - last_activity <= SOURCE_IDLE_SEC
+
+        hooks = getattr(self, "hooks", None)
+        if hooks is not None:
+            last = getattr(hooks, "last_at", 0.0) or None
+            settled = now - self.started_at >= SOURCE_HOOK_GRACE_SEC
+            ok = bool(last) or not (settled and expecting)
+            sources["hooks"] = self._source_entry(
+                now, last, ok,
+                "a session is active but no hook has arrived - check the SideCrab "
+                "hooks block in settings.json")
+
+        last_scan = getattr(self.store, "last_scan_at", None)
+        if last_scan is not None:
+            ok = (bool(getattr(self.store, "last_scan_ok", False))
+                  and now - last_scan <= SOURCE_SCAN_FRESH_SEC)
+            sources["transcripts"] = self._source_entry(
+                now, last_scan, ok,
+                getattr(self.store, "last_scan_note", None)
+                or "the transcript scan has not run recently")
+
+        last = getattr(self.statusline, "last_at", None) if self.statusline else None
+        if last:
+            ok = now - last <= STATUSLINE_PREFER_SEC or not expecting
+            sources["statusline"] = self._source_entry(
+                now, last, ok,
+                "the status line has stopped posting; limits fall back to the usage "
+                "endpoint")
+
+        health = getattr(self.limits, "health", None)
+        limits_health = health(now) if callable(health) else None
+        if limits_health is not None:
+            ok = limits_health["ok"] and not limits_health["backoff"]
+            sources["limitsToken"] = self._source_entry(
+                now, limits_health["lastAt"], ok,
+                limits_health["note"] or "the usage endpoint is rate-limited")
+
+        last = getattr(self.otlp, "last_at", None) if self.otlp else None
+        if last:
+            ok = now - last <= SOURCE_OTLP_FRESH_SEC or not expecting
+            sources["otlp"] = self._source_entry(
+                now, last, ok, "the telemetry exporter has stopped sending")
+
+        block = host or {}
+        sensors_source = block.get("sensorsSource")
+        if isinstance(sensors_source, dict):
+            ok = (bool(sensors_source.get("available"))
+                  and not sensors_source.get("stale"))
+            note = sensors_source.get("note")
+            beat = self.hwinfo.heartbeat() if self.hwinfo is not None else None
+            # The sampler's own liveness, which pollTime cannot show: a thread that died
+            # and a section that stopped being written both freeze the reading.
+            if ok and beat is not None and now - beat > SOURCE_HWINFO_SAMPLER_SEC:
+                ok, note = False, "the HWiNFO sampler has stopped polling"
+            sources["hwinfo"] = {
+                "ok": ok,
+                "lastAt": sensors_source.get("pollTime"),
+                "ageSec": sensors_source.get("ageSec"),
+                "note": note if not ok else None}
+
+        gpu = block.get("gpu")
+        if isinstance(gpu, dict):
+            ok = bool(gpu.get("available"))
+            at = _parse_ts(gpu.get("sampledAt"))
+            sources["gpu"] = self._source_entry(
+                now, at, ok, gpu.get("note") or "nvidia-smi did not answer")
+        return sources
+
+    def _approvals_block(self, now: float) -> dict:
+        """`approvals` - whether a tap MAY decide, and whether this panel CAN (C4).
+
+        The host's `hasToken` says a token file exists on the host side. That is not the
+        same claim as "it matches crabd" or "approvals are enabled", and until now the
+        only way to tell the difference was to send a real decide and have it refused -
+        a probe with a side effect. These four values are the four distinct answers, and
+        none of them reveals the code:
+
+          off        - approvals are disabled; no tap can decide anything;
+          no-token   - enabled, but crabd holds no pairing code at all (an unwritable
+                       ~/.sidecrab, or a file it quarantined and could not replace);
+          unverified - a code exists and nothing has yet proved this panel has it;
+          ready      - a code was verified in THIS process.
+
+        `verifiedAt` stays as it is under `off`: it is a fact about what happened, not a
+        second copy of the enable flag.
+        """
+        enabled = self.config.panel_approvals(now)
+        gate = getattr(self, "panel_token", None)
+        verified_at = gate.verified_at if gate is not None else None
+        if not enabled:
+            readiness = "off"
+        elif gate is None or not gate.status(now)["present"]:
+            readiness = "no-token"
+        elif verified_at is None:
+            readiness = "unverified"
+        else:
+            readiness = "ready"
+        return {"enabled": enabled, "tokenRequired": True, "readiness": readiness,
+                "verifiedAt": _utc_iso(verified_at) if verified_at else None}
+
     # ---- lane A: the additive host members ----
-    def _lane_a_host(self, host: dict | None) -> dict | None:
+    def _lane_a_host(self, host: dict | None, now: float) -> dict | None:
         """`host` with sensors / sensorsSource / gpu / load folded in.
 
         IT MAY CREATE THE BLOCK. A machine whose GetSystemTimes and
@@ -6744,7 +7238,9 @@ class StateBuilder:
         """
         extra: dict = {}
         if self.hwinfo is not None:
-            sensors, source = self.hwinfo.get()
+            # `now` is passed rather than left to the reader's own clock (SCA-009): the
+            # served age must be measured from the same instant as generatedAt.
+            sensors, source = self.hwinfo.get(now)
             extra["sensors"] = sensors
             extra["sensorsSource"] = source
         if self.gpu is not None:
@@ -6854,6 +7350,9 @@ class StateBuilder:
                 "mtime": 0.0, "sub_total": 0, "sub_active": 0, "sub_files": [],
                 "agent_labels": {}, "question": None, "question_ts": 0.0,
                 "context_tokens": None, "context_ts": 0.0,
+                # SCA-001: which main file won the identity block, and its newest
+                # record's timestamp. Internal to build() - neither is served.
+                "main_rank": (0.0, 0.0, ""), "main_ts": 0.0,
                 # v0.19.0: newest completed model round-trip in the MAIN transcript.
                 # Subagent files never reach it - a background subagent finishing is not
                 # the operator answering, and folding its records in here would clear a
@@ -7209,9 +7708,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # Per-request Access-Control-Allow-Origin, set by do_GET / do_POST before any _send.
-    # A reflected Origin string (the widget's opaque iCUE origin, "null") lets the widget
-    # read the response; None emits no ACAO header at all - a non-browser client that
-    # needs none, or a refused cross-site page that must not be handed one.
+    # A reflected Origin string - since v0.34.0 only this server's own origin, which is
+    # what the panel page sends - lets that page read the response; None emits no ACAO
+    # header at all, which is a non-browser client that needs none, or a refused
+    # cross-site page that must not be handed one.
     #
     # "*" IS NO LONGER A LEGAL VALUE ANYWHERE (SEC-4, v0.16.0). It was the read
     # endpoints' setting until the audit pointed out what /v1/state actually contains:
@@ -7293,17 +7793,41 @@ class Handler(BaseHTTPRequestHandler):
         return host.strip().lower() in self._own_names()
 
     def _refused_origin(self, origin) -> bool:
-        """The origin gate as it stands from v0.31.0. A present http(s) Origin is refused
-        (SEC-1 + SEC-4) UNLESS it is exactly one of this server's own origins -
-        `http://127.0.0.1:<bound port>` or `http://localhost:<bound port>` - which is what
-        the crabd-served panel sends on its own POSTs. Nothing wider: a different port,
-        a https scheme, a subdomain trick (`127.0.0.1.evil.example`) or a trailing path
-        are not this server's origin and stay refused. A DNS-rebinding page never reaches
-        here with an allowed value because its Host was refused first. Absent, `null` and
-        non-web origins are allowed exactly as before."""
-        if not self._is_web_origin(origin):
+        """The origin gate from v0.34.0 (provisional), CLEAN-04. TWO cases are allowed
+        and everything else is refused:
+
+          - NO Origin header at all. Every native client of crabd lands here: the CLI's
+            Stop and PermissionRequest hooks, the status line command, the notifier, the
+            setup scripts and curl. Measured on the live companion - `originsSeen` holds
+            only `<absent>` pairs. This is not authentication and was never claimed to
+            be; the pairing code and the Host allowlist are the gates that are.
+          - EXACTLY one of this server's own origins, `http://127.0.0.1:<bound port>` or
+            `http://localhost:<bound port>`, which is what the crabd-served panel page
+            sends on its own POSTs. Nothing wider: another port, an https scheme, a
+            subdomain trick (`127.0.0.1.evil.example`) or a trailing path are not this
+            server's origin.
+
+        WHAT THIS RETIRED, and why it was safe to: `null` and non-web schemes (`file:`,
+        `qrc:`) used to be allowed, because the widget ran from a vendor-served file/qrc
+        page inside QtWebEngine, whose cross-origin fetch serializes its Origin to
+        exactly "null" - and a widget that cannot POST is a broken product. That page is
+        gone with the vendor host (CLEAN-05); the panel is served by crabd itself and sends a real
+        same-origin header. `null` is also the one origin a sandboxed allow-scripts
+        iframe on any page the operator visits can FORGE, which is the SEC-a residual -
+        so retiring the allowance closes the forged-null vector rather than merely
+        bounding it with the pairing code.
+
+        An Origin header that is PRESENT but empty is treated as absent: no browser
+        emits one, so it cannot be the CSRF vector this gate exists for.
+
+        A DNS-rebinding page never reaches here with an allowed value: its Host was
+        refused first.
+        """
+        if not isinstance(origin, str):
             return False
         o = origin.strip().lower()
+        if not o:
+            return False
         if not o.startswith("http://"):
             return True
         return o[len("http://"):] not in self._own_names()
@@ -7733,8 +8257,24 @@ class Handler(BaseHTTPRequestHandler):
         body = bytearray()
         try:
             if chunked:
+                # SCA-033 (v0.34.0, provisional): `framed` is true ONLY after the
+                # terminating zero-size chunk and its blank line. Every other way out of
+                # this loop leaves bytes on the socket whose boundary crabd can no longer
+                # establish, and on HTTP/1.1 - which this handler declares - keep-alive
+                # then hands those bytes to BaseHTTPRequestHandler as a NEW request line.
+                # Measured by the audit on a raw socket: a malformed chunk-size line
+                # followed by a second request got the 404 for the first AND dispatched
+                # the second on the same connection. A framing error is not recoverable
+                # by reading further, so the connection closes.
+                framed = False
                 while len(body) < keep:
-                    line = self.rfile.readline(64).strip()
+                    size_line = self.rfile.readline(64)
+                    # Not newline-terminated means truncated, or a size line longer than
+                    # the 64-byte bound - either way the next bytes are not where this
+                    # parser would look for them.
+                    if not size_line.endswith(b"\n"):
+                        break
+                    line = size_line.strip()
                     if not line:
                         break
                     try:
@@ -7742,14 +8282,28 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         break
                     if size == 0:
-                        self.rfile.readline(4)  # trailing CRLF after the last chunk
+                        # What follows a last chunk is the trailer section ended by a
+                        # blank line. crabd consumes no trailers, so an immediate CRLF is
+                        # the only shape it can hand back to keep-alive intact.
+                        framed = self.rfile.readline(4) == b"\r\n"
                         break
                     if size < 0 or size > keep:
-                        size = keep            # a chunk header is not a licence to allocate
-                    body += self.rfile.read(size)
-                    self.rfile.read(2)  # CRLF between chunks
-                if len(body) >= keep:
-                    self.close_connection = True   # mid-stream; the framing is gone
+                        # CLAMPED, not honoured, and not skipped either: the oversize body
+                        # still has to reach the endpoint's own `len(raw) > ITS_CAP` test,
+                        # which is what turns it into that endpoint's error rather than a
+                        # silent truncation. A chunk header is not a licence to allocate.
+                        body += self.rfile.read(keep - len(body))
+                        break
+                    chunk = self.rfile.read(size)
+                    body += chunk
+                    # A chunk shorter than its header promised, or a delimiter that is not
+                    # CRLF, is the same lost boundary as a bad size line. RFC 9112 §7.1
+                    # makes CRLF the delimiter; a bare LF client was already misparsed by
+                    # the old blind 2-byte read, so this makes that failure honest.
+                    if len(chunk) != size or self.rfile.read(2) != b"\r\n":
+                        break
+                if not framed:
+                    self.close_connection = True
                 return bytes(body)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -7783,10 +8337,10 @@ class Handler(BaseHTTPRequestHandler):
     # State-changing POST endpoints (SEC-1). Loopback binding was crabd's whole
     # access-control story; a web page the operator merely VISITS crosses it with a
     # CORS-simple POST whose side effect fires even though the browser cannot read the
-    # reply. So a real web page (http/https Origin) is refused here. Absent / null /
-    # non-web Origins are allowed - the widget's opaque iCUE origin, curl-fed ingest
-    # hooks, the CLI's own Stop/PermissionRequest HTTP hooks and every local tool land
-    # there.
+    # reply. So a web page is refused here unless its Origin is exactly this server's
+    # own, which is what the panel page sends. A request with NO Origin header is
+    # allowed: curl-fed ingest hooks, the CLI's own Stop/PermissionRequest HTTP hooks,
+    # the notifier, the setup scripts and every local tool land there.
     #
     # SINCE v0.16.0 THIS SET NO LONGER DECIDES WHETHER THE GATE APPLIES - do_GET runs the
     # same gate on every read (SEC-4) and do_POST runs it on every path including the
@@ -7797,55 +8351,14 @@ class Handler(BaseHTTPRequestHandler):
         "/v1/statusline", "/v1/metrics", "/v1/logs",
         "/v1/action", "/v1/config",
         "/v1/panel-log",
+        # C4: it changes `approvals.readiness`, so it belongs on the inventory of what
+        # CHANGES STATE even though it can neither allow nor deny.
+        "/v1/approvals/verify",
     ))
 
-    @staticmethod
-    def _is_web_origin(origin) -> bool:
-        """True when Origin marks a real http(s) browser page - the CSRF vector refused
-        on a mutating endpoint. False for absent, "null", and any non-web scheme.
-
-        THE TRADE the gate rests on, and its assumption: an opaque "null" Origin is
-        ALLOWED. The widget runs from an iCUE-served file/qrc page inside QtWebEngine
-        (Chromium), and a cross-origin fetch from an opaque origin serializes its Origin
-        header to exactly "null" - it can carry no other value we could allowlist, and a
-        widget that cannot POST is a broken product. A sandboxed-iframe attacker can
-        also FORGE Origin:null, so this gate closes the visited-http(s)-page vector, not
-        the local-process or forged-null one.
-
-        SEC-a is CLOSED as of v0.29.0: `decide` additionally requires the panel pairing
-        code (PanelToken) and the request's `requestId`, neither of which a forged-null
-        page can obtain - so the paragraph below now describes the pre-0.29.0 exposure
-        and why this gate alone was never enough. It is kept because the reasoning about
-        `null` is still what stops someone "fixing" this gate by rejecting null.
-
-        THE EXACT RESIDUAL as it stood (SEC-a, 2026-08-28 audit -
-        docs/findings/QA-Audit-2026-08-28.md). When panelApprovals is enabled, a
-        forged/opaque null Origin - a sandboxed allow-scripts iframe on any page the
-        operator visits, or any local process - CAN reach `POST /v1/action decide` and
-        approve a REAL pending permission the operator never tapped. It first GETs
-        /v1/state (also null-allowed) to harvest the live sessionId and pending tool,
-        then decides on it. The queue-whitelist bound applies ONLY to `queue-continue`
-        (which restricts the queued prompt to a fixed vocabulary); `decide` is NOT
-        whitelisted, and the permission broker keys pending permissions by sessionId
-        alone - which the same null-readable /v1/state discloses - so there is NO second
-        barrier on the decide path. (This is escalation of an already-pending request,
-        not arbitrary command choice: the attacker can only approve what a Claude session
-        already proposed while a prompt is live.) The real mitigations are (a) an
-        allowlist of the widget's TRUE origin - which first needs measuring what
-        QtWebEngine actually sends (see the origin recorder / GET /v1/health.originsSeen),
-        or (b) a per-request nonce in pendingPermission that decide must echo. Until one
-        of those lands, the posture is panelApprovals-off (the ship default). DO NOT
-        blindly tighten this gate to reject null: the QtWebEngine widget legitimately
-        sends null, and a blind change breaks the product. See also
-        docs/findings/audit-security.md (SEC-1). If a future widget build is confirmed to
-        send a stable non-"null" origin, tighten this to an allowlist of that exact
-        value."""
-        if not isinstance(origin, str):
-            return False
-        o = origin.strip().lower()
-        if not o or o == "null":
-            return False
-        return o.startswith("http://") or o.startswith("https://")
+    # _is_web_origin was retired with the vendor page (CLEAN-04, v0.34.0).
+    # It existed to let `null` and non-web schemes through the gate, and the reasoning
+    # for that allowance - and for closing it - now lives in _refused_origin.
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
@@ -7899,6 +8412,8 @@ class Handler(BaseHTTPRequestHandler):
             self._do_config(self._read_body())
         elif path == "/v1/panel-log":
             self._do_panel_log(self._read_body())
+        elif path == "/v1/approvals/verify":
+            self._do_approvals_verify(self._read_body())
         else:
             # Drain before answering, exactly like the 403 above (v0.17.0). An unknown
             # path is still a POST that ARRIVED WITH A BODY, and a body left unread sits
@@ -8021,6 +8536,11 @@ class Handler(BaseHTTPRequestHandler):
         # facts measured in the shipped CLI, including the one that matters most: this
         # shape forces the next turn by the SAME code path decision:"block" does.
         if not self._send_stop_answer(json.dumps(stop_continue_body(prompt)).encode()):
+            # The answer never reached the socket, so CRB-F5 keeps the prompt for the
+            # next Stop - which means it is not delivered and a cancel may still have it.
+            queue = getattr(self.builder, "continues", None)
+            if queue is not None:
+                queue.release(session_id, prompt)
             return
         # Past the send without failing = the answer is on the socket. Only now is the
         # prompt spent, and only now is it true to say it was sent. Both lines are
@@ -8079,7 +8599,10 @@ class Handler(BaseHTTPRequestHandler):
         if queue is None or not session_id:
             return None, session_id
         now = time.time()
-        prompt = queue.peek(session_id, now)
+        # claim, not peek (MF-002): from here the prompt is on its way into the answer
+        # and a cancel must be told it lost rather than silently deleting an item that
+        # will be delivered anyway.
+        prompt = queue.claim(session_id, now)
         if prompt is None:
             # peek IGNORES an expired entry; drain DELETES it. Purging it here keeps the
             # behaviour the old drain-first shape had: an item this Stop already ruled
@@ -8223,11 +8746,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         session_id = body.get("sessionId") or body.get("session_id")
         if (not isinstance(session_id, str) or not session_id
-                or action not in ("ack", "reply", "queue-continue", "decide")):
+                or action not in ("ack", "reply", "queue-continue", "cancel-continue",
+                                  "decide")):
             self._send(400, b'{"error":"malformed request"}')
             return
         if action == "queue-continue":
             self._do_queue_continue(session_id, body.get("prompt"))
+            return
+        if action == "cancel-continue":
+            self._do_cancel_continue(session_id)
             return
         if action == "decide":
             self._do_decide(session_id, body.get("decision"),
@@ -8347,6 +8874,86 @@ class Handler(BaseHTTPRequestHandler):
                                          create=True)
         self._send(204, None)
 
+    def _do_cancel_continue(self, session_id: str) -> None:
+        """POST /v1/action {"action":"cancel-continue"} -> 204 (MF-002, v0.34.0
+        provisional).
+
+        204 removed it, 409 says a Stop hook already has it, 404 says there was nothing
+        to cancel. Replacing a queued prompt with another one was the only way to change
+        your mind before this, and replacing is not cancelling: the session still gets
+        told to do something.
+
+        THE RACE IS THE FEATURE. A Stop hook can fire between the tap and this handler,
+        and the two answers are not interchangeable - "cancelled" means the session will
+        not act on it and "already delivered" means it will. The queue settles the order
+        under one lock (claim / cancel / drain_if), so exactly one of the two wins and
+        the loser is told which it was, with the time the delivery was taken.
+
+        NO session-existence gate, unlike queue-continue, and that is deliberate: a
+        prompt queued for a session that has since gone quiet is exactly the one an
+        operator most wants to withdraw, and answering "unknown session" would strand it
+        until the TTL. Nothing queued is already its own answer.
+        """
+        queue = getattr(self.builder, "continues", None)
+        if queue is None:
+            self._send(501, b'{"error":"continue not supported"}')
+            return
+        now = time.time()
+        if not self.builder.config.allow_continue(now):
+            self._send(403, b'{"error":"tap-to-continue is disabled"}')
+            return
+        verdict, prompt, at = queue.cancel(session_id, now)
+        if verdict == "cancelled":
+            self.builder.hooks.note_external(session_id,
+                                             "continue cancelled: " + prompt,
+                                             create=True)
+            self._send(204, None)
+            return
+        if verdict == "delivered":
+            self._send(409, dump_state({"error": "already delivered",
+                                        "deliveredAt": _utc_iso(at)}))
+            return
+        self._send(404, b'{"error":"nothing queued"}')
+
+    def _do_approvals_verify(self, raw: bytes) -> None:
+        """POST /v1/approvals/verify {"code": "..."} -> 204 (C4 / MF-017).
+
+        204 and a recorded `verifiedAt` on a match, 403 on a mismatch, 429 once five
+        attempts have been made inside a minute. IT NEVER DECIDES ANYTHING: there is no
+        reference to the permission broker on this path, so no body and no ordering of
+        requests can turn a pairing check into an approval. It never returns the code
+        either - not on success, not in an error - so a caller learns only whether the
+        code it already held was right.
+
+        The enable flag is NOT a gate here. An operator pairing the panel wants to know
+        the code is right before arming approvals, and a readiness answer that needs the
+        feature already on would be useless exactly when it is needed. Nothing is armed
+        by verifying.
+
+        Gate order is the same as decide's, and for the same reason: shape first (400,
+        no secret consulted), then the crabd-has-no-token case (503), then the code.
+        """
+        body = self._json_body(raw)
+        if not isinstance(body, dict):
+            self._send(400, b'{"error":"malformed request"}')
+            return
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            self._send(400, b'{"error":"code required"}')
+            return
+        gate = getattr(self.builder, "panel_token", None)
+        if gate is None:
+            self._send(503, b'{"error":"panel pairing unavailable"}')
+            return
+        verdict = gate.verify_code(code, time.time())
+        if verdict == "rate-limited":
+            self._send(429, b'{"error":"too many attempts - wait a minute"}')
+            return
+        if verdict != "ok":
+            self._send(403, b'{"error":"pairing code rejected"}')
+            return
+        self._send(204, None)
+
     def _do_decide(self, session_id: str, decision, token=None, request_id=None) -> None:
         """POST /v1/action {"action":"decide"} -> 204 (contract v0.12.0 §4; v0.29.0 gate).
 
@@ -8423,10 +9030,20 @@ class Handler(BaseHTTPRequestHandler):
     # panelApprovals is deliberately NOT writable via /v1/config (SEC-2, 2026-08-27) and
     # must never be added - flipping the approvals security flag over loopback is exactly
     # the CSRF the origin gate exists to bound (SEC-c, 2026-08-28).
-    CONFIG_WRITABLE = ("quietHours", "toast", "digest", "budget")
+    # v0.34.0 (provisional), C6 / MF-001: the three continue-prompt keys join the
+    # whitelist so the settings sheet can edit the vocabulary it already draws.
+    # panelApprovals, allowReply, allowContinue and recapRepos stay OUT and must: the
+    # first three gate security or a feature, and recapRepos points the git half at an
+    # arbitrary path.
+    CONFIG_WRITABLE = ("quietHours", "toast", "digest", "budget",
+                       "continuePrompts", "continuePromptsByRepo",
+                       "continuePromptsByPath")
+    CONFIG_WRITABLE_ERROR = (b'{"error":"quietHours, toast, digest, budget, '
+                             b'continuePrompts, continuePromptsByRepo and '
+                             b'continuePromptsByPath are the only writable keys"}')
 
     def _do_config(self, raw: bytes) -> None:
-        """POST /v1/config - quietHours, toast, digest and budget, and NOTHING else.
+        """POST /v1/config - the writable keys, and NOTHING else.
 
         The whitelist is exact rather than "ignore what you don't know": `allowReply`
         gates a feature, and a widget (or anything else that can reach localhost) must
@@ -8434,14 +9051,22 @@ class Handler(BaseHTTPRequestHandler):
         any combination of them; an unknown key anywhere is 400. An invalid body is
         rejected WHOLE - the file is never half-written from a request that failed
         validation, which is why every key is validated before the single write below.
+
+        THE ANSWER CARRIES WHAT WAS WRITTEN (C6): 200 with {"applied", "warnings"}
+        rather than the old bare 204. The continue-prompt keys are parsed the way the
+        FILE parser parses them - entries that are not strings, blank, over-long,
+        duplicated or past a cap are dropped rather than failing the write - and a drop
+        the operator cannot see is a setting that silently did not take. `applied` is
+        the normalised value now on disk, so the sheet can render what it actually got:
+        "7:5" comes back as "07:05".
         """
         body = self._json_body(raw)
         if (not isinstance(body, dict) or not body
                 or not set(body) <= set(self.CONFIG_WRITABLE)):
-            self._send(400, b'{"error":"quietHours, toast, digest and budget are the '
-                            b'only writable keys"}')
+            self._send(400, self.CONFIG_WRITABLE_ERROR)
             return
         values = {}
+        warnings: list[str] = []
         if "quietHours" in body:
             ok, normalized = self._validate_quiet_hours(body["quietHours"])
             if not ok:
@@ -8470,10 +9095,133 @@ class Handler(BaseHTTPRequestHandler):
             values["budget"] = normalized
         # panelApprovals intentionally has no branch here - it is not in CONFIG_WRITABLE
         # (SEC-2). A body naming it is already rejected 400 by the whitelist check above.
+        for key, validator in (("continuePrompts", self._validate_continue_prompts),
+                               ("continuePromptsByRepo", self._validate_by_repo),
+                               ("continuePromptsByPath", self._validate_by_path)):
+            if key not in body:
+                continue
+            ok, normalized, said = validator(body[key])
+            if not ok:
+                self._send(400, dump_state(
+                    {"error": f"{key} must be the shape the config file uses, or null"}))
+                return
+            values[key] = normalized
+            warnings.extend(said)
         if not self.builder.config.set_keys(values):
             self._send(500, b'{"error":"could not write config"}')
             return
-        self._send(204, None)
+        self._send(200, dump_state({"applied": values, "warnings": warnings}))
+
+    # ---- C6 / MF-001: the continue-prompt keys, parsed as the FILE parser parses them
+    # Each returns (ok, normalized, warnings). `ok` False means the KEY's own shape is
+    # wrong - not a list, not an object - which is a caller bug and a 400. Anything the
+    # file parser would DROP is dropped here too and named in a warning, because the
+    # sheet has to be able to show the operator that their entry did not take.
+
+    @staticmethod
+    def _clean_prompt_list(raw, where: str, cap: int, drop_builtins: bool):
+        """-> (list, warnings), applying exactly the rules continue_extras and
+        _project_list apply: strings only, whitespace collapsed, 1..CONTINUE_PROMPT_MAX,
+        deduped, capped."""
+        out: list[str] = []
+        warnings: list[str] = []
+        for entry in raw:
+            if len(out) >= cap:
+                warnings.append(f"{where}: kept the first {cap} prompts")
+                break
+            if not isinstance(entry, str):
+                warnings.append(f"{where}: dropped an entry that is not text")
+                continue
+            prompt = " ".join(entry.split())
+            if not prompt:
+                warnings.append(f"{where}: dropped a blank entry")
+            elif len(prompt) > CONTINUE_PROMPT_MAX:
+                warnings.append(f"{where}: dropped an entry over "
+                                f"{CONTINUE_PROMPT_MAX} characters")
+            elif prompt in out:
+                warnings.append(f"{where}: dropped a duplicate of {prompt!r}")
+            elif drop_builtins and prompt in CONTINUE_PROMPTS_BUILTIN:
+                warnings.append(f"{where}: {prompt!r} is already a builtin button")
+            else:
+                out.append(prompt)
+                continue
+        return out, warnings
+
+    @classmethod
+    def _validate_continue_prompts(cls, value):
+        if value is None:
+            return True, None, []
+        if not isinstance(value, list):
+            return False, None, []
+        # drop_builtins: continue_extras refuses a duplicate of a builtin because the
+        # widget draws builtins then extras, and the button would appear twice.
+        out, warnings = cls._clean_prompt_list(value, "continuePrompts",
+                                               CONTINUE_PROMPTS_CAP, True)
+        return True, out, warnings
+
+    @classmethod
+    def _validate_by_repo(cls, value):
+        if value is None:
+            return True, None, []
+        if not isinstance(value, dict):
+            return False, None, []
+        out: dict = {}
+        warnings: list[str] = []
+        seen: set[str] = set()
+        for key, entry in list(value.items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
+            name = key.strip() if isinstance(key, str) else ""
+            if not name:
+                warnings.append("continuePromptsByRepo: dropped a blank key")
+                continue
+            if name.casefold() in seen:
+                # The file parser's first-wins rule, reported rather than merged.
+                warnings.append(f"continuePromptsByRepo: {name!r} differs from an "
+                                f"earlier key only in case - the first one is used")
+                continue
+            seen.add(name.casefold())
+            if not isinstance(entry, list):
+                warnings.append(f"continuePromptsByRepo[{name}]: dropped, not a list")
+                continue
+            # An EMPTY list is kept (SCA-011): it is precedence-bearing configuration,
+            # not an absent key, and the sheet must be able to write one.
+            prompts, said = cls._clean_prompt_list(
+                entry, f"continuePromptsByRepo[{name}]",
+                CONTINUE_PROMPTS_PROJECT_CAP, False)
+            out[name] = prompts
+            warnings.extend(said)
+        if len(value) > CONTINUE_PROMPTS_PROJECT_KEYS:
+            warnings.append(f"continuePromptsByRepo: kept the first "
+                            f"{CONTINUE_PROMPTS_PROJECT_KEYS} projects")
+        return True, out, warnings
+
+    @classmethod
+    def _validate_by_path(cls, value):
+        if value is None:
+            return True, None, []
+        if not isinstance(value, dict):
+            return False, None, []
+        out: dict = {}
+        warnings: list[str] = []
+        for key, entry in list(value.items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
+            root = key.strip() if isinstance(key, str) else ""
+            if not root or not os.path.isabs(root):
+                # A relative key can never match a session cwd, which is absolute, so
+                # the file parser refuses it rather than keeping a key that never fires.
+                warnings.append(f"continuePromptsByPath: dropped {str(key)[:64]!r}, "
+                                f"not an absolute path")
+                continue
+            if not isinstance(entry, list):
+                warnings.append(f"continuePromptsByPath[{root}]: dropped, not a list")
+                continue
+            prompts, said = cls._clean_prompt_list(
+                entry, f"continuePromptsByPath[{root}]",
+                CONTINUE_PROMPTS_PROJECT_CAP, False)
+            out[root] = prompts
+            warnings.extend(said)
+        if len(value) > CONTINUE_PROMPTS_PROJECT_KEYS:
+            warnings.append(f"continuePromptsByPath: kept the first "
+                            f"{CONTINUE_PROMPTS_PROJECT_KEYS} paths")
+        return True, out, warnings
 
     @staticmethod
     def _validate_quiet_hours(value):

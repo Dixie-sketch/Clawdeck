@@ -20,7 +20,7 @@
                           answered convincingly while the task was dead in Ready with
                           LastTaskResult=1. FAIL, with the holding PID named - and while it
                           holds the port the real task cannot bind at all.
-      is running          a registered, ENABLED helper task (glow, toast) that is not Running.
+      is running          a registered, ENABLED helper task (toast, panel) that is not Running.
                           Every SideCrab task is a logon daemon, so Ready means the process is
                           gone - and nothing used to ask: crabd had the health probe and the
                           other two had only the freshness row, which reported "nothing is
@@ -30,8 +30,8 @@
                           runs. This is the class nothing else catches: the task is Running,
                           /v1/health answers ok, and the fix you just shipped is not in the
                           process. Caught by comparing the NEWEST mtime across the component's
-                          watched files (glow's entry point is a launcher that never changes -
-                          watching it alone hid every edit to the glow itself) against the
+                          watched files (a component whose entry point is a thin launcher
+                          hides every edit to the modules it calls) against the
                           task's LastRunTime, and - decisively - crabd's served version against
                           the VERSION in companion\crabd.py.
       wiring paths        hooks, status line, task actions or a toast handler naming a SideCrab
@@ -39,7 +39,7 @@
       statusline invoked  our command installed in settings.json but never actually invoked -
                           /v1/health's lastStatuslineAgeSec is null. "Installed" and "arriving"
                           are different questions and only the first one was askable before.
-      consumer schemas    the notifier and the glow pin the schemas they accept. crabd moved to
+      consumer schemas    the notifier pins the schemas it accepts. crabd moved to
                           4, then 5; each time a consumer stayed behind it kept running, kept
                           polling and never toasted (or lit) again.
       toast identity      the AUMID missing, so toasts group under "Windows PowerShell".
@@ -73,9 +73,9 @@
         file; the report prints the command that changes them and stops there
       * writes config.json, and never enables panel approvals - arming approvals is a security
         posture, taken deliberately by Install-SideCrab.ps1 -WithApprovals
-      * enables a DISABLED task - a disabled task is a decision (the glow is parked on the
-        headless SDK crash, docs/BACKLOG.md), and re-enabling it here would start it into that
-        crash. Enable-ScheduledTask is the deliberate override.
+      * enables a DISABLED task - a disabled task is a decision the operator made with
+        Disable-ScheduledTask, and re-enabling it here would start it. Enable-ScheduledTask
+        is the deliberate override.
 
     Exit code is 0 when no FAIL row stands (a row fixed in this run counts as handled), 1
     otherwise - so this is CI-safe.
@@ -276,7 +276,7 @@ if ($healthProbe.Ok) {
 } elseif (-not $crabdTask.Registered) {
     Add-Check -Id 'health' -Title 'crabd answering' -Status 'fail' `
               -Detail "$noAnswer and SideCrab-crabd is not registered" `
-              -Why 'nothing is running crabd - the widget, the notifier and the glow all read it, so every one of them is dark.' `
+              -Why 'nothing is running crabd - the panel and the notifier both read it, so both are dark.' `
               -Command 'pwsh -File setup\Install-SideCrab.ps1'
 } elseif ($crabdTask.State -eq 'Disabled') {
     Add-Check -Id 'health' -Title 'crabd answering' -Status 'fail' `
@@ -362,12 +362,12 @@ foreach ($c in $spec) {
     if ($st.State -eq 'Disabled') {
         Add-Check -Id "stale-$($c.Key)" -Title "$($c.Key) code freshness" -Status 'info' `
                   -Detail "$($c.TaskName) disabled on purpose - nothing to be stale" `
-                  -Why 'a disabled task is a stated decision (the glow is parked on the headless SDK crash, docs/BACKLOG.md); -Fix never enables one.'
+                  -Why 'a disabled task is a stated decision the operator made with Disable-ScheduledTask; -Fix never enables one.'
         continue
     }
-    # The NEWEST of the component's watched files, not its entry point. glow's entry point is a
-    # 26-line launcher that never changes, so watching it alone made every edit to
-    # sidecrab_glow.py / icue.py / decision.py invisible to this check.
+    # The NEWEST of the component's watched files, not its entry point. Measured on a
+    # component whose entry point was a 26-line launcher that never changed: watching it alone
+    # made every edit to the modules it called invisible to this check.
     $watched     = Get-SideCrabWatchedWriteTime -Path $c.WatchFiles
     $scriptWrite = $watched.WriteTime
     $reported = if ($c.Key -eq 'crabd' -and $health -and (Test-HasProperty $health 'version')) { "$($health.version)" } else { '' }
@@ -400,7 +400,7 @@ foreach ($c in $spec) {
 
 # -- 2b. registered, enabled, and NOT RUNNING ------------------------------------------
 # Every SideCrab task is a logon daemon - AtLogOn, no execution time limit, restart x3 - so
-# Ready means the process is gone. Nothing asked: crabd had the health probe, and glow and
+# Ready means the process is gone. Nothing asked: crabd had the health probe, and panel and
 # toast had only the freshness row, which answered "task is Ready - nothing is executing" as
 # an OK. A toast task that died at logon read GREEN and only crabd was ever offered a start.
 # crabd is excluded ON PURPOSE: the health and port-owner rows above are its liveness, and a
@@ -503,7 +503,6 @@ if (-not (Test-SideCrabStatusLineIsOurs -Command $slCmd)) {
 $liveSchema = if ($state -and (Test-HasProperty $state 'schema')) { [int] $state.schema } else { $null }
 foreach ($consumer in @(
     [pscustomobject]@{ Key = 'notifier'; File = 'notifier\sidecrab_toast.py'; Pin = 'SUPPORTED_SCHEMAS'; Symptom = 'it will never toast again' }
-    [pscustomobject]@{ Key = 'glow';     File = 'lighting\decision.py';       Pin = 'ACCEPTED_SCHEMAS';  Symptom = 'it will never light again' }
 )) {
     $path = Join-Path $RepoRoot $consumer.File
     if (-not (Test-Path -LiteralPath $path)) {

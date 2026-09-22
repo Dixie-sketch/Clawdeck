@@ -2055,8 +2055,10 @@ class ServeTests(TempProjects):
         self.assertEqual(sorted(state),
                          ["approvals", "burn", "continuePrompts", "crabd", "fleet", "generatedAt",
                           "host", "limits", "quiet", "recap", "schema", "sessions",
-                          "toast"])
-        # v0.22.0: the host's own CPU and memory, beside the iCUE temperature sensors.
+                          # C3 (v0.34.0, provisional): one freshness verdict per feed.
+                          # Presence-gated and additive, so `schema` stays 5.
+                          "sources", "toast"])
+        # v0.22.0: the host's own CPU and memory, beside the previous host's temperature sensors.
         # PRESENCE is the feature detection and the key is OPTIONAL - this fixture
         # injects a sampler so the shape is pinned; a machine whose counters cannot be
         # read serves no `host` key at all (HostBlockThroughTheBuilderTests).
@@ -2093,7 +2095,7 @@ class ServeTests(TempProjects):
         self.assertIsNone(state["recap"])
         # No FleetReader attached is the "could not read it" case, and it serves
         # unknown for both components - never a pair of green dots.
-        self.assertEqual(state["fleet"], {"glow": "unknown", "toast": "unknown"})
+        self.assertEqual(state["fleet"], {"toast": "unknown"})
 
     def test_session_row_matches_the_contract(self):
         _, state = self.get("/v1/state")
@@ -3153,16 +3155,17 @@ class ActionEndpointTests(ServedOverASocket):
         self.assertEqual(reply.status, 403)
         self.assertEqual(json.loads(reply.body), {"error": "cross-site request refused"})
 
-    def test_action_allows_the_widget_null_origin_and_reflects_it(self):
+    def test_action_allows_the_panels_own_origin_and_reflects_it(self):
         """SEC-1: the widget's QtWebEngine page sends Origin: null. Allowed, and the
         reply reflects that origin (never the wildcard) so the widget can read the
         status - not ACAO:*."""
+        origin = "http://127.0.0.1:%d" % self.port
         reply = self.client.post(
             "/v1/action",
             json.dumps({"sessionId": self.SID, "action": "ack"}).encode(),
-            headers={"Origin": "null"})
+            headers={"Origin": origin})
         self.assertEqual(reply.status, 204)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     def test_action_with_no_origin_works_and_sends_no_wildcard(self):
         """SEC-1: curl hooks / the CLI's HTTP hooks / local tools send no Origin. Allowed,
@@ -3194,20 +3197,20 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.33.0")
+        self.assertEqual(crabd.VERSION, "0.34.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
         never heard of (contextTokens, fleet) are present in the very document whose
         schema that widget accepts - its acceptance test is 1 <= schema <= 5, and an
         unknown KEY is ignored, never rejected. This is what lets crabd ship additive
-        features without the console-bound .icuewidget import (VERSIONING REWORK)."""
+        features without the console-bound the old widget package import (VERSIONING REWORK)."""
         state = self.state()
         # The deployed v0.5.0 acceptance test, transcribed from widget/scripts/sidecrab.js
         # acceptDoc(): a whole number in 1..ceiling, where v0.5.0's ceiling is 5.
         self.assertTrue(1 <= state["schema"] <= 5
                         and state["schema"] == int(state["schema"]))
-        self.assertEqual(sorted(state["fleet"]), ["glow", "toast"])   # v0.6.0, top level
+        self.assertEqual(sorted(state["fleet"]), ["toast"])   # v0.6.0, top level
         self.assertIn("byModel", state["burn"])                       # v0.5.0
         row = next(r for r in state["sessions"] if r["id"] == self.SID)
         self.assertIn("contextTokens", row)                           # v0.6.0, per session
@@ -3908,14 +3911,14 @@ class AckAllAndConfigTests(ServedOverASocket):
 
     def test_a_valid_window_is_204_and_written(self):
         status, _ = self.config_post({"quietHours": {"start": "22:00", "end": "07:00"}})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["quietHours"],
                          {"start": "22:00", "end": "07:00"})
 
     def test_null_clears_the_window(self):
         self.config_post({"quietHours": {"start": "22:00", "end": "07:00"}})
         status, _ = self.config_post({"quietHours": None})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertIsNone(self.read_config()["quietHours"])
         self.rebuild()
         self.assertIsNone(self.state()["quiet"])
@@ -4004,7 +4007,7 @@ class AckAllAndConfigTests(ServedOverASocket):
         self.config_path.unlink(missing_ok=True)
         self.assertFalse(self.config_path.exists())
         status, _ = self.config_post({"quietHours": {"start": "22:00", "end": "07:00"}})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config(),
                          {"quietHours": {"start": "22:00", "end": "07:00"},
                           "allowReply": False})
@@ -4035,12 +4038,13 @@ class AckAllAndConfigTests(ServedOverASocket):
                                  headers={"Origin": "http://evil.example"})
         self.assertEqual(reply.status, 403)
 
-    def test_config_allows_the_widget_null_origin_and_reflects_it(self):
+    def test_config_allows_the_panels_own_origin_and_reflects_it(self):
+        origin = "http://localhost:%d" % self.port
         reply = self.client.post("/v1/config",
                                  json.dumps({"quietHours": None}).encode(),
-                                 headers={"Origin": "null"})
-        self.assertEqual(reply.status, 204)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+                                 headers={"Origin": origin})
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     def test_an_unknown_post_path_is_still_404(self):
         self.assertEqual(self.client.post("/v1/configure", b"{}").status, 404)
@@ -4433,6 +4437,9 @@ def schtasks_csv(name, status):
 
 
 OK_GLOW = (0, schtasks_csv("SideCrab-glow", "Running"), "")
+# The task that still ships. OK_GLOW is kept because the per-task status mapping tests
+# below query a name directly and are not affected by which names FLEET_TASKS holds.
+OK_TOAST = (0, schtasks_csv("SideCrab-toast", "Running"), "")
 # Measured 2026-08-26 on the Windows host against an unregistered task name.
 NOT_FOUND = (1, "", "ERROR: The system cannot find the file specified.\r\r\n")
 
@@ -4493,31 +4500,35 @@ class FleetMappingTests(unittest.TestCase):
         self.assertEqual(self.status((0, '"\\Side,Crab","N/A","Running"\r\n', "")),
                          "running")
 
-    def test_both_components_are_reported_independently(self):
-        fleet = self.reader({"SideCrab-glow": OK_GLOW, "SideCrab-toast": NOT_FOUND})
+    def test_the_served_map_holds_exactly_the_tasks_that_still_ship(self):
+        """`glow` left FLEET_TASKS with the RGB retirement (CLEAN-05, 2026-09-21): a
+        component that no longer ships would have reported `absent` forever, which is a
+        fault light nobody can clear. The per-task status mapping above is unchanged and
+        still proves each outcome independently."""
+        fleet = self.reader({"SideCrab-toast": NOT_FOUND})
         fleet.poll(time.time())
-        self.assertEqual(fleet.get(), {"glow": "running", "toast": "absent"})
+        self.assertEqual(fleet.get(), {"toast": "absent"})
 
     def test_before_the_first_poll_the_fleet_is_unknown_not_green(self):
-        fleet = self.reader({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
-        self.assertEqual(fleet.get(), {"glow": "unknown", "toast": "unknown"})
+        fleet = self.reader({"SideCrab-toast": OK_TOAST})
+        self.assertEqual(fleet.get(), {"toast": "unknown"})
 
     def test_the_query_is_cached_for_sixty_seconds(self):
-        runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
+        runner = FakeSchtasks({"SideCrab-toast": OK_TOAST})
         fleet = crabd.FleetReader(runner=runner)
         now = time.time()
         self.assertTrue(fleet.poll(now))
         self.assertFalse(fleet.poll(now + crabd.FLEET_REFRESH_SEC - 1))
-        self.assertEqual(len(runner.calls), 2)          # one per task, once
+        self.assertEqual(len(runner.calls), 1)          # one per task, once
         self.assertTrue(fleet.poll(now + crabd.FLEET_REFRESH_SEC + 1))
-        self.assertEqual(len(runner.calls), 4)
+        self.assertEqual(len(runner.calls), 2)
 
     def test_get_hands_back_a_copy(self):
-        fleet = self.reader({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
+        fleet = self.reader({"SideCrab-toast": OK_TOAST})
         fleet.poll(time.time())
         served = fleet.get()
-        served["glow"] = "tampered"
-        self.assertEqual(fleet.get()["glow"], "running")
+        served["toast"] = "tampered"
+        self.assertEqual(fleet.get()["toast"], "running")
 
 
 class FleetOffRequestPathTests(TempProjects):
@@ -4526,7 +4537,7 @@ class FleetOffRequestPathTests(TempProjects):
     subprocesses in the request path and stall `generatedAt`."""
 
     def test_building_the_state_never_runs_schtasks(self):
-        runner = FakeSchtasks({"SideCrab-glow": OK_GLOW, "SideCrab-toast": OK_GLOW})
+        runner = FakeSchtasks({"SideCrab-toast": OK_TOAST})
         fleet = crabd.FleetReader(runner=runner)
         builder = crabd.StateBuilder(
             crabd.TranscriptStore(self.projects), crabd.HookTracker(), StubLimits(),
@@ -4534,37 +4545,34 @@ class FleetOffRequestPathTests(TempProjects):
         for _ in range(3):
             state = builder.build()
         self.assertEqual(runner.calls, [])
-        self.assertEqual(state["fleet"], {"glow": "unknown", "toast": "unknown"})
+        self.assertEqual(state["fleet"], {"toast": "unknown"})
         # ...and once the fleet thread's poll has run, the build serves that snapshot.
         fleet.poll(time.time())
-        self.assertEqual(builder.build()["fleet"],
-                         {"glow": "running", "toast": "running"})
-        self.assertEqual(len(runner.calls), 2)
+        self.assertEqual(builder.build()["fleet"], {"toast": "running"})
+        self.assertEqual(len(runner.calls), 1)
 
     def test_a_fleet_reader_that_raises_cannot_kill_the_feed(self):
         """_fleet_loop swallows; this proves the poll is where the blast stops, so a
         wedged schtasks leaves the LAST reading standing rather than a dead document."""
-        boom = FakeSchtasks({"SideCrab-glow": OK_GLOW,
-                             "SideCrab-toast": subprocess.TimeoutExpired("schtasks", 10)})
+        boom = FakeSchtasks({"SideCrab-toast": subprocess.TimeoutExpired("schtasks", 10)})
         fleet = crabd.FleetReader(runner=boom)
         fleet.poll(time.time())
-        self.assertEqual(fleet.get(), {"glow": "running", "toast": "unknown"})
+        self.assertEqual(fleet.get(), {"toast": "unknown"})
 
 
 class FleetServedOverASocket(ServedOverASocket):
     """`fleet` on the wire, from a real crabd on a test port."""
 
     def test_the_served_document_carries_the_fleet_block(self):
-        runner = FakeSchtasks({"SideCrab-glow": OK_GLOW,
-                               "SideCrab-toast": (0, schtasks_csv("SideCrab-toast",
+        runner = FakeSchtasks({"SideCrab-toast": (0, schtasks_csv("SideCrab-toast",
                                                                   "Ready"), "")})
         self.builder.fleet = crabd.FleetReader(runner=runner)
         self.builder.fleet.poll(time.time())
         with self.builder._lock:
             self.builder._state = self.builder.build()
         state = self.state()
-        self.assertEqual(state["fleet"], {"glow": "running", "toast": "stopped"})
-        self.assertEqual(sorted(state["fleet"]), ["glow", "toast"])
+        self.assertEqual(state["fleet"], {"toast": "stopped"})
+        self.assertEqual(sorted(state["fleet"]), ["toast"])
 
     def test_the_served_session_row_carries_context_tokens(self):
         row = next(r for r in self.state()["sessions"] if r["id"] == self.SID)
@@ -5269,20 +5277,20 @@ class ConfigToastTests(AckAllAndConfigTests):
 
     def test_toast_alone_is_valid(self):
         status, _ = self.config_post({"toast": self.GOOD})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["toast"], self.GOOD)
 
     def test_both_keys_in_one_body_are_valid(self):
         status, _ = self.config_post({"quietHours": {"start": "22:00", "end": "07:00"},
                                       "toast": self.GOOD})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         config = self.read_config()
         self.assertEqual(config["quietHours"], {"start": "22:00", "end": "07:00"})
         self.assertEqual(config["toast"], self.GOOD)
 
     def test_quiet_hours_alone_still_works_unchanged(self):
         status, _ = self.config_post({"quietHours": {"start": "22:00", "end": "07:00"}})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["quietHours"],
                          {"start": "22:00", "end": "07:00"})
         self.assertNotIn("toast", self.read_config())
@@ -5291,7 +5299,7 @@ class ConfigToastTests(AckAllAndConfigTests):
         for seconds in (crabd.CONFIG_TOAST_MIN_SEC, crabd.CONFIG_TOAST_MAX_SEC):
             status, _ = self.config_post(
                 {"toast": {"thresholdSec": seconds, "enabled": False}})
-            self.assertEqual(status, 204, seconds)
+            self.assertEqual(status, 200, seconds)
             self.assertEqual(self.read_config()["toast"]["thresholdSec"], seconds)
 
     def test_an_invalid_toast_is_400_and_writes_nothing(self):
@@ -5348,7 +5356,7 @@ class ConfigToastTests(AckAllAndConfigTests):
             {"quietHours": {"start": "22:00", "end": "07:00"}, "allowReply": True,
              "recapRepos": ["C:\\Dev\\sidecrab"], "somethingElse": {"deep": [1, 2]}}),
             encoding="utf-8")
-        self.assertEqual(self.config_post({"toast": self.GOOD})[0], 204)
+        self.assertEqual(self.config_post({"toast": self.GOOD})[0], 200)
         after = self.read_config()
         self.assertEqual(after["quietHours"], {"start": "22:00", "end": "07:00"})
         self.assertTrue(after["allowReply"])
@@ -5416,7 +5424,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
 
     def test_the_optional_key_round_trips(self):
         status, _ = self.config_post({"toast": self.WITH_APPROVAL})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["toast"], self.WITH_APPROVAL)
 
     def test_the_notifiers_shipped_default_of_20_is_accepted(self):
@@ -5425,7 +5433,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
         self.assertLess(20, crabd.CONFIG_TOAST_MIN_SEC)
         self.assertEqual(self.config_post(
             {"toast": {"thresholdSec": 120, "enabled": True,
-                       "approvalThresholdSec": 20}})[0], 204)
+                       "approvalThresholdSec": 20}})[0], 200)
         self.assertEqual(self.read_config()["toast"]["approvalThresholdSec"], 20)
 
     # -- THE FIX: a save that does not mention it must not erase it
@@ -5436,7 +5444,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
         self.seed_toast({"thresholdSec": 120, "enabled": True,
                          "approvalThresholdSec": 45})
         status, _ = self.config_post({"toast": {"thresholdSec": 300, "enabled": False}})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         toast = self.read_config()["toast"]
         self.assertEqual(toast["thresholdSec"], 300)     # the save landed
         self.assertFalse(toast["enabled"])
@@ -5449,7 +5457,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
                          "approvalThresholdSec": 45})
         for seconds in (200, 300, 400):
             self.assertEqual(self.config_post(
-                {"toast": {"thresholdSec": seconds, "enabled": True}})[0], 204)
+                {"toast": {"thresholdSec": seconds, "enabled": True}})[0], 200)
             self.assertEqual(self.read_config()["toast"]["approvalThresholdSec"], 45)
 
     def test_an_explicit_value_overrides_the_preserved_one(self):
@@ -5464,7 +5472,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
     def test_nothing_is_invented_when_the_disk_never_had_one(self):
         """A plain {thresholdSec, enabled} write against a config with no approval key
         writes no approval key. Preservation must not become a default."""
-        self.assertEqual(self.config_post({"toast": self.GOOD})[0], 204)
+        self.assertEqual(self.config_post({"toast": self.GOOD})[0], 200)
         self.assertNotIn("approvalThresholdSec", self.read_config()["toast"])
 
     def test_a_non_dict_toast_on_disk_does_not_break_the_write(self):
@@ -5472,7 +5480,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
         preservation step throw on the way to a perfectly valid write."""
         for junk in ("on", [1, 2], None, 7):
             self.config_path.write_text(json.dumps({"toast": junk}), encoding="utf-8")
-            self.assertEqual(self.config_post({"toast": self.GOOD})[0], 204, junk)
+            self.assertEqual(self.config_post({"toast": self.GOOD})[0], 200, junk)
             self.assertEqual(self.read_config()["toast"], self.GOOD, junk)
 
     # -- bounds and types
@@ -5483,7 +5491,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
             status, _ = self.config_post(
                 {"toast": {"thresholdSec": 120, "enabled": True,
                            "approvalThresholdSec": seconds}})
-            self.assertEqual(status, 204, seconds)
+            self.assertEqual(status, 200, seconds)
             self.assertEqual(self.read_config()["toast"]["approvalThresholdSec"],
                              seconds)
 
@@ -5533,7 +5541,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
 
     def test_a_plain_two_member_write_is_unchanged(self):
         status, _ = self.config_post({"toast": self.GOOD})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["toast"], self.GOOD)
 
     def test_preservation_does_not_leak_into_the_other_writable_keys(self):
@@ -5545,7 +5553,7 @@ class ConfigApprovalThresholdTests(ServedOverASocket):
             {"digest": {"enabled": True, "time": "07:00", "approvalThresholdSec": 45}}),
             encoding="utf-8")
         self.assertEqual(self.config_post(
-            {"digest": {"enabled": False, "time": "08:00"}})[0], 204)
+            {"digest": {"enabled": False, "time": "08:00"}})[0], 200)
         self.assertEqual(self.read_config()["digest"],
                          {"enabled": False, "time": "08:00"})
 
@@ -5665,7 +5673,7 @@ class ServedToastBlockTests(ServedOverASocket):
         self.assertEqual(self.served()["thresholdSec"], 120)
         reply = self.client.post("/v1/config", json.dumps(
             {"toast": {"thresholdSec": 300, "enabled": False}}).encode())
-        self.assertEqual(reply.status, 204)
+        self.assertEqual(reply.status, 200)
         self.rebuild()
         # The write landed AND the preserved hand edit is still what the panel reads -
         # the two halves of v0.16.0, now visible on the feed for the first time.
@@ -5675,7 +5683,7 @@ class ServedToastBlockTests(ServedOverASocket):
     def test_a_write_that_never_had_the_key_still_serves_no_default(self):
         self.write_config({"quietHours": None})
         self.assertEqual(self.client.post("/v1/config", json.dumps(
-            {"toast": {"thresholdSec": 300, "enabled": True}}).encode()).status, 204)
+            {"toast": {"thresholdSec": 300, "enabled": True}}).encode()).status, 200)
         self.rebuild()
         self.assertEqual(self.served(), {"thresholdSec": 300, "enabled": True})
 
@@ -5934,17 +5942,19 @@ class HistoryEndpointTests(ServedOverASocket):
     def test_history_carries_the_same_cors_as_the_other_gets(self):
         """v0.16.0: "the same CORS as the other GETs" now means the REFLECTED origin, not
         the wildcard (SEC-4). The widget's opaque `null` still gets a usable header."""
+        origin = "http://127.0.0.1:%d" % self.port
         reply = self.client.get(f"/v1/history?day={self.today()}",
-                                headers={"Origin": "null"})
-        self.assertEqual(reply.headers["Access-Control-Allow-Origin"], "null")
+                                headers={"Origin": origin})
+        self.assertEqual(reply.headers["Access-Control-Allow-Origin"], origin)
         self.assertEqual(reply.headers["Content-Type"], "application/json")
 
     def test_a_400_also_carries_cors(self):
         """The widget reads the STATUS to decide the day tap is inert; a 400 without CORS
-        is unreadable from the iCUE origin and looks like a network failure instead."""
-        reply = self.client.get("/v1/history?day=nope", headers={"Origin": "null"})
+        is unreadable from the previous host's origin and looks like a network failure instead."""
+        origin = "http://127.0.0.1:%d" % self.port
+        reply = self.client.get("/v1/history?day=nope", headers={"Origin": origin})
         self.assertEqual(reply.status, 400)
-        self.assertEqual(reply.headers["Access-Control-Allow-Origin"], "null")
+        self.assertEqual(reply.headers["Access-Control-Allow-Origin"], origin)
 
     def test_a_trailing_slash_still_routes(self):
         status, _ = self.history(f"day={self.today()}", path="/v1/history/")
@@ -5958,7 +5968,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.33.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.34.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -6066,7 +6076,7 @@ class ConfigDigestTests(ServedOverASocket):
 
     def test_digest_alone_is_valid(self):
         status, _ = self.config_post({"digest": self.GOOD})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["digest"], self.GOOD)
 
     def test_the_time_is_normalized_like_quiet_hours(self):
@@ -6078,14 +6088,14 @@ class ConfigDigestTests(ServedOverASocket):
     def test_midnight_and_the_last_minute_of_the_day_are_valid(self):
         for value in ("00:00", "23:59"):
             status, _ = self.config_post({"digest": {"enabled": True, "time": value}})
-            self.assertEqual(status, 204, value)
+            self.assertEqual(status, 200, value)
             self.assertEqual(self.read_config()["digest"]["time"], value)
 
     def test_disabled_still_carries_a_time(self):
         """No null-clear, same rule as toast: "no digest" is {"enabled": false}, which
         still says what the hour WOULD be when the operator turns it back on."""
         status, _ = self.config_post({"digest": {"enabled": False, "time": "21:00"}})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["digest"],
                          {"enabled": False, "time": "21:00"})
 
@@ -6123,7 +6133,7 @@ class ConfigDigestTests(ServedOverASocket):
              "toast": {"thresholdSec": 120, "enabled": True},
              "recapRepos": ["C:\\Dev\\sidecrab"], "somethingElse": {"deep": [1, 2]}}),
             encoding="utf-8")
-        self.assertEqual(self.config_post({"digest": self.GOOD})[0], 204)
+        self.assertEqual(self.config_post({"digest": self.GOOD})[0], 200)
         after = self.read_config()
         self.assertEqual(after["quietHours"], {"start": "22:00", "end": "07:00"})
         self.assertTrue(after["allowReply"])
@@ -6172,15 +6182,22 @@ class ConfigWhitelistQuadTests(ServedOverASocket):
         for mask in range(1, 2 ** len(keys)):
             yield {name: value for i, (name, value) in enumerate(keys) if mask >> i & 1}
 
-    def test_the_whitelist_is_exactly_these_four_keys(self):
-        self.assertEqual(set(crabd.Handler.CONFIG_WRITABLE), set(self.KEYS))
+    def test_the_whitelist_is_these_four_keys_and_the_continue_vocabulary(self):
+        """C6 (v0.34.0, provisional) added the three continuePrompt* keys. The four
+        original keys are still whitelisted and the combination sweep below still
+        covers them; panelApprovals, allowReply, allowContinue and recapRepos are still
+        out, which is what test_one_bad_key... and the SEC-2 tests prove."""
+        self.assertTrue(set(self.KEYS) <= set(crabd.Handler.CONFIG_WRITABLE))
+        self.assertEqual(set(crabd.Handler.CONFIG_WRITABLE) - set(self.KEYS),
+                         {"continuePrompts", "continuePromptsByRepo",
+                          "continuePromptsByPath"})
         self.assertEqual(len(list(self.all_combinations())), 15)
 
     def test_every_combination_of_the_three_writes_all_of_its_keys(self):
         for payload in self.all_combinations():
             self.seed()
             status, _ = self.config_post(payload)
-            self.assertEqual(status, 204, payload)
+            self.assertEqual(status, 200, payload)
             after = self.read_config()
             for key, value in payload.items():
                 self.assertEqual(after[key], value, (payload, key))
@@ -6237,7 +6254,7 @@ class ConfigWhitelistQuadTests(ServedOverASocket):
         self.seed()
         status, _ = self.config_post({"quietHours": self.QUIET, "toast": self.TOAST,
                                       "digest": self.DIGEST, "budget": self.BUDGET})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         after = self.read_config()
         self.assertEqual((after["quietHours"], after["toast"], after["digest"],
                           after["budget"]),
@@ -6379,13 +6396,13 @@ class ConfigBudgetTests(ServedOverASocket):
 
     def test_budget_alone_is_valid(self):
         status, _ = self.config_post({"budget": self.GOOD})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertEqual(self.read_config()["budget"], self.GOOD)
 
     def test_the_range_edges_are_accepted(self):
         for target in (100_000, 100_000_000):
             status, _ = self.config_post({"budget": {"dailyOutputTokens": target}})
-            self.assertEqual(status, 204, target)
+            self.assertEqual(status, 200, target)
             self.assertEqual(self.read_config()["budget"]["dailyOutputTokens"], target)
 
     def test_one_token_outside_either_edge_is_400_and_writes_nothing(self):
@@ -6421,10 +6438,10 @@ class ConfigBudgetTests(ServedOverASocket):
     def test_null_clears_the_budget(self):
         """Unlike toast and digest, a budget has no `enabled` member to switch off, so
         removal has to be expressible - and it drops the served block, not zeroes it."""
-        self.assertEqual(self.config_post({"budget": self.GOOD})[0], 204)
+        self.assertEqual(self.config_post({"budget": self.GOOD})[0], 200)
         self.assertIn("budget", self.rebuild()["burn"])
         status, _ = self.config_post({"budget": None})
-        self.assertEqual(status, 204)
+        self.assertEqual(status, 200)
         self.assertIsNone(self.read_config()["budget"])
         self.assertNotIn("budget", self.rebuild()["burn"])
 
@@ -6435,7 +6452,7 @@ class ConfigBudgetTests(ServedOverASocket):
 
     def test_the_block_reaches_the_served_document_with_a_real_pct(self):
         self.assertEqual(self.config_post({"budget": {"dailyOutputTokens": 100_000}})[0],
-                         204)
+                         200)
         burn = self.rebuild()["burn"]
         spent = burn["today"]["outputTokens"]
         # A zero numerator would make the assertion below true for a broken pct too.
@@ -6484,7 +6501,7 @@ class ConfigBudgetTests(ServedOverASocket):
              "toast": {"thresholdSec": 120, "enabled": True},
              "digest": {"enabled": True, "time": "08:30"},
              "recapRepos": ["C:\\Dev\\sidecrab"]}), encoding="utf-8")
-        self.assertEqual(self.config_post({"budget": self.GOOD})[0], 204)
+        self.assertEqual(self.config_post({"budget": self.GOOD})[0], 200)
         after = self.read_config()
         self.assertEqual(after["quietHours"], {"start": "22:00", "end": "07:00"})
         self.assertTrue(after["allowReply"])
@@ -8800,14 +8817,20 @@ class PanelTokenEndpointTests(PermissionEndpointTests):
         out, thread = self._fire()
         self.assertTrue(self._await())
         doc = self.rebuild()
-        self.assertEqual(doc["approvals"], {"enabled": True, "tokenRequired": True})
+        self.assertEqual(doc["approvals"], {"enabled": True, "tokenRequired": True,
+                                            # C4 (v0.34.0, provisional): a code exists
+                                            # and no panel has proved it holds it.
+                                            "readiness": "unverified",
+                                            "verifiedAt": None})
         rid = self.row()["pendingPermission"]["requestId"]
         self.assertRegex(rid, r"^[0-9a-f]{16}$")
         self.assertEqual(self.action(self.decide_body("deny"))[0], 204)
         thread.join(timeout=10)
 
     def test_approvals_block_reads_off_while_disabled(self):
-        self.assertEqual(self.state()["approvals"], {"enabled": False, "tokenRequired": True})
+        self.assertEqual(self.state()["approvals"],
+                         {"enabled": False, "tokenRequired": True,
+                          "readiness": "off", "verifiedAt": None})
 
     def test_a_decide_without_the_code_is_403_and_the_hold_is_untouched(self):
         self._enable()
@@ -9665,7 +9688,7 @@ class StatusLineContextLosesWhenStaleTests(TempProjects):
 
 
 # =====================================================================================
-# v0.22.0 - `host`: this machine's CPU and memory, for the panel beside the iCUE
+# v0.22.0 - `host`: this machine's CPU and memory, for the panel beside the previous host
 # temperature sensors. Additive, so `schema` stays 5 and presence is the detection.
 #
 # The CPU half is the only arithmetic in crabd that is WRONG IN A PLAUSIBLE-LOOKING WAY
@@ -10366,13 +10389,14 @@ class QuietOverrideActionTests(ServedOverASocket):
         self.assertEqual(reply.status, 403)
         self.assertNotIn("quietOverride", self.read_config())
 
-    def test_quiet_allows_the_widget_null_origin_and_reflects_it(self):
+    def test_quiet_allows_the_panels_own_origin_and_reflects_it(self):
+        origin = "http://127.0.0.1:%d" % self.port
         reply = self.client.post(
             "/v1/action",
             json.dumps({"action": "quiet", "mode": "auto"}).encode(),
-            headers={"Origin": "null"})
+            headers={"Origin": origin})
         self.assertEqual(reply.status, 204)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     def test_quiet_override_is_not_writable_over_v1_config(self):
         """It IS panel-writable - just not through /v1/config. The action endpoint is its
@@ -10667,9 +10691,10 @@ class PanelLogEndpointTests(ServedOverASocket):
         self.assertEqual(_unprefixed(body["lines"][0]), "kept")
 
     def test_a_400_carries_cors_so_the_widget_can_read_the_status(self):
-        reply = self.post_log({"lines": []}, headers={"Origin": "null"})
+        origin = "http://127.0.0.1:%d" % self.port
+        reply = self.post_log({"lines": []}, headers={"Origin": origin})
         self.assertEqual(reply.status, 400)
-        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(reply.headers.get("Access-Control-Allow-Origin"), origin)
 
     # ---- the origin gates, both directions
 
@@ -10695,13 +10720,14 @@ class PanelLogEndpointTests(ServedOverASocket):
         self.assertNotIn(b"secret-ish", reply.body)
         self.assertIsNone(reply.headers.get("Access-Control-Allow-Origin"))
 
-    def test_both_verbs_allow_the_widget_null_origin_and_reflect_it(self):
-        post = self.post_log({"lines": ["tap"]}, headers={"Origin": "null"})
+    def test_both_verbs_allow_the_panels_own_origin_and_reflect_it(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        post = self.post_log({"lines": ["tap"]}, headers={"Origin": origin})
         self.assertEqual(post.status, 204)
-        self.assertEqual(post.headers.get("Access-Control-Allow-Origin"), "null")
-        get = self.read_log(headers={"Origin": "null"})
+        self.assertEqual(post.headers.get("Access-Control-Allow-Origin"), origin)
+        get = self.read_log(headers={"Origin": origin})
         self.assertEqual(get.status, 200)
-        self.assertEqual(get.headers.get("Access-Control-Allow-Origin"), "null")
+        self.assertEqual(get.headers.get("Access-Control-Allow-Origin"), origin)
 
     def test_both_verbs_work_with_no_origin_and_send_no_wildcard(self):
         """curl and the maintainer's own tooling send no Origin at all."""
@@ -10917,13 +10943,16 @@ class OriginRecorderEndpointTests(ServedOverASocket):
     BROWSER_UA = "Mozilla/5.0 (Windows) QtWebEngine/6.7 Chrome/118 Safari/537.36"
 
     def origins_seen(self):
-        body = self.client.get("/v1/health", headers={"Origin": "null"}).json()
+        # Read with NO Origin: the recorder still records a refused request (it runs
+        # before the gate), but since CLEAN-04 a `null` Origin no longer gets a reply
+        # to read the diagnostic out of.
+        body = self.client.get("/v1/health").json()
         return {e["origin"]: e for e in body["originsSeen"]}
 
     def rows(self):
         """Full list keyed by the (origin, source) PAIR - the origins_seen() helper keys
         on origin alone and would collapse the pairs this feature exists to separate."""
-        body = self.client.get("/v1/health", headers={"Origin": "null"}).json()
+        body = self.client.get("/v1/health").json()
         return {(e["origin"], e["source"]): e for e in body["originsSeen"]}
 
     def test_distinct_origins_are_recorded_with_counts(self):
@@ -11635,15 +11664,17 @@ class PanelRouteAndHostGateTests(ServedOverASocket):
         self.assertEqual(other.status, 204)
         self.assertIsNone(other.headers.get("Access-Control-Allow-Origin"))
 
-    def test_null_and_absent_origins_are_unchanged(self):
-        """The iCUE widget (null) and every local tool (absent) keep working exactly as
-        before: the allowlist ADDS the panel's origin, it removes nothing."""
-        null = self.ack({"Origin": "null"})
-        self.assertEqual((null.status, null.headers.get("Access-Control-Allow-Origin")),
-                         (204, "null"))
+    def test_an_absent_origin_still_works_and_null_no_longer_does(self):
+        """CLEAN-04 (2026-09-21): every local tool sends no Origin at all and keeps
+        working unchanged. `null` was allowed only for the previous host's file/qrc page,
+        which the standalone wave retired - and it is the one origin a sandboxed iframe
+        on a visited page can forge."""
         absent = self.ack({})
         self.assertEqual(absent.status, 204)
         self.assertIsNone(absent.headers.get("Access-Control-Allow-Origin"))
+        null = self.ack({"Origin": "null"})
+        self.assertEqual(null.status, 403)
+        self.assertIsNone(null.headers.get("Access-Control-Allow-Origin"))
 
     def test_the_own_origin_still_needs_the_pairing_code_to_decide(self):
         """Same origin is a transport fact, not a credential. The gates on `decide` run

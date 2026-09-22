@@ -6,9 +6,9 @@
 
 .DESCRIPTION
     The reverse of Install-SideCrab.ps1 and equally safe to re-run. Tasks are removed
-    for whichever SideCrab components are registered - crabd, glow, toast, and any
+    for whichever SideCrab components are registered - crabd, toast, panel, and any
     other SideCrab-* task found on the machine, so a component installed by a newer
-    version of the installer is still cleaned up by an older uninstaller.
+    version of the installer, or one this version has RETIRED, is still cleaned up.
 
     Only hook entries whose command (or, for the type-http hooks, url) contains the crabd
     URL are removed; every other hook survives - including one hand-merged INTO a SideCrab
@@ -30,8 +30,8 @@
     -TaskName IS SURGERY ON ONE COMPONENT, and removes only that component's own surface:
       -TaskName SideCrab-crabd   its task + the hooks, the status line and panelApprovals
       -TaskName SideCrab-toast   its task + the AUMID and the two button schemes
-      -TaskName SideCrab-glow    its task, and nothing else
       -TaskName SideCrab-panel   its task, and nothing else (panel-settings.json is data: -Purge)
+      -TaskName SideCrab-glow    a retired name: its task, and nothing else
     A name the catalogue does not know removes that task and nothing else. Without -TaskName
     every surface goes. (The switch used to narrow the TASK deletion alone and then strip the
     hooks, status line and approvals regardless - the ownership table is
@@ -54,13 +54,21 @@
         HKCU sidecrab-ack, HKCU sidecrab-snooze              the toast buttons' schemes
         the panelApprovals KEY in config.json                (the rest of the file survives)
 
-      KEPT unless -Purge is passed (data / cache / logs)
+      KEPT unless -Purge is passed (data / cache / logs / credentials)
         ~/.sidecrab/config.json         quiet hours, recap repos, toast threshold - the
                                         operator's settings, not ours to delete
         ~/.sidecrab/history.jsonl       a record of the operator's own sessions
         ~/.sidecrab/toast-state.json    the digest + budget ledger
         ~/.sidecrab/limits-cache.json   derived, rebuildable, no secrets
-        ~/.sidecrab/glow.log, logs/     the account of what the glow and the toasts did
+        ~/.sidecrab/glow.log, logs/     the account of what the retired RGB component and the
+                                        toasts did
+        ~/.sidecrab/panel-token         THE APPROVAL PAIRING CODE. A live secret: an uninstall
+                                        that leaves it silently leaves a machine able to honour
+                                        an Approve tap. -Purge deletes the file (SCA-016).
+        ~/.sidecrab/limits-token.dpapi  a long-lived Claude token, DPAPI-protected to this
+                                        account. -Purge deletes the file (SCA-016).
+      Neither credential is ever read, decrypted or printed by this script, at any switch:
+      the residue table carries a path and a sentence, and -Purge removes the file.
 
       KEPT AT EVERY SWITCH, -Purge included
         ~/.claude/settings.json.sidecrab-bak-*   the backups. They are the way BACK from an
@@ -75,7 +83,7 @@
 .EXAMPLE
     pwsh -File .\setup\Uninstall-SideCrab.ps1 -Purge                   # also drop ~/.sidecrab data
 .EXAMPLE
-    pwsh -File .\setup\Uninstall-SideCrab.ps1 -TaskName SideCrab-glow   # just that one
+    pwsh -File .\setup\Uninstall-SideCrab.ps1 -TaskName SideCrab-panel  # just that one
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -405,7 +413,7 @@ $kept = 0
 foreach ($r in @($residue | Where-Object { $_.Disposition -eq 'purge' })) {
     if (-not (Test-Path -LiteralPath $r.Path)) { continue }
     $kept++
-    Write-Step "$($r.Kind.PadRight(6)) $($r.Path)"
+    Write-Step "$($r.Kind.PadRight(10)) $($r.Path)"
     Write-Host "           $($r.Why)" -ForegroundColor DarkGray
 }
 $backupDir  = Split-Path -Parent $SettingsPath
@@ -413,7 +421,7 @@ $backupGlob = Get-SideCrabBackupPattern -SettingsPath $SettingsPath
 $backups = @(Get-ChildItem -LiteralPath $backupDir -Filter $backupGlob -File -ErrorAction SilentlyContinue)
 if ($backups.Count -gt 0) {
     $kept++
-    Write-Step "backup $($backups.Count) settings.json backup(s) in $backupDir"
+    Write-Step "backup     $($backups.Count) settings.json backup(s) in $backupDir"
     Write-Host '           the way back from this install - never removed by an uninstall, at any switch' -ForegroundColor DarkGray
 }
 if ($kept -eq 0) {

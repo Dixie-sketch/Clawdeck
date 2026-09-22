@@ -65,8 +65,8 @@ Describe 'SideCrab setup' {
         $script:Spec     = Get-SideCrabComponentSpec -RepoRoot $script:FakeRoot
 
         function script:Plan {
-            param([hashtable] $Present = @{}, [hashtable] $Requested = @{})
-            @(Select-SideCrabComponent -Spec $script:Spec -Present $Present -Requested $Requested)
+            param([hashtable] $Present = @{}, [hashtable] $Requested = @{}, [hashtable] $Declined = @{})
+            @(Select-SideCrabComponent -Spec $script:Spec -Present $Present -Requested $Requested -Declined $Declined)
         }
         function script:One {
             param([object[]] $Plan, [string] $Key)
@@ -112,59 +112,87 @@ Describe 'SideCrab setup' {
 
     Context 'component catalogue' {
 
-        It 'names the four components' {
-            (($script:Spec | ForEach-Object { $_.Key }) -join ',') | Should -Be 'crabd,glow,toast,panel'
+        It 'names the three supported components' {
+            # RGB was retired in the standalone wave (CLEAN-06): its catalogue row is gone, and
+            # the task name lives on only in Get-SideCrabRetiredComponentSpec.
+            (($script:Spec | ForEach-Object { $_.Key }) -join ',') | Should -Be 'crabd,toast,panel'
         }
 
         It 'maps each component to its SideCrab-* task name' {
             (script:One $script:Spec 'crabd').TaskName | Should -Be 'SideCrab-crabd'
-            (script:One $script:Spec 'glow').TaskName  | Should -Be 'SideCrab-glow'
             (script:One $script:Spec 'toast').TaskName | Should -Be 'SideCrab-toast'
             (script:One $script:Spec 'panel').TaskName | Should -Be 'SideCrab-panel'
         }
 
         It 'roots every script path under the supplied repo root' {
             (script:One $script:Spec 'crabd').Script | Should -Be 'C:\Fake\sidecrab\companion\crabd.py'
-            (script:One $script:Spec 'glow').Script  | Should -Be 'C:\Fake\sidecrab\lighting\glow_launcher.pyw'
             (script:One $script:Spec 'toast').Script | Should -Be 'C:\Fake\sidecrab\notifier\sidecrab_toast.py'
             (script:One $script:Spec 'panel').Script | Should -Be 'C:\Fake\sidecrab\panel-host\dist\SideCrab.Panel.exe'
         }
 
         It 'marks crabd required and the others optional' {
             (script:One $script:Spec 'crabd').Required | Should -BeTrue
-            (script:One $script:Spec 'glow').Required  | Should -BeFalse
             (script:One $script:Spec 'toast').Required | Should -BeFalse
             (script:One $script:Spec 'panel').Required | Should -BeFalse
         }
+
+        It 'CLEAN-06: every component is part of the default install' {
+            foreach ($k in 'crabd', 'toast', 'panel') {
+                (script:One $script:Spec $k).DefaultInstall | Should -BeTrue
+            }
+        }
+
+        It 'CLEAN-06: only the panel is Buildable - the others must exist on disk' {
+            (script:One $script:Spec 'panel').Buildable | Should -BeTrue
+            (script:One $script:Spec 'crabd').Buildable | Should -BeFalse
+            (script:One $script:Spec 'toast').Buildable | Should -BeFalse
+        }
+
+        It 'CLEAN-06: no component declares a Python import to preflight' {
+            # the vendor SDK was the only one, and it went with the RGB component. A row that still
+            # carried PyImport would send the installer looking for a preflight that is gone.
+            foreach ($c in $script:Spec) {
+                ($c.PSObject.Properties.Name -contains 'PyImport') | Should -BeFalse
+            }
+        }
+
+        It 'CLEAN-06: no catalogue row names the retired component or its folder' {
+            $text = ($script:Spec | ForEach-Object { "$($_.Key) $($_.TaskName) $($_.Script) $($_.Description) $($_.WatchFiles -join ' ')" }) -join ' '
+            $text | Should -Not -Match 'glow'
+            $text | Should -Not -Match 'lighting'
+            $text | Should -Not -Match 'the previous host'
+        }
     }
 
-    Context 'component detection (no switches)' {
+    Context 'component detection (CLEAN-06 default install)' {
 
-        It 'installs crabd alone when neither optional script exists' {
-            $plan = script:Plan -Present @{ crabd = $true }
-            (script:One $plan 'crabd').Selected | Should -BeTrue
-            (script:One $plan 'glow').Selected  | Should -BeFalse
-            (script:One $plan 'toast').Selected | Should -BeFalse
-            (script:One $plan 'glow').Reason    | Should -Be 'not-installed'
-        }
-
-        It 'auto-includes glow when only its script is present' {
-            $plan = script:Plan -Present @{ crabd = $true; glow = $true }
-            (script:One $plan 'glow').Selected  | Should -BeTrue
-            (script:One $plan 'glow').Reason    | Should -Be 'auto-detected'
-            (script:One $plan 'toast').Selected | Should -BeFalse
-        }
-
-        It 'auto-includes toast independently of glow' {
+        It 'selects all three with no switches at all' {
             $plan = script:Plan -Present @{ crabd = $true; toast = $true }
-            (script:One $plan 'toast').Selected | Should -BeTrue
-            (script:One $plan 'toast').Reason   | Should -Be 'auto-detected'
-            (script:One $plan 'glow').Selected  | Should -BeFalse
+            foreach ($k in 'crabd', 'toast', 'panel') { (script:One $plan $k).Selected | Should -BeTrue }
         }
 
-        It 'auto-includes both when both scripts are present' {
-            $plan = script:Plan -Present @{ crabd = $true; glow = $true; toast = $true }
-            (@($plan | Where-Object Selected).Count) | Should -Be 3
+        It 'selects the panel by default even with no exe built yet' {
+            # The whole point of Buildable: a first install has nothing at panel-host\dist,
+            # and treating that as "not installed" is what kept the panel opt-in.
+            $plan = script:Plan -Present @{ crabd = $true; toast = $true }
+            (script:One $plan 'panel').Selected | Should -BeTrue
+            (script:One $plan 'panel').Reason   | Should -Be 'default'
+            (script:One $plan 'panel').Problem  | Should -BeNullOrEmpty
+        }
+
+        It 'still says auto-detected when the script is actually there' {
+            $plan = script:Plan -Present @{ crabd = $true; toast = $true; panel = $true }
+            (script:One $plan 'toast').Reason | Should -Be 'auto-detected'
+            (script:One $plan 'panel').Reason | Should -Be 'auto-detected'
+        }
+
+        It 'a default component whose script is missing and cannot be built is a problem' {
+            # The notifier is not Buildable, so an absent sidecrab_toast.py is a partial
+            # checkout and must be said out loud rather than silently dropped.
+            $plan = script:Plan -Present @{ crabd = $true }
+            (script:One $plan 'toast').Selected | Should -BeTrue
+            (script:One $plan 'toast').Reason   | Should -Be 'default'
+            (script:One $plan 'toast').Problem  | Should -Match 'default install'
         }
 
         It 'reports a problem when crabd itself is missing' {
@@ -173,27 +201,58 @@ Describe 'SideCrab setup' {
             (script:One $plan 'crabd').Problem  | Should -Match 'crabd script not found'
         }
 
-        It 'raises no problem for an absent optional component' {
-            $plan = script:Plan -Present @{ crabd = $true }
-            (script:One $plan 'glow').Problem  | Should -BeNullOrEmpty
-            (script:One $plan 'toast').Problem | Should -BeNullOrEmpty
+        It 'MUTATION: the plan can never name a retired component' {
+            foreach ($present in @(@{}, @{ crabd = $true }, @{ crabd = $true; toast = $true; panel = $true })) {
+                @(script:Plan -Present $present | Where-Object { $_.Key -eq 'glow' }).Count | Should -Be 0
+                @(script:Plan -Present $present | Where-Object { $_.TaskName -eq 'SideCrab-glow' }).Count | Should -Be 0
+            }
         }
     }
 
-    Context 'component detection (switches)' {
+    Context 'component detection (switches and -Skip*)' {
 
-        It 'selects glow on -WithGlow when the script is present' {
-            $plan = script:Plan -Present @{ crabd = $true; glow = $true } -Requested @{ glow = $true }
-            (script:One $plan 'glow').Selected | Should -BeTrue
-            (script:One $plan 'glow').Reason   | Should -Be 'requested'
-            (script:One $plan 'glow').Problem  | Should -BeNullOrEmpty
+        It 'CLEAN-06: -SkipPanel declines the default panel' {
+            $plan = script:Plan -Present @{ crabd = $true; toast = $true } -Declined @{ panel = $true }
+            (script:One $plan 'panel').Selected | Should -BeFalse
+            (script:One $plan 'panel').Reason   | Should -Be 'declined'
+            (script:One $plan 'panel').Problem  | Should -BeNullOrEmpty
+            (script:One $plan 'toast').Selected | Should -BeTrue
         }
 
-        It 'turns -WithGlow with a missing script into a problem, not a silent skip' {
-            $plan = script:Plan -Present @{ crabd = $true } -Requested @{ glow = $true }
-            (script:One $plan 'glow').Selected | Should -BeTrue
-            (script:One $plan 'glow').Problem  | Should -Match '-WithGlow'
-            (script:One $plan 'glow').Problem  | Should -Match 'glow_launcher.pyw'
+        It 'CLEAN-06: -SkipToast declines the notifier and leaves the rest alone' {
+            $plan = script:Plan -Present @{ crabd = $true; toast = $true } -Declined @{ toast = $true }
+            (script:One $plan 'toast').Selected | Should -BeFalse
+            (script:One $plan 'panel').Selected | Should -BeTrue
+            (script:One $plan 'crabd').Selected | Should -BeTrue
+        }
+
+        It 'CLEAN-06: declining beats requesting - the contradiction installs less' {
+            $plan = script:Plan -Present @{ crabd = $true; panel = $true } `
+                                -Requested @{ panel = $true } -Declined @{ panel = $true }
+            (script:One $plan 'panel').Selected | Should -BeFalse
+            (script:One $plan 'panel').Reason   | Should -Be 'declined'
+        }
+
+        It 'a declined REQUIRED component is still installed - crabd is not optional' {
+            $plan = script:Plan -Present @{ crabd = $true } -Declined @{ crabd = $true }
+            (script:One $plan 'crabd').Selected | Should -BeTrue
+            (script:One $plan 'crabd').Reason   | Should -Be 'required'
+        }
+
+        It 'selects the panel on -Panel and records that it was asked for by name' {
+            $plan = script:Plan -Present @{ crabd = $true; panel = $true } -Requested @{ panel = $true }
+            (script:One $plan 'panel').Selected  | Should -BeTrue
+            (script:One $plan 'panel').Reason    | Should -Be 'requested'
+            (script:One $plan 'panel').Requested | Should -BeTrue
+        }
+
+        It 'SCA-015/CLEAN-06: -Panel with no exe is Requested, not a Problem - it gets built' {
+            # The exe is Buildable, so "not there yet" is a build step. Requested is what makes
+            # a FAILED build fatal in the installer, which is where that distinction lands.
+            $plan = script:Plan -Present @{ crabd = $true } -Requested @{ panel = $true }
+            (script:One $plan 'panel').Selected  | Should -BeTrue
+            (script:One $plan 'panel').Requested | Should -BeTrue
+            (script:One $plan 'panel').Problem   | Should -BeNullOrEmpty
         }
 
         It 'turns -WithToast with a missing script into a problem naming that switch' {
@@ -201,42 +260,36 @@ Describe 'SideCrab setup' {
             (script:One $plan 'toast').Problem | Should -Match '-WithToast'
         }
 
-        It 'does not let one switch select the other component' {
-            $plan = script:Plan -Present @{ crabd = $true; glow = $true; toast = $true } `
-                                -Requested @{ glow = $true }
-            (script:One $plan 'glow').Reason  | Should -Be 'requested'
-            (script:One $plan 'toast').Reason | Should -Be 'auto-detected'
-        }
-
         It 'always selects crabd regardless of switches' {
-            foreach ($req in @(@{}, @{ glow = $true }, @{ glow = $true; toast = $true })) {
+            foreach ($req in @(@{}, @{ toast = $true }, @{ toast = $true; panel = $true })) {
                 (script:One (script:Plan -Present @{ crabd = $true } -Requested $req) 'crabd').Selected |
                     Should -BeTrue
             }
         }
 
         It 'treats a false switch value as not requested' {
-            $plan = script:Plan -Present @{ crabd = $true } -Requested @{ glow = $false }
-            (script:One $plan 'glow').Selected | Should -BeFalse
-            (script:One $plan 'glow').Problem  | Should -BeNullOrEmpty
+            $plan = script:Plan -Present @{ crabd = $true; toast = $true } -Requested @{ toast = $false }
+            (script:One $plan 'toast').Requested | Should -BeFalse
+            (script:One $plan 'toast').Reason    | Should -Be 'auto-detected'
         }
     }
 
     Context 'task-name assembly' {
 
         It 'returns only the selected task names, in catalogue order' {
-            $plan  = script:Plan -Present @{ crabd = $true; toast = $true }
+            $plan  = script:Plan -Present @{ crabd = $true; toast = $true } -Declined @{ panel = $true }
             $names = Get-SideCrabTaskName -Component $plan
             ($names -join ',') | Should -Be 'SideCrab-crabd,SideCrab-toast'
         }
 
         It 'returns every known task name with -All' {
             $names = Get-SideCrabTaskName -Component $script:Spec -All
-            ($names -join ',') | Should -Be 'SideCrab-crabd,SideCrab-glow,SideCrab-toast,SideCrab-panel'
+            ($names -join ',') | Should -Be 'SideCrab-crabd,SideCrab-toast,SideCrab-panel'
         }
 
-        It 'returns crabd alone for a bare install' {
-            $names = Get-SideCrabTaskName -Component (script:Plan -Present @{ crabd = $true })
+        It 'returns crabd alone when both optional components are declined' {
+            $names = Get-SideCrabTaskName -Component (script:Plan -Present @{ crabd = $true } `
+                                                        -Declined @{ toast = $true; panel = $true })
             ($names -join ',') | Should -Be 'SideCrab-crabd'
         }
 
@@ -247,7 +300,7 @@ Describe 'SideCrab setup' {
         It 'emits names unrolled, not nested one array deep' {
             # The trap this pins: a `, @(...)` return makes @(f).Count 1 forever.
             $names = @(Get-SideCrabTaskName -Component $script:Spec -All)
-            $names.Count      | Should -Be 4
+            $names.Count      | Should -Be 3
             $names[0]         | Should -Be 'SideCrab-crabd'
             ($names[0] -is [string]) | Should -BeTrue
         }
@@ -337,12 +390,16 @@ Describe 'SideCrab setup' {
             }
         }
 
-        It 'Install exposes -WithGlow, -WithToast, -Panel and -Status' {
+        It 'CLEAN-06: Install keeps -WithToast/-Panel, adds -SkipToast/-SkipPanel, drops -WithGlow' {
             $p = script:Get-ParamName $script:InstallAst
-            $p | Should -Contain 'WithGlow'
             $p | Should -Contain 'WithToast'
             $p | Should -Contain 'Panel'
+            $p | Should -Contain 'SkipToast'
+            $p | Should -Contain 'SkipPanel'
             $p | Should -Contain 'Status'
+            # The retired switch is GONE, not accepted-and-ignored: a -WithGlow that silently
+            # did nothing would read as "still supported" in every script that passes it.
+            $p | Should -Not -Contain 'WithGlow'
         }
 
         It 'Install keeps its existing switches' {
@@ -365,11 +422,24 @@ Describe 'SideCrab setup' {
             }
         }
 
-        It 'Update pulls fast-forward only and warns about the iCUE-only widget path' {
+        It 'Update pulls fast-forward only' {
             $text = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Update-SideCrab.ps1') -Raw -Encoding utf8
             ($text -match '--ff-only')       | Should -BeTrue
-            ($text -match 'iCUE')            | Should -BeTrue
-            ($text -match 'Write-Warning')   | Should -BeTrue
+        }
+
+        It 'CLEAN-10: no setup script sends the operator to a retired vendor application' {
+            # The acceptance test for CLEAN-10 on this surface: following install, update,
+            # approval or repair guidance can never name the previous host, the vendor CLI or an import.
+            # The SHIPPED scripts only. This file names the retired words on purpose, to
+            # assert they are gone - scanning itself would make the check unwritable.
+            foreach ($f in @(Get-ChildItem -LiteralPath $script:SetupDir -Filter '*.ps1' -File)) {
+                $text = Get-Content -LiteralPath $f.FullName -Raw -Encoding utf8
+                foreach ($needle in 'the previous host', 'the vendor SDK', 'the old packaging tool', 'the vendor CLI') {
+                    if ($text -match [regex]::Escape($needle)) {
+                        throw "$($f.Name) still names '$needle'"
+                    }
+                }
+            }
         }
 
         It 'the hooks README still documents the curl traps' {
@@ -1673,20 +1743,21 @@ Describe 'SideCrab setup' {
             function script:PanelRow { param([string] $Key) $script:PanelSpec | Where-Object { $_.Key -eq $Key } | Select-Object -First 1 }
         }
 
-        It 'the catalogue names the panel as an optional, native, portless component' {
+        It 'the catalogue names the panel as a default, native, portless, buildable component' {
             $p = script:PanelRow 'panel'
             $p | Should -Not -BeNullOrEmpty
-            $p.TaskName | Should -Be 'SideCrab-panel'
-            $p.Required | Should -BeFalse
-            $p.Switch   | Should -Be '-Panel'
-            $p.Port     | Should -Be 0
-            $p.Launch   | Should -Be 'exe'
-            $p.Script   | Should -Be 'C:\Fake\sidecrab\panel-host\dist\SideCrab.Panel.exe'
-            $p.PyImport | Should -BeNullOrEmpty
+            $p.TaskName       | Should -Be 'SideCrab-panel'
+            $p.Required       | Should -BeFalse
+            $p.DefaultInstall | Should -BeTrue
+            $p.Buildable      | Should -BeTrue
+            $p.Switch         | Should -Be '-Panel'
+            $p.Port           | Should -Be 0
+            $p.Launch         | Should -Be 'exe'
+            $p.Script         | Should -Be 'C:\Fake\sidecrab\panel-host\dist\SideCrab.Panel.exe'
         }
 
         It 'every python component says so, so the installer cannot run an exe through python' {
-            foreach ($k in 'crabd', 'glow', 'toast') { (script:PanelRow $k).Launch | Should -Be 'python' }
+            foreach ($k in 'crabd', 'toast') { (script:PanelRow $k).Launch | Should -Be 'python' }
         }
 
         It 'a plan row carries Launch through, so the installer reads it off the plan' {
@@ -1697,9 +1768,15 @@ Describe 'SideCrab setup' {
             $row.Reason   | Should -Be 'auto-detected'
         }
 
-        It '-Panel with no built exe is a problem naming the switch, not a silent skip' {
+        It 'CLEAN-06: -Panel with no built exe is a BUILD STEP, not a problem' {
+            # It was a Problem while the installer only registered what was already on disk.
+            # Now the installer builds it, so a Problem here would abort a first install on
+            # exactly the machine the default is meant to serve.
             $plan = @(Select-SideCrabComponent -Spec $script:PanelSpec -Present @{ crabd = $true } -Requested @{ panel = $true })
-            ($plan | Where-Object { $_.Key -eq 'panel' }).Problem | Should -Match '-Panel'
+            $row  = $plan | Where-Object { $_.Key -eq 'panel' }
+            $row.Problem   | Should -BeNullOrEmpty
+            $row.Selected  | Should -BeTrue
+            $row.Requested | Should -BeTrue
         }
 
         It 'Register-SideCrabTask accepts a native Execute beside the python pair' {
@@ -2415,7 +2492,6 @@ Describe 'SideCrab setup' {
 
         It 'the catalogue says WHICH component owns a port, so no caller has to guess' {
             (script:One $script:Spec 'crabd').Port | Should -Be 2722
-            (script:One $script:Spec 'glow').Port  | Should -Be 0
             (script:One $script:Spec 'toast').Port | Should -Be 0
             (script:One $script:Spec 'panel').Port | Should -Be 0
         }
@@ -2644,7 +2720,10 @@ Describe 'SideCrab setup' {
         BeforeAll {
             script:Import-AstFunction -Path $script:Common -Name @(
                 'Get-SideCrabUninstallScope', 'Get-SideCrabStatusLineRestoreDecision',
-                'Get-SideCrabPullPreflight',  'Get-SideCrabGlowPreflight',
+                'Get-SideCrabPullPreflight',  'Get-SideCrabRetiredComponentSpec',
+                'Test-SideCrabTaskIsOurs',    'Get-SideCrabRetirementDecision',
+                'Get-SideCrabRetiredRecord',  'Set-SideCrabRetiredRecord',
+                'Invoke-SideCrabRetirement',  'Get-SideCrabViewportVerdict',
                 'Get-SideCrabAumidIconDecision', 'Get-SideCrabRunStateDecision',
                 'Get-SideCrabWatchedWriteTime'
             )
@@ -2679,19 +2758,30 @@ Describe 'SideCrab setup' {
             }
         }
 
-        It '-TaskName SideCrab-glow removes the glow task and NOTHING else' {
+        It '-TaskName SideCrab-panel removes the panel task and NOTHING else' {
             # THE DEFECT: this narrowed the task deletion only, then went on to strip the hooks,
             # restore the status line and clear panelApprovals of a crabd install nobody asked
             # about. Every one of these five must be false.
-            $s = Get-SideCrabUninstallScope -Spec $script:Spec -TaskName 'SideCrab-glow'
+            $s = Get-SideCrabUninstallScope -Spec $script:Spec -TaskName 'SideCrab-panel'
             $s.Narrowed     | Should -BeTrue
-            $s.ComponentKey | Should -Be 'glow'
+            $s.ComponentKey | Should -Be 'panel'
             $s.Tasks        | Should -BeTrue
             $s.Hooks        | Should -BeFalse
             $s.StatusLine   | Should -BeFalse
             $s.Approvals    | Should -BeFalse
             $s.Aumid        | Should -BeFalse
             $s.Protocol     | Should -BeFalse
+        }
+
+        It 'CLEAN-06: a RETIRED name is an unknown one - it removes that task and nothing else' {
+            # SideCrab-glow left the catalogue, so this is the unknown-name branch. That is the
+            # right answer and worth pinning: a hand-run uninstall of the retired task must not
+            # start guessing what else it implies and tear down the crabd install beside it.
+            $s = Get-SideCrabUninstallScope -Spec $script:Spec -TaskName 'SideCrab-glow'
+            $s.Narrowed    | Should -BeTrue
+            $s.UnknownTask | Should -BeTrue
+            $s.Tasks       | Should -BeTrue
+            foreach ($f in 'Hooks', 'StatusLine', 'Approvals', 'Aumid', 'Protocol') { $s.$f | Should -BeFalse }
         }
 
         It '-TaskName SideCrab-toast owns the two HKCU registrations and not the CLI wiring' {
@@ -2933,58 +3023,179 @@ Describe 'SideCrab setup' {
             ($read -lt $row) | Should -BeTrue
         }
 
-        # ---- CD-21: glow is not installed green when its SDK will not import --------------
+        # ---- CLEAN-06: the retired component's task is migrated, never orphaned -----------
 
-        It 'an auto-detected glow whose cuesdk will not import is SKIPPED, with the pip line' {
-            $p = Get-SideCrabGlowPreflight -Selected $true -Requested $false -Importable $false `
-                                           -RequirementsPath 'C:\r\lighting\requirements.txt'
-            $p.Install | Should -BeFalse
-            $p.Status  | Should -Be 'skipped'
-            $p.Command | Should -Match 'pip install -r'
-            $p.Reason  | Should -Match 'never light'
+        It 'the retired spec still knows the name the catalogue no longer carries' {
+            # Deleting the catalogue row is what makes an existing SideCrab-glow invisible to
+            # Install, Update, Repair and Uninstall. This table is the only thing that keeps
+            # the name reachable long enough to remove it.
+            $r = @(Get-SideCrabRetiredComponentSpec)
+            @($r | Where-Object { $_.TaskName -eq 'SideCrab-glow' }).Count | Should -Be 1
+            @($r | Where-Object { $_.TaskName -eq 'SideCrab-glow' })[0].Reason | Should -Be 'RGB retired'
         }
 
-        It 'an explicit -WithGlow installs anyway, loudly - a switch is an instruction' {
-            # Failing the whole install (crabd included) over a lighting dependency would be the
-            # worse outcome.
-            $p = Get-SideCrabGlowPreflight -Selected $true -Requested $true -Importable $false
-            $p.Install | Should -BeTrue
-            $p.Status  | Should -Be 'requested-broken'
-            $p.Reason  | Should -Match 'does NOT import'
+        It 'ownership is decided by path, with a separator boundary' {
+            Test-SideCrabTaskIsOurs -Action 'pythonw.exe "C:\dev\sidecrab\lighting\glow_launcher.pyw"' -RepoRoot 'C:\dev\sidecrab' | Should -BeTrue
+            # Case and slash direction are both survivable; a sibling directory is not us.
+            Test-SideCrabTaskIsOurs -Action 'pythonw.exe "c:/DEV/SideCrab/lighting/x.pyw"' -RepoRoot 'C:\dev\sidecrab' | Should -BeTrue
+            Test-SideCrabTaskIsOurs -Action 'pythonw.exe "C:\dev\sidecrab-fork\lighting\x.pyw"' -RepoRoot 'C:\dev\sidecrab' | Should -BeFalse
+            Test-SideCrabTaskIsOurs -Action '' -RepoRoot 'C:\dev\sidecrab' | Should -BeFalse
         }
 
-        It 'an importable glow installs silently - the gate cannot fire on a healthy box' {
-            # Measured 2026-08-27 on this host: `import cuesdk` succeeds, so a healthy install
-            # sees no new output at all. A gate that fires on a healthy night is worse than none.
-            $p = Get-SideCrabGlowPreflight -Selected $true -Requested $false -Importable $true
-            $p.Install | Should -BeTrue
-            $p.Status  | Should -Be 'ok'
-            $p.Command | Should -Be ''
+        It 'CASE Disabled: a parked task is still retired - parked is not a reason to keep it' {
+            $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $true -State 'Disabled' `
+                    -Action 'pythonw.exe "C:\dev\sidecrab\lighting\glow_launcher.pyw"' -RepoRoot 'C:\dev\sidecrab' `
+                    -AlreadyRecorded $false
+            $d.Verdict    | Should -Be 'retire'
+            $d.Unregister | Should -BeTrue
+            $d.Record     | Should -BeTrue
         }
 
-        It 'only glow declares an import to check, and it names the pinned requirements file' {
-            (script:One $script:Spec 'glow').PyImport  | Should -Be 'cuesdk'
-            (script:One $script:Spec 'crabd').PyImport | Should -BeNullOrEmpty
-            (script:One $script:Spec 'toast').PyImport | Should -BeNullOrEmpty
-            (script:One $script:Spec 'glow').PyRequires | Should -Match 'lighting.requirements\.txt$'
+        It 'CASE Running: a running task is retired too, and never started' {
+            $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $true -State 'Running' `
+                    -Action 'pythonw.exe "C:\dev\sidecrab\lighting\glow_launcher.pyw"' -RepoRoot 'C:\dev\sidecrab' `
+                    -AlreadyRecorded $false
+            $d.Verdict    | Should -Be 'retire'
+            $d.Unregister | Should -BeTrue
         }
 
-        It 'the installer runs the import under the SAME interpreter the task will use' {
-            # A different python on PATH is a different set of site-packages, so checking with
-            # anything but $python would answer a question nobody asked.
-            ($script:InstallText9 -match 'Get-SideCrabGlowPreflight')            | Should -BeTrue
-            ($script:InstallText9 -match '& \$python -c "import \$\(\$c\.PyImport\)"') | Should -BeTrue
+        It 'CASE absent: nothing to unregister, and the record is written once' {
+            $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $false -State '' `
+                    -Action '' -RepoRoot 'C:\dev\sidecrab' -AlreadyRecorded $false
+            $d.Verdict    | Should -Be 'absent'
+            $d.Unregister | Should -BeFalse
+            $d.Record     | Should -BeTrue
+        }
+
+        It 'CASE foreign path: another install owns it, so this run touches nothing' {
+            $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $true -State 'Running' `
+                    -Action 'pythonw.exe "D:\someone-else\sidecrab\lighting\glow_launcher.pyw"' `
+                    -RepoRoot 'C:\dev\sidecrab' -AlreadyRecorded $false
+            $d.Verdict    | Should -Be 'foreign'
+            $d.Unregister | Should -BeFalse
+            $d.Record     | Should -BeFalse
+            $d.Detail     | Should -Match 'another install owns it'
+        }
+
+        It 'IDEMPOTENT: absent plus already-recorded is a no-op in both directions' {
+            $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $false -State '' `
+                    -Action '' -RepoRoot 'C:\dev\sidecrab' -AlreadyRecorded $true
+            $d.Verdict    | Should -Be 'already-retired'
+            $d.Unregister | Should -BeFalse
+            $d.Record     | Should -BeFalse
+        }
+
+        It 'MUTATION: no decision branch can ever ask for a start' {
+            # The whole migration must be unable to revive the component. If a Start property
+            # ever appears here, a caller will eventually honour it.
+            foreach ($reg in $true, $false) {
+                foreach ($st in 'Running', 'Disabled', 'Ready', '') {
+                    $d = Get-SideCrabRetirementDecision -TaskName 'SideCrab-glow' -Registered $reg -State $st `
+                            -Action 'pythonw.exe "C:\dev\sidecrab\lighting\x.pyw"' -RepoRoot 'C:\dev\sidecrab' `
+                            -AlreadyRecorded $false
+                    ($d.PSObject.Properties.Name -contains 'Start') | Should -BeFalse
+                }
+            }
+        }
+
+        It 'the record merges and never re-stamps an entry that is already there' {
+            $rp = Join-Path $script:TempDir9 'state\retired.json'
+            (Get-SideCrabRetiredRecord -Path $rp).Count | Should -Be 0     # absent = empty, not a throw
+            $a = Set-SideCrabRetiredRecord -Path $rp -TaskName 'SideCrab-glow' -Reason 'RGB retired' -At '2026-09-21T00:00:00Z'
+            $a.Action | Should -Be 'recorded'
+            Test-Path -LiteralPath $rp | Should -BeTrue
+            $b = Set-SideCrabRetiredRecord -Path $rp -TaskName 'SideCrab-glow' -Reason 'RGB retired' -At '2027-01-01T00:00:00Z'
+            $b.Action | Should -Be 'already-recorded'
+            $rec = Get-SideCrabRetiredRecord -Path $rp
+            $rec['SideCrab-glow'].at     | Should -Be '2026-09-21T00:00:00Z'
+            $rec['SideCrab-glow'].reason | Should -Be 'RGB retired'
+            # A second retired component must not erase the first.
+            Set-SideCrabRetiredRecord -Path $rp -TaskName 'SideCrab-other' -Reason 'x' | Out-Null
+            (Get-SideCrabRetiredRecord -Path $rp).Count | Should -Be 2
+        }
+
+        It 'a corrupt record reads as empty rather than throwing mid-migration' {
+            $rp = Join-Path $script:TempDir9 'state\bad.json'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $rp) | Out-Null
+            [IO.File]::WriteAllText($rp, '{not json')
+            (Get-SideCrabRetiredRecord -Path $rp).Count | Should -Be 0
+        }
+
+        It 'FIXTURE: all four cases converge, and a second run changes nothing' {
+            # An isolated task adapter: no scheduler is touched and nothing is started.
+            $root  = 'C:\dev\sidecrab'
+            $cases = @{
+                'disabled' = [pscustomobject]@{ Registered = $true;  State = 'Disabled'; Action = "pythonw.exe `"$root\lighting\g.pyw`"" }
+                'running'  = [pscustomobject]@{ Registered = $true;  State = 'Running';  Action = "pythonw.exe `"$root\lighting\g.pyw`"" }
+                'absent'   = [pscustomobject]@{ Registered = $false; State = '';         Action = '' }
+                'foreign'  = [pscustomobject]@{ Registered = $true;  State = 'Running';  Action = 'pythonw.exe "D:\other\sidecrab\lighting\g.pyw"' }
+            }
+            $expect = @{ disabled = 'unregistered'; running = 'unregistered'; absent = 'none'; foreign = 'none' }
+
+            foreach ($case in $cases.Keys) {
+                $rp   = Join-Path $script:TempDir9 "fixture-$case\state\retired.json"
+                $seen = [System.Collections.Generic.List[string]]::new()
+                $st   = $cases[$case]
+                $probe = { param($n) [pscustomobject]@{ TaskName = $n; Registered = $st.Registered; State = $st.State; Action = $st.Action } }.GetNewClosure()
+                $unreg = { param($n) $seen.Add($n) }.GetNewClosure()
+
+                $r1 = @(Invoke-SideCrabRetirement -RepoRoot $root -RetiredPath $rp -StateProbe $probe -Unregister $unreg)
+                $r1.Count  | Should -Be 1
+                $r1[0].Task | Should -Be $expect[$case]
+
+                # The second run: no further unregister call, and no second record.
+                $before = $seen.Count
+                $r2 = @(Invoke-SideCrabRetirement -RepoRoot $root -RetiredPath $rp -StateProbe $probe -Unregister $unreg)
+                if ($case -eq 'foreign') {
+                    $seen.Count | Should -Be 0
+                    Test-Path -LiteralPath $rp | Should -BeFalse   # a foreign task is never recorded
+                } else {
+                    $r2[0].Record | Should -Not -Be 'recorded'
+                    (Get-SideCrabRetiredRecord -Path $rp).Count | Should -Be 1
+                }
+                # Unregister is called per run for a still-present task, and never for absent.
+                if ($case -eq 'absent') { $seen.Count | Should -Be 0 } else { $seen.Count | Should -BeGreaterOrEqual $before }
+            }
+        }
+
+        It 'the migration only ever names retired tasks, never a supported one' {
+            $root  = 'C:\dev\sidecrab'
+            $asked = [System.Collections.Generic.List[string]]::new()
+            $probe = { param($n) $asked.Add($n); [pscustomobject]@{ TaskName = $n; Registered = $false; State = ''; Action = '' } }.GetNewClosure()
+            Invoke-SideCrabRetirement -RepoRoot $root -RetiredPath (Join-Path $script:TempDir9 'scope\state\retired.json') `
+                -StateProbe $probe -Unregister { param($n) throw 'must not unregister' } | Out-Null
+            foreach ($n in 'SideCrab-crabd', 'SideCrab-toast', 'SideCrab-panel', 'SideCrab-hwinfo') {
+                $asked | Should -Not -Contain $n
+            }
+            $asked | Should -Contain 'SideCrab-glow'
+        }
+
+        It '-WhatIf describes the migration and performs none of it' {
+            $rp    = Join-Path $script:TempDir9 'whatif\state\retired.json'
+            $probe = { param($n) [pscustomobject]@{ TaskName = $n; Registered = $true; State = 'Running'; Action = 'pythonw.exe "C:\dev\sidecrab\lighting\g.pyw"' } }
+            $r = @(Invoke-SideCrabRetirement -RepoRoot 'C:\dev\sidecrab' -RetiredPath $rp `
+                       -StateProbe $probe -Unregister { param($n) throw 'must not unregister under -WhatIf' } -WhatIf)
+            $r[0].Task   | Should -Be 'would-unregister'
+            $r[0].Record | Should -Be 'would-record'
+            Test-Path -LiteralPath $rp | Should -BeFalse
+        }
+
+        It 'both Install and Update run the migration, so neither path orphans the task' {
+            ($script:InstallText9 -match 'Invoke-SideCrabRetirement') | Should -BeTrue
+            $upd = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Update-SideCrab.ps1') -Raw -Encoding utf8
+            ($upd -match 'Invoke-SideCrabRetirement') | Should -BeTrue
+        }
+
+        It 'CLEAN-06: the retired log is kept, not purged by the migration' {
+            # A retirement removes a task. Deleting the operator's record of what the component
+            # did is a different decision, and it is -Purge's, not this migration's.
+            @(Get-SideCrabRetiredComponentSpec)[0].KeepLogs | Should -Contain 'glow.log'
+            $res = @(Get-SideCrabResidueSpec -SettingsPath 'C:\u\.claude\settings.json' `
+                        -ConfigPath 'C:\u\.sidecrab\config.json' -ChainPath 'C:\u\.sidecrab\statusline-chain.json')
+            @($res | Where-Object { $_.Key -eq 'glowlog' })[0].Kind | Should -Be 'log'
         }
 
         # ---- CD-24: freshness watches the code, not just the entry point ------------------
-
-        It 'glow watches the modules that actually change, not only its launcher' {
-            $glow = @((script:One $script:Spec 'glow').WatchFiles)
-            $glow.Count | Should -Be 4
-            foreach ($n in 'glow_launcher.pyw', 'sidecrab_glow.py', 'icue.py', 'decision.py') {
-                @($glow | Where-Object { $_ -like "*$n" }).Count | Should -Be 1
-            }
-        }
 
         It 'the toast handlers are deliberately NOT watched' {
             # The shell launches them as their own processes on a button press; their mtime says
@@ -2994,7 +3205,7 @@ Describe 'SideCrab setup' {
         }
 
         It 'a plan row carries WatchFiles through, so the doctor cannot silently re-narrow' {
-            @((script:One (script:Plan -Present @{ glow = $true }) 'glow').WatchFiles).Count | Should -Be 4
+            @((script:One (script:Plan -Present @{ crabd = $true }) 'crabd').WatchFiles).Count | Should -Be 1
         }
 
         It 'the newest watched file wins, and names itself' {
@@ -3274,4 +3485,379 @@ Describe 'SideCrab setup' {
             ($script:HwinfoText -match 'NON-COMMERCIAL')               | Should -BeTrue
         }
     }
+    Context 'standalone wave: audit findings SCA-003/004/015/016' {
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @(
+                'Get-SideCrabWidgetVersion', 'Get-SideCrabComponentVersion',
+                'Get-SideCrabApprovalReadiness'
+            )
+            $script:InstallTextI = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw -Encoding utf8
+            $script:UpdateTextI  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Update-SideCrab.ps1')  -Raw -Encoding utf8
+            $script:TestTextI    = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrab.ps1')    -Raw -Encoding utf8
+            $script:UninstTextI  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Uninstall-SideCrab.ps1') -Raw -Encoding utf8
+            $script:TempI = Join-Path ([IO.Path]::GetTempPath()) ("sidecrab-lanei-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-Item -ItemType Directory -Force -Path $script:TempI | Out-Null
+
+            # One line in the shape contract C7 gives it, so every case below differs from the
+            # passing case in exactly one way.
+            function script:VpLine {
+                param([int] $Pid_ = 4242, [string] $Started = '2026-09-21T10:00:00Z',
+                      [int] $Cw = 2560, [int] $Ch = 720, [int] $Pw = 2560, [int] $Ph = 720)
+                "viewport: ${Cw}x${Ch} css px, dpr 1, zoom 1, window ${Pw}x${Ph} physical, pid $Pid_, started $Started"
+            }
+            $script:VpStart = [datetime]::Parse('2026-09-21T10:00:00Z', [cultureinfo]::InvariantCulture,
+                                  [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                                  [System.Globalization.DateTimeStyles]::AssumeUniversal)
+        }
+
+        AfterAll {
+            if (Test-Path -LiteralPath $script:TempI) { Remove-Item -LiteralPath $script:TempI -Recurse -Force }
+        }
+
+        # ---- SCA-004: the viewport row is bound to the process answering now --------------
+
+        It 'SCA-004 REGRESSION: an old good line plus a hidden current host does NOT pass' {
+            # THE EXACT DEFECT. panel.log is append-only, so yesterday's successful load was
+            # certifying a host that started today, found no target display and drew nothing.
+            $lines = @(
+                (script:VpLine -Pid_ 111 -Started '2026-09-20T08:00:00Z')
+                'hidden: target display absent, pid 4242, started 2026-09-21T10:00:00Z'
+            )
+            $v = Get-SideCrabViewportVerdict -Lines $lines -Registered $true `
+                     -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'hidden'
+        }
+
+        It 'SCA-004: a viewport line from a PREVIOUS pid is stale, not a pass' {
+            $v = Get-SideCrabViewportVerdict -Lines @((script:VpLine -Pid_ 111)) -Registered $true `
+                     -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass   | Should -BeFalse
+            $v.State  | Should -Be 'stale'
+            $v.Detail | Should -Match 'pid 111'
+        }
+
+        It 'SCA-004: the same pid with a different start time is a REUSED pid, not a pass' {
+            $v = Get-SideCrabViewportVerdict -Lines @((script:VpLine -Started '2026-09-20T08:00:00Z')) `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'stale'
+        }
+
+        It 'SCA-004: a line with no pid/started cannot be bound and fails plainly' {
+            # A host older than contract C7. The old check read this line happily.
+            $v = Get-SideCrabViewportVerdict -Lines @('viewport: 2560x720 css px on a 2560x720 window') `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'unbindable'
+        }
+
+        It 'SCA-004: the host prefixes every line with its timestamp, and the verdict still reads it' {
+            # The shipped host writes '2026-09-21 23:43:43 viewport: ...' (Log.Write stamps every
+            # line). The first cut anchored the match at the start of the line and reported
+            # no-line against a log full of lines; measured on the deployed host, 2026-09-21.
+            $stamped = '2026-09-21 10:00:01 ' + (script:VpLine)
+            $v = Get-SideCrabViewportVerdict -Lines @('2026-09-21 10:00:00 panel loaded', $stamped) `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeTrue
+            $v.State | Should -Be 'ok'
+            $h = Get-SideCrabViewportVerdict -Lines @($stamped, '2026-09-21 10:01:00 hidden: target display absent, pid 4242, started 2026-09-21T10:00:00Z') `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $h.Pass  | Should -BeFalse
+            $h.State | Should -Be 'hidden'
+        }
+
+        It 'SCA-004: a start stamp with no offset is the host''s LOCAL time and still binds' {
+            # The shipped host writes `started 2026-09-21T23:43:42` (local, no offset). Read as
+            # UTC that is six hours from the process on this machine and every line was stale.
+            $localStart = [datetime]::new(2026, 9, 21, 23, 43, 42, [System.DateTimeKind]::Local)
+            $line = "2026-09-21 23:43:43 viewport: 2560x720 css px, dpr 1, zoom 1, window 2560x720 physical, pid 4242, started 2026-09-21T23:43:42"
+            $v = Get-SideCrabViewportVerdict -Lines @($line) -Registered $true `
+                     -ProcessId 4242 -ProcessStart $localStart
+            $v.Pass  | Should -BeTrue
+            $v.State | Should -Be 'ok'
+        }
+
+        It 'SCA-004: a matching pid and start on a correct geometry PASSES' {
+            # The healthy night. A gate that cannot pass here is worse than no gate.
+            $v = Get-SideCrabViewportVerdict -Lines @('some other log line', (script:VpLine)) `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeTrue
+            $v.State | Should -Be 'ok'
+        }
+
+        It 'SCA-004: a 2 px difference still passes - a 150% monitor reads back 2561' {
+            $v = Get-SideCrabViewportVerdict -Lines @((script:VpLine -Cw 2561 -Ch 721)) -Registered $true `
+                     -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass | Should -BeTrue
+            $v2 = Get-SideCrabViewportVerdict -Lines @((script:VpLine -Cw 1280)) -Registered $true `
+                      -ProcessId 4242 -ProcessStart $script:VpStart
+            $v2.Pass  | Should -BeFalse
+            $v2.State | Should -Be 'scaled'
+        }
+
+        It 'SCA-004: hidden is reported as its own state even with no prior viewport line' {
+            $v = Get-SideCrabViewportVerdict -Lines @('hidden: target display absent, pid 4242, started 2026-09-21T10:00:00Z') `
+                     -Registered $true -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'hidden'
+        }
+
+        It 'SCA-004: an enabled panel task with no live process fails before any line is read' {
+            $v = Get-SideCrabViewportVerdict -Lines @((script:VpLine)) -Registered $true -ProcessId 0
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'no-process'
+        }
+
+        It 'SCA-004: an absent or disabled panel task is n/a, not a failure' {
+            (Get-SideCrabViewportVerdict -Registered $false).Pass | Should -BeTrue
+            (Get-SideCrabViewportVerdict -Registered $true -Disabled $true).Pass | Should -BeTrue
+            (Get-SideCrabViewportVerdict -Registered $false).State | Should -Be 'n-a'
+        }
+
+        It 'SCA-004: an empty log on a running host fails - nothing has been drawn' {
+            $v = Get-SideCrabViewportVerdict -Lines @() -Registered $true `
+                     -ProcessId 4242 -ProcessStart $script:VpStart
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'no-line'
+        }
+
+        It 'SCA-004: the smoke test reads the verdict rather than re-deriving it' {
+            ($script:TestTextI -match 'Get-SideCrabViewportVerdict') | Should -BeTrue
+            # The old inline regex, which had no pid in it at all, is gone.
+            ($script:TestTextI -match "Where-Object \{ \`$_ -match 'viewport: ' \}") | Should -BeFalse
+            ($script:TestTextI -match 'Get-Process -Name ''SideCrab\.Panel''') | Should -BeTrue
+        }
+
+        # ---- SCA-003: the update verdict includes the host ---------------------------------
+
+        It 'SCA-003: a failed host build sets the verdict and names the retained version' {
+            ($script:UpdateTextI -match '\$hostFailed\s*=\s*\$true')          | Should -BeTrue
+            ($script:UpdateTextI -match 'if \(\$hostFailed\) \{ \$verifyFailed = \$true \}') | Should -BeTrue
+            ($script:UpdateTextI -match 'Retained host version')              | Should -BeTrue
+            ($script:UpdateTextI -match 'exit \(\[int\] \$verifyFailed\)')    | Should -BeTrue
+        }
+
+        It 'SCA-003: the retained version is read BEFORE the build, or there is nothing to name' {
+            $read  = $script:UpdateTextI.IndexOf('$hostBefore   = (Get-SideCrabComponentVersion')
+            $build = $script:UpdateTextI.IndexOf("& (Join-Path `$PSScriptRoot 'Build-SideCrabPanel.ps1')")
+            ($read -ge 0)     | Should -BeTrue
+            ($read -lt $build) | Should -BeTrue
+        }
+
+        It 'SCA-003: a failed build no longer downgrades to a warning' {
+            # Write-Warning on the build path is exactly what let the run exit 0.
+            ($script:UpdateTextI -match 'the panel host did not rebuild \(exit \$LASTEXITCODE\); ') | Should -BeFalse
+            ($script:UpdateTextI -match 'FAIL:    the panel host did not rebuild') | Should -BeTrue
+        }
+
+        It 'SCA-003: a panel task that does not come back Running is also a failure' {
+            ($script:UpdateTextI -match 'Get-SideCrabRunStateDecision') | Should -BeTrue
+            ($script:UpdateTextI -match '\$panelRun\.Fault')            | Should -BeTrue
+        }
+
+        It 'SCA-003: the prior exe is left in place - nothing deletes it on a failed build' {
+            # "Stale but working beats dark" only holds if the failure path removes nothing.
+            $from = $script:UpdateTextI.IndexOf('$hostFailed   = $false')
+            $to   = $script:UpdateTextI.IndexOf('# ---- 3. verify')
+            ($from -ge 0) | Should -BeTrue
+            ($to -gt $from) | Should -BeTrue
+            $seg = $script:UpdateTextI.Substring($from, $to - $from)
+            ($seg -match 'Remove-Item') | Should -BeFalse
+            # And the whole script never removes the exe, at any point.
+            ($script:UpdateTextI -match 'Remove-Item') | Should -BeFalse
+        }
+
+        It 'SCA-003: the run-state decision the verdict leans on calls Ready a fault' {
+            (Get-SideCrabRunStateDecision -Registered $true -State 'Ready').Fault    | Should -BeTrue
+            (Get-SideCrabRunStateDecision -Registered $true -State 'Running').Fault  | Should -BeFalse
+            # Disabled is a decision, not a fault, so a parked panel cannot fail an update.
+            (Get-SideCrabRunStateDecision -Registered $true -State 'Disabled').Fault | Should -BeFalse
+        }
+
+        # ---- SCA-015: -WhatIf performs no native build ------------------------------------
+
+        It 'SCA-015: the only Build-SideCrabPanel call in Install sits inside ShouldProcess' {
+            $call  = $script:InstallTextI.IndexOf("& (Join-Path `$PSScriptRoot 'Build-SideCrabPanel.ps1')")
+            $gate  = $script:InstallTextI.IndexOf("ShouldProcess(`$panelRow.Script, 'Build the panel host (dotnet publish)')")
+            ($call -ge 0) | Should -BeTrue
+            ($gate -ge 0) | Should -BeTrue
+            ($gate -lt $call) | Should -BeTrue
+            # Exactly one call site: a second one outside the gate would reopen the finding.
+            ([regex]::Matches($script:InstallTextI, [regex]::Escape("Build-SideCrabPanel.ps1'")).Count) | Should -Be 1
+        }
+
+        It 'SCA-015: under -WhatIf the plan stops claiming a panel task will be registered' {
+            ($script:InstallTextI -match 'whatif-not-built') | Should -BeTrue
+        }
+
+        It 'SCA-015: Install never invokes dotnet itself - the build has one door' {
+            # The gated call to Build-SideCrabPanel.ps1 is the only way a native build happens.
+            # A direct dotnet invocation here would be a second door with no ShouldProcess on it.
+            foreach ($needle in '& dotnet', 'Start-Process dotnet', 'dotnet.exe') {
+                ($script:InstallTextI -match [regex]::Escape($needle)) | Should -BeFalse
+            }
+        }
+
+        It 'SCA-015: the build failure is fatal only when the panel was asked for by name' {
+            ($script:InstallTextI -match '\$panelRow\.Requested')   | Should -BeTrue
+            ($script:InstallTextI -match 'build-failed')            | Should -BeTrue
+        }
+
+        # ---- SCA-016: the purge inventory names both credential files ----------------------
+
+        It 'SCA-016: the residue table carries the pairing file and the DPAPI limits token' {
+            $res = @(Get-SideCrabResidueSpec -SettingsPath 'C:\u\.claude\settings.json' `
+                        -ConfigPath 'C:\u\.sidecrab\config.json' -ChainPath 'C:\u\.sidecrab\statusline-chain.json')
+            $pair = @($res | Where-Object { $_.Key -eq 'pairing' })
+            $lim  = @($res | Where-Object { $_.Key -eq 'limitstoken' })
+            $pair.Count | Should -Be 1
+            $lim.Count  | Should -Be 1
+            $pair[0].Path | Should -Be 'C:\u\.sidecrab\panel-token'
+            $lim[0].Path  | Should -Be 'C:\u\.sidecrab\limits-token.dpapi'
+        }
+
+        It 'SCA-016: both are credentials, and -Purge is what removes them' {
+            $res = @(Get-SideCrabResidueSpec -SettingsPath 'C:\u\.claude\settings.json' `
+                        -ConfigPath 'C:\u\.sidecrab\config.json' -ChainPath 'C:\u\.sidecrab\statusline-chain.json')
+            foreach ($k in 'pairing', 'limitstoken') {
+                $r = @($res | Where-Object { $_.Key -eq $k })[0]
+                $r.Kind        | Should -Be 'credential'
+                # 'purge' is what both branches of the uninstaller read: removed by -Purge,
+                # listed as retained without it. 'keep' would make -Purge silently leave a secret.
+                $r.Disposition | Should -Be 'purge'
+                $r.Why         | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'SCA-016: the path matches the one the installer actually writes' {
+            # Derived from ConfigPath in both places. A table that derived it from somewhere
+            # else would inventory a file nothing produces and miss the one that exists.
+            ($script:InstallTextI -match "Join-Path \(Split-Path -Parent \`$ConfigPath\) 'panel-token'") | Should -BeTrue
+            ($script:InstallTextI -match "Join-Path \(Split-Path -Parent \`$ConfigPath\) 'limits-token\.dpapi'") | Should -BeTrue
+        }
+
+        It 'SCA-016: neither credential is ever read, decrypted or printed by the uninstaller' {
+            # The table carries a path and a sentence. Anything that opened the file would put
+            # a secret in a console transcript.
+            ($script:UninstTextI -match 'Get-SideCrabPanelToken')      | Should -BeFalse
+            ($script:UninstTextI -match 'Get-SideCrabLimitsTokenState') | Should -BeFalse
+            ($script:UninstTextI -match 'Unprotect-')                   | Should -BeFalse
+        }
+
+        It 'SCA-016: the uninstall header states the retain-or-remove policy for both' {
+            ($script:UninstTextI -match 'panel-token')        | Should -BeTrue
+            ($script:UninstTextI -match 'limits-token\.dpapi') | Should -BeTrue
+            ($script:UninstTextI -match 'SCA-016')            | Should -BeTrue
+        }
+
+        It 'SCA-016: a purge-disposition row is BOTH removed by -Purge and listed when kept' {
+            # One table drives both branches, so the report and the deletion cannot diverge.
+            ([regex]::Matches($script:UninstTextI, [regex]::Escape("Disposition -eq 'purge'")).Count) |
+                Should -BeGreaterOrEqual 2
+        }
+
+        # ---- CLEAN-07: one version source, and it is in this repo --------------------------
+
+        It 'CLEAN-07: the widget version comes from widget\version.json' {
+            $root = Join-Path $script:TempI 'wv'
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'widget') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $root 'widget\version.json'), '{"version": "0.32.0"}')
+            $v = Get-SideCrabWidgetVersion -RepoRoot $root
+            $v.Present | Should -BeTrue
+            $v.Version | Should -Be '0.32.0'
+        }
+
+        It 'CLEAN-07: an absent version file fails plainly and says which path' {
+            $v = Get-SideCrabWidgetVersion -RepoRoot (Join-Path $script:TempI 'nothing-here')
+            $v.Present | Should -BeFalse
+            $v.Reason  | Should -Match 'version\.json'
+            $v.Reason  | Should -Match 'not found'
+        }
+
+        It 'CLEAN-07: a malformed version file is its own reason, not the same as absent' {
+            $root = Join-Path $script:TempI 'wvbad'
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'widget') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $root 'widget\version.json'), '{not json')
+            (Get-SideCrabWidgetVersion -RepoRoot $root).Reason | Should -Match 'does not parse'
+            [IO.File]::WriteAllText((Join-Path $root 'widget\version.json'), '{"nope": 1}')
+            (Get-SideCrabWidgetVersion -RepoRoot $root).Reason | Should -Match 'no version member'
+        }
+
+        It 'CLEAN-07: nothing in setup reads the retired vendor manifest any more' {
+            foreach ($f in @(Get-ChildItem -LiteralPath $script:SetupDir -Filter '*.ps1' -File)) {
+                $text = Get-Content -LiteralPath $f.FullName -Raw -Encoding utf8
+                ($text -match 'widget.manifest\.json') | Should -BeFalse
+            }
+        }
+
+        It 'CLEAN-07: the three versions are read from three separate artefacts' {
+            $root = Join-Path $script:TempI 'ver'
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'companion') | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $root 'widget')    | Out-Null
+            [IO.File]::WriteAllText((Join-Path $root 'companion\crabd.py'), "x = 1`nVERSION = `"0.34.0`"`n")
+            [IO.File]::WriteAllText((Join-Path $root 'widget\version.json'), '{"version": "0.32.0"}')
+            $v = Get-SideCrabComponentVersion -RepoRoot $root -PanelExe (Join-Path $root 'nope.exe')
+            $v.Crabd  | Should -Be '0.34.0'
+            $v.Widget | Should -Be '0.32.0'
+            # Not built is its own word: 'unknown' would read as "we looked and could not tell".
+            $v.Host   | Should -Be 'not built'
+        }
+
+        It 'CLEAN-07: an unreadable source is named in Notes, never silently blank' {
+            $v = Get-SideCrabComponentVersion -RepoRoot (Join-Path $script:TempI 'empty-root')
+            $v.Crabd | Should -Be 'unknown'
+            @($v.Notes).Count | Should -BeGreaterThan 0
+        }
+
+        It 'CLEAN-07: approvals readiness is what the companion says, not a local guess' {
+            $ready = { [pscustomobject]@{ approvals = [pscustomobject]@{ readiness = 'ready' } } }
+            Get-SideCrabApprovalReadiness -Probe $ready | Should -Be 'ready'
+            foreach ($r in 'off', 'no-token', 'unverified', 'ready') {
+                $p = { [pscustomobject]@{ approvals = [pscustomobject]@{ readiness = $r } } }.GetNewClosure()
+                Get-SideCrabApprovalReadiness -Probe $p | Should -Be $r
+            }
+        }
+
+        It 'CLEAN-07: an older companion that omits the block says so, and does not read ready' {
+            Get-SideCrabApprovalReadiness -Probe { [pscustomobject]@{ sessions = @() } } |
+                Should -Be 'not reported by this crabd'
+            Get-SideCrabApprovalReadiness -Probe { throw 'connection refused' } | Should -Match 'not read'
+        }
+
+        # ---- the smoke test's new rows ------------------------------------------------------
+
+        It 'CLEAN-09: the smoke test carries widget version and retired glow rows' {
+            ($script:TestTextI -match "Add-Result -Check 'widget version'") | Should -BeTrue
+            ($script:TestTextI -match "Add-Result -Check 'retired glow'")   | Should -BeTrue
+        }
+
+        It 'CLEAN-09: the rows that existed only for the retired component are gone' {
+            ($script:TestTextI -match "Add-Result -Check 'glow schema'") | Should -BeFalse
+            ($script:TestTextI -match 'ACCEPTED_SCHEMAS')                | Should -BeFalse
+            # The notifier's own schema pin is a different consumer and stays.
+            ($script:TestTextI -match 'SUPPORTED_SCHEMAS')               | Should -BeTrue
+        }
+
+        It 'CLEAN-09: the panel route and sensors rows survive the cleanup' {
+            foreach ($row in 'panel route', 'sensors', 'panel viewport') {
+                ($script:TestTextI -match "Add-Result -Check '$row'") | Should -BeTrue
+            }
+        }
+
+        It 'CLEAN-09: the retired-task row only fails for a task THIS checkout owns' {
+            ($script:TestTextI -match 'Test-SideCrabTaskIsOurs') | Should -BeTrue
+            ($script:TestTextI -match 'owned elsewhere - left alone') | Should -BeTrue
+        }
+
+        It 'the task-state probe carries the action, or ownership cannot be decided' {
+            $common = Get-Content -LiteralPath $script:Common -Raw -Encoding utf8
+            ($common -match 'Action         = \$action') | Should -BeTrue
+            # Present on the unregistered branch too: a caller under Set-StrictMode reading
+            # .Action on an absent task would otherwise throw instead of seeing ''.
+            ($common -match "Registered = \`$false; State = \`$null; Action = ''") | Should -BeTrue
+        }
+    }
+
 }

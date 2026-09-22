@@ -1,5 +1,11 @@
 # SideCrab state contract — `/v1/state` (schema 5-compat, feature-detected)
 
+> **The vendor widget host is retired (2026-09-21, crabd 0.34.0 / widget 0.32.0).** The panel's
+> only consumer is the standalone panel host showing the page crabd serves at `/panel/`. Every
+> version section below that describes the widget running inside the vendor's frame is the dated
+> record of that time and is not edited; the current transport, gates and host bridge are the
+> newest section. The retirement itself is in the maintainers' history.
+
 > **VERSIONING REWORK (v0.6.1/crabd 0.6.1, 2026-08-26).** The strict schema whitelist coupled
 > every crabd deploy to a console-bound widget import (schema N+1 bricked the on-glass widget
 > until someone stood at the desk). New policy:
@@ -13,6 +19,227 @@
 >   AND a coordinated deploy — which is exactly why they should be rare.
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
+
+## v0.34.0 (2026-09-21, ADDITIVE: source health, approval readiness, cancel, a wider config write; REMOVED: `fleet.glow`; schema stays 5)
+
+Two additive top-level members, two additive members inside `approvals`, one new action,
+one new route, and three new writable config keys. One thing is **removed** and one
+answer **changes shape**; both are called out below. `schema` stays **5**: an older panel
+ignores everything additive here, but see the two breaking notes before shipping it
+against an old consumer.
+
+### 1. `sources`: one freshness verdict per feed
+
+```jsonc
+"sources": {
+  "hooks":       { "ok": true,  "lastAt": "2026-09-22T04:39:57Z", "ageSec": 1.8, "note": null },
+  "transcripts": { "ok": true,  "lastAt": "2026-09-22T04:39:58Z", "ageSec": 0.0, "note": null },
+  "limitsToken": { "ok": true,  "lastAt": "2026-09-22T04:38:58Z", "ageSec": 60.0, "note": null },
+  "hwinfo":      { "ok": false, "lastAt": "2026-09-22T04:38:25Z", "ageSec": 94.7,
+                   "note": "HWiNFO stopped publishing (free build 12-hour limit): readings are old" },
+  "gpu":         { "ok": true,  "lastAt": "2026-09-22T04:39:57Z", "ageSec": 1.8, "note": null }
+}
+```
+
+**Present when crabd can judge at least one source, and absent otherwise.** Presence is
+the feature detection, as it is for `host`. The members are `hooks`, `transcripts`,
+`statusline`, `limitsToken`, `otlp`, `hwinfo` and `gpu`, each
+`{ "ok": bool, "lastAt": iso|null, "ageSec": number|null, "note": string|null }`.
+
+**A source crabd cannot judge is ABSENT from the object.** Never a false `ok`, never a
+false failure. The status line and the OTLP exporter are optional wiring an operator may
+simply not have done, and "never seen" does not tell that apart from "stopped", so
+neither key appears until that source has spoken once. `hwinfo` and `gpu` appear only
+when their readers are attached. A consumer must therefore iterate what is there, not
+look up a fixed list.
+
+**`ok` means the source produced inside its own window - and silence with nothing to
+report is `ok`.** Hooks, the status line and telemetry are event-driven: on a night with
+nobody working, silence is the correct reading, and a panel that goes amber every night
+is a panel nobody reads. crabd judges them only while a session is actually running,
+which it knows from the newest transcript mtime - evidence that does not come from the
+hooks, so it can be used to judge them. `hooks` additionally waits out a 15-minute
+uptime grace, because hook rows do not survive a crabd restart and a crabd restarted
+mid-turn holds none until that turn's Stop.
+
+**`note` is one short human reason, and only when `ok` is false.** It is null whenever
+`ok` is true, so a consumer can render it without checking. **`lastAt` and `ageSec` are
+null when the source has never produced.** Absent stays absent: there is no zero here.
+
+`hwinfo`'s entry is the same verdict `host.sensorsSource` already carries, plus one the
+reading alone cannot give: a sampler that has stopped POLLING while its last reading is
+still young reads `ok: false` with "the HWiNFO sampler has stopped polling".
+
+### 2. `approvals` gains `readiness` and `verifiedAt`
+
+```jsonc
+"approvals": { "enabled": true, "tokenRequired": true,
+               "readiness": "unverified", "verifiedAt": null }
+```
+
+`enabled` and `tokenRequired` are **unchanged**. The two new members answer a question
+the panel could previously only ask by sending a real `decide` and having it refused:
+
+| `readiness` | means |
+|---|---|
+| `off` | approvals are disabled; no tap can decide anything |
+| `no-token` | enabled, but crabd holds no pairing code at all - an unwritable `~/.sidecrab`, or a file it quarantined and could not replace |
+| `unverified` | a code exists and nothing has yet proved this panel has it |
+| `ready` | a code was verified in this crabd process |
+
+`verifiedAt` is the ISO time of that verification, or null. It is **not** cleared by
+`off`: it is a fact about what happened, not a second copy of the enable flag. It is held
+in memory, so a crabd restart reads `unverified` again - what was verified was a panel
+this process can no longer see.
+
+The host's `hasToken` is a different claim (a token file exists on the host side) and is
+untouched.
+
+### 3. `POST /v1/approvals/verify` - is this the right code
+
+```jsonc
+POST /v1/approvals/verify
+{ "code": "K7QXM-2PDAB" }
+```
+
+| answer | when |
+|---|---|
+| **204**, no body | the code matches; `approvals.readiness` becomes `ready` and `verifiedAt` is stamped |
+| **403** `{"error":"pairing code rejected"}` | it does not match |
+| **429** `{"error":"too many attempts - wait a minute"}` | five attempts have already been made inside a minute |
+| **400** `{"error":"code required"}` | no `code`, or not a non-empty string. The shape gate spends no attempt |
+| **400** `{"error":"malformed request"}` | the body is not a JSON object |
+| **503** `{"error":"panel pairing unavailable"}` | crabd holds no PanelToken at all |
+
+**It can never allow or deny anything.** There is no reference to the permission broker
+on this path: no body and no ordering of requests turns a pairing check into an approval,
+and a pending permission is still pending after a successful verify. **It never returns
+the code**, on any answer.
+
+The Host allowlist and the origin gate are **exactly** `/v1/action`'s. The attempt
+budget is its own and is deliberately separate from the `decide` lockout, so neither
+route can spend or clear the other's: a panel checking its pairing cannot lock the
+operator out of Approve and Deny. The budget counts **attempts**, not failures.
+
+`panelApprovals` being off does **not** gate this route. Pairing is checked before
+approvals are armed, which is exactly when the answer is worth having, and verifying
+arms nothing.
+
+### 4. `POST /v1/action cancel-continue` - withdraw a queued continuation
+
+```jsonc
+POST /v1/action
+{ "action": "cancel-continue", "sessionId": "…" }
+```
+
+| answer | when |
+|---|---|
+| **204**, no body | a queued item was removed. `sessions[].queuedContinue` clears on the next build, and the history line `continue cancelled: <prompt>` is written |
+| **409** `{"error":"already delivered","deliveredAt":"…"}` | a Stop hook already has it |
+| **404** `{"error":"nothing queued"}` | nothing queued, and nothing recently delivered |
+| **403** `{"error":"tap-to-continue is disabled"}` | `allowContinue` is false in the config file |
+| **501** `{"error":"continue not supported"}` | this crabd has no continue queue |
+
+Replacing a queued prompt with another one was the only way to change your mind before
+this, and replacing is not cancelling - the session still gets told to do something.
+
+**The race is part of the contract.** A Stop hook can fire between the tap and this
+handler, and the two answers are not interchangeable: 204 means the session will not act
+on it and 409 means it will. The queue settles the order under one lock, so exactly one
+of the two wins and the loser is told which it was, with the time the delivery was
+taken. An item the Stop hook has CLAIMED but not yet finished sending counts as
+delivered: the answer is being written and there is no instant at which crabd could take
+it back. A send that never reached the socket releases the claim, because the prompt is
+kept for the next Stop and is still the operator's to withdraw.
+
+**An expired item is `nothing queued`, not a cancellation.** The card stops showing a
+queued continue at the ten-minute TTL, so it is not what the operator is cancelling.
+
+There is deliberately **no session-existence gate**, unlike `queue-continue`: a prompt
+queued for a session that has since gone quiet is the one an operator most wants to
+withdraw, and "unknown session" would strand it until the TTL.
+
+### 5. `POST /v1/config` - three new keys, and the answer now has a body
+
+**BREAKING for any consumer that asserts 204.** The route answered `204 No Content`. It
+now answers **`200`** with:
+
+```jsonc
+{ "applied": { "quietHours": { "start": "07:05", "end": "23:09" } },
+  "warnings": [] }
+```
+
+`applied` is the **normalised** value now on disk, so a sheet renders what it actually
+got: `"7:5"` comes back as `"07:05"`. `warnings` is a list of short strings, empty in
+the ordinary case.
+
+`CONFIG_WRITABLE` gains `continuePrompts`, `continuePromptsByRepo` and
+`continuePromptsByPath`, validated exactly as the config FILE parser validates them.
+That parser **drops** bad entries rather than failing, and a drop the operator cannot
+see is a setting that silently did not take - so each drop is a warning:
+
+- an entry that is not text, is blank, is over 200 characters, or duplicates another;
+- a prompt that is already a builtin button (it would be drawn twice);
+- a repo key that differs from an earlier one only in case (the first still wins);
+- a path key that is not absolute (it could never match a session cwd);
+- anything past the 20-prompt or 50-project cap.
+
+The key's **own** shape being wrong - a list where an object belongs, or the reverse -
+is still a **400** that writes nothing. Only keys present in the body are written, a
+`null` value clears that key, and every other key in the file survives unchanged.
+
+**An empty list is written and returned as an empty list.** It is precedence-bearing
+configuration, not an absent key: an empty `continuePromptsByPath` entry is how an
+operator says "this subtree gets none of the parent's extras".
+
+`panelApprovals`, `allowReply`, `allowContinue` and `recapRepos` stay file-only, and a
+body naming any of them is still rejected whole.
+
+### 6. REMOVED: `fleet.glow`
+
+`fleet` is now `{"toast": "running"|"stopped"|"absent"|"unknown"}`. The glow component
+was retired with the Corsair RGB path (`docs/history/RGB-retired-2026-09-21.md`), and a
+key that could only ever report a task that is not there is a fault light nobody can
+clear. **A consumer reading `fleet.glow` must stop.** Everything else about `fleet` -
+the four outcomes, the ~60 s cache, `unknown` never being folded into `stopped` - is
+unchanged.
+
+### 7. The origin gate is narrower (transport, CLEAN-04)
+
+Exactly two kinds of request pass the origin gate now:
+
+- a request with **no `Origin` header**, which is every native client: the CLI's Stop and
+  PermissionRequest hooks, the status line command, the notifier, the setup scripts and
+  curl. Measured on the live companion - `GET /v1/health.originsSeen` holds only
+  `<absent>` pairs. This is not authentication and never was; the Host allowlist and the
+  pairing code are the gates that are;
+- **exactly one of this server's own origins**, `http://127.0.0.1:<bound port>` or
+  `http://localhost:<bound port>`, which is what the crabd-served panel page sends.
+
+`null` and the non-web schemes (`file:`, `qrc:`) are now **refused 403** on every route,
+reads included, and get no `Access-Control-Allow-Origin`. They were allowed for the
+the previous host's file/qrc page, which this wave retires; `null` is also the one origin a
+sandboxed allow-scripts iframe on a visited page can forge, so closing the allowance
+closes that vector rather than merely bounding it with the pairing code.
+
+The Host allowlist (421) and the pairing gate on `decide` are **unchanged**.
+
+### What did not move
+
+`schema` stays **5**. `sessions[]`, `burn`, `limits`, `quiet`, `recap`, `toast`,
+`continuePrompts`, `host` and `generatedAt` are untouched in shape and meaning. The
+per-session `queue-continue` allowlist from v0.33.0 is unchanged; a session whose cwd
+moved is now served under the project it is actually in, which is the same rule applied
+to better data rather than a new rule.
+
+### The two things to read before shipping this against an old consumer
+
+1. **`POST /v1/config` answers 200, not 204.** Anything asserting 204 fails.
+2. **`fleet.glow` is gone.** Anything reading it fails. The widget's `FLEET_PARTS` still
+   names it and `renderFleet` turns an absent key into `unknown`, so the panel draws a
+   permanently grey glow dot until that entry and its `fleetGlow` element are removed.
+
+Everything else is additive and presence-detected.
 
 ## v0.33.0 (2026-09-21 — ADDITIVE: a continue vocabulary per project, and a per-session `queue-continue` allowlist; schema stays 5)
 
@@ -350,7 +577,7 @@ the server shuts down.
 ### 6. The widget's transport, standalone only (widget)
 
 In the standalone host — and only there — the widget subscribes to `baseUrl() + '/v1/events'` when
-`EventSource` exists. Inside iCUE it polls exactly as before: the widget's origin there is `null`,
+`EventSource` exists. Inside the previous host it polls exactly as before: the widget's origin there is `null`,
 and an `EventSource` is one more thing to go wrong on a surface with no devtools for a saving of
 two and a half seconds.
 
@@ -369,7 +596,7 @@ two and a half seconds.
 
 ### 7. The panel host web-message bridge (panel host)
 
-The standalone host is the only surface that can SAVE a setting: iCUE owns its own property sheet
+The standalone host is the only surface that can SAVE a setting: the previous host owns its own property sheet
 and a widget cannot write it back, and a plain browser at `/panel/` has no file to write. So the
 host accepts exactly two messages from the page it loaded, and `IsWebMessageEnabled` is on while
 `AreHostObjectsAllowed` stays off — a JSON channel, never a live .NET surface.
@@ -414,10 +641,10 @@ no error anywhere.
 ## v0.31.0 (2026-09-21 — TRANSPORT: the panel route, the Host allowlist, the same-origin allowlist; schema stays 5)
 
 crabd `VERSION` → `0.31.0`, widget `0.29.0`, panel host `0.1.0`. No field is added to or removed
-from `/v1/state`. Three transport changes, all so the panel can run OUTSIDE iCUE: iCUE 5.51.40
+from `/v1/state`. Three transport changes, all so the panel can run OUTSIDE the previous host: the previous host
 added a widget URL-permission layer that refuses every widget request to `127.0.0.1` and saves
 its grant without the port a loopback grant needs, so the widget cannot reach crabd on that build
-(README, "iCUE 5.51.40 and newer").
+(README, "the previous host's later builds").
 
 ### 1. `GET /panel/` — crabd serves the widget tree
 
@@ -469,12 +696,12 @@ the page from `~/.sidecrab/panel-token` through the host's injected
 
 The widget detects the host from its own address: served over `http(s)` from a `/panel` path means
 crabd served it. In that mode `baseUrl()` is `window.location.origin` (same-origin fetches, no
-`crabdPort` guess); `getIcueProperty()` reads `window.__sidecrabHost.props`, one object the host
+`crabdPort` guess); `getvendorProperty()` reads `window.__sidecrabHost.props`, one object the host
 injects before any script runs (never bare globals, so a prop cannot collide with a function name
 the way 0.27.0's did), and otherwise returns each reader's default; `uniqueId` is the constant
 `standalone`; the Sensors bridge is simply absent, so the temperature row hides itself; and the
 property-to-config sync is OFF, so `~/.sidecrab/config.json` is the one master for quiet hours,
-toast, digest and budget. Inside iCUE nothing changes.
+toast, digest and budget. Inside the previous host nothing changes.
 
 `/v1/health.originsSeen` (diagnostic, not part of this contract) gains `source: "panel"` for a
 request that came from the served panel: an `Origin` equal to crabd's own, or a `Referer` under
@@ -541,7 +768,7 @@ stops SAFELY.
 
 **The pairing code.** `~/.sidecrab/panel-token`, 10 symbols of `0123456789ABCDEFGHJKMNPQRSTVWXYZ`
 (2^50), written atomically on first start, shown as `XXXXX-XXXXX`. Printed by
-`Install-SideCrab.ps1 -PairingCode`; held by the widget as the iCUE property `panelToken`
+`Install-SideCrab.ps1 -PairingCode`; held by the widget as the previous host's property `panelToken`
 ("Approval Pairing Code"). NEVER served: `/v1/health` gains
 `"panelToken": {"present": bool, "rejectedRecently": int, "lockedUntil": ISO | null}`.
 
@@ -653,9 +880,9 @@ saw, `GET /v1/panel-log` for a maintainer to read it back. crabd `VERSION` → `
 > It is a debugging aid the widget writes to and forgets; if the write fails, the panel
 > carries on as though it had never tried.
 
-**Why it exists.** The widget is rendered by iCUE on the Xeneon Edge, a surface no devtools
+**Why it exists.** The widget is rendered by the previous host on the Xeneon Edge, a surface no devtools
 can attach to — `console.log` has nowhere to go. The question this week: **which input
-events does iCUE actually deliver to the widget when the operator touches the glass?** A
+events does the previous host actually deliver to the widget when the operator touches the glass?** A
 **tap** is proven (panel approvals were verified live with the operator on 2026-08-27);
 **swipe, long-press and multi-touch are unknown**. The only way to find out is for the
 widget to describe what it received, over the same loopback port everything else rides, and
@@ -853,7 +1080,7 @@ override, and `override` is **absent**, not null, when there is no override.
 One new top-level key, `host`. Additive, so `schema` stays **5**, unknown keys are ignored by
 every existing reader, and no widget import is needed. crabd `VERSION` → `0.22.0`.
 
-### 1. `host` — this machine's CPU and memory, beside the iCUE temperature sensors
+### 1. `host` — this machine's CPU and memory, beside the previous host's temperature sensors
 
 ```jsonc
 "host": {                        // OPTIONAL top-level key — PRESENCE is the feature detection
@@ -1543,7 +1770,7 @@ so removal is deploy-order-free. Historical `estate` sections below are collapse
 Two rules the removal leaves behind, both still live:
 
 - Every shipped string and fixture is generic — SideCrab reads nothing but local Claude Code state.
-- **The widget must degrade to a useful standalone product without crabd** (clock + crab + iCUE
+- **The widget must degrade to a useful standalone product without crabd** (clock + crab + the previous host
   sensors), because a store user installs the widget first and may never install the companion.
 
 ## v0.8.0 additions (2026-08-26 — additive, schema stays 5)
@@ -1562,7 +1789,7 @@ day, quiet-hours-suppressed-and-skipped (not deferred), silent when crabd is unr
 
 **Widget-only in v0.8.0:** session PINNING — the detail sheet gains Pin/Unpin; pinned sessions
 sort first within their state band (needs_input still outranks everything), marked with a small
-pin glyph, persisted via the iCUE local-storage mechanism the vendor docs describe (falling back
+pin glyph, persisted via the previous host's local-storage mechanism the vendor docs describe (falling back
 to in-memory when unavailable — a lost pin is a nuisance, not an error); tapping a DAY in the
 timeline-footer week strip opens that day's history via GET /v1/history (absent endpoint on an
 older crabd → the day tap is inert, attempt-and-handle, no latch).
@@ -1691,7 +1918,7 @@ Widget-only in v0.4.0 (no contract impact): tapping the CRAB = ack-all (no-op wh
 waits); celebrating mood (both arms up ~10 s) when a session completes a turn that ran >30 min;
 rare idle blink (reduced-motion-safe); done-card Dismiss (local hide until state changes);
 tapping the LIMITS zone header → burn-by-session sheet from sessions[].todayOutputTokens;
-quiet-hours iCUE properties that POST /v1/config on change.
+quiet-hours the previous host's properties that POST /v1/config on change.
 
 
 
@@ -1716,8 +1943,8 @@ Per session:
 ```
 
 Widget-only in v0.3.0 (no contract impact): escalation tiers from unacked needs_input
-`stateSince` age; 24h↔7d sparkline toggle; hardware sensors row via iCUE's sensor
-data-provider plugin (hidden entirely when the iCUE API is absent, e.g. dev browser).
+`stateSince` age; 24h↔7d sparkline toggle; hardware sensors row via the previous host's sensor
+data-provider plugin (hidden entirely when the previous host's API is absent, e.g. dev browser).
 
 
 
@@ -1768,7 +1995,7 @@ Neither side may change it unilaterally — a change lands here first, bumps `sc
 
 ## Transport
 - crabd binds `127.0.0.1:2722` (2722 = C-R-A-B on a phone keypad), HTTP, no auth (localhost-only, read-only data).
-- `GET /v1/state` → the full document below, `Content-Type: application/json`. **CORS: see the v0.16.0 §1 table above — this line's original "permissive CORS (`Access-Control-Allow-Origin: *`)" is SUPERSEDED and no longer true.** The widget still renders from iCUE's QtWebEngine origin; that origin is `null`, which is allowed and reflected.
+- `GET /v1/state` → the full document below, `Content-Type: application/json`. **CORS: see the v0.16.0 §1 table above — this line's original "permissive CORS (`Access-Control-Allow-Origin: *`)" is SUPERSEDED and no longer true.** The widget still renders from the previous host QtWebEngine origin; that origin is `null`, which is allowed and reflected.
 - `GET /v1/health` → **this two-field shape is SUPERSEDED (CON-c, 2026-08-28).** The daemon serves the full 8-field diagnostic set documented under "v0.14.0 additions" above (`ok`, `version`, `uptimeSec`, `hooksSeen`, `statuslineSeen`, `lastStatuslineAgeSec`, `otlpSeen`, `originsSeen`). `ok`/`version` are unchanged, so any reader of the original two keys still works; the rest are additive and diagnostic. **Health is NOT part of the state contract** — the widget does not consume it, and nothing here bumps `schema`.
 - `POST /v1/hook` → body is the raw Claude Code hook JSON from stdin (fields include `session_id`, `hook_event_name`, `cwd`, ...). Responds 204. Fire-and-forget; hooks must never block Claude Code (client timeout ≤2 s).
 - The widget polls `/v1/state` every 3 s. It renders the **stale/dead-feed state** (worried crab, dimmed panel, "data as of HH:MM" banner) whenever a poll fails OR `generatedAt` is older than 30 s. Silence must never render as all-green.

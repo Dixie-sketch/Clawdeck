@@ -6,12 +6,12 @@
    feature level. Every additive field — contextTokens, fleet, recap, byModel,
    events, daily — is found by FIELD PRESENCE and renders as its absent-behaviour
    when missing, so crabd may ship new fields under the same number and this
-   widget simply lights them up when it is next imported. NOTHING in this file
-   may gate behaviour on a schema NUMBER comparison; a number above the ceiling
-   is a real break and stays a dead feed. The lesson that bought this: crabd
-   redeploys over RDP, the widget does NOT — an .icuewidget import is a
-   double-click at the iCUE console, so schema N+1 bricked the glass until
-   someone stood at the desk.
+   widget simply lights them up. NOTHING in this file may gate behaviour on a
+   schema NUMBER comparison; a number above the ceiling is a real break and stays a
+   dead feed. The lesson that bought this: the companion and the page are updated
+   separately, so a schema bump the page did not get bricked the glass until
+   somebody stood at the desk. The page is served by the companion now, which makes
+   that less likely and not impossible - the rule stays.
 
    Budget: two timers (3 s poll, 1 Hz clock) and no requestAnimationFrame. Every
    DOM write goes through setText/setVar, which no-op when the value is unchanged,
@@ -44,47 +44,10 @@ var SHEET_EVENTS_MAX_ACTION = 3;
 var SHEET_CLOSE_MS = 900;      /* let the confirmation be read before the sheet goes */
 var ESC_T1_MS = 300000;        /* 5 min unacked  -> deeper amber, stronger pulse */
 var ESC_T2_MS = 900000;        /* 15 min unacked -> red-amber, arm held a cell higher */
-var SENSOR_REFRESH_MS = 10000; /* signal-driven; this is only the reconcile */
-var SENSOR_BOOT_RETRY_MS = 120;
-var SENSOR_BOOT_RETRY_MAX = 15;/* ~1.8 s grace: the plugin flag is a race, not a fact */
+/* The temperature thresholds, in CELSIUS. A reading in any other unit is shown
+   plainly and left uncoloured rather than being called red at 80°F. */
 var SENSOR_AMBER_C = 80;
 var SENSOR_RED_C = 90;
-/* v0.18.0. How long every read of a sensor may FAIL before the number still on
-   the glass stops being allowed to look live. Keyed on read failures and never on
-   the value not changing: a temperature that sits at 47 for an hour is a normal
-   idle machine, and dimming that would be the panel crying wolf at the truth. */
-var SENSOR_STALE_MS = 60000;
-/* Units are re-requested on this cadence rather than on every value read. The
-   sensorUnitsChanged signal is the mechanism and this is the reconcile, the same
-   split SENSOR_REFRESH_MS is: pairing every value with a units request doubled
-   the traffic through the bridge. (It ALSO used to be what stopped a units failure
-   blanking a good value — by asking less often. That was never the fix, only a
-   smaller blast radius; the units leg is failure-isolated outright since v0.20.0,
-   CD-12, and this constant is back to being about traffic and nothing else.) */
-var SENSOR_UNITS_TTL_MS = 300000;
-/* How long a FAILED units lookup is left alone (v0.20.0, CD-12). The units leg no
-   longer takes the value down with it, so a bridge that cannot answer it must not
-   be re-asked beside every 10 s value read either — 30 s picks the row's units up
-   within a minute of the bridge recovering, and costs one extra call a minute
-   while it does not. */
-var SENSOR_UNITS_RETRY_MS = 30000;
-/* The sensor NAME is cached exactly the way the units are (v0.21.0) and for the
-   same two reasons: it changes about as often as a unit does — which is to say
-   only when the operator picks a different sensor, and a selection change already
-   resets the whole health record — and a name request beside every 10 s value read
-   is the doubled bridge traffic SENSOR_UNITS_TTL_MS exists to avoid.
-   There is no nameChanged signal in the plugin contract; sensorDataChanged is the
-   nearest thing it offers and is wired to invalidate this cache. */
-var SENSOR_NAME_TTL_MS = 300000;
-var SENSOR_NAME_RETRY_MS = 30000;
-/* Characters, and the figure is the CSS cap read back in glyphs rather than a
-   round number: .sensor-n is capped at 12 vmin (86.4 px at the Edge slot), which
-   is about 13 characters of --fs-meta. Clamping here first means the common long
-   name ends on a word rather than mid-glyph; the CSS ellipsis is the floor under
-   a name this does not catch, not a substitute for it. "CPU Package" (11) and
-   "GPU Hot Spot" (12) — the two that matter — survive whole. */
-var SENSOR_NAME_MAX = 13;
-var SENSOR_LOG_MAX = 80;       /* the read-outcome ring buffer, window.__sidecrabSensorLog */
 
 /* v0.4.0 */
 var BLINK_MS = 150;            /* one eye-frame; long enough to read, short enough not to be a nap */
@@ -175,19 +138,6 @@ var PIN_PROP = 'pinnedSessions';
    uniqueId, is the whole mechanism the vendor documents. */
 var FILTER_PROP = 'sessionFilter';
 var DENSITY_PROP = 'density';
-/* v0.16.0 — the approval-threshold TOUCH RECORD, in the same vendor object and
-   for a reason nothing else in there has: `toast.approvalThresholdSec` is
-   OPTIONAL on the wire and crabd PRESERVES the on-disk value when the key is
-   omitted, so the widget must be able to tell "the operator moved this control"
-   from "this control has never been moved and is showing its default".
-   Value shape: {seen: <int seconds>, touched: <bool>}. `seen` is the last value
-   this widget recorded; `touched` latches true the first time the property moves
-   off it. Persisted because the distinction has to survive a panel restart — an
-   in-memory-only flag would go back to silent on every reboot and the setting
-   would never reach crabd again. Storage is best-effort (no uniqueId, no store):
-   the degrade is back to silent, which PRESERVES whatever is on disk, so the
-   failure direction is the safe one. */
-var APPROVAL_PROP = 'approvalToast';
 /* A user-initiated GET, not the poller: it may take a little longer than a poll
    without anything piling up, because a second tap is refused while one is in
    flight. Still bounded — an unsettled fetch would leave the tap dead. */
@@ -288,8 +238,8 @@ var ACCESSORIES = ['party', 'nightcap', 'sunglasses'];
 var MOODS = ['content', 'waving', 'asleep', 'worried', 'celebrating', 'sweating'];
 
 /* v0.22.0 — the QUIET OVERRIDE.
-   Quiet hours is a SCHEDULE, written to /v1/config and owned by the iCUE property
-   sheet. This is the override on top of it — be quiet an hour early, or stay awake
+   Quiet hours is a SCHEDULE, written to /v1/config and edited in the settings
+   sheet's companion section (MF-001). This is the override on top of it — be quiet an hour early, or stay awake
    through tonight's window — and it is a different kind of statement, so it goes on
    a different wire: POST /v1/action, the endpoint for things the operator does to
    the panel now, beside ack, decide and queue-continue.
@@ -312,7 +262,17 @@ var QUIET_MAX_MINUTES = 480;
    reading, and a history of it is something a panel that has been watching can
    assemble and a panel that has just booted honestly cannot. */
 var HOST_WINDOW_MS = 600000;   /* the width of the plot: 10 minutes */
-var HOST_RING_MAX = 260;       /* 200 samples of 10 min at 3 s, plus slack for a fast poll */
+/* SCA-012 — A MEMORY BACKSTOP, NOT THE HORIZON, and that distinction IS the defect
+   this replaces. The cap used to be enforced by dropping the OLDEST sample, so at
+   the companion's 2 s publish cadence a ring capped at 260 held 518 s of a chart
+   labelled ten minutes: 82 s inside the advertised horizon were discarded and the
+   chart said nothing about it. Time is the horizon now (hostRingTrim), and past
+   this cap the ring is THINNED rather than truncated, so the span survives and only
+   the resolution inside it falls.
+   THE NUMBER: ten minutes at the 2 s cadence is 301 samples, so 400 is the cap with
+   a third of a window of slack. It cannot be reached at any documented cadence; it
+   is a bound on memory for one that is faster than documented. */
+var HOST_RING_MAX = 400;
 /* Below this the sheet says "collecting" instead of drawing. Ten samples is 30 s of
    feed — enough for a line to have a shape, few enough that the wait is not a
    feature. Under it a two-point "sparkline" is not a trend, it is a slope, and
@@ -345,7 +305,6 @@ var MODEL_CTX_RE = /\[(\d+(?:\.\d+)?)\s*([kKmM])\]/;
    tooltip and the screen reader. The g / t LETTERS are static markup in
    index.html, not here — nothing in this file writes them. */
 var FLEET_PARTS = [
-	{ key: 'glow', label: 'glow', el: 'fleetGlow' },
 	{ key: 'toast', label: 'toast', el: 'fleetToast' }
 ];
 var FLEET_STATES = { running: 1, stopped: 1, absent: 1, unknown: 1 };
@@ -372,21 +331,87 @@ var CONTINUE_DEFAULTS = [
 var DECIDE_ALLOW = 'allow';
 var DECIDE_DENY = 'deny';
 
-/* The approval pairing code (v0.27.0, closes SEC-a). Read LIVE off the iCUE
-   property on every decide, never cached: the operator types it into the widget
-   settings while a permission may already be waiting. Sent in the body, not a
-   header, so the request stays the same application/json preflight crabd already
-   answers. crabd normalises (case, hyphens) so this only trims. */
-/* NOT named panelToken: iCUE injects each property as a same-named GLOBAL, and a
-   function declaration colliding with it is a whole-script SyntaxError (0.27.0 shipped
-   blank for exactly this). The PROPERTY keeps the name; the reader does not. */
-function pairingCode() { return strProp('panelToken', '').trim(); }
+/* The approval pairing code (v0.27.0, closes SEC-a). Read LIVE off the host boot
+   object on every decide, never cached and never rendered: the host injects it, the
+   panel sends it, and nothing puts it on a display read from across a room. Sent in
+   the body rather than a header so the request stays the one application/json
+   preflight the companion already answers. The companion normalises case and
+   hyphens, so this only trims. */
+function pairingCode() { return hostPairingCode(); }
 
 /* crabd >= 0.29.0 says so in the document (`approvals.tokenRequired`); an older
    crabd has no `approvals` block and never asks for one. */
 function tokenRequired() {
 	var a = lastGoodDoc && lastGoodDoc.approvals;
 	return !!(a && typeof a === 'object' && a.tokenRequired === true);
+}
+
+/* MF-017 — APPROVAL READINESS, as the companion states it. Four values and each
+   sends the operator somewhere different, which is the whole reason it is not a
+   boolean: `off` is a feature nobody turned on, `no-token` is a companion with no
+   code to check against, `unverified` is a panel that has not proved it holds the
+   code, and `ready` is the one state in which a tap on Approve will be accepted.
+   PRESENCE-GATED: a companion that does not serve `readiness` gets null here, and
+   every reader below renders nothing rather than guessing at a state. */
+function approvalReadiness() {
+	var a = lastGoodDoc && lastGoodDoc.approvals;
+	if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+	var r = a.readiness;
+	return (r === 'off' || r === 'no-token' || r === 'unverified' || r === 'ready') ? r : null;
+}
+
+function approvalVerifiedAt() {
+	var a = lastGoodDoc && lastGoodDoc.approvals;
+	var t = a && typeof a === 'object' ? Date.parse(a.verifiedAt) : NaN;
+	return isFinite(t) ? t : null;
+}
+
+/* The repair text, one sentence per state, and every one of them names the thing
+   the operator would actually do. */
+function approvalReadyText(state) {
+	if (state === 'ready') {
+		var at = approvalVerifiedAt();
+		return 'approvals ready' + (at !== null ? ' ' + EMDASH + ' paired at ' +
+			fmtTimeOfDay(new Date(at), use24Clock()) : '');
+	}
+	if (state === 'off') return 'approvals are off in the companion configuration';
+	if (state === 'no-token') return 'the companion has no pairing code ' + EMDASH +
+		' run the SideCrab installer to mint one';
+	if (state === 'unverified') return panelBridge()
+		? 'this panel is not paired yet ' + EMDASH + ' restart the panel host to pair it'
+		: 'this panel is not paired ' + EMDASH + ' approvals need the SideCrab panel host';
+	return '';
+}
+
+/* Sent ONCE per page load, and only when the companion says it is waiting for it.
+   Once per boot rather than per document because the answer is a fact about this
+   page: a code that was wrong at boot is wrong for as long as the page is open, and
+   retrying it every three seconds is how a rate limiter gets tripped by its own
+   client. The code is never rendered, never logged and never put in a URL. */
+var approvalVerifySent = false;
+
+function maybeVerifyApproval() {
+	if (approvalVerifySent || mockName) return;
+	if (approvalReadiness() !== 'unverified') return;
+	var code = hostPairingCode();
+	if (!code) return;
+	approvalVerifySent = true;
+	postJson('/v1/approvals/verify', JSON.stringify({ code: code })).then(function (res) {
+		if (res.status === 204 || res.status === 200) { logLine('approvals: paired'); return; }
+		if (res.status === 403) { logLine('approvals: the panel host holds the wrong pairing code'); return; }
+		if (res.status === 429) {
+			/* Backing off is the whole response. The latch above already means this
+			   page will not ask again, which is what a lock-out asks for. */
+			logLine('approvals: pairing is rate limited, not retrying this session');
+			return;
+		}
+		logLine('approvals: verify failed (HTTP ' + res.status + ')');
+	}).catch(function () {
+		/* NOT latched open: a dead socket at boot is a fact about this moment, and
+		   the next document that still says unverified may find the companion up. */
+		approvalVerifySent = false;
+		logLine('approvals: verify failed, crabd not reachable');
+	});
 }
 
 /* v0.15.0 — the queued chip, the approval countdown, and the two header chips */
@@ -475,6 +500,13 @@ var lastGoodDoc = null;
 var lastGoodAtMs = 0;          /* Date.parse(generatedAt) of the newest good doc */
 var everHadData = false;
 var pollFailed = false;
+/* SCA-018. TRUE once the companion has ANSWERED with a document this panel cannot
+   read - a schema outside the ceiling, a body that is not JSON, a generatedAt that
+   does not parse. It is a different fact from "nothing has answered yet" and it
+   wants a different sentence on the glass: one of them is a companion that is not
+   running, the other is a companion that is. Sticky until a readable document
+   arrives, because a dead feed does not get fresher by being asked again. */
+var feedUnreadable = false;
 var prevAlert = false;
 var cardSig = '';
 var extraSig = '';
@@ -526,20 +558,15 @@ var densityIdx = 0;
    operator's latest word on it. */
 var filterStoredUnknown = null;
 var densityStoredUnknown = null;
-/* v0.16.0 — see APPROVAL_PROP. null seen = nothing recorded yet (the next sync
-   records the current value as the baseline WITHOUT calling it a change). */
-var approvalSeenSec = null;
-var approvalTouched = false;
-var approvalForcedSec = null;  /* dev-only &approvalsec=, mock mode only */
 /* v0.17.0 — the SEED, read off /v1/state's top-level `toast` block. crabd serves
    { thresholdSec, enabled } whenever it is serving config at all, and adds
    approvalThresholdSec ONLY when the operator has set it on disk. So:
      null  = older crabd, or a crabd with nothing set     -> no seed, behave as v0.16.0
      <int> = the operator's on-disk value                 -> the effective threshold
-   Presence-detected, never schema-gated. It seeds the DISPLAY only: iCUE
-   properties are read-only to a widget, so the host slider cannot be moved to
-   match and the panel must not pretend otherwise. It is also NOT a touch — see
-   effectiveApprovalSec(). */
+   Presence-detected, never schema-gated. It seeds the DISPLAY and the config
+   sheet's control, and seeding is NOT a touch: a value nobody moved is never sent
+   back, which is what stops a save materialising a key the operator hand-edited.
+   See configSeed(). */
 var approvalFeedSec = null;
 
 /* id -> { state, turn } from the PREVIOUS good document. The celebration needs
@@ -586,6 +613,14 @@ var trickLoop = null;          /* dev-only: re-fires a forced trick so it can be
 var forcedTrick = null;        /* dev-only &crab=juggle|bounce|snap */
 
 var crabdVersionSeen = null;
+/* SCA-020. The companion's own start instant, as it states it. A CHANGE of this
+   string is a restart, and a restart is the one event that may legitimately move
+   generatedAt backwards (a corrected system clock, a resumed VM). It is compared
+   and never ordered. */
+var crabdStartedSeen = null;
+/* The instant the first of a consecutive run of out-of-order drops happened, or 0.
+   The escape hatch under the ordering rule: see acceptDoc. */
+var orderingDroppedSince = 0;
 var resizeTimer = null;        /* the grid's capacity is a media query, so a slot change must re-render */
 
 /* ---- the quiet override (v0.22.0) ----
@@ -649,41 +684,6 @@ var holdOverrideSec = null;    /* dev-only &hold=, mock mode only */
 var holdAnchorAt = null;       /* the pinned instant, set on first use */
 var refreshFlashAuto = false;  /* dev-only &refreshflash=1 */
 
-/* The iCUE properties are the widget's only WRITE to configuration, and crabd
-   rewrites a file for each one — so every key is gated three ways: a value worth
-   sending, a debounce, and the unsupported latch. cfgSent[key] is the last
-   payload sent for that key, so a property event that changes nothing sends
-   nothing.
-
-   There is deliberately NO schema gate here. /v1/config is an ENDPOINT, and the
-   document cannot honestly describe it: the `quiet` KEY has been served
-   null-or-object since crabd 0.2.0, but the endpoint only landed in 0.4.0 — so
-   keying off `quiet` presence would POST at a 0.2.0/0.3.0 crabd and call the
-   404 a surprise. Measured against companion/crabd.py: no field in the document
-   is an airtight signal for this endpoint. So the widget ATTEMPTS the POST and
-   reads the reply — the only honest capability test there is.
-
-   v0.7.0 added `toast` and v0.10.0 `budget`, and all three are sent as SEPARATE
-   POSTs, never one body carrying several. That is the whole point of per-key
-   handling: an older crabd 400s the key it does not know, and a combined body
-   would take quiet hours down with it — one unsupported key silently disabling a
-   supported one. The 404 latch stays ENDPOINT-wide because a 404 is the
-   endpoint's answer, not a key's. */
-var cfgTimer = null;
-var cfgBooted = false;
-var cfgEndpointUnsupported = false;   /* set by a 404: this crabd has no /v1/config at all */
-var cfgSent = { quietHours: null, toast: null, budget: null };
-/* v0.16.0. `approvalThresholdSec` is an OPTIONAL member of an EXISTING key, and
-   that is a shape the per-key handling above cannot express: a crabd from 0.7.0
-   to 0.15.0 knows `toast` perfectly well and 400s the whole block for the one
-   member it has never heard of — taking thresholdSec and enabled down with it.
-   The widget updates by console import while crabd updates by redeploy, so this
-   pairing is the LIKELY one, not the exotic one.
-   So a 400 on a toast body that carried the optional member drops the member and
-   lets the next sync send the two-member block an older crabd accepts. Same
-   no-latch discipline as the key-level 400: it is cleared when crabd.version
-   changes, because a redeploy is what would add support. */
-var cfgApprovalUnsupported = false;
 
 var sheetSessionId = null;
 var sheetMode = null;          /* 'session' | 'burn' | 'timeline' | 'day' | 'forecast' | 'overflow' */
@@ -764,71 +764,20 @@ var ageOverrideAt = null;      /* the pinned instant, set on first use */
    photographed without a second fixture per step. */
 var budgetPctOverride = null;
 
-var sensorApi = null;
-var sensorTimer = null;
-var sensorBootAttempts = 0;
-var sensorShown = { cpu: false, gpu: false };
-/* Transition latch for the same-sensor console line. The state is re-derived on
-   every reconcile, and a line written every 10 s is a line nobody reads. */
-var sameWarned = false;
-/* v0.18.0 per-sensor read health, the state the staleness cue is derived from.
-   sensorId is carried so a SELECTION change from the settings panel resets the
-   lot — a units cache and a "last good at" that belong to the sensor the operator
-   just stopped watching would otherwise be applied to the one they started. */
-/* `value` (v0.22.0) is the last reading that actually arrived, held so the host
-   history sheet can state the temperatures in words without reading them back out
-   of the DOM — the row's spans are a rendering, and a second consumer that parsed
-   them would be depending on a string this file formats for the glass. */
-var sensorHealth = {
-	cpu: { sensorId: '', units: null, unitsAt: 0, unitsRetryAt: 0, name: null, nameAt: 0, nameRetryAt: 0, value: null, lastOkAt: 0, failsSinceOk: 0, stale: false },
-	gpu: { sensorId: '', units: null, unitsAt: 0, unitsRetryAt: 0, name: null, nameAt: 0, nameRetryAt: 0, value: null, lastOkAt: 0, failsSinceOk: 0, stale: false }
-};
-/* The host block from /v1/state (crabd 0.22.0, v0.21.0). Held as its own state
-   rather than read out of lastGoodDoc at paint time because the sensors row is
-   assembled from TWO sources on different clocks — iCUE's bridge on a 10 s
-   reconcile plus signals, and the feed on a 3 s poll — and one place has to own
-   what the row currently contains.
+/* The host block from /v1/state. Held as its own state rather than read out of
+   lastGoodDoc at paint time because several writers paint this row and one place
+   has to own what it currently contains.
    null means "no figure", and it is the only value that ever hides a segment: a
-   contract-legal null must never become 0%, which on this row would read as an
-   idle machine rather than as a companion that could not measure one. */
+   contract-legal null must never become 0%, which on this row would read as an idle
+   machine rather than as a companion that could not measure one. */
 var hostMetrics = { cpuPct: null, memPct: null, memUsedGB: null, memTotalGB: null };
-/* The ten-minute host ring (v0.22.0). One entry per POLL — not per render, which
-   runs on taps and on the 1 Hz tick too and would sample the same document many
-   times over. Entries carry a null cpu/mem when the poll landed and the figure did
-   not, because "crabd answered and could not measure" is a fact worth having a slot
-   for; polls that never landed leave a TIME gap instead, which hostRuns reads. */
+/* The ten-minute host ring (v0.22.0). One entry per DOCUMENT - not per render,
+   which runs on taps and on the 1 Hz tick too and would sample the same document
+   many times over. Entries carry a null cpu/mem when the document landed and the
+   figure did not, because "the companion answered and could not measure" is a fact
+   worth having a slot for; documents that never landed leave a TIME gap instead,
+   which hostRuns reads. */
 var hostRing = [];
-/* The read-outcome ring buffer. Every resolve, reject and timeout lands here with
-   a timestamp, and it is mirrored to window.__sidecrabSensorLog so a debugger
-   attached to the panel can read the last SENSOR_LOG_MAX outcomes without having
-   been attached when they happened. The console gets the failures and the health
-   transitions only; a healthy panel reads two sensors every 10 s, and logging
-   every one of those is ~17,000 lines a day of "still fine". */
-var sensorLog = [];
-var sensorLogVerbose = false;  /* dev-only &sensorlog=1 */
-var sensorForcedFail = false;  /* dev-only &sensorfail=1 */
-/* Dev-only, mock mode only: &sensors=<cpu>[,<gpu>][,C|F] stands in for the iCUE
-   Sensors BRIDGE (v0.17.0), the way &uid= stands in for uniqueId. window.plugins
-   does not exist in any browser, so before this the sensors row was the one part
-   of the Limits zone that could not be seen off-glass at all — and it is the part
-   that decides whether that zone fits. It replaces the PLUGIN and nothing else:
-   refreshSensors / readSensor / showSensor / markSensorZone below are the
-   shipping ones, so what a screenshot catches is the row iCUE paints.
-   v0.21.0 widens it to the two things the bridge now also has to answer for:
-   &sensors=none  the bridge is HERE and neither property holds a sensor id —
-                  the fresh-import case, and the only state the "pick sensors"
-                  hint renders in. Reachable no other way off-glass, because
-                  every other form of the flag manufactures ids.
-   &sensornames=<cpu>|<gpu>  the names iCUE answers getSensorName with. Empty
-                  segments mean a bridge that answers with nothing, which is the
-                  no-label path.
-   &sensorsame=1  BOTH properties resolve to one id — the operator's own defect,
-                  reproduced rather than simulated: sensorIdFor returns the same
-                  string for both keys, so every "are these the same sensor?"
-                  test downstream is answering about real state. */
-var sensorForced = null;
-var sensorForcedNames = null;
-var sensorForcedSame = false;
 /* Dev-only, mock mode only: &mood=<content|waving|asleep|worried|celebrating>
    holds one crab mood (v0.17.0). &celebrate=1 already did this for exactly one
    mood and for exactly this reason; the other four were reachable only by picking
@@ -837,90 +786,88 @@ var sensorForcedSame = false;
    is derived, so nothing about the derivation changes. */
 var moodForced = null;
 
-/* ------------------------------------------------------------------ iCUE glue */
+/* ------------------------------------------------------- the host adapter (v0.32.0)
 
-function onIcueDataUpdated() { applyProperties(); }
-function onIcueInitialized() { applyProperties(); }
+   CLEAN-01. ONE object, set by the panel host before any script runs, is
+   everything this page is told about the surface it is on:
 
-/* Bare assignment on purpose: a var/let/const here hides the handlers from the
-   iCUE bridge, and iCUE's import validator rejects a widget that never
-   references icueEvents at all. */
-icueEvents = { onDataUpdated: onIcueDataUpdated, onICUEInitialized: onIcueInitialized };
+       window.__sidecrabHost = { kind: 'standalone', props: { ... }, pairingCode: '...' }
 
-/* ---------------------------------------------------- two hosts, one codebase (v0.29.0)
+   The companion serves this page at /panel/ in both surfaces. What differs is
+   what sits behind it: the panel host (WebView2) answers `settings` and
+   `focus-session` over its message bridge, and a plain browser answers nothing.
+   So CAPABILITIES ARE NOT READ OFF THIS OBJECT AND NOT GUESSED FROM THE ADDRESS.
+   They come from the bridge's own host-info reply (hostCan), which means a page
+   that cannot save says so instead of offering a Save that goes nowhere.
 
-   The panel runs in TWO hosts from this one tree: inside iCUE as the .icuewidget
-   (file:// page, properties injected as `let` globals, the Sensors plugin on
-   window.plugins), and STANDALONE, served by crabd itself at /panel/ inside the
-   panel-host window (panel-host/, WebView2) or any local browser. iCUE 5.51.40
-   added a widget URL-permission layer that refuses every widget request to
-   127.0.0.1 and cannot be made to persist a loopback grant, which is why the
-   second host exists.
+   WHAT WAS RETIRED WITH THE VENDOR HOST, and why none of it comes back:
+   - the vendor event bus and the property-update callbacks. Settings now move on a save
+     result, which is a reply to a request this page made.
+   - The window-global probe and the Function('return NAME') probe. The vendor
+     injected each property as a lexical global, so a reader had to look for one;
+     here a page global that happens to share a setting's name is NOT a setting,
+     and the Function probe made every settings read a dynamic code evaluation.
+   - window.plugins and the sensor wrappers (CLEAN-03). The hardware row is fed by
+     the companion's `host` block alone.
+   Settings live on this one object and are read only through hostProp. */
 
-   Detection is the page's own address: served over http(s) from a /panel path
-   means crabd served it. The host window may also set window.__sidecrabHost
-   BEFORE any script runs ({ kind: 'standalone', props: {...} }); its `props` play
-   the part iCUE's property sheet plays, keyed by the same names, and are read
-   FIRST by getIcueProperty. Nothing else about the widget forks: absent props
-   read as their defaults, the Sensors bridge is simply absent (the row hides
-   itself, as it does in any browser), and every fetch is same-origin.
-
-   THE 0.27.1 TRAP DOES NOT APPLY HERE, and that is deliberate: props live on ONE
-   object, never as bare globals, so a prop named like a function cannot collide
-   with it at parse time. Do not "simplify" the host script to `let` globals. */
-function standaloneHost() {
+function hostBoot() {
 	if (typeof window === 'undefined') return null;
-	var h = window.__sidecrabHost;
-	if (h && typeof h === 'object' && h.kind === 'standalone') return h;
-	try {
-		var p = window.location.protocol, path = window.location.pathname || '';
-		if ((p === 'http:' || p === 'https:') && /^\/panel(\/|$)/.test(path)) return { kind: 'standalone', props: {} };
-	} catch (e) { /* no location (a test double) */ }
-	return null;
+	var h;
+	try { h = window.__sidecrabHost; } catch (e) { return null; }
+	if (!h || typeof h !== 'object' || Array.isArray(h)) return null;
+	if (h.kind !== 'standalone') return null;
+	return h;
 }
 
-function isStandalone() { return standaloneHost() !== null; }
+/* The injected settings, as an object this page owns rather than one it shares.
+   A missing or malformed `props` is an EMPTY settings set, never a reason to go
+   looking somewhere else for a value. */
+function hostProps() {
+	var h = hostBoot();
+	var p = h && h.props;
+	return p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+}
 
-function getIcueProperty(name) {
-	var host = standaloneHost();
-	if (host) {
-		var props = host.props && typeof host.props === 'object' ? host.props : {};
-		if (Object.prototype.hasOwnProperty.call(props, name)) {
-			var pv = props[name];
-			if (pv !== undefined && pv !== null && pv !== '') return pv;
-		}
-		/* The one prop with no sensible default: uniqueId keys the vendor-storage
-		   prefs (pins, filter, density). A fixed key means the standalone panel
-		   remembers them across restarts; a plain browser with no host object gets
-		   the same key, which is fine - it is one operator's panel either way. */
-		if (name === 'uniqueId') return 'standalone';
-		/* NEVER fall through to the global probe: there are no iCUE globals in this
-		   host, and a page global that happens to share a prop's name is not a
-		   setting. */
-		return undefined;
-	}
-	if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
-		var value = window[name];
-		if (value !== undefined && value !== null && value !== '') return value;
-	}
-	try {
-		var v = Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined')();
+function hostProp(name) {
+	var props = hostProps();
+	if (Object.prototype.hasOwnProperty.call(props, name)) {
+		var v = props[name];
 		if (v !== undefined && v !== null && v !== '') return v;
-	} catch (e) { /* not running inside iCUE */ }
+	}
+	/* The one setting with no sensible default: uniqueId keys the stored prefs
+	   (pins, filter, density, view). A fixed key means the panel remembers them
+	   across restarts, and a plain browser preview gets the same key, which is
+	   right - it is one operator's panel either way. */
+	if (name === 'uniqueId') return 'standalone';
 	return undefined;
 }
 
 function boolProp(name, dflt) {
-	var v = getIcueProperty(name);
+	var v = hostProp(name);
 	if (v === undefined || v === null || v === '') return dflt;
 	if (typeof v === 'string') return v !== 'false' && v !== '0';
 	return !!v;
 }
 
 function strProp(name, dflt) {
-	var v = getIcueProperty(name);
+	var v = hostProp(name);
 	if (v === undefined || v === null || v === '') return dflt;
 	return String(v);
+}
+
+function numProp(name, dflt) {
+	var n = Number(hostProp(name));
+	return isFinite(n) ? n : dflt;
+}
+
+/* The approval pairing code. Injected by the host beside the settings and never
+   put on the glass: MF-017 sends it once per boot to verify, and a code the panel
+   printed would be a secret on a display read from across a room. */
+function hostPairingCode() {
+	var h = hostBoot();
+	var c = h && h.pairingCode;
+	return typeof c === 'string' ? c.trim() : '';
 }
 
 function hexToRgbTriple(hex, dflt) {
@@ -930,28 +877,28 @@ function hexToRgbTriple(hex, dflt) {
 	return ((n >> 16) & 255) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255);
 }
 
+/* Called at boot and after every accepted save. NOT on a vendor data-updated
+   callback: there is no longer anything that can move a setting under this page
+   except a save this page asked for. */
 function applyProperties() {
 	var root = document.documentElement;
 	setVar(root, '--text-color', strProp('textColor', '#EDE7DF'));
-	/* Third statement of the accent default (the others: :root in sidecrab.css and
-	   the accentColor property meta in index.html). This one WINS at runtime, so it
-	   is the one that must not drift. AUD-F1 moved it #CC785C -> #BE7E6E; v0.30.1 moved it to #6F94CC. */
+	/* Second statement of the accent default (the other is :root in sidecrab.css).
+	   This one WINS at runtime, so it is the one that must not drift. AUD-F1 moved
+	   it #CC785C -> #BE7E6E; v0.30.1 moved it to #6F94CC. */
 	setVar(root, '--accent', strProp('accentColor', '#6F94CC'));
 	setVar(root, '--bg-rgb', hexToRgbTriple(strProp('backgroundColor', '#0F0E0D'), '15, 14, 13'));
 
-	var t = Number(getIcueProperty('transparency'));
-	if (!isFinite(t)) t = 0;
-	t = Math.max(0, Math.min(100, t));
+	var t = Math.max(0, Math.min(100, numProp('transparency', 0)));
 	setVar(root, '--bg-alpha', String(1 - t / 100));
 
-	/* iCUE fires onDataUpdated for ANY property, so this runs on colour changes
-	   too — it is a no-op unless a config-backed property actually moved. */
-	scheduleConfigSync();
-	/* v0.23.0. Same shape and the same reason: the touch-diagnostics switch can
-	   move under a running panel, this is the only place that hears about it, and
-	   syncDiag returns immediately unless the wanted state and the installed state
-	   actually disagree — so a colour change cannot tear down the capture layer. */
+	/* The touch-diagnostics switch can move under a running panel on a save, and
+	   this is the only place that hears about it. syncDiag returns immediately
+	   unless the wanted state and the installed state actually disagree, so a
+	   colour change cannot tear down the capture layer. */
 	syncDiag();
+	/* MF-001: nothing is pushed to /v1/config from here any more. The config sheet
+	   is the one writer, and it writes only what the operator moved. */
 	render();
 }
 
@@ -1020,12 +967,11 @@ function shortModel(m) {
 	return String(m).replace(/^claude-/, '').replace(/-\d{6,8}$/, '');
 }
 
-/* The 12/24-hour default lives in ONE place, and it is the MANIFEST's (v0.20.0,
-   CD-32). index.html declares `clock24` with data-default="false", so an iCUE
-   panel boots on the 12-hour clock — but the JS fallback said `true`, so the two
-   places with no property sheet to inject a value (a dev browser and the
-   standalone QA pass) booted on 24-hour and showed a different clock from every
-   shipped panel. Five call sites each carried their own copy of the default,
+/* The 12/24-hour default lives in ONE place (v0.20.0, CD-32), and since v0.32.0
+   that place is this file: the retired vendor metadata used to declare it too, and
+   the two statements disagreed, so a panel with a property sheet booted on the
+   12-hour clock and a browser preview booted on 24-hour. Five call sites each
+   carried their own copy of the default,
    which is five chances for the pair to drift apart again. */
 function use24Clock() { return boolProp('clock24', false); }
 
@@ -1065,28 +1011,32 @@ function logLine(msg) {
 
 /* ------------------------------------------------------------------- polling */
 
-function baseUrl() {
-	/* Standalone: crabd served this page, so crabd is this page's origin. Same-origin
-	   fetches carry no CORS round trip and no crabdPort guess; a panel opened under
-	   the localhost name talks to localhost, exactly as crabd's allowlist expects. */
-	if (isStandalone()) return window.location.origin;
-	var port = strProp('crabdPort', '2722').replace(/[^0-9]/g, '');
-	if (!port) port = '2722';
-	return 'http://127.0.0.1:' + port;
-}
+/* CLEAN-04. The companion SERVED this page, so the companion is this page's
+   origin - in the panel host and in a browser preview alike. The retired
+   `crabdPort` property fallback and the file/qrc branch beside it are gone: a
+   page that picked its own cross-origin port from a setting could be pointed at
+   a port nobody served it from, and the CORS round trip it needed existed only
+   for the vendor host's null origin. */
+function baseUrl() { return window.location.origin; }
 
 function endpointUrl() { return baseUrl() + '/v1/state'; }
 
-function poll() {
+/* `force` is a DELIBERATE refresh (the pull gesture), which bypasses the stream
+   gate and nothing else. SCA-019: the gate used to be unqualified, so the gesture
+   the panel advertises was a no-op whenever the stream was open - including when it
+   was open and silent, which is the one state the operator most needs a way out of.
+   THE SINGLE-FLIGHT GUARD IS NOT BYPASSABLE: a poll already on the wire is the
+   answer to "is this current", and a second one would only be a duplicate. */
+function poll(force) {
 	/* The diagnostics flush rides the poll CYCLE, not the poll itself — above the
 	   in-flight guard, because whether the state fetch is stuck says nothing about
 	   whether the operator's taps should reach the companion (v0.23.0). It is a
 	   no-op unless diagnostics are on and there is something to ship. */
 	diagFlush();
-	/* lane B: the poll is the FALLBACK while the /v1/events stream is open. Below
-	   diagFlush deliberately — whether state is arriving by push says nothing about
-	   whether the operator's captured taps should reach the companion. */
-	if (sseDelivering()) return;
+	/* The poll is the FALLBACK while the /v1/events stream is DELIVERING. A stream
+	   that is open but has said nothing past its liveness deadline is not
+	   delivering, so the poll resumes there without waiting for the reconnect. */
+	if (!force && sseDelivering()) return;
 	if (inFlight) return;
 	inFlight = true;
 	var url = mockName ? './mock/mock-state-' + mockName + '.json' : endpointUrl();
@@ -1122,13 +1072,49 @@ function acceptDoc(doc) {
 		   say something else. Additive fields never arrive this way: they arrive
 		   under the same number and are picked up by presence. */
 		pollFailed = true;
+		feedUnreadable = true;
 		render();
 		return;
 	}
 	var gen = Date.parse(doc.generatedAt);
-	if (!isFinite(gen)) { pollFailed = true; render(); return; }
+	if (!isFinite(gen)) { pollFailed = true; feedUnreadable = true; render(); return; }
+
+	/* SCA-020 — ORDERING. Two transports feed this one function and they overlap by
+	   construction: the startup and reconnect GET is issued before the stream is
+	   established, so a poll can resolve AFTER a pushed snapshot that is newer than
+	   it. Accepting the older one rolled the cards, the freshness line and the alert
+	   state backwards, and re-fired the chime for a question that had already been
+	   answered - measured with a 300 ms poll against a 2 s-newer stream frame.
+	   EQUAL generatedAt IS KEPT, deliberately, and this is the half that is easy to
+	   get wrong in the other direction: the companion's timestamps have one-second
+	   resolution and it publishes a changed document inside one second, so dropping
+	   equal-timestamp documents would drop supported updates. Only STRICTLY older
+	   is dropped.
+	   THE TWO ESCAPES, because an ordering rule with no way out freezes a panel on
+	   a healthy companion:
+	     - a changed crabd.startedAt is a RESTART, which may legitimately have moved
+	       the clock backwards. The baseline resets outright.
+	     - a clock that moved backwards WITHOUT a restart would otherwise make every
+	       document look older for ever. Past the staleness horizon the newest
+	       document wins whatever its timestamp says - a feed this old is not one
+	       this rule is protecting any more. */
+	var started = doc.crabd && typeof doc.crabd.startedAt === 'string' ? doc.crabd.startedAt : null;
+	if (started !== crabdStartedSeen) {
+		crabdStartedSeen = started;
+		orderingDroppedSince = 0;
+	} else if (everHadData && gen < lastGoodAtMs) {
+		if (!orderingDroppedSince) orderingDroppedSince = Date.now();
+		if (Date.now() - orderingDroppedSince <= STALE_MS) {
+			logLine('out of order: dropped a snapshot ' + (lastGoodAtMs - gen) +
+				'ms older than the one on the glass');
+			return;
+		}
+		logLine('out of order for ' + STALE_MS + 'ms with no restart: taking the newest document');
+	}
+	orderingDroppedSince = 0;
 
 	pollFailed = false;
+	feedUnreadable = false;
 	lastGoodDoc = doc;
 	lastGoodAtMs = gen;
 	/* A crabd restart under a live widget may have ADDED /v1/config, or added a
@@ -1138,20 +1124,20 @@ function acceptDoc(doc) {
 	var ver = doc.crabd && typeof doc.crabd.version === 'string' ? doc.crabd.version : null;
 	if (ver !== crabdVersionSeen) {
 		crabdVersionSeen = ver;
-		cfgEndpointUnsupported = false;
-		cfgApprovalUnsupported = false;
+
 		/* v0.22.0: the quiet-override latch clears with the rest. A redeploy is
-		   exactly what would add the action, and the alternative is a chip that
-		   stays hidden until somebody re-imports the widget at the iCUE console. */
+		   exactly what would add the action, and the alternative is a chip that stays
+		   hidden until somebody reloads the panel. */
 		quietOverrideUnsupported = false;
 		/* v0.23.0: and the panel-log latch. A redeploy to crabd 0.24.0 is exactly
 		   what ADDS the endpoint, and the alternative is a diagnostic session that
-		   captures perfectly and ships nothing until somebody re-imports the widget
-		   at the iCUE console. */
+		   captures perfectly and ships nothing until somebody reloads the panel. */
 		diagUnsupported = false;
-		cfgSent = { quietHours: null, toast: null, budget: null };
 	}
 	everHadData = true;
+	/* MF-017: the readiness that gates the pairing attempt is a field of THIS
+	   document, so the attempt is made once one has landed. */
+	maybeVerifyApproval();
 	/* ONE SAMPLE PER POLL (v0.22.0), taken here and not in render(): render runs on
 	   the 1 Hz tick and on every tap, and sampling there would record the same
 	   document a dozen times and call it a history. */
@@ -1169,10 +1155,6 @@ function acceptDoc(doc) {
 	   and not in render(), which runs on the 1 Hz tick and on every tap. */
 	detectChime(doc);
 	render();
-	/* The iCUE properties resolve long before the first poll, so the boot-time
-	   reconcile waits for a good document — not for a schema number. Whether the
-	   endpoint exists is settled by the POST itself. */
-	if (!cfgBooted) { cfgBooted = true; scheduleConfigSync(); }
 	maybeAutoGesture();
 	maybeAutoOpenSheet();
 }
@@ -1233,7 +1215,7 @@ function fireCelebrate() {
    proper enum control nothing in here changes. Anything unrecognised is auto:
    the default is the feature being on. */
 function crabPlain() {
-	var v = getIcueProperty('crabStyle');
+	var v = hostProp('crabStyle');
 	if (v === undefined || v === null || v === '') return false;
 	if (typeof v === 'string') {
 		var s = v.trim().toLowerCase();
@@ -1685,22 +1667,20 @@ function pruneDismissed(sessions) {
 
 /* ------------------- persisted display state: pins, filter, density (v0.8.0) */
 
-/* PERSISTENCE IS THE VENDOR'S, NOT AN INVENTION. Corsair's local-storage
-   reference (skills/icue-widget-builder/references/local-storage.md) documents
-   exactly one mechanism for an iCUE HTML widget: every widget has a QUuid
-   exposed as the global `uniqueId`, and ONE JSON object holding all of that
-   widget's persisted properties is stored in localStorage under that id. So the
-   pin map is a PROPERTY INSIDE that object (PIN_PROP), never a localStorage key
-   of its own — a widget that scatters bare keys across the origin is sharing a
-   namespace with every other widget iCUE serves from the same file:// origin.
-   The doc also says display state only: no credentials, no personal data. A map
-   of session ids the operator chose to keep at the front of their own panel is
-   display state and nothing more.
+/* ONE OBJECT UNDER ONE KEY, and the shape is kept although the host that required
+   it is retired: everything this panel persists - the pin map, the filter, the
+   density, the view - is a PROPERTY INSIDE one JSON object stored under the host's
+   `uniqueId`, never a localStorage key of its own. Scattering bare keys across an
+   origin is how a page collides with whatever else is served from it, and the
+   single object is also the thing that makes a round-trip of an unknown value
+   possible (see viewStoredUnknown).
+   DISPLAY STATE ONLY: no credentials, no personal data. A map of session ids the
+   operator chose to keep at the front of their own panel is display state and
+   nothing more.
 
    Feature-detected on both halves, because both can be absent:
-     - `uniqueId` does not exist in a dev browser at all (it is injected by the
-       iCUE host), and referencing an undeclared identifier is a ReferenceError,
-       not undefined — which is why this goes through getIcueProperty.
+     - `uniqueId` is injected by the panel host and is absent in a plain browser
+       preview, where hostProp answers with the fixed 'standalone' key.
      - localStorage itself THROWS on access in some locked-down profiles, so
        every call is wrapped rather than tested once for existence.
    Either one missing leaves prefsStoreKey null and the map in memory for the
@@ -1748,13 +1728,12 @@ function prefIndexOrNone(list, key) {
 }
 
 function loadPrefs() {
-	var key = getIcueProperty('uniqueId');
-	/* Dev-only, mock mode only: stand in for the host-injected uniqueId so the
-	   REAL storage path (same code, same JSON object shape) can be exercised and
-	   its reload behaviour photographed off-glass. Never consulted when the host
-	   supplies a genuine uniqueId, and unreachable from the iCUE origin, which
-	   has no query string to carry it. */
-	if ((key === undefined || key === null || key === '') && mockName && devUidOverride) key = devUidOverride;
+	/* Dev-only, mock mode only: &uid= stands in for the host-injected uniqueId so
+	   the REAL storage path (same code, same JSON object shape) can be exercised
+	   and its reload behaviour photographed off-glass. It is read FIRST because
+	   hostProp answers 'standalone' for this one key rather than undefined, so a
+	   fallback behind it could never be reached. */
+	var key = (mockName && devUidOverride) ? devUidOverride : hostProp('uniqueId');
 	if (key === undefined || key === null || key === '') { prefsStoreKey = null; return; }
 	prefsStoreKey = String(key);
 
@@ -1783,12 +1762,6 @@ function loadPrefs() {
 	/* The approval-threshold touch record (v0.16.0). Read as defensively as the pin
 	   map: a shape that has drifted degrades to "never touched", which is the
 	   silent-and-preserving side. */
-	var at = props[APPROVAL_PROP];
-	if (at && typeof at === 'object' && !Array.isArray(at)) {
-		var seen = Number(at.seen);
-		if (isFinite(seen)) approvalSeenSec = clampApprovalSec(seen);
-		if (at.touched === true) approvalTouched = true;
-	}
 
 	var map = props[PIN_PROP];
 	if (!map || typeof map !== 'object' || Array.isArray(map)) return;
@@ -1825,7 +1798,6 @@ function savePrefs() {
 	props[VIEW_PROP] = viewStoredUnknown !== null ? viewStoredUnknown : VIEWS[viewIdx].key;
 	/* Written only once there is something to record, so a panel whose operator
 	   never opens the property sheet does not accumulate a key either. */
-	if (approvalSeenSec !== null) props[APPROVAL_PROP] = { seen: approvalSeenSec, touched: approvalTouched };
 	try { store.setItem(prefsStoreKey, JSON.stringify(props)); }
 	catch (e) { logLine('display state save failed (storage refused the write)'); }
 }
@@ -2685,8 +2657,7 @@ function renderSessions(sessions, status, quiet, recap) {
 	   the store listing carries the link, and a hardcoded one goes stale on glass
 	   that nobody re-imports. */
 	setText(ui.gridEmpty, status === 'connecting'
-		? 'Claude Code stats need the SideCrab companion ' + EMDASH +
-		  " see the widget's description for setup."
+		? feedAbsentNote()
 		/* A filter that emptied the grid says SO, and names the mode it emptied it
 		   in. "No active Claude sessions" under a Waiting chip with four working
 		   sessions behind it would be the panel reporting the filter's answer as
@@ -3562,6 +3533,10 @@ function openForecastSheet(winKey) {
    session, so every session-scoped sync is skipped and syncSheet routes on
    sheetMode. */
 function openTimelineSheet() {
+	/* INERT WHILE NOTHING HAS ARRIVED (SCA-018): the connecting head is mostly empty
+	   and a stray tap on it would open a timeline of a day nobody has been told
+	   about. The rule openForecastSheet and openOverflowSheet already keep. */
+	if (!everHadData) return;
 	sheetSessionId = null;
 	sheetGen++;
 	sheetOpenState = null;
@@ -3705,15 +3680,45 @@ function clearSheetTimer() {
 	if (sheetCloseTimer) { clearTimeout(sheetCloseTimer); sheetCloseTimer = null; }
 }
 
-function scheduleClose() {
+/* SCA-006 — THE SURFACE A RECEIPT BELONGS TO, as one comparable token.
+
+   An action is started against a session on a surface, and its answer can arrive a
+   round trip later on a surface that is showing something else. Until v0.32.0 the
+   answer was written wherever the operator happened to be looking: acknowledging A
+   and switching to B put A's "acknowledged" on B's sheet and B's close timer with
+   it, so a delayed 204 for A shut B's sheet under the operator's hand. The POST
+   itself was always correct - only the receipt went to the wrong place.
+
+   THE SESSION ID ALONE IS NOT ENOUGH, which is why the two generations are in here:
+   the same session can be closed and reopened inside one round trip, and a receipt
+   from the first visit would then write itself into the second as though nothing
+   had happened. */
+function actionSurface(id) {
+	return String(id) + '#' + sheetGen + '#' + detailGen;
+}
+
+/* True while the receipt for `token` still belongs to what is on the glass. */
+function surfaceStillOurs(token) {
+	var id = laneCActionSessionId();
+	return id !== null && id !== undefined && actionSurface(id) === token;
+}
+
+/* Scoped to the surface that asked for it (SCA-006): a close scheduled for A must
+   not shut B. */
+function scheduleClose(token) {
 	clearSheetTimer();
-	sheetCloseTimer = setTimeout(function () { sheetCloseTimer = null; closeSheet(); }, SHEET_CLOSE_MS);
+	sheetCloseTimer = setTimeout(function () {
+		sheetCloseTimer = null;
+		if (token !== undefined && !surfaceStillOurs(token)) return;
+		closeSheet();
+	}, SHEET_CLOSE_MS);
 }
 
 /* Called from every render: the sheet is a view of live data, so it must follow
    the session out of needs_input and shut itself rather than sit there offering
    an ack for a question that has already been answered at the keyboard. */
 function syncSheet() {
+	if (sheetMode === 'settings') { syncSettingsSheet(); return; }
 	if (sheetMode === 'burn') { syncBurnSheet(); return; }
 	if (sheetMode === 'forecast') { syncForecastSheet(); return; }
 	if (sheetMode === 'timeline') { syncTimelineSheet(); return; }
@@ -3777,6 +3782,7 @@ function syncSheet() {
 function syncContinue(s) {
 	if (!ui.sheetContinueBtns) return;
 	if (continueStatusFor !== s.id) { continueStatusFor = s.id; setContinueStatus('', ''); }
+	syncQueuedRow(s);
 	/* lane D: the button set is built in one place for this sheet and the Detail
 	   view, and it is now per SESSION - the signature below therefore changes when
 	   the sheet moves to a session in another repo, which is what rebuilds the row. */
@@ -3796,12 +3802,49 @@ function syncContinue(s) {
 	}
 }
 
+/* MF-002. The sheet's queued line and its Cancel control, built lazily above the
+   continue buttons: the thing the operator is being offered a way out of belongs
+   beside the thing that created it. The row is REMOVED rather than emptied when
+   nothing is queued, so an empty line never sits in the layout claiming a queue. */
+function syncQueuedRow(s) {
+	if (!ui.sheetContinue) return;
+	var label = queuedLabel(s);
+	if (!label) {
+		if (ui.sheetQueued && ui.sheetQueued.parentNode) {
+			ui.sheetQueued.parentNode.removeChild(ui.sheetQueued);
+			ui.sheetQueued = null;
+		}
+		return;
+	}
+	if (!ui.sheetQueued) {
+		var row = document.createElement('div');
+		row.className = 'sheet-queued';
+		var text = document.createElement('span');
+		text.className = 'sheet-queued-text';
+		row.appendChild(text);
+		var btn = document.createElement('button');
+		btn.type = 'button';
+		/* Its own attribute and no data-sheet-action, the rule every borrowed-looks
+		   button in this sheet keeps: the generic branch in onSheetClick would POST
+		   an action of null. */
+		btn.className = 'sheet-btn sheet-btn-cancel';
+		btn.setAttribute('data-cancel-continue', '1');
+		btn.textContent = 'Cancel';
+		row.appendChild(btn);
+		ui.sheetQueued = row;
+		ui.sheetQueuedText = text;
+		ui.sheetContinue.insertBefore(row, ui.sheetContinueBtns);
+	}
+	setText(ui.sheetQueuedText, 'queued: ' + label);
+}
+
 /* The sheet's copy of the approval countdown (v0.15.0). Driven by tick(), not by
    syncSheet, for the reason in syncSheet: the poll is 3 s and this number is the
    answer to "does the button under my thumb still do anything". Zero means there
    is nothing to count — no approval sheet open, or a requestedAt that did not
    parse — and the line is then empty rather than expired. */
 function tickSheetApproval(nowMs) {
+	renderApprovalReadiness();   /* MF-017 */
 	if (!ui.sheetApprovalLeft) return;
 	if (!sheetApprovalAt || ui.sheet.getAttribute('data-approval') !== '1') {
 		setText(ui.sheetApprovalLeft, '');
@@ -4414,9 +4457,9 @@ function appendWeekRow(grid, label, week, pick, cls) {
    An older crabd 404s this and the tap is inert — but the very next tap tries
    again, because crabd redeploys under a live widget and the endpoint may exist
    by then. There is deliberately no "history unsupported" flag anywhere in this
-   file: adding one would strand the whole feature until someone re-imported the
-   widget at the iCUE console, which is exactly the failure the v0.6.1 schema
-   rework was written to stop repeating. */
+   file: adding one would strand the whole feature until someone reloaded the panel,
+   which is exactly the failure the v0.6.1 schema rework was written to stop
+   repeating. */
 function fetchHistory(day) {
 	var url = mockName
 		/* Mock mode has no crabd to answer, so each day is a canned document on
@@ -4863,6 +4906,9 @@ function onSheetAction(action, text) {
 	if (!sheetSessionId || sheetBusy) return;
 	var id = sheetSessionId;
 	var s = findSession(id);
+	/* SCA-006: the surface this receipt may be written to, captured BEFORE the
+	   request leaves. */
+	var token = actionSurface(id);
 
 	sheetBusy = true;
 	ui.sheet.classList.add('busy');
@@ -4880,28 +4926,35 @@ function onSheetAction(action, text) {
 	}
 
 	postAction(id, action, text).then(function (res) {
-		sheetBusy = false;
-		ui.sheet.classList.remove('busy');
+		var ours = surfaceStillOurs(token);
+		/* The BUSY latch belongs to the surface too. Clearing it from a stale receipt
+		   would unlock a sheet that has its own action in flight. */
+		if (ours) { sheetBusy = false; ui.sheet.classList.remove('busy'); }
 		if (action === 'ack') {
-			if (res.status === 204 || res.status === 200) { setSheetStatus('acknowledged', 'ok'); scheduleClose(); }
-			else {
-				delete ackOptimistic[id];
-				setSheetStatus('could not acknowledge (HTTP ' + res.status + ')', 'err');
-				render();
+			if (res.status === 204 || res.status === 200) {
+				if (ours) { setSheetStatus('acknowledged', 'ok'); scheduleClose(token); }
+				return;
 			}
+			/* The optimistic ack is SESSION state, not surface state: it is rolled
+			   back and re-rendered whatever is on the glass, because the alternative
+			   is a card left silenced by a write that never landed. */
+			delete ackOptimistic[id];
+			render();
+			if (ours) setSheetStatus('could not acknowledge (HTTP ' + res.status + ')', 'err');
 			return;
 		}
+		if (!ours) return;
 		/* 501 is the contract's "reply-injection is not proven yet" answer. It is
 		   the expected state today, not a fault: muted text, sheet stays usable. */
 		if (res.status === 501) { setSheetStatus('replies not available yet', 'note'); return; }
-		if (res.status === 204 || res.status === 200) { setSheetStatus('sent: ' + text, 'ok'); scheduleClose(); return; }
+		if (res.status === 204 || res.status === 200) { setSheetStatus('sent: ' + text, 'ok'); scheduleClose(token); return; }
 		if (res.status === 404) { setSheetStatus('crabd no longer knows this session', 'err'); return; }
 		setSheetStatus('reply failed (HTTP ' + res.status + ')', 'err');
 	}).catch(function () {
-		sheetBusy = false;
-		ui.sheet.classList.remove('busy');
+		var ours = surfaceStillOurs(token);
+		if (ours) { sheetBusy = false; ui.sheet.classList.remove('busy'); }
 		if (action === 'ack') { delete ackOptimistic[id]; render(); }
-		setSheetStatus('crabd not reachable', 'err');
+		if (ours) setSheetStatus('crabd not reachable', 'err');
 	});
 }
 
@@ -4915,13 +4968,50 @@ function onSheetContinue(prompt, label) {
 	   one implementation; when no sheet is open the target is the page's session. */
 	var id = laneCActionSessionId();
 	if (!id || !prompt) return;
+	/* SCA-006: this line is mirrored onto the Detail page as well as the sheet, so
+	   both surfaces are in the token. */
+	var token = actionSurface(id);
 	setContinueStatus('queued: ' + label, 'ok');
 	postAction(id, 'queue-continue', prompt).then(function (res) {
+		if (!surfaceStillOurs(token)) return;
 		if (res.status === 204 || res.status === 200) { setContinueStatus('queued: ' + label, 'ok'); return; }
 		/* 404 (no endpoint), 400 (older crabd does not know this action), or any
 		   other non-2xx: not available on this crabd. No latch. */
 		setContinueStatus('not available', 'note');
 	}).catch(function () {
+		if (!surfaceStillOurs(token)) return;
+		setContinueStatus('crabd not reachable', 'err');
+	});
+}
+
+/* MF-002 — CANCEL A QUEUED CONTINUE. The queue is a promise about what happens
+   when the session next stops, and until now the only way out of one was to let it
+   fire. Three answers, and each is a different fact rather than three flavours of
+   failure: 204 removed it, 409 says it had already been delivered and when, 404
+   says there was nothing queued - which is what an operator sees when the session
+   picked it up between the paint and the fingertip.
+   It is NOT optimistic. A queued prompt that disappeared from the line and then
+   turned out to have been delivered would be the panel telling the operator the
+   session is idle when it is about to run. The line clears when the feed says so. */
+function onCancelContinue() {
+	var id = laneCActionSessionId();
+	if (!id) return;
+	var token = actionSurface(id);
+	setContinueStatus('cancelling', 'pending');
+	postAction(id, 'cancel-continue').then(function (res) {
+		if (!surfaceStillOurs(token)) return;
+		if (res.status === 204 || res.status === 200) { setContinueStatus('cancelled', 'ok'); return; }
+		if (res.status === 409) {
+			var at = res.body && typeof res.body.deliveredAt === 'string' ? Date.parse(res.body.deliveredAt) : NaN;
+			setContinueStatus(isFinite(at)
+				? 'already sent at ' + fmtTimeOfDay(new Date(at), use24Clock())
+				: 'already sent', 'note');
+			return;
+		}
+		if (res.status === 404) { setContinueStatus('nothing queued', 'note'); return; }
+		setContinueStatus('not available', 'note');
+	}).catch(function () {
+		if (!surfaceStillOurs(token)) return;
 		setContinueStatus('crabd not reachable', 'err');
 	});
 }
@@ -4950,8 +5040,17 @@ function onSheetDecide(decision) {
 	if (decision !== DECIDE_ALLOW && decision !== DECIDE_DENY) return;
 	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
 	   operator reads why instead of finding the card still armed after a close. */
-	if (tokenRequired() && !pairingCode()) {
-		showNotice('not paired ' + EMDASH + ' set Approval Pairing Code in widget settings', 'err');
+	/* MF-017: the companion's own verdict outranks the local guess. `unverified`,
+	   `no-token` and `off` each get their own repair sentence; a companion that does
+	   not serve readiness falls back to the local test, which is what shipped. */
+	var ready = approvalReadiness();
+	if (ready !== null && ready !== 'ready') {
+		showNotice(approvalReadyText(ready), 'err');
+		logLine('decide refused locally: readiness is ' + ready);
+		return;
+	}
+	if (ready === null && tokenRequired() && !pairingCode()) {
+		showNotice('not paired ' + EMDASH + ' the panel host holds no pairing code', 'err');
 		logLine('decide refused locally: no pairing code');
 		return;
 	}
@@ -5021,7 +5120,7 @@ function postAction(sessionId, action, text, decision, quiet, requestId) {
 				   the very next poll and the tap cycle could not be photographed
 				   past its first frame. */
 				if (action === 'quiet' && (status === 204 || status === 200)) applyMockQuietWrite(quiet);
-				resolve({ status: status });
+				resolve({ status: status, body: null });
 			}, 140);
 		});
 	}
@@ -5037,7 +5136,11 @@ function mockActionStatus(action) {
 	/* v0.22.0: `quiet` joins the two actions whose older-crabd 400 is demoable,
 	   because that 400 is the one that LATCHES the chip away and a capability latch
 	   nobody can reach off-glass is a latch nobody has watched fire. */
-	if (action === 'queue-continue' || action === 'decide' || action === 'quiet') {
+	/* MF-002: cancel-continue is 204 in the harness. Its 409 and 404 are demoed
+	   through the same &action400 route the other write actions use, because the
+	   two answers that matter are the ones a fixture cannot reach by accident. */
+	if (action === 'queue-continue' || action === 'decide' || action === 'quiet' ||
+		action === 'cancel-continue') {
 		if (actionForce400) return 400;
 		var stub = lastGoodDoc && lastGoodDoc._mock ? lastGoodDoc._mock.action400 : null;
 		if (Array.isArray(stub) && stub.indexOf(action) !== -1) return 400;
@@ -5079,7 +5182,16 @@ function postJson(path, payload) {
 		}
 		return fetch(url, opts).then(function (r) {
 			if (timer) clearTimeout(timer);
-			return { status: r.status };
+			/* THE BODY MATTERS NOW, and it did not before: /v1/config answers
+			   {applied, warnings}, a 409 on cancel-continue carries the instant the
+			   prompt was delivered, and /v1/approvals/verify explains a 403. Read
+			   defensively - an absent body, or one that is not JSON, is null, and
+			   every caller treats null as "no detail" rather than as a failure. */
+			return r.text().then(function (t) {
+				var body = null;
+				if (t) { try { body = JSON.parse(t); } catch (e) { body = null; } }
+				return { status: r.status, body: body };
+			}, function () { return { status: r.status, body: null }; });
 		}, function (e) {
 			if (timer) clearTimeout(timer);
 			throw e;
@@ -5483,17 +5595,27 @@ function endPull(release) {
 	forceRefresh();
 }
 
+/* SCA-019. The gesture ALWAYS does something now. It used to call an unforced
+   poll, which returned immediately whenever the stream was open - so on the one
+   panel where this gesture matters, a pull did nothing at all and still said
+   "refreshing".
+   Spinner-free on purpose. A spinner would have to keep animating until something
+   answered, which on a panel whose companion may simply be gone means an animation
+   that never stops, and the stale banner is already the widget's honest account of
+   that. This is a flash saying the refresh was asked for; what came back is the
+   panel's own job to show. */
 function forceRefresh() {
-	/* Spinner-free on purpose. A spinner would have to keep animating until
-	   something answered, which on a panel whose companion may simply be gone means
-	   an animation that never stops — and the stale banner is already the widget's
-	   honest account of that. This is a flash saying the poll was asked for; what
-	   came back is the panel's own job to show.
-	   poll() is a no-op while one is already in flight, and that is the right
-	   answer rather than a missed refresh: the question a pull asks is "is this
-	   current", and a poll already on the wire is the answer to it. */
-	poll();
 	showNotice('refreshing', 'pull');
+	/* A stream that is OPEN but not delivering is restarted rather than polled
+	   around: the transport is the thing that is wrong, and sseFellBack closes it,
+	   polls once immediately and reconnects on the paced ladder. A HEALTHY stream is
+	   left alone - tearing one down on every pull would cost a reconnect for
+	   nothing - and gets a single forced GET instead. */
+	if (sseSource && sseSource.readyState === 1 && sseSilent()) {
+		sseFellBack('refresh restarted a silent stream');
+		return;
+	}
+	poll(true);
 }
 
 /* ------------------------------------------------------- the notice line */
@@ -5626,7 +5748,34 @@ function safeFocus(el) {
    that are both known to exist here. */
 var sheetReturnFocus = null;
 
+/* SCA-008 — THE DIALOG IS NAMED FOR THE MODE IT IS IN. One panel serves eight
+   modes and the markup can carry only one name, so the fixed "Session actions" in
+   index.html announced the settings sheet, the week drill and the hardware history
+   under a name none of them has. */
+var SHEET_LABELS = {
+	session: 'Session actions',
+	burn: "Today's burn",
+	forecast: 'Usage window forecast',
+	timeline: "Today's timeline",
+	day: 'One day in full',
+	overflow: 'The sessions the grid could not fit',
+	host: "This PC's hardware history",
+	settings: 'Panel settings'
+};
+
+function setSheetLabel() {
+	var panel = ui.sheet.querySelector('.sheet-panel');
+	if (!panel) return;
+	var name = SHEET_LABELS[sheetMode] || 'SideCrab';
+	if (panel.getAttribute('aria-label') !== name) panel.setAttribute('aria-label', name);
+}
+
 function enterSheetFocus() {
+	/* Named BEFORE focus moves into it: a dialog focused and then renamed is one an
+	   assistive technology has already announced under the old name. enterSheetFocus
+	   is the one path every opener goes through, and the mode is fixed by the time
+	   it runs. */
+	setSheetLabel();
 	var active = document.activeElement;
 	if (active && active !== document.body && !ui.sheet.contains(active)) sheetReturnFocus = active;
 	setBackgroundHidden(true);
@@ -5702,6 +5851,9 @@ function onSheetClick(ev) {
 	if (decideBtn) { onSheetDecide(decideBtn.getAttribute('data-decide')); return; }
 	/* Tap-to-continue (v0.12.0). Same rule: a continue button carries the full
 	   prompt on data-continue-prompt and no data-sheet-action. */
+	/* MF-002, above the generic branch for the reason every branch here is: it
+	   wears .sheet-btn and carries no data-sheet-action. */
+	if (t.closest && t.closest('[data-cancel-continue]')) { onCancelContinue(); return; }
 	var contBtn = t.closest ? t.closest('[data-continue-prompt]') : null;
 	if (contBtn) { onSheetContinue(contBtn.getAttribute('data-continue-prompt'), contBtn.getAttribute('data-continue-label') || 'Continue'); return; }
 	/* lane C: Full view. Routed above the generic branch, the rule Dismiss and Pin
@@ -5964,15 +6116,36 @@ function quietOverrideFromFeed() {
    arithmetic on the feed's own value; painting one nobody served would be inventing
    a state. crabd will drop it from the next document anyway — this only stops the
    chip counting "0m" for up to a poll after it ended. */
+/* SCA-027 — A REQUESTED OVERRIDE IS PENDING, NOT ON. The tap used to paint the
+   requested mode as though the companion had already applied it: the chip read
+   "quiet", carried data-quiet="on" and announced "Quiet override on" while the feed
+   still said quiet.active was false - so an alert could sound with the control
+   under the operator's thumb saying the panel was silent. What is returned here is
+   still the requested mode, because that is what the next tap cycles from; what is
+   added is `pending`, which is the difference between a request and a fact, and
+   everything that paints or gates reads it. */
 function quietState() {
 	if (quietOptimistic) {
+		/* The first document generated AFTER the tap is the answer, whatever it says:
+		   the companion applies the action on the POST, so a newer document that does
+		   not carry the override is the companion declining it, not latency. */
 		if (lastGoodAtMs > quietOptimistic.at) quietOptimistic = null;
-		else return quietOptimistic;
+		else return { mode: quietOptimistic.mode, until: quietOptimistic.until, pending: true };
 	}
 	var fed = quietOverrideFromFeed();
-	if (!fed) return { mode: 'auto', until: null };
-	if (fed.until !== null && fed.until <= Date.now()) return { mode: 'auto', until: null };
-	return fed;
+	if (!fed) return { mode: 'auto', until: null, pending: false };
+	if (fed.until !== null && fed.until <= Date.now()) return { mode: 'auto', until: null, pending: false };
+	return { mode: fed.mode, until: fed.until, pending: false };
+}
+
+/* THE CONSERVATIVE HALF, and it is deliberately one-sided. While a request for
+   QUIET is unconfirmed the chime is held locally: the operator has just asked for
+   silence, and the honest failure there is a missed chime rather than a noise in a
+   room somebody has just silenced. A request for AWAKE gets no such treatment -
+   there is no optimistic unmute against a quiet period the companion has confirmed,
+   because that would make the panel louder on a promise it has not been given. */
+function quietPendingMute() {
+	return !!(quietOptimistic && quietOptimistic.mode === 'on');
 }
 
 /* The fixed vocabulary, as a function so the tap and the aria-label cannot disagree
@@ -6063,21 +6236,27 @@ function renderMoonChip(status) {
 		return;
 	}
 	var st = quietState();
-	if (ui.moonChip.getAttribute('data-quiet') !== st.mode) ui.moonChip.setAttribute('data-quiet', st.mode);
-	setText(ui.moonMode, quietModeWord(st.mode));
+	/* SCA-027: the chip says what is TRUE, and while a request is unconfirmed the
+	   true thing is that it was asked for. */
+	var word = st.pending ? 'pending' : quietModeWord(st.mode);
+	var attr = st.pending ? 'pending' : st.mode;
+	if (ui.moonChip.getAttribute('data-quiet') !== attr) ui.moonChip.setAttribute('data-quiet', attr);
+	setText(ui.moonMode, word);
 	/* The instant is parked on the element and relabelled by the 1 Hz tick, the
 	   idiom the gauge countdowns and the card ages already use: the poll is 3 s and
 	   a remaining time that only moved on a poll would cross its minute boundary up
 	   to three seconds late. REMOVED whenever there is nothing to count, so the tick
 	   cannot write a figure computed from a stale number. */
-	if (st.mode !== 'auto' && st.until !== null) {
+	if (!st.pending && st.mode !== 'auto' && st.until !== null) {
 		var key = String(st.until);
 		if (ui.moonChip.getAttribute('data-until') !== key) ui.moonChip.setAttribute('data-until', key);
 	} else if (ui.moonChip.hasAttribute('data-until')) {
 		ui.moonChip.removeAttribute('data-until');
 	}
 	paintMoonLeft(Date.now());
-	var label = st.mode === 'auto'
+	var label = st.pending
+		? quietModeWord(st.mode) + ' requested ' + EMDASH + ' waiting for the companion to confirm'
+		: st.mode === 'auto'
 		? 'Quiet hours follow the schedule. Tap for quiet for an hour.'
 		: (st.mode === 'on' ? 'Quiet override on' : 'Staying awake through quiet hours') +
 		  '. Tap for ' + quietModeWord(nextQuietMode(st.mode)) + ', press and hold for the schedule.';
@@ -6122,115 +6301,76 @@ function normHm(v) {
 	return pad2(h) + ':' + pad2(mi);
 }
 
-/* null means "the properties are not in a state worth sending" — an invalid or
-   half-typed time. That is deliberately NOT the same as {quietHours: null},
-   which means "the switch is off, clear quiet hours". */
-function desiredQuietConfig() {
-	if (!boolProp('quietEnabled', false)) return { quietHours: null };
-	var start = normHm(strProp('quietStart', '22:00'));
-	var end = normHm(strProp('quietEnd', '07:00'));
-	if (!start || !end) return null;
-	return { quietHours: { start: start, end: end } };
-}
+/* ================================================================ MF-001
+   COMPANION CONFIGURATION, EDITED ON THE GLASS.
 
-/* Both toast members are required by the contract, so both are always sent. The
-   threshold is clamped to the slider's own range rather than passed through: a
-   property that somehow arrives outside it is a value to correct, not a body to
-   have crabd reject — and a 400 there would be indistinguishable from the
-   "older crabd, no toast key" 400 this version has to read. */
-function desiredToastConfig() {
-	var n = Number(getIcueProperty('toastThreshold'));
-	if (!isFinite(n)) n = TOAST_SEC_DEFAULT;
-	n = Math.round(Math.max(TOAST_SEC_MIN, Math.min(TOAST_SEC_MAX, n)));
-	var block = { thresholdSec: n, enabled: boolProp('toastEnabled', true) };
-	/* The THIRD member is optional and is sent only once the operator has actually
-	   moved its control (v0.16.0). Recorded first, so this call is also what
-	   establishes the baseline on a panel that has never seen the property. */
-	var approval = approvalPropertySec();
-	noteApprovalThreshold(approval);
-	if (approvalTouched && !cfgApprovalUnsupported) block.approvalThresholdSec = approval;
-	return { toast: block };
+   WHAT THIS REPLACES. Until v0.32.0 quiet hours, the toast thresholds and the
+   budget were derived from the vendor property sheet and pushed to /v1/config one
+   key at a time on a debounce, with a whole layer of capability latches for
+   companions that predated each key. That surface is retired with the vendor host,
+   and the push went with it - it had been inert in the standalone panel anyway, by
+   an explicit guard, precisely because a panel with no property sheet would have
+   POSTed its own defaults on every boot and silently cleared a hand-edited file.
+
+   THE RULE THAT REPLACES ALL OF IT: ONLY THE KEYS THE OPERATOR ACTUALLY MOVED ARE
+   SENT. A key nobody touched is a key this panel has no opinion about, and the
+   companion preserves what it already holds. That is the same discipline the old
+   approvalThresholdSec sequencing was built to get, generalised to every key and
+   made obvious instead of clever.
+
+   THE CONTROLS SEED FROM THE FEED, which is the only statement of what is
+   currently configured. A value the feed does not carry seeds from this panel's
+   own default and is NOT sent unless it is moved, so seeding cannot write. */
+
+/* Strict HH:MM, because the companion validates strictly and answers 400 - a
+   single-digit hour is padded rather than rejected, since "9:05" is a typed value a
+   person plainly means, but anything else is left alone and nothing is sent. */
+function normHm(v) {
+	var m = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(String(v === undefined || v === null ? '' : v));
+	if (!m) return null;
+	var h = Number(m[1]), mi = Number(m[2]);
+	if (!isFinite(h) || !isFinite(mi) || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+	return pad2(h) + ':' + pad2(mi);
 }
 
 function clampApprovalSec(n) {
 	return Math.round(Math.max(APPROVAL_SEC_MIN, Math.min(APPROVAL_SEC_MAX, n)));
 }
 
-/* The property's current value, clamped to the contract bounds. Absent (a dev
-   browser, or an iCUE that has not injected it yet) reads as the shipped default
-   so the control and the notifier agree on what "never set" means: 20 s. */
-function approvalPropertySec() {
-	if (approvalForcedSec !== null) return clampApprovalSec(approvalForcedSec);
-	var n = Number(getIcueProperty('approvalThreshold'));
-	if (!isFinite(n)) n = APPROVAL_SEC_DEFAULT;
-	return clampApprovalSec(n);
+function clampToastSec(n) {
+	return Math.round(Math.max(TOAST_SEC_MIN, Math.min(TOAST_SEC_MAX, n)));
 }
 
-/* THE SEQUENCING RULE, and the reason this is not just another clamp-and-send:
-   crabd PRESERVES `toast.approvalThresholdSec` when a write omits it, precisely
-   so a panel save cannot delete a value the operator hand-edited into
-   config.json. A widget that sent its default on every save would defeat that on
-   the first colour change — the key would be materialised at 20 s and the
-   hand-edited value gone, with nothing said.
-   So the first observation is a BASELINE, never a change: it records what the
-   property reads and sends nothing. Only a value that later differs from that
-   baseline is the operator having moved the control, and from then on the key
-   rides every toast write (the latch is deliberate — setting it back to 20 is
-   still a statement, and it has to be able to reach crabd). */
-function noteApprovalThreshold(sec) {
-	if (approvalSeenSec === null) { approvalSeenSec = sec; savePrefs(); return; }
-	if (sec === approvalSeenSec) return;
-	approvalSeenSec = sec;
-	approvalTouched = true;
-	savePrefs();
-	/* Repaint the sheet line HERE, because this is the only place the latch is
-	   ever set and it does not run on the render path: the config sync has its own
-	   cadence, so an open approval sheet otherwise kept saying "45 s (saved)" for
-	   up to a poll after the operator had moved the slider to 90 — measured, not
-	   theorised. Safe to call with the sheet shut; it only writes text. */
-	renderApprovalThreshold();
-}
-
-/* v0.17.0. Reads the feed's optional seed and NOTHING else — it does not write
-   approvalSeenSec, does not set approvalTouched, and does not save prefs.
-   That separation is the whole point: approvalTouched means "the operator moved
-   the iCUE slider", and a value arriving from crabd is the operator having edited
-   config.json instead. Letting the seed set the latch would put approvalThresholdSec
-   into every subsequent toast write, which is exactly the materialise-an-unset-key
-   failure v0.16.0 exists to prevent — crabd would then start receiving the
-   PROPERTY's value (20 s by default) as if it had been chosen, overwriting the
-   on-disk figure this seed was read from.
-   Presence-detected on the member, not on the block: an older crabd sends no
-   `toast` at all, and a current one sends the block WITHOUT this member until the
-   operator sets it. Both must land on null. */
+/* v0.17.0. Reads the feed's optional `toast.approvalThresholdSec` and nothing else.
+   Presence-detected on the MEMBER, not on the block: an older companion sends no
+   `toast` at all, and a current one sends the block WITHOUT this member until it is
+   set. Both must land on null, because a default printed as a configured value is a
+   figure nobody chose. */
 function noteApprovalSeed(toast) {
 	var have = toast && typeof toast === 'object' && !Array.isArray(toast);
 	var n = have ? Number(toast.approvalThresholdSec) : NaN;
-	/* Object.prototype.hasOwnProperty rather than a truthiness test: 0 is not a
-	   legal value here, but a null the contract does allow must read as absent
-	   rather than as Number(null) === 0. */
+	/* hasOwnProperty rather than a truthiness test: 0 is not a legal value here, but
+	   a null the contract does allow must read as absent rather than as 0. */
 	var present = have &&
 		Object.prototype.hasOwnProperty.call(toast, 'approvalThresholdSec') &&
 		isFinite(n);
 	approvalFeedSec = present ? clampApprovalSec(n) : null;
 }
 
-/* What the panel should SAY the approval threshold is. The property wins the
-   moment the operator has moved it, because from then on the panel's own control
-   is the operator's latest word and it is what crabd is being sent. Until then a
-   seed from the feed is a better answer than the property's untouched default,
-   which is a value nobody chose. */
-function effectiveApprovalSec() {
-	if (!approvalTouched && approvalFeedSec !== null) return approvalFeedSec;
-	return approvalPropertySec();
+/* MF-017. The readiness line in the action sheet's approval block, beside the
+   threshold line that is already there. Rendered only when the companion states a
+   readiness AND it is not `ready`: a decision that is going to work needs no line
+   about itself, and the sheet has the width for one sentence, not two. */
+function renderApprovalReadiness() {
+	if (!ui.sheetApprovalReady) return;
+	var state = approvalReadiness();
+	var show = state !== null && state !== 'ready';
+	setText(ui.sheetApprovalReady, show ? approvalReadyText(state) : '');
+	ui.sheetApprovalReady.classList.toggle('shown', show);
 }
 
-/* Presence-gated on the SEED, not on the effective value: with no `toast` block
-   in the feed there is nothing the panel knows that the settings sheet does not
-   already show, and a line restating the slider back at the operator is noise.
-   Once a seed exists the line always renders, because "the slider is the one in
-   force now" is the other half of the same fact and going silent the moment the
-   operator touches the control would read as the setting having gone away. */
+/* Presence-gated on the SEED: with no `toast` block in the feed there is nothing
+   the panel knows that the config sheet does not already show. */
 function renderApprovalThreshold() {
 	if (!ui.sheetApprovalThreshold) return;
 	if (approvalFeedSec === null) {
@@ -6238,696 +6378,191 @@ function renderApprovalThreshold() {
 		ui.sheetApprovalThreshold.classList.remove('shown');
 		return;
 	}
-	setText(ui.sheetApprovalThreshold, 'toast after ' + fmtApprovalSec(effectiveApprovalSec()) +
-		(approvalTouched ? ' (panel)' : ' (saved)'));
+	setText(ui.sheetApprovalThreshold, 'toast after ' + fmtApprovalSec(approvalFeedSec));
 	ui.sheetApprovalThreshold.classList.add('shown');
 }
 
-/* Minutes ONLY for a whole number of them; everything else stays in seconds.
-   The slider steps by 5 up to 300, so 90 and 135 are ordinary settings — and
-   rounding those to minutes printed "2 min" for a 90 s threshold, which is not a
-   rounding, it is a wrong number on a settings line. 300 reads "5 min", 3600
-   (the contract ceiling, reachable only by hand-editing config.json) reads
-   "60 min", and 90 reads "90 s". */
+/* Minutes ONLY for a whole number of them; everything else stays in seconds. 90 and
+   135 are ordinary settings, and rounding those to minutes printed "2 min" for a
+   90 s threshold - not a rounding, a wrong number on a settings line. */
 function fmtApprovalSec(sec) {
 	return sec >= 60 && sec % 60 === 0 ? (sec / 60) + ' min' : sec + ' s';
 }
 
-/* The budget is ONE member by contract, and the switch-off case is
-   {budget: null} — "clear it", which is a different statement from "the
-   properties are not worth sending" (that is the null this function never
-   returns, because a slider cannot be half-typed the way a time field can).
-   The slider is in thousands; the multiplication back to tokens happens here and
-   nowhere else. */
-function desiredBudgetConfig() {
-	if (!boolProp('budgetEnabled', false)) return { budget: null };
-	var k = Number(getIcueProperty('budgetTokens'));
-	if (!isFinite(k)) k = BUDGET_K_DEFAULT;
-	k = Math.round(Math.max(BUDGET_K_MIN, Math.min(BUDGET_K_MAX, k)));
-	return { budget: { dailyOutputTokens: k * 1000 } };
-}
+/* ---- MF-001: the draft, the baseline and what may be sent ---- */
 
-function scheduleConfigSync() {
-	if (cfgTimer) clearTimeout(cfgTimer);
-	cfgTimer = setTimeout(function () { cfgTimer = null; syncConfig(); }, CFG_DEBOUNCE_MS);
-}
+var cfgDraft = null;
+var cfgTouched = null;
+var cfgBusy = false;
 
-/* One debounce, one POST per key. keep400 says what a 400 MEANS for that key —
-   see syncConfigKey. */
-function syncConfig() {
-	/* Standalone (v0.29.0): there is no property sheet, so config.json is the ONE
-	   master for quiet hours, toast and budget and nothing is pushed from here.
-	   Without this guard the defaults below would POST on every boot and silently
-	   CLEAR an operator's hand-edited quietHours and budget. */
-	if (isStandalone()) return;
-	syncConfigKey('quietHours', desiredQuietConfig(), false);
-	syncConfigKey('toast', desiredToastConfig(), true);
-	/* keep400, same as toast and for the same reason: a pre-0.10.0 crabd answers
-	   400 to a budget write because it does not know the key. Not latched — see
-	   syncConfigKey. */
-	syncConfigKey('budget', desiredBudgetConfig(), true);
-}
-
-function syncConfigKey(key, want, keep400) {
-	/* Attempt-and-handle IS the capability test (see cfgEndpointUnsupported
-	   above). Once a 404 has proven this crabd has no /v1/config at all, stop:
-	   the latch is what keeps a pre-0.4.0 crabd from being re-POSTed on every
-	   property nudge. */
-	if (cfgEndpointUnsupported) return;
-	if (!want) return;
-	var payload = JSON.stringify(want);
-	if (payload === cfgSent[key]) return;
-	/* Claimed before the request, so a second property event mid-flight does not
-	   send the same body twice; cleared on failure so the next change retries. */
-	cfgSent[key] = payload;
-	postConfig(payload).then(function (res) {
-		if (res.status === 204 || res.status === 200) return;
-		/* 404 = this crabd predates the endpoint. That is UNSUPPORTED, not an
-		   error, and it is permanent for this crabd — latch it so the widget
-		   stops asking (cleared only when crabd.version changes, i.e. a
-		   redeploy that may have added it). */
-		if (res.status === 404) {
-			cfgEndpointUnsupported = true;
-			cfgSent[key] = null;
-			logLine(key + ' config unsupported by this crabd (HTTP 404)');
-			return;
-		}
-		/* 400 on a WHITELIST key means this crabd does not know the key — the
-		   contract says a pre-0.7.0 crabd answers exactly that to a toast write.
-		   It is NOT latched: 400 is also what a bad body gets, and a latch would
-		   strand the key until the widget was re-imported at the console over
-		   what may have been one malformed value. Keeping the payload marker is
-		   the whole brake: the same body is never re-sent, a changed value still
-		   gets a try, and a crabd redeploy clears the marker outright.
-		   Keys whose 400 can only be a bad body (quietHours, which this widget
-		   validates before sending) clear the marker instead and retry. */
-		if (res.status === 400 && keep400) {
-			/* One rung BELOW the key: a toast body that carried the optional
-			   approvalThresholdSec may have been refused for that member alone, and
-			   an older crabd's 400 takes the two required members down with it. Drop
-			   the member and clear the payload marker so the next sync actually
-			   retries — without the clear the same body is the only one that would
-			   ever be built, and the whole toast key would stay dead. Tried once per
-			   crabd version; a body still refused without it falls through to the
-			   key-level reading below on the retry. */
-			if (key === 'toast' && !cfgApprovalUnsupported &&
-				payload.indexOf('approvalThresholdSec') !== -1) {
-				cfgApprovalUnsupported = true;
-				cfgSent[key] = null;
-				logLine('toast approvalThresholdSec not supported by this crabd (HTTP 400) ' +
-					EMDASH + ' retrying without it');
-				scheduleConfigSync();
-				return;
-			}
-			logLine(key + ' config not supported by this crabd (HTTP 400) ' + EMDASH +
-				' this key only, no latch');
-			return;
-		}
-		cfgSent[key] = null;
-		/* Silent on glass by design, at every status: this is a settings write the
-		   user made in iCUE, and the panel is not the place to render a config
-		   error. Nothing here may touch pollFailed — an absent config endpoint is
-		   not a dead feed. */
-		logLine(key + ' config rejected (HTTP ' + res.status + ')');
-	}).catch(function () {
-		/* Transient by assumption — crabd restarts on every deploy. NOT latched:
-		   treating a blip as "unsupported forever" would silently strand the
-		   setting until the widget was re-imported at the console. */
-		cfgSent[key] = null;
-		logLine(key + ' config failed: crabd not reachable');
-	});
-}
-
-/* ------------------------------------------------- hardware sensors (v0.3.0) */
-
-/* iCUE's Sensors data provider, declared in manifest.json as
-   "widgetbuilder.sensorsdataprovider:Sensors:1.0". The wrapper classes are
-   inlined in index.html per the Corsair common-tools reference.
-
-   The whole row is display:none until a real reading arrives. That is the
-   degrade path, not a nicety: in a dev browser, in mock mode, and on any
-   machine iCUE reports no temperature sensor for, window.plugins does not exist
-   at all — and a row that rendered "NaN °C" or "undefined" on glass would be
-   worse than no row. */
-function sensorsPlugin() {
-	if (typeof window === 'undefined' || !window.plugins) return null;
-	return window.plugins.Sensorsdataprovider || null;
-}
-
-function onSensorsdataproviderInitialized() { initSensors(); }
-
-/* Bare assignment, same reason as icueEvents: a var/let/const here hides the
-   handler from the iCUE bridge. */
-pluginSensorsdataproviderEvents = { onInitialized: onSensorsdataproviderInitialized };
-
-function initSensors() {
-	if (sensorApi) { refreshSensors(); return; }
-	var plugin = sensorsPlugin();
-	if (!plugin || typeof SimpleSensorApiWrapper === 'undefined') return;
-
-	sensorApi = new SimpleSensorApiWrapper(plugin);
-	noteSensorRead('bridge', 'init', 'SimpleSensorApiWrapper bound', 0);
-	if (plugin.sensorValueChanged && plugin.sensorValueChanged.connect) {
-		plugin.sensorValueChanged.connect(function (id, value) {
-			var key = sensorKeyForId(id);
-			if (!key) return;
-			/* THE SIGNAL CARRIES THE NEW VALUE (sensors-data-provider.md:
-			   sensorValueChanged(sensorId, value)) and until v0.18.0 this handler
-			   threw it away and went back through the request path for a number it
-			   had already been handed. That mattered: the request path is the thing
-			   that can freeze, and this is a live reading that owes it nothing. Take
-			   it when it parses; fall through to a request when it does not, so a
-			   provider that emits the signal bare still refreshes. */
-			if (applyPushedSensorValue(key, value)) return;
-			refreshSensors();
-		});
-	}
-	/* Units change when the operator flips iCUE between C and F. Cheap to honour,
-	   and the TTL below is only the reconcile for a provider that does not emit. */
-	if (plugin.sensorUnitsChanged && plugin.sensorUnitsChanged.connect) {
-		plugin.sensorUnitsChanged.connect(function (id) {
-			var key = sensorKeyForId(id);
-			/* unitsRetryAt is cleared with the value (v0.20.0, CD-12): this signal is
-			   the bridge saying the units HAVE CHANGED, which outranks a backoff set
-			   by an earlier failure — the row would otherwise keep showing °C for up
-			   to SENSOR_UNITS_RETRY_MS after the operator flipped iCUE to °F. */
-			if (key) { sensorHealth[key].units = null; sensorHealth[key].unitsRetryAt = 0; refreshSensors(); }
-		});
-	}
-	/* There is no nameChanged signal in the contract (sensors-data-provider.md
-	   lists sensorAdded / sensorRemoved / sensorDataChanged / sensorValueChanged /
-	   sensorUnitsChanged and nothing else), so sensorDataChanged is what a name
-	   cache has to key on. It is the right shape for it — a sensor whose DATA
-	   changed is exactly the one whose label may have — and the TTL still catches a
-	   provider that never emits it. A label is the one thing on this row that must
-	   not be allowed to go quietly wrong: it is the evidence the operator would use
-	   to decide the number beside it belongs to the wrong sensor. */
-	if (plugin.sensorDataChanged && plugin.sensorDataChanged.connect) {
-		plugin.sensorDataChanged.connect(function (id) {
-			var key = sensorKeyForId(id);
-			if (key) { sensorHealth[key].name = null; sensorHealth[key].nameRetryAt = 0; refreshSensors(); }
-		});
-	}
-	/* The signal does the work; this only reconciles a sensor that stopped
-	   emitting and picks up a changed selection from the settings panel. */
-	if (!sensorTimer) sensorTimer = setInterval(refreshSensors, SENSOR_REFRESH_MS);
-	refreshSensors();
-}
-
-/* ---- the read-outcome log (v0.18.0) ----------------------------------------
-
-   The instrumentation exists because the defect this release fixes is one this
-   panel could not have reported: reads were failing and the row went on showing
-   the number the first read had painted, so "frozen" and "healthy but idle"
-   looked identical from the far side of a desk. Every outcome is recorded; the
-   console is told about the ones that mean something. */
-function noteSensorRead(key, outcome, detail, ms) {
-	var rec = {
-		t: new Date().toISOString(), key: key, outcome: outcome,
-		detail: detail === undefined || detail === null ? '' : String(detail),
-		ms: ms
-	};
-	sensorLog.push(rec);
-	if (sensorLog.length > SENSOR_LOG_MAX) sensorLog.shift();
-	try { window.__sidecrabSensorLog = sensorLog; } catch (e) {}
-	if (sensorLogVerbose || outcome !== 'ok') {
-		logLine('sensor ' + key + ' ' + outcome + (rec.detail ? ' ' + rec.detail : '') +
-			(typeof ms === 'number' ? ' (' + ms + 'ms)' : ''));
-	}
-}
-
-/* ---- key / id / element plumbing -------------------------------------------
-
-   One place that maps a sensor key to its id and its value element, because three
-   callers need it: the 10 s reconcile, the value signal, and the staleness
-   watchdog on the 1 Hz tick. Everything else about a cell now goes through
-   syncSensorRow, which owns the row. */
-var SENSOR_KEYS = ['cpu', 'gpu'];
-
-function sensorIdFor(key) {
-	/* A dev browser has no property sheet, so the flag has to stand in for the
-	   selected sensor IDs as well as for the plugin that would answer them. */
-	if (sensorForced) {
-		/* &sensors=none — the bridge is here and nothing is selected. Returning ''
-		   is not a special case: it is the same empty string strProp gives for an
-		   unset property, so the fresh-import path below runs unmodified. */
-		if (sensorForced.none) return '';
-		return sensorForcedSame ? 'dev:shared' : 'dev:' + key;
-	}
-	return strProp(key === 'gpu' ? 'gpuTempSensor' : 'cpuTempSensor', '');
-}
-
-/* THE DEFECT THIS RELEASE MAKES VISIBLE (v0.21.0). Measured out of iCUE's own
-   property storage on the operator's machine: cpuTempSensor and gpuTempSensor
-   both held `1ce3d9bb-…`, one sensor — almost certainly a hub or ambient probe —
-   feeding both cells. Every symptom of the v0.18.0 wrapper race is reproduced by
-   that selection alone (two numbers that never move, and never disagree), and
-   the panel had no way to tell the two apart or to say which it was looking at.
-   Both ends must be non-empty: two UNSET properties are not "the same sensor",
-   they are the fresh import the hint below is for. */
-function sensorsSameId() {
-	var a = sensorIdFor('cpu'), b = sensorIdFor('gpu');
-	return !!a && !!b && a === b;
-}
-
-/* Neither property is set AND a bridge exists to have offered a choice. The
-   second half is what keeps this off every plain browser and out of the
-   standalone screenshots: no plugin means no settings panel to send anyone to. */
-function sensorsUnset() {
-	return !!sensorApi && !sensorIdFor('cpu') && !sensorIdFor('gpu');
-}
-
-/* iCUE hands back whatever the provider calls the sensor, which ranges from
-   "CPU Package" to a device-qualified path. The cell budget is one line shared
-   with a temperature, a host figure and (in the CPU cell) a second one, so the
-   label has to be the part that identifies the sensor and nothing else.
-   Last segment first — a path names the device on the left and the sensor on the
-   right, and the device is the half already implied by which cell this is. Then
-   the trailing "Temperature"/"Temp", which the degree sign beside it has said
-   already. The clamp is the last resort, and CSS ellipsis is the floor under it. */
-function shortSensorName(raw) {
-	if (raw === undefined || raw === null) return '';
-	var s = String(raw).replace(/\s+/g, ' ').trim();
-	if (!s) return '';
-	var parts = s.split(/\s+[-–—>]\s+|\s*[|\/\\]\s*|:\s+/);
-	var last = parts[parts.length - 1].trim();
-	if (last) s = last;
-	s = s.replace(/\s*\b(temperatures?|temps?)\b\s*$/i, '').trim();
-	if (!s) return '';
-	if (s.length > SENSOR_NAME_MAX) s = s.slice(0, SENSOR_NAME_MAX - 1).trim() + '…';
-	return s;
-}
-
-function sensorKeyForId(id) {
-	if (id === undefined || id === null || id === '') return '';
-	var s = String(id);
-	for (var i = 0; i < SENSOR_KEYS.length; i++) {
-		if (s === sensorIdFor(SENSOR_KEYS[i])) return SENSOR_KEYS[i];
-	}
-	return '';
-}
-
-function sensorValueEl(key) { return key === 'gpu' ? ui.sensorGpuVal : ui.sensorCpuVal; }
-
-function refreshSensors() {
-	if (!sensorApi) return;
-	for (var i = 0; i < SENSOR_KEYS.length; i++) readSensor(SENSOR_KEYS[i]);
-}
-
-function readSensor(key) {
-	var valueEl = sensorValueEl(key);
-	var sensorId = sensorIdFor(key);
-	var h = sensorHealth[key];
-	if (!sensorId) { resetSensorHealth(key); hideSensor(key); return; }
-	/* BOTH PROPERTIES POINT AT ONE SENSOR (v0.21.0). The GPU cell is not read at
-	   all in that state — not to save the call, but because there is no second
-	   reading to take: the same request would come back with the same number, and
-	   printing it twice is the misinformation this release exists to stop. The cell
-	   renders its reason instead (syncSensorRow). CPU keeps the reading, because
-	   one of the two properties is presumably the one the operator meant. */
-	if (key === 'gpu' && sensorsSameId()) {
-		resetSensorHealth(key);
-		setText(valueEl, '');
-		hideSensor(key);
-		return;
-	}
-	if (h.sensorId !== sensorId) { resetSensorHealth(key); h.sensorId = sensorId; }
-
-	var started = Date.now();
-	/* THE UNITS LEG CANNOT FAIL THE READ (v0.20.0, CD-12). Both calls used to go
-	   into one Promise.all, which rejects if EITHER rejects — so a units lookup
-	   that failed threw away a temperature that had come back perfectly well.
-	   Measured both ways: on the first read the row stayed hidden with a good 71 in
-	   hand, and on a TTL refresh a fresh 88 was discarded and the last value left to
-	   dim to stale. A unit string is an annotation on the number; the number is the
-	   reading, and a reading is never dropped because its label is missing.
-	   So the units leg resolves to an OUTCOME rather than rejecting, and the
-	   Promise.all below now rejects only when the value itself does — which is the
-	   one failure that really is one. */
-	var needUnits = (h.units === null || (started - h.unitsAt) >= SENSOR_UNITS_TTL_MS) &&
-		started >= h.unitsRetryAt;
-	var unitsLeg = needUnits
-		? sensorApi.getSensorUnits(sensorId).then(
-			function (u) { return { ok: true, units: u }; },
-			function () { return { ok: false, units: null }; })
-		: Promise.resolve({ ok: false, units: h.units });
-	/* THE NAME LEG IS FAILURE-ISOLATED THE SAME WAY (v0.21.0), and it is written
-	   next to the units leg deliberately so the pair cannot drift apart. CD-12 is
-	   the whole argument: a label that could not be fetched must never take down
-	   the number it labels. It also carries the same backoff, so a bridge with no
-	   getSensorName cannot put a failing request beside every value read. */
-	var needName = (h.name === null || (started - h.nameAt) >= SENSOR_NAME_TTL_MS) &&
-		started >= h.nameRetryAt && typeof sensorApi.getSensorName === 'function';
-	var nameLeg = needName
-		? sensorApi.getSensorName(sensorId).then(
-			function (n) { return { ok: true, name: n }; },
-			function () { return { ok: false, name: null }; })
-		: Promise.resolve({ ok: false, name: h.name });
-	var want = Promise.all([sensorApi.getSensorValue(sensorId), unitsLeg, nameLeg]);
-
-	want.then(function (res) {
-		var ms = Date.now() - started;
-		var num = parseFloat(res[0]);
-		if (!isFinite(num)) {
-			/* A read that RESOLVED and had nothing readable in it is a positive
-			   statement that this sensor has nothing to report — absence, not a
-			   comms failure — so the row goes, exactly as it always has. Only a
-			   REJECT gets the keep-then-dim treatment below. */
-			noteSensorRead(key, 'empty', res[0], ms);
-			resetSensorHealth(key); h.sensorId = sensorId;
-			setSensorStale(key, false);
-			hideSensor(key);
-			return;
-		}
-		if (res[1].ok) {
-			h.units = res[1].units === undefined || res[1].units === null ? '' : String(res[1].units);
-			h.unitsAt = Date.now();
-			h.unitsRetryAt = 0;
-		} else if (needUnits) {
-			/* The units call was ASKED and did not answer. h.units is left where it
-			   was — the last good string, or null on a sensor that has never reported
-			   one — and renderSensorValue draws a bare degree sign for null, which is
-			   the same rendering a bridge that answers with no units already gets.
-			   The retry is held off for SENSOR_UNITS_RETRY_MS so a permanently broken
-			   units call cannot put a second request beside every 10 s value read,
-			   which is the doubled traffic SENSOR_UNITS_TTL_MS exists to avoid. */
-			h.unitsRetryAt = Date.now() + SENSOR_UNITS_RETRY_MS;
-			noteSensorRead(key, 'units', 'units unavailable, value kept', ms);
-		}
-		if (res[2].ok) {
-			/* '' is an ANSWER — a bridge saying this sensor has no name — and it is
-			   cached as one, so the row stops asking. Only a rejection retries. */
-			h.name = res[2].name === undefined || res[2].name === null ? '' : String(res[2].name);
-			h.nameAt = Date.now();
-			h.nameRetryAt = 0;
-		} else if (needName) {
-			h.nameRetryAt = Date.now() + SENSOR_NAME_RETRY_MS;
-			noteSensorRead(key, 'name', 'name unavailable, value kept', ms);
-		}
-		h.lastOkAt = Date.now();
-		if (h.failsSinceOk) noteSensorRead(key, 'recovered', 'after ' + h.failsSinceOk + ' failed read(s)', ms);
-		h.failsSinceOk = 0;
-		setSensorStale(key, false);
-		renderSensorValue(key, num, h.units, valueEl);
-		noteSensorRead(key, 'ok', Math.round(num) + ' ' + (h.units || ''), ms);
-	})
-	.catch(function (err) {
-		var ms = Date.now() - started;
-		h.failsSinceOk++;
-		noteSensorRead(key, (err && err.code) || 'error', (err && err.message) || 'read failed', ms);
-		/* Nothing has ever come back for this sensor, so there is no good number to
-		   protect and the row stays hidden — the pre-v0.18.0 behaviour, kept. */
-		if (!h.lastOkAt) { hideSensor(key); return; }
-		/* There IS a good number on the glass. A single failed read must not blank
-		   it (a blip erasing a correct reading is its own lie), and it must not go
-		   on looking live forever either. Keep it, and dim it at SENSOR_STALE_MS. */
-		sensorStaleCheck();
-	});
-}
-
-function resetSensorHealth(key) {
-	var h = sensorHealth[key];
-	h.sensorId = ''; h.units = null; h.unitsAt = 0; h.unitsRetryAt = 0;
-	/* The NAME goes with the rest of the record, and that is the point of resetting
-	   on a selection change at all: a label left over from the sensor the operator
-	   just stopped watching, sitting beside a reading from the one they started, is
-	   worse than no label — it is a confident wrong answer to the exact question
-	   this row was given a label to answer. */
-	h.name = null; h.nameAt = 0; h.nameRetryAt = 0;
-	/* The VALUE goes with the record for the same reason the name does: a reading
-	   from the sensor the operator just stopped watching is not a reading of the one
-	   they started. */
-	h.value = null;
-	h.lastOkAt = 0; h.failsSinceOk = 0;
-}
-
-/* The one place a temperature is painted, so the value signal and the request
-   path cannot drift into showing it two different ways. */
-function renderSensorValue(key, num, rawUnits, valueEl) {
-	var units = rawUnits ? String(rawUnits).replace(/^\s*°?/, '') : '';
-	sensorHealth[key].value = num;
-	setText(valueEl, Math.round(num) + (units ? '°' + units : '°'));
-	/* The 80/90 thresholds are Celsius. iCUE reports whatever unit the
-	   user picked, so a Fahrenheit reading is shown plainly and left
-	   uncoloured rather than being called red at 80°F. */
-	var isC = units === '' || units.charAt(0).toUpperCase() === 'C';
-	setVar(valueEl, '--sensor-color',
-		!isC ? 'var(--text-color)'
-			: num >= SENSOR_RED_C ? 'var(--red)'
-			: num >= SENSOR_AMBER_C ? 'var(--amber)'
-			: 'var(--text-color)');
-	paintSensorName(key);
-	showSensor(key);
-}
-
-/* The other cell's key. A two-cell row, so the sibling is the one this is not —
-   the label painter reads the neighbour's current name through it. */
-function siblingSensorKey(key) { return key === 'gpu' ? 'cpu' : 'gpu'; }
-
-/* True when this cell's name would only REPEAT the sibling's (v0.24.0). Measured on
-   the operator's machine: iCUE answers getSensorName with the same string ("Temp #1")
-   for two genuinely different sensor ids feeding the two cells — different ids,
-   different readings, one name. A label that says the same thing on both cells names
-   neither; the cell position already says which is CPU and which is GPU. Compared
-   AFTER shortSensorName (so it matches what would actually paint), case-insensitively,
-   against the sibling's CURRENT name and re-read every paint — names can change and
-   nothing here is cached. A distinctive name is not a collision, and neither is a
-   sibling with no name: sensorHealth[sib].name is non-null only while that cell holds
-   a present reading (resetSensorHealth/hideSensor null it), so an unset, absent or
-   reset neighbour reads empty here and this returns false — one cell named beside an
-   empty one still shows. This is the SELECTION/name axis only; the different-ids →
-   no same-sensor-warning fact and the readings themselves are untouched. */
-function sensorNameCollides(key) {
-	var mine = shortSensorName(sensorHealth[key].name);
-	if (!mine) return false;
-	var other = shortSensorName(sensorHealth[siblingSensorKey(key)].name);
-	if (!other) return false;
-	return mine.toLowerCase() === other.toLowerCase();
-}
-
-var paintingSensorSibling = false;
-
-/* The label, painted from the cached name and nowhere else. Empty is a state, not
-   a blank: the span is display:none rather than an empty box, because the cell is
-   a flex row with a gap and an empty span still spends one. */
-function paintSensorName(key) {
-	paintOneSensorName(key);
-	/* A collision is only visible once BOTH names are in hand, and the two cells
-	   paint from independent async reads that finish in either order. Re-evaluate
-	   the sibling too, so a cell that painted its name while the neighbour's was
-	   still null is corrected the instant the second, equal name lands — without
-	   this the first-painted cell keeps a label the duplicate has since made
-	   non-distinctive, and only the later cell hides. Guarded so the sibling's
-	   own repaint does not bounce straight back in. */
-	if (!paintingSensorSibling) {
-		paintingSensorSibling = true;
-		try { paintOneSensorName(siblingSensorKey(key)); }
-		finally { paintingSensorSibling = false; }
-	}
-}
-
-function paintOneSensorName(key) {
-	var el = key === 'gpu' ? ui.sensorGpuName : ui.sensorCpuName;
-	if (!el) return;
-	/* Suppress a non-distinctive name on BOTH cells (v0.24.0): when the two cells
-	   hold the same name NEITHER shows it. Display-only — the readings, the units,
-	   the host CPU%/MEM% segments and the same-sensor warning are all untouched;
-	   this decides only whether the name label paints. */
-	var txt = sensorNameCollides(key) ? '' : shortSensorName(sensorHealth[key].name);
-	setText(el, txt);
-	el.classList.toggle('shown', !!txt);
-	/* The full string on title/aria: the clamp above is for the glass, and a
-	   truncated name that cannot be recovered anywhere is a worse answer than a
-	   long one. Nothing on this panel has a pointer, so this is for the
-	   accessibility tree and for anyone reading the DOM during a QA pass. A
-	   suppressed name drops off here too — a hidden duplicate is not worth
-	   announcing to a screen reader either. */
-	var full = txt && sensorHealth[key].name ? String(sensorHealth[key].name) : '';
-	if (full) { el.setAttribute('title', full); el.setAttribute('aria-label', full); }
-	else { el.removeAttribute('title'); el.removeAttribute('aria-label'); }
-}
-
-/* The pushed reading from sensorValueChanged. Returns false when it cannot be
-   used — no units known yet, or a value that does not parse — so the caller
-   falls back to a request rather than silently dropping the tick. */
-function applyPushedSensorValue(key, value) {
-	var h = sensorHealth[key];
-	var sensorId = sensorIdFor(key);
-	if (h.sensorId !== sensorId || h.units === null) return false;
-	var num = parseFloat(value);
-	if (!isFinite(num)) return false;
-	h.lastOkAt = Date.now();
-	if (h.failsSinceOk) noteSensorRead(key, 'recovered', 'via signal after ' + h.failsSinceOk + ' failed read(s)', 0);
-	h.failsSinceOk = 0;
-	setSensorStale(key, false);
-	renderSensorValue(key, num, h.units, sensorValueEl(key));
-	noteSensorRead(key, 'ok', Math.round(num) + ' ' + (h.units || '') + ' (signal)', 0);
-	return true;
-}
-
-/* THE STALENESS CUE. Rides the 1 Hz tick and not the 10 s reconcile, deliberately
-   — a reconcile that has itself stopped firing is one of the ways this row
-   freezes, and a cue that could only be raised by the thing that broke would
-   never be raised. From the tick it needs nothing to still be working.
-   The test is "no successful read for SENSOR_STALE_MS", not "the number has not
-   moved": a machine sitting at one temperature is the normal case. */
-function sensorStaleCheck() {
-	var now = Date.now();
-	for (var i = 0; i < SENSOR_KEYS.length; i++) {
-		var key = SENSOR_KEYS[i], h = sensorHealth[key];
-		if (!sensorShown[key] || !h.lastOkAt) { setSensorStale(key, false); continue; }
-		setSensorStale(key, (now - h.lastOkAt) >= SENSOR_STALE_MS);
-	}
-}
-
-function setSensorStale(key, on) {
-	var h = sensorHealth[key];
-	if (h.stale === !!on) return;
-	h.stale = !!on;
-	sensorValueEl(key).classList.toggle('stale', h.stale);
-	logLine('sensor ' + key + (h.stale
-		? ' STALE — no successful read for ' + Math.round(SENSOR_STALE_MS / 1000) + 's, value dimmed'
-		: ' live again'));
-}
-
-/* The plugin flag is a race, not a fact (lifecycle reference): a single
-   negative read at boot cannot tell "plain browser" from "iCUE, not injected
-   yet". Retry for a short grace window, then leave the row hidden for good. */
-function sensorBootCheck() {
-	/* Dev-only, mock mode only: the flag replaces the BRIDGE, so everything below
-	   this line — refreshSensors, readSensor, the threshold colouring, showSensor,
-	   markSensorZone — is the shipping path running on stand-in readings. */
-	if (sensorForced) {
-		sensorApi = forcedSensorApi();
-		/* The reconcile runs in the FORCED path too (v0.18.0). Without it the dev
-		   bridge read each sensor exactly once — enough for the screenshot the flag
-		   was built for in v0.17.0, and useless for the thing it has to show now,
-		   which is a sensor going stale over repeated failing reads. The stated
-		   contract of this flag is that everything below it is the shipping path on
-		   stand-in readings, and a shipping path that polls has to poll here. */
-		if (!sensorTimer) sensorTimer = setInterval(refreshSensors, SENSOR_REFRESH_MS);
-		refreshSensors();
-		return;
-	}
-	if (sensorsPlugin()) { initSensors(); return; }
-	if (sensorBootAttempts >= SENSOR_BOOT_RETRY_MAX) return;
-	sensorBootAttempts++;
-	setTimeout(sensorBootCheck, SENSOR_BOOT_RETRY_MS);
-}
-
-/* The two-method shape readSensor actually consumes, resolved from the flag. The
-   unit string is spelled the way iCUE spells it ("°C"), because readSensor strips
-   a leading degree sign and a stand-in that skipped it would be exercising a
-   different string than the one that ships. */
-function forcedSensorApi() {
-	/* &sensorfail=1 reproduces the OPERATOR'S BUG SHAPE, not a generic outage: the
-	   first read of each sensor resolves and paints a number, and every read after
-	   it rejects. That is what a bridge whose synchronous answers were being
-	   dropped looked like on the glass — one good reading at boot, then nothing,
-	   with the boot number still sitting there looking live. It is the case the
-	   staleness cue exists for, so it is the case the flag makes reachable. */
-	var served = {};
-	function maybeFail(id) {
-		if (!sensorForcedFail) return null;
-		if (!served[id]) { served[id] = true; return null; }
-		var err = new Error('Request timeout'); err.code = 'timeout';
-		return Promise.reject(err);
-	}
+/* What the feed says is configured right now. Every member is presence-detected and
+   falls back to this panel's own default, which is safe ONLY because a defaulted
+   member is never sent unless it is moved. */
+function configSeed() {
+	var doc = lastGoodDoc;
+	var q = doc && doc.quiet && typeof doc.quiet === 'object' && !Array.isArray(doc.quiet) ? doc.quiet : null;
+	var t = doc && doc.toast && typeof doc.toast === 'object' && !Array.isArray(doc.toast) ? doc.toast : null;
+	/* The digest is not in the state document today. Presence-gated on both places
+	   it could arrive, so a companion that starts serving it lights these controls
+	   up with no change here; until then they seed from the defaults and stay unsent
+	   until moved. */
+	var d = (t && t.digest && typeof t.digest === 'object' && !Array.isArray(t.digest)) ? t.digest
+		: (doc && doc.digest && typeof doc.digest === 'object' && !Array.isArray(doc.digest)) ? doc.digest : null;
+	var b = doc && doc.burn && doc.burn.budget && typeof doc.burn.budget === 'object' &&
+		!Array.isArray(doc.burn.budget) ? doc.burn.budget : null;
+	var bt = b ? Number(b.dailyOutputTokens) : NaN;
 	return {
-		getSensorValue: function (id) {
-			return maybeFail(id) ||
-				Promise.resolve(id === 'dev:gpu' ? sensorForced.gpu : sensorForced.cpu);
-		},
-		getSensorUnits: function () { return Promise.resolve('°' + sensorForced.units); },
-		/* The NAMES the bridge answers with (v0.21.0). Defaults are the shape iCUE
-		   actually returns on a correctly-configured machine, so the off-glass row
-		   defaults to the row the operator should see; &sensornames= overrides
-		   either, and an empty segment is a bridge that answers with nothing — the
-		   no-label path, which is a different picture and worth its own shot. */
-		getSensorName: function (id) {
-			var n = id === 'dev:gpu' ? sensorForced.gpuName : sensorForced.cpuName;
-			return Promise.resolve(n === undefined || n === null ? '' : n);
-		}
+		quietEnabled: !!(q && normHm(q.start) && normHm(q.end)),
+		quietStart: (q && normHm(q.start)) || '22:00',
+		quietEnd: (q && normHm(q.end)) || '07:00',
+		toastEnabled: t ? t.enabled !== false : true,
+		toastSec: t && isFinite(Number(t.thresholdSec)) ? clampToastSec(Number(t.thresholdSec)) : TOAST_SEC_DEFAULT,
+		approvalSec: approvalFeedSec !== null ? approvalFeedSec : APPROVAL_SEC_DEFAULT,
+		digestEnabled: !!(d && d.enabled === true),
+		digestTime: (d && normHm(d.time)) || '09:00',
+		budgetEnabled: isFinite(bt),
+		budgetK: isFinite(bt) ? Math.round(bt / 1000) : BUDGET_K_DEFAULT
 	};
 }
 
-function showSensor(key) {
-	sensorShown[key] = true;
-	syncSensorRow();
+function configValues() {
+	if (!cfgDraft) { cfgDraft = configSeed(); cfgTouched = {}; }
+	return cfgDraft;
 }
 
-function hideSensor(key) {
-	sensorShown[key] = false;
-	/* A hidden cell has no number to be stale about, and leaving the flag set
-	   would have the next reading paint itself dim for a frame. */
-	setSensorStale(key, false);
-	/* v0.21.0 — HIDING THE CELL IS NO LONGER ENOUGH TO TAKE THE NUMBER OFF THE
-	   GLASS. Until this release a hidden sensor meant a hidden cell, so the text
-	   left in the value span could not be seen. The CPU cell now survives a dead
-	   bridge whenever the feed is serving a host figure, and the last temperature
-	   would have gone on sitting beside it with nothing dimming it and no read
-	   behind it — the exact "looks live, is not" failure v0.18.0 was about. So the
-	   text goes with the state that produced it. */
-	setText(sensorValueEl(key), '');
-	var nameEl = key === 'gpu' ? ui.sensorGpuName : ui.sensorCpuName;
-	if (nameEl) { setText(nameEl, ''); nameEl.classList.remove('shown'); nameEl.removeAttribute('title'); nameEl.removeAttribute('aria-label'); }
-	syncSensorRow();
+function configSet(key, value) {
+	configValues()[key] = value;
+	cfgTouched[key] = true;
+	setConfigStatus('not saved yet', 'pending');
 }
 
-/* ---- the row's one owner (v0.21.0) ------------------------------------------
+/* The body, built from the touched keys alone, plus any reason a touched key could
+   not be made into a legal one. A warning here NEVER becomes a partial write: the
+   sheet says what is wrong and sends nothing. */
+function configPayload() {
+	var v = configValues(), t = cfgTouched, out = {}, warn = [], any = false;
+	if (t.quietEnabled || t.quietStart || t.quietEnd) {
+		if (!v.quietEnabled) { out.quietHours = null; any = true; }
+		else {
+			var qs = normHm(v.quietStart), qe = normHm(v.quietEnd);
+			if (!qs || !qe) warn.push('quiet hours need two HH:MM times');
+			else { out.quietHours = { start: qs, end: qe }; any = true; }
+		}
+	}
+	if (t.toastEnabled || t.toastSec || t.approvalSec) {
+		/* thresholdSec and enabled are BOTH required by the contract, so a change to
+		   either sends both. approvalThresholdSec rides only when it was MOVED: the
+		   companion preserves an omitted value, and sending this panel's default
+		   would delete a figure hand-edited into the config file. */
+		out.toast = { thresholdSec: clampToastSec(v.toastSec), enabled: !!v.toastEnabled };
+		if (t.approvalSec) out.toast.approvalThresholdSec = clampApprovalSec(v.approvalSec);
+		any = true;
+	}
+	if (t.digestEnabled || t.digestTime) {
+		var dt = normHm(v.digestTime);
+		if (!dt) warn.push('the digest needs an HH:MM time');
+		else { out.digest = { enabled: !!v.digestEnabled, time: dt }; any = true; }
+	}
+	if (t.budgetEnabled || t.budgetK) {
+		out.budget = v.budgetEnabled
+			? { dailyOutputTokens: Math.round(Math.max(BUDGET_K_MIN, Math.min(BUDGET_K_MAX, v.budgetK))) * 1000 }
+			: null;   /* null CLEARS the key, which is a different statement from not sending it */
+		any = true;
+	}
+	return { body: out, warnings: warn, any: any };
+}
 
-   The row is assembled from TWO sources on two clocks: iCUE's bridge (a 10 s
-   reconcile plus value/units/data signals) and crabd's feed (a 3 s poll). Before
-   this release only the bridge could show or hide it, and both halves writing
-   `shown` from their own callback is how a row ends up hidden with a live figure
-   in it — or shown with nothing. So visibility is computed in ONE place, from all
-   of the state, every time any of it moves. */
+function onConfigSave() {
+	if (cfgBusy) return;
+	var built = configPayload();
+	if (built.warnings.length) { setConfigStatus(built.warnings.join('; '), 'err'); return; }
+	if (!built.any) { setConfigStatus('nothing changed', 'note'); return; }
+	cfgBusy = true;
+	setConfigStatus('saving', 'pending');
+	postConfig(JSON.stringify(built.body)).then(function (res) {
+		cfgBusy = false;
+		if (res.status !== 204 && res.status !== 200) {
+			setConfigStatus('not saved (HTTP ' + res.status + ')', 'err');
+			return;
+		}
+		/* The companion's own account of what it stored. `applied` is what actually
+		   went to disk after its validation, `warnings` is what it declined or
+		   corrected - both are shown, because a save that quietly dropped a key is
+		   the failure this reply exists to make visible. */
+		var body = res.body && typeof res.body === 'object' ? res.body : null;
+		var warn = body && Array.isArray(body.warnings) ? body.warnings.filter(function (w) {
+			return typeof w === 'string' && w;
+		}) : [];
+		var applied = body && body.applied && typeof body.applied === 'object' ? body.applied : null;
+		var names = [];
+		if (applied) {
+			for (var k in applied) { if (Object.prototype.hasOwnProperty.call(applied, k)) names.push(k); }
+		}
+		/* The draft is dropped so the controls re-seed from the next document: what
+		   the companion stored is what they must show, not what this page sent. */
+		cfgDraft = null;
+		cfgTouched = null;
+		if (sheetMode === 'settings') buildSettingsRows();
+		setConfigStatus(warn.length
+			? 'saved ' + (names.length ? names.join(', ') : '') + ' ' + EMDASH + ' ' + warn.join('; ')
+			: names.length ? 'saved ' + names.join(', ') : 'saved',
+			warn.length ? 'note' : 'ok');
+	}).catch(function () {
+		cfgBusy = false;
+		setConfigStatus('not saved ' + EMDASH + ' crabd not reachable', 'err');
+	});
+}
+
+function setConfigStatus(text, kind) {
+	if (!ui.cfgStatus) return;
+	setText(ui.cfgStatus, text);
+	if (ui.cfgStatus.getAttribute('data-kind') !== (kind || '')) {
+		ui.cfgStatus.setAttribute('data-kind', kind || '');
+	}
+}
+
+/* ------------------------------------------- the hardware row (CLEAN-03, v0.32.0)
+
+   THE COMPANION IS THE ONLY SOURCE NOW. This row used to be assembled from two,
+   on two clocks: a vendor sensor plugin reached through an inlined async wrapper
+   (window.plugins, a request/response bridge with its own 5 s timeouts, units and
+   name caches, failure backoffs, a read-outcome ring buffer and a staleness
+   watchdog on the 1 Hz tick), and the companion's own `host` block on the poll.
+   The plugin went with the vendor host, and the whole second clock went with it -
+   along with the synchronous-answer ordering race that froze the row, the two
+   settings that could name one sensor twice, and the cell arbitration between them.
+
+   Everything on this row now arrives in /v1/state and is rendered by the lane A
+   block near the end of this file, presence-detected member by member. THE HONESTY
+   RULE IS UNCHANGED AND IS THE WHOLE POINT: an absent reading is an absent cell,
+   never a zero and never a number left over from a source that stopped answering.
+   A reading that is present but old is dimmed by the feed's own sampledAt, which is
+   the companion stating its freshness rather than the panel guessing at it. */
+/* ---- the row's one owner (v0.21.0, one source since v0.32.0) -----------------
+
+   Visibility for the whole row is computed HERE, in one place, from all of the
+   state, every time any of it moves. That rule outlived the two-source problem it
+   was written for: a cell shown by one writer and hidden by another is how a row
+   ends up hidden with a live figure in it, and the lane A block still paints cells
+   this function has decided about. */
 function syncSensorRow() {
-	var same = sensorsSameId();
-	var unset = sensorsUnset();
-
-	/* The warning is derived from the SELECTION, not from a read: it is knowable
-	   with the bridge unable to answer a single request, and that is exactly the
-	   run where the operator most needs to be told which of the two faults this
-	   is. Requires a bound bridge only because without one there is no row. */
-	var warn = !!sensorApi && same;
-	setText(ui.sensorGpuWarn, warn ? 'same sensor' : '');
-	ui.sensorGpuWarn.classList.toggle('shown', warn);
-	ui.sensorGpu.classList.toggle('warn', warn);
-	if (warn) {
-		ui.sensorGpu.setAttribute('title', 'CPU and GPU are set to the same sensor — pick a different GPU sensor in the widget settings');
-		ui.sensorGpu.setAttribute('aria-label', 'GPU: same sensor as CPU, no separate reading');
-	} else {
-		ui.sensorGpu.removeAttribute('title');
-		ui.sensorGpu.removeAttribute('aria-label');
-	}
-	if (warn !== sameWarned) {
-		sameWarned = warn;
-		logLine(warn
-			? 'sensors: cpuTempSensor and gpuTempSensor hold the SAME id — GPU cell shows "same sensor"'
-			: 'sensors: cpu and gpu ids differ again');
-	}
-
-	setText(ui.sensorHint, unset ? 'pick sensors in settings' : '');
-	ui.sensorHint.classList.toggle('shown', unset);
-
-	/* A cell is shown when it has something true to say, which for the CPU cell is
-	   a temperature OR a host figure — the two are independent, and a bridge that
-	   cannot answer must not take the companion's number off the glass with it. */
-	var cpuOn = sensorShown.cpu || hostMetrics.cpuPct !== null || laneACpuOn();   /* lane A */
-	var gpuOn = sensorShown.gpu || warn || laneAGpuOn();   /* lane A */
+	/* A cell is shown when it has something true to say. CPU can be lit by a
+	   temperature or by the feed's utilisation, independently; GPU by either half
+	   of its own pair. */
+	var cpuOn = hostMetrics.cpuPct !== null || laneACpuOn();
+	var gpuOn = laneAGpuOn();
 	var memOn = hostMetrics.memPct !== null;
 	ui.sensorCpu.classList.toggle('shown', cpuOn);
 	ui.sensorGpu.classList.toggle('shown', gpuOn);
 	ui.hostMem.classList.toggle('shown', memOn);
 	syncLaneASensorCells();   /* lane A: the CPU and GPU cells, from the companion */
 
-	var any = cpuOn || gpuOn || memOn || unset || laneAAnyCell();   /* lane A */
+	var any = cpuOn || gpuOn || memOn || laneAAnyCell();
 	ui.sensors.classList.toggle('shown', any);
 
 	/* THE DRILL-IN (v0.22.0), decided here because this function is the row's one
 	   owner and the tap is a fact about the row. It follows the READING, not the
-	   markup — the discipline setGaugeTappable keeps: the row is a control only
+	   markup - the discipline setGaugeTappable keeps: the row is a control only
 	   while the feed is serving a host figure to have a history OF, so a panel with
 	   temperatures alone offers no chevron, no pointer and no promise.
 	   role and tabindex are added and REMOVED with it rather than sitting in the
@@ -6947,14 +6582,10 @@ function syncSensorRow() {
 	markSensorZone(any);
 }
 
-/* The sensors row is the ONLY thing the Limits zone can show in the standalone
-   state, so whether it has anything to say decides whether that zone is a zone at
-   all. A body class rather than a CSS :has() on the row: iCUE renders in
-   QtWebEngine, whose version is the console's to choose, and a layout that
-   silently loses a whole column on an older engine is not a trade worth a saved
-   line. Since v0.21.0 the argument is the whole row's verdict, not just a
-   temperature: the "pick sensors" hint is the one thing a fresh import has in
-   this zone, and a zone dropped out from under it would delete the prompt. */
+/* The sensors row is the ONLY thing the Limits zone can show when the feed carries
+   no limits, so whether it has anything to say decides whether that zone is a zone
+   at all. A body class rather than a CSS :has() on the row, and the argument is the
+   whole row's verdict rather than one reading. */
 function markSensorZone(any) {
 	document.body.classList.toggle('has-sensors', !!any);
 }
@@ -7041,9 +6672,26 @@ function sampleHost(doc) {
 	/* hostPct is the SAME reader the row uses, so a contract-legal null cannot enter
 	   the ring as a 0 and draw a floor the machine never touched. */
 	hostRing.push({ t: now, cpu: h ? hostPct(h.cpuPct) : null, mem: h ? hostPct(h.memPct) : null });
+	hostRingTrim(hostRing, now);
+	laneASampleHost(doc);   /* lane A: the second ring, on the same document */
+}
+
+/* SCA-012. ONE trim for both rings, and TIME IS THE HORIZON: a sample inside the
+   ten minutes the chart advertises is never dropped to satisfy a count. */
+function hostRingTrim(ring, now) {
 	var cut = now - HOST_WINDOW_MS;
-	while (hostRing.length && (hostRing[0].t < cut || hostRing.length > HOST_RING_MAX)) hostRing.shift();
-	laneASampleHost(doc);   /* lane A: the second ring, on the same poll */
+	while (ring.length && ring[0].t < cut) ring.shift();
+	if (ring.length <= HOST_RING_MAX) return;
+	/* Past the memory cap the ring is THINNED: keep the newest sample and every
+	   second one below it, and keep the oldest outright so the span moves by nothing
+	   at all. HOST_GAP_MS is three intervals, so a doubled step is still inside it
+	   and the line does not break where nothing was actually missed. */
+	var keep = [], i;
+	for (i = ring.length - 1; i >= 0; i -= 2) keep.push(ring[i]);
+	if (keep[keep.length - 1] !== ring[0]) keep.push(ring[0]);
+	keep.reverse();
+	ring.length = 0;
+	for (i = 0; i < keep.length; i++) ring.push(keep[i]);
 }
 
 /* The ring split into CONTIGUOUS runs — the segments the line may actually be drawn
@@ -7083,9 +6731,9 @@ function hostCount(key) {
 
 /* The row is a control only when it has a HISTORY to open — which is the same test
    as "the feed is serving a host figure", because the ring is fed from that member
-   and nothing else. Temperatures alone do not earn the tap: they come from iCUE's
-   bridge, they are not sampled into the ring, and a sheet that charted nothing
-   would be a control that opens an empty view. */
+   and nothing else. Temperatures alone do not earn the tap: they are not sampled
+   into the ring, and a sheet that charted nothing would be a control that opens an
+   empty view. */
 function hostSheetAvailable() {
 	return hostMetrics.cpuPct !== null || hostMetrics.memPct !== null ||
 		laneAHostAvailable();   /* lane A */
@@ -7127,7 +6775,7 @@ function syncHostSheet() {
 	var last = hostRing.length ? hostRing[hostRing.length - 1] : null;
 	var sig = [hostRing.length, last ? last.t : 0, hostCount('cpu'), hostCount('mem'),
 		hostMetrics.cpuPct, hostMetrics.memPct, hostMetrics.memUsedGB, hostMetrics.memTotalGB,
-		sensorText('cpu'), sensorText('gpu'), laneAHostSig()].join('#');
+		laneAHostSig()].join('#');
 	if (sig === hostSig) return;
 	hostSig = sig;
 
@@ -7143,37 +6791,77 @@ function syncHostSheet() {
 			hostMetrics.memTotalGB.toFixed(1) + ' GB'));
 	}
 
-	/* The temperatures, as TEXT and never as a third chart: they are not in the ring
-	   (iCUE's bridge feeds them on its own clock, not the poll's) so there is no
-	   ten-minute history of them to draw, and drawing one from the ring's timestamps
-	   would be charting a series against somebody else's samples. */
-	var temps = [];
-	for (var i = 0; i < SENSOR_KEYS.length; i++) {
-		var t = sensorText(SENSOR_KEYS[i]);
-		if (t) temps.push(t);
+	/* The temperatures are TEXT and never a third chart: they are not in the ring,
+	   so there is no ten-minute history of them to draw, and drawing one from the
+	   ring's timestamps would be charting one series against another's samples.
+	   appendLaneAHostBlocks writes them; this line exists only to say so when there
+	   are none, which is the absent state and not a zero. */
+	if (!laneAHasTemps()) {
+		var line = document.createElement('div');
+		line.className = 'hs-temps';
+		line.textContent = 'no hardware sensor reading';
+		ui.sheetHost.appendChild(line);
 	}
-	var line = document.createElement('div');
-	line.className = 'hs-temps';
-	/* lane A: the bridge is no longer the only source of a temperature, so "no
-	   hardware sensor reading" is only true when the companion has none either -
-	   otherwise this line would sit two lines above twenty-four of them. */
-	line.textContent = temps.length ? temps.join('     ')
-		: (laneAHasTemps() ? '' : 'no hardware sensor reading');
-	if (line.textContent) ui.sheetHost.appendChild(line);
 	appendLaneAHostBlocks();   /* lane A */
+	appendSourcesBlock();      /* MF-008 */
 }
 
-/* One temperature in words, or '' when the row has nothing true to say about it —
-   the row's OWN verdict (sensorShown) rather than a second opinion, so the sheet
-   cannot report a reading the row has already taken off the glass. */
-function sensorText(key) {
-	if (!sensorShown[key]) return '';
-	var h = sensorHealth[key];
-	if (typeof h.value !== 'number' || !isFinite(h.value)) return '';
-	var units = h.units ? String(h.units).replace(/^\s*°?/, '') : '';
-	var name = shortSensorName(h.name);
-	return key.toUpperCase() + ' ' + Math.round(h.value) + (units ? '°' + units : '°') +
-		(name ? ' ' + name : '') + (h.stale ? ' (stale)' : '');
+/* MF-008 — WHERE EVERY NUMBER ON THIS PANEL COMES FROM, and how old it is.
+   `sources` is presence-gated key by key: a companion that does not serve the block
+   renders nothing here rather than a list of unknowns, and a key the block omits is
+   a source this build has not been told about rather than one that is down. Each
+   entry is {ok, lastAt, ageSec, note}; `note` is the companion's own words about a
+   source that is not ok and is shown verbatim, because a panel that paraphrased it
+   would be guessing at a fault it cannot see. */
+var SOURCE_LABELS = {
+	hooks: 'hooks', transcripts: 'transcripts', statusline: 'statusline',
+	limitsToken: 'limits token', otlp: 'OTLP', hwinfo: 'HWiNFO', gpu: 'GPU'
+};
+var SOURCE_ORDER = ['hooks', 'transcripts', 'statusline', 'limitsToken', 'otlp', 'hwinfo', 'gpu'];
+
+function appendSourcesBlock() {
+	var src = lastGoodDoc && lastGoodDoc.sources;
+	if (!src || typeof src !== 'object' || Array.isArray(src)) return;
+	var rows = [];
+	for (var i = 0; i < SOURCE_ORDER.length; i++) {
+		var key = SOURCE_ORDER[i];
+		if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
+		var v = src[key];
+		if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+		rows.push({ key: key, v: v });
+	}
+	if (!rows.length) return;
+	var head = document.createElement('div');
+	head.className = 'hs-head';
+	head.textContent = 'Sources';
+	ui.sheetHost.appendChild(head);
+	for (var r = 0; r < rows.length; r++) {
+		ui.sheetHost.appendChild(sourceRow(rows[r].key, rows[r].v));
+	}
+}
+
+function sourceRow(key, v) {
+	var row = document.createElement('div');
+	row.className = 'hs-source' + (v.ok === true ? '' : ' bad');
+	var name = document.createElement('span');
+	name.className = 'hs-source-name';
+	name.textContent = SOURCE_LABELS[key] || key;
+	row.appendChild(name);
+	var what = document.createElement('span');
+	what.className = 'hs-source-state';
+	/* A note wins over the word "fresh": the companion said something specific and
+	   replacing it with a status word would throw the only detail away. */
+	what.textContent = typeof v.note === 'string' && v.note ? v.note
+		: (v.ok === true ? 'fresh' : 'not answering');
+	row.appendChild(what);
+	var age = document.createElement('span');
+	age.className = 'hs-source-age';
+	/* An absent age is an em-dash and never a zero: "0 s ago" would be the freshest
+	   reading on the row, said about a source that stated nothing. */
+	var sec = Number(v.ageSec);
+	age.textContent = isFinite(sec) && sec >= 0 ? laneAAgeWords(sec) : EMDASH;
+	row.appendChild(age);
+	return row;
 }
 
 function hostNote(text) {
@@ -7296,13 +6984,14 @@ function onSensorsClick() {
 
 /* ------------------------------------------------ touch diagnostics (v0.23.0) */
 
-/* WHY THIS EXISTS. The operator reports that touch "doesn't seem to work" on the
-   physical Edge — and yet panel approvals were tapped and landed live, and the
-   manifest has carried `interactive: true` since v0.2.0. Both of those are true at
-   once only if SOMETHING arrives and something else does not. The spec's own words
-   for what iCUE forwards are "widget click handling", which would make a tap a
+/* WHY THIS EXISTS. The operator reported that touch "doesn't seem to work" on the
+   physical display — and yet panel approvals were tapped and landed live. Both of
+   those are true at once only if SOMETHING arrives and something else does not. The
+   retired host forwarded "widget click handling", which would make a tap a
    synthesized CLICK and leave every gesture on this panel — swipe, long press,
-   two-finger tap, pull-to-refresh — reading an event stream that is not there.
+   two-finger tap, pull-to-refresh — reading an event stream that is not there. The
+   panel host does not have that limitation, which is one of the things this capture
+   layer is now for: proving it.
    THAT IS A HYPOTHESIS AND NOBODY HAS MEASURED IT — do not build on the paragraph
    above. This is the instrument; a later wave rebuilds gestures on what it records.
 
@@ -7362,15 +7051,15 @@ var diagBusy = false;          /* one POST in flight at a time */
 var diagUnsupported = false;   /* 404 latch: this crabd has no /v1/panel-log */
 var diagForced = false;        /* dev-only &touchdiag=1, mock mode only */
 
-/* The property, the flag, or neither. Read live on every call — an iCUE switch can
-   move under a running panel, and applyProperties() is what notices. */
+/* The setting, the flag, or neither. Read live on every call - a save can move the
+   switch under a running panel, and applyProperties() is what notices. */
 function diagWanted() {
 	if (mockName && diagForced) return true;
 	return boolProp('touchDiag', false);
 }
 
-/* The reconcile. Called from applyProperties (iCUE fires onDataUpdated for ANY
-   property) and once at boot. Idempotent by construction: it compares the wanted
+/* The reconcile. Called from applyProperties, which runs on every accepted save,
+   and once at boot. Idempotent by construction: it compares the wanted
    state to the installed state and returns when they agree, so a colour change
    cannot tear down and rebuild the capture layer. */
 function syncDiag() {
@@ -7960,10 +7649,10 @@ function tick() {
 	applyEscalation(now.getTime(), document.body.classList.contains('quiet'));
 	/* Catch a feed that goes stale between polls without waiting for the next one. */
 	if (everHadData && !document.body.classList.contains('stale') && computeStatus() === 'stale') render();
-	/* The sensor staleness cue (v0.18.0). Deliberately here and not on the sensor
-	   reconcile: a reconcile that has stopped firing is one of the ways the row
-	   freezes, so the cue must not depend on it. */
-	sensorStaleCheck();
+	/* SCA-019: and catch a stream that is still OPEN and has stopped saying
+	   anything. Here rather than on the poll cycle because the poll is exactly what
+	   an open stream suppresses. */
+	sseLivenessCheck();
 }
 
 /* ==== lane B: the push transport, the settings sheet and the chime ==== */
@@ -7977,21 +7666,36 @@ function tick() {
    goes through the SAME acceptDoc, so the schema check, the generatedAt check and
    the stale/dead-feed rendering cannot fork between the two.
 
-   INSIDE iCUE NOTHING CHANGES. The widget's origin there is `null` and its fetches
-   go to 127.0.0.1 by IP; an EventSource is one more thing to go wrong on a surface
-   with no devtools, for a saving of two and a half seconds on a panel that has
-   polled happily since v0.1. Gated on isStandalone(). */
+   The stream is wanted wherever EventSource exists and a fixture is not in play;
+   a mock run is a file, not a stream. */
 var SSE_PATH = '/v1/events';
 var SSE_RETRY_MIN_MS = 3000;
 var SSE_RETRY_MAX_MS = 30000;
+/* SCA-019 — THE LIVENESS DEADLINE. How long a stream the browser still calls OPEN
+   may say nothing at all before this page stops believing it. It exists because
+   readyState is the BROWSER's opinion of the socket and says nothing about whether
+   the companion is still publishing: a stream held open by something in the middle,
+   or by a companion whose publisher thread has stopped, reads as perfectly healthy
+   from in here. Before this, such a stream suppressed the fallback poll for ever
+   and the panel could only go stale and stay stale.
+   THE NUMBER, and the replay behind it. Measured read-only against a live
+   companion over a 75 s window: 37 frames, all of them `state`, median gap 2090 ms,
+   p90 2313 ms, worst 2619 ms. The companion publishes a snapshot on a 2 s cadence
+   and, when a whole interval passes with nothing to publish, a `ping` at 15 s
+   (SSE_PING_SEC). So the largest gap a HEALTHY companion can produce is 15 s, and
+   45 s is three consecutive missed pings - it cannot fire on a healthy night, which
+   is the test every gate on this panel has to pass before it ships. Raising the
+   companion's ping interval is what would move this number; nothing else. */
+var SSE_LIVENESS_MS = 45000;
 var sseSource = null;
 var sseRetryMs = SSE_RETRY_MIN_MS;
 var sseRetryTimer = null;
 
 /* The diagnostic the panel-log and a devtools session both read. NOT a bare global
    and not a property name: `__sidecrabTransport` is assigned onto window, so the
-   0.27.1 collision (an iCUE property and a top-level declaration sharing a name,
-   which is a parse error and a blank panel) cannot happen to it. */
+   0.27.1 collision cannot happen to it: the retired host injected every setting as
+   a same-named lexical global, so a top-level declaration sharing a name was a parse
+   error and a blank panel. Nothing injects globals now, and nothing may start. */
 function transportDiag() {
 	if (typeof window === 'undefined') return null;
 	if (!window.__sidecrabTransport) window.__sidecrabTransport = { mode: 'poll', lastEventAt: null };
@@ -8011,15 +7715,39 @@ function noteTransportEvent() {
 }
 
 /* EventSource.OPEN is 1. Read off readyState rather than a flag of our own: the
-   browser owns the connection's state and a second copy of it can disagree. */
+   browser owns the connection's state and a second copy of it can disagree.
+   DELIVERING IS NOT THE SAME AS OPEN (SCA-019). An open stream that has said
+   nothing past SSE_LIVENESS_MS is not delivering, and saying so here is what lets
+   the fallback poll resume at the next interval rather than at the next reconnect. */
 function sseDelivering() {
-	return !!(sseSource && sseSource.readyState === 1);
+	if (!sseSource || sseSource.readyState !== 1) return false;
+	return !sseSilent();
+}
+
+/* True once an open stream has been quiet past the deadline. `lastEventAt` is
+   seeded at OPEN, so a stream that connects and never says another word is timed
+   from the connection rather than from null - which would otherwise read as "no
+   event yet" for ever. */
+function sseSilent() {
+	var d = transportDiag();
+	if (!d || !d.lastEventAt) return false;
+	return (Date.now() - d.lastEventAt) > SSE_LIVENESS_MS;
 }
 
 function sseWanted() {
 	if (mockName) return false;          /* a fixture is a file, not a stream */
-	if (!isStandalone()) return false;
 	return typeof EventSource !== 'undefined';
+}
+
+/* Called from the 1 Hz tick. sseDelivering() has already let the poll through by
+   the time this runs; this is the other half - closing the stream the page has
+   stopped believing and reconnecting on the same paced ladder a transport error
+   uses. Separate from the poll so that a silent stream is repaired once rather
+   than re-torn-down on every poll interval. */
+function sseLivenessCheck() {
+	if (!sseSource || sseSource.readyState !== 1) return;
+	if (!sseSilent()) return;
+	sseFellBack('no state or ping for ' + Math.round(SSE_LIVENESS_MS / 1000) + 's');
 }
 
 function sseStart() {
@@ -8034,7 +7762,12 @@ function sseConnect() {
 	try { es = new EventSource(baseUrl() + SSE_PATH); }
 	catch (e) { sseFellBack('EventSource refused'); return; }
 	sseSource = es;
-	es.addEventListener('open', function () { setTransportMode('sse', 'stream open'); });
+	es.addEventListener('open', function () {
+		setTransportMode('sse', 'stream open');
+		/* The connection IS a liveness signal, and seeding the deadline here is what
+		   makes a connect-then-silence measurable at all. */
+		noteTransportEvent();
+	});
 	es.addEventListener('state', function (ev) { onSseState(ev); });
 	/* A ping is liveness and nothing else: it carries no document, so it must not
 	   touch pollFailed, lastGoodAtMs or anything else the stale logic reads. */
@@ -8087,8 +7820,9 @@ function sseFellBack(why) {
 	logLine('sse retry in ' + Math.round(wait / 1000) + 's');
 	/* The fallback poll runs NOW rather than at the next interval: the stream may
 	   have been the only thing feeding this page, and the panel is already as stale
-	   as whatever killed the stream made it. */
-	poll();
+	   as whatever killed the stream made it. Forced, because sseClose() above has
+	   already dropped the gate and a future reader should not have to prove that. */
+	poll(true);
 }
 
 function sseClose() {
@@ -8114,16 +7848,15 @@ var chimeCtx = null;
 
 function chimeOn() { return boolProp('chime', true); }
 
-/* NAMED chimeLevel AND NOT chimeVolume, deliberately: `chimeVolume` is an iCUE
-   PROPERTY, and iCUE injects every property into the page as a same-named global
+/* NAMED chimeLevel AND NOT chimeVolume, and the name is kept although its reason
+   is retired: `chimeVolume` is a SETTING, and the retired host injected every
+   setting into the page as a same-named global
    with `let` semantics. A function declaration sharing a property's name is a
    parse error and a blank panel - 0.27.0 shipped exactly that with `panelToken`,
    and nothing in a browser or a mock run can catch it. The reader gets a
    different name; the property keeps its own. */
 function chimeLevel() {
-	var n = Number(getIcueProperty('chimeVolume'));
-	if (!isFinite(n)) n = CHIME_VOLUME_DEFAULT;
-	return Math.max(0, Math.min(100, Math.round(n)));
+	return Math.max(0, Math.min(100, Math.round(numProp('chimeVolume', CHIME_VOLUME_DEFAULT))));
 }
 
 /* THE DECISION, pure, so every gate is provable without an audio device
@@ -8166,7 +7899,7 @@ function detectChime(doc) {
 	var rows = doc && Array.isArray(doc.sessions) ? doc.sessions : [];
 	/* ABSENT quiet is false, never unknown: crabd omits the block entirely when no
 	   quiet hours are configured, so a truthiness test on doc.quiet is the reading. */
-	var quiet = !!(doc && doc.quiet && doc.quiet.active === true);
+	var quiet = !!(doc && doc.quiet && doc.quiet.active === true) || quietPendingMute();
 	var now = Date.now();
 	if (chimeDecision(chimePrevStates, rows, quiet, chimeOn(), now, chimeLastAt)) {
 		chimeLastAt = now;
@@ -8196,8 +7929,8 @@ function chimeAudio() {
 }
 
 /* Two notes, ~350 ms, SYNTHESIZED. There is no audio file in this tree and adding
-   one would put a binary into a package iCUE validates and a store reviews; a pair
-   of sine oscillators is four lines and no asset. A5 then D6 — RISING, because a
+   one would put a binary into the shipped asset set; a pair of sine oscillators is
+   four lines and no asset. A5 then D6 — RISING, because a
    falling pair reads as something finishing and this is something starting to
    wait. */
 function playChime(volume) {
@@ -8231,11 +7964,32 @@ function chimeNote(ctx, hz, at, dur, peak) {
 
 /* ---- lane B: the panel-host message bridge ---- */
 
-/* The standalone host is the only surface that can SAVE a setting: iCUE owns its
-   own property sheet and a widget cannot write it back (v0.17.0), and a plain
-   browser at /panel/ has no file to write. So the bridge is feature-detected and
-   its absence is said out loud rather than papered over. */
+/* BRIDGE v2 (C2, v0.32.0). The panel host is the only surface that can save a
+   setting or bring a window to the front; a browser preview at /panel/ has neither,
+   and says so rather than offering controls that go nowhere.
+
+   EVERY PAGE-TO-HOST MESSAGE CARRIES A requestId AND EVERY ACCEPTED REQUEST GETS A
+   TERMINAL ANSWER (SCA-021). Before this, the host answered only on SUCCESS: a save
+   that failed its file write was logged natively and nothing came back, so the sheet
+   said "saving" for ever and the operator could not tell a failed write from a slow
+   one. A focus request rejected before a result did the same. The page's half of the
+   repair is here - a correlation id, a deadline, and one place where every pending
+   state ends:
+     - a reply whose requestId this page is not waiting for is DROPPED. That is how a
+       late answer to a superseded attempt stops overwriting the newer one.
+     - a request with no answer inside BRIDGE_TIMEOUT_MS ends by itself and says the
+       host did not answer, which is a different sentence from a failure and is the
+       honest one.
+   CAPABILITIES COME FROM THE HANDSHAKE, never from the injected boot object and never
+   from the page's address: what a host CAN do is a thing only the host can state. */
 var hostInfo = null;
+var BRIDGE_TIMEOUT_MS = 10000;
+/* Contract: at most 64 characters. The boot instant plus a counter, so two pages open
+   at once cannot collide and a reply meant for a previous page load can never match a
+   request this one made. */
+var bridgeBootId = String(Date.now() % 1000000);
+var bridgeSeq = 0;
+var bridgePending = {};
 
 function panelBridge() {
 	try {
@@ -8244,11 +7998,70 @@ function panelBridge() {
 	} catch (e) { return null; }
 }
 
+/* What this host has SAID it can do. False until the handshake lands, which is the
+   safe direction: a control that appears once the host has answered is better than
+   one that promises before it has. */
+function hostCan(name) {
+	var c = hostInfo && hostInfo.capabilities;
+	return !!(c && typeof c === 'object' && c[name] === true);
+}
+
+function bridgeRequestId(kind) {
+	return (kind + '-' + bridgeBootId + '-' + (++bridgeSeq)).slice(0, 64);
+}
+
+/* Returns the requestId, or null when the message could not be sent at all. The
+   caller owns the two callbacks and this owns the deadline. */
+function bridgeSend(type, fields, onTimeout) {
+	var b = panelBridge();
+	if (!b) return null;
+	var id = bridgeRequestId(type);
+	var msg = { type: type, requestId: id };
+	for (var k in fields) {
+		if (Object.prototype.hasOwnProperty.call(fields, k)) msg[k] = fields[k];
+	}
+	try { b.postMessage(msg); } catch (e) { return null; }
+	/* ONE OUTSTANDING REQUEST PER KIND (SCA-021). A second Save supersedes the
+	   first, and the first's answer must not land on it: the status line reports one
+	   attempt, and a late failure written over a newer attempt in flight is the
+	   panel reporting the wrong outcome. The superseded record is dropped WITHOUT
+	   calling its timeout, because it did not time out - it was replaced. */
+	for (var pid in bridgePending) {
+		if (!Object.prototype.hasOwnProperty.call(bridgePending, pid)) continue;
+		if (bridgePending[pid].type !== type) continue;
+		clearTimeout(bridgePending[pid].timer);
+		delete bridgePending[pid];
+	}
+	bridgePending[id] = {
+		type: type,
+		timer: setTimeout(function () {
+			delete bridgePending[id];
+			logLine('bridge: no answer to ' + type + ' within ' +
+				Math.round(BRIDGE_TIMEOUT_MS / 1000) + 's');
+			if (onTimeout) onTimeout();
+		}, BRIDGE_TIMEOUT_MS)
+	};
+	return id;
+}
+
+/* True when this reply answers a request this page is still waiting for; the
+   pending record is cleared either way it returns. */
+function bridgeSettle(msg, type) {
+	var id = typeof msg.requestId === 'string' ? msg.requestId : '';
+	var rec = Object.prototype.hasOwnProperty.call(bridgePending, id) ? bridgePending[id] : null;
+	if (!rec || rec.type !== type) return false;
+	clearTimeout(rec.timer);
+	delete bridgePending[id];
+	return true;
+}
+
 function bridgeInit() {
 	var b = panelBridge();
 	if (!b || typeof b.addEventListener !== 'function') return;
 	b.addEventListener('message', function (ev) { onHostMessage(ev); });
-	try { b.postMessage({ type: 'host-info' }); } catch (e) { /* an older host */ }
+	/* A host that does not answer this leaves every capability false, so the sheet
+	   says saving is unavailable rather than offering a Save nothing will take. */
+	bridgeSend('host-info', {}, function () { renderSettingsFoot(); });
 }
 
 function onHostMessage(ev) {
@@ -8260,9 +8073,30 @@ function onHostMessage(ev) {
 		try { msg = JSON.parse(msg); } catch (e) { return; }
 	}
 	if (!msg || typeof msg !== 'object') return;
-	if (msg.type === 'settings-saved') { onSettingsSaved(msg.props); return; }
-	if (msg.type === 'host-info') { hostInfo = msg; renderSettingsFoot(); return; }
-	if (msg.type === 'focus-result') { laneEOnFocusResult(msg); return; }   /* lane E */
+	if (msg.type === 'host-info') {
+		if (!bridgeSettle(msg, 'host-info')) return;
+		hostInfo = msg;
+		renderSettingsFoot();
+		/* The capabilities have only just arrived, so anything gated on one is built
+		   now rather than at boot. */
+		laneEInit();
+		/* MF-017: the pairing code can only be verified once the host has told this
+		   page it is there. */
+		maybeVerifyApproval();
+		return;
+	}
+	if (msg.type === 'settings-result') {
+		if (!bridgeSettle(msg, 'settings')) return;
+		onSettingsResult(msg);
+		return;
+	}
+	if (msg.type === 'focus-result') {
+		if (!bridgeSettle(msg, 'focus-session')) return;
+		laneEOnFocusResult(msg);
+		return;
+	}
+	/* An unknown type is not an error and is not logged as one: the host may ship
+	   ahead of the page. */
 }
 
 /* ---- lane B: the settings sheet ---- */
@@ -8294,12 +8128,11 @@ var SETTINGS_COLORS = [
 ];
 var settingsDraft = null;
 
-function gearWanted() {
-	/* Standalone, where the sheet can actually save; or mock mode, where it is the
-	   only way to see the sheet off-glass. Never in iCUE: the property sheet is the
-	   settings surface there, and a second one that cannot write would be a lie. */
-	return isStandalone() || !!mockName;
-}
+/* The sheet is the settings surface in both surfaces now, so the chip always
+   shows. What it can DO differs: a browser preview renders the same controls and
+   says plainly that saving needs the panel host (renderSettingsFoot, onSettingsSave),
+   which is a truthful read-only view rather than a hidden feature. */
+function gearWanted() { return true; }
 
 function settingsCurrent() {
 	var d = {};
@@ -8310,9 +8143,7 @@ function settingsCurrent() {
 	}
 	for (i = 0; i < SETTINGS_SLIDERS.length; i++) {
 		var sl = SETTINGS_SLIDERS[i];
-		var n = Number(getIcueProperty(sl[0]));
-		if (!isFinite(n)) n = sl[2];
-		d[sl[0]] = Math.max(0, Math.min(100, Math.round(n)));
+		d[sl[0]] = Math.max(0, Math.min(100, Math.round(numProp(sl[0], sl[2]))));
 	}
 	for (i = 0; i < SETTINGS_COLORS.length; i++) {
 		var c = SETTINGS_COLORS[i];
@@ -8331,9 +8162,29 @@ function settingsValues() {
 	return settingsDraft;
 }
 
+/* MF-001. The companion half of the sheet can only exist once a document has
+   arrived, and a sheet opened BEFORE the first one - which is what the boot flag
+   does, and what a panel opened the instant the companion starts does - would
+   otherwise show the panel half alone for as long as it stayed open. Caught on the
+   glass in the browser pass, not reasoned about. Guarded on the transition rather
+   than on a flag, so the rebuild happens once and not on every poll. */
+var settingsHadData = null;
+
+function syncSettingsSheet() {
+	if (settingsHadData === everHadData) return;
+	settingsHadData = everHadData;
+	buildSettingsRows();
+}
+
 function openSettingsSheet() {
 	if (!ui.sheetSettings) return;
+	settingsHadData = everHadData;
 	settingsDraft = settingsCurrent();
+	/* MF-001: the companion half re-seeds from the current feed on every open, so a
+	   sheet opened after somebody edited config.json by hand shows what is on disk
+	   rather than what this page last saw. */
+	cfgDraft = null;
+	cfgTouched = null;
 	sheetSessionId = null;
 	sheetGen++;
 	sheetOpenState = null;
@@ -8349,7 +8200,9 @@ function openSettingsSheet() {
 	setVar(ui.sheet, '--sheet-accent', 'var(--accent)');
 	setText(ui.sheetTitle, 'Panel settings');
 	ui.sheetTitle.classList.remove('title-derived');
-	setText(ui.sheetRepo, panelBridge() ? 'saved to panel-settings.json' : 'preview only');
+	setText(ui.sheetRepo, panelBridge()
+		? 'panel settings on this machine, companion settings in the companion'
+		: 'browser preview ' + EMDASH + ' panel settings cannot be saved here');
 	buildSettingsRows();
 	ui.sheet.classList.add('open');
 	ui.sheet.setAttribute('aria-hidden', 'false');
@@ -8357,15 +8210,18 @@ function openSettingsSheet() {
 }
 
 /* Built in JS rather than written into index.html, for the reason the burn list and
-   the card grid are: iCUE parses index.html as strict XML, and thirty controls of
-   static markup is thirty chances to ship an unclosed element to a surface with no
-   devtools. The region in the markup is one empty div. */
+   the card grid are: the rows depend on state that only exists at runtime, and the
+   set changes with the feed. The region in the markup is one empty div. */
 function buildSettingsRows() {
 	var root = ui.sheetSettings;
 	if (!root) return;
 	var values = settingsValues();
 	root.textContent = '';
 	var i;
+	/* TWO HALVES, SEPARATELY HEADED AND SEPARATELY SAVED, because they go to two
+	   different places and a control that does not say where it writes is a control
+	   the operator has to guess at. */
+	root.appendChild(settingsSection('This panel', 'stored on this machine by the panel host'));
 	for (i = 0; i < SETTINGS_TOGGLES.length; i++) {
 		root.appendChild(settingsToggleRow(SETTINGS_TOGGLES[i][0], SETTINGS_TOGGLES[i][1], values));
 	}
@@ -8376,25 +8232,214 @@ function buildSettingsRows() {
 		root.appendChild(settingsSliderRow(SETTINGS_SLIDERS[i], values));
 	}
 	root.appendChild(settingsActions());
+
+	/* MF-001. Presence-gated on having a document at all: with nothing from the
+	   companion there is nothing to seed these controls from, and a sheet that
+	   offered to write quiet hours to a companion it has never heard from would be
+	   offering to overwrite a file it cannot read. */
+	if (everHadData) {
+		root.appendChild(settingsSection('Companion', 'sent to the SideCrab companion, only the keys you change'));
+		root.appendChild(cfgToggleRow('Quiet hours', 'quietEnabled'));
+		root.appendChild(cfgTimeRow('Quiet from', 'quietStart'));
+		root.appendChild(cfgTimeRow('Quiet until', 'quietEnd'));
+		root.appendChild(cfgToggleRow('Desktop toasts', 'toastEnabled'));
+		root.appendChild(cfgRangeRow('Toast after', 'toastSec', TOAST_SEC_MIN, TOAST_SEC_MAX, 10, fmtApprovalSec));
+		root.appendChild(cfgRangeRow('Approval toast after', 'approvalSec', APPROVAL_SEC_MIN, 300, 5, fmtApprovalSec));
+		root.appendChild(cfgToggleRow('Daily digest', 'digestEnabled'));
+		root.appendChild(cfgTimeRow('Digest at', 'digestTime'));
+		root.appendChild(cfgToggleRow('Daily token budget', 'budgetEnabled'));
+		root.appendChild(cfgRangeRow('Budget per day', 'budgetK', BUDGET_K_MIN, BUDGET_K_MAX, 100,
+			function (k) { return fmtNum(k * 1000) + ' out'; }));
+		root.appendChild(configActions());
+		root.appendChild(configPromptsRow());
+		/* MF-017: the readiness the approval sheet only shows while a permission is
+		   waiting, said here where it can be read at any time. */
+		var ready = approvalReadiness();
+		if (ready !== null) {
+			var line = document.createElement('div');
+			line.className = 'set-foot set-foot-ready' + (ready === 'ready' ? '' : ' bad');
+			line.textContent = approvalReadyText(ready);
+			root.appendChild(line);
+		}
+	}
 	renderSettingsFoot();
 }
+
+/* MF-001. A GENERIC toggle, bound to a getter and a setter rather than to the
+   panel-settings draft, because the companion half of this sheet writes somewhere
+   else entirely. The accessibility wiring is settingsToggleRow's (SCA-008) and is
+   not re-derived here. */
+function cfgToggleRow(label, key) {
+	var row = settingsRow(label);
+	var btn = document.createElement('button');
+	btn.type = 'button';
+	btn.className = 'set-btn set-toggle';
+	btn.id = 'setToggle' + (++setIdSeq);
+	btn.setAttribute('aria-labelledby', row.labelId + ' ' + btn.id);
+	paintSettingsToggle(btn, !!configValues()[key]);
+	btn.addEventListener('click', function () {
+		var next = !configValues()[key];
+		configSet(key, next);
+		paintSettingsToggle(btn, next);
+	});
+	row.appendChild(btn);
+	return row;
+}
+
+/* An HH:MM field. A text input and not <input type="time">: the panel is driven by
+   a fingertip on a wall display with no system time picker to pop, and the native
+   control renders a locale-dependent widget this stylesheet cannot size. normHm is
+   the validator on save and the field itself is left alone while it is being typed,
+   because correcting a half-typed "9:" under the operator's finger is the control
+   fighting the person using it. */
+function cfgTimeRow(label, key) {
+	var row = settingsRow(label);
+	var input = document.createElement('input');
+	input.type = 'text';
+	input.className = 'set-text';
+	input.id = 'setText' + (++setIdSeq);
+	input.setAttribute('aria-labelledby', row.labelId + ' ' + input.id);
+	input.setAttribute('inputmode', 'numeric');
+	input.setAttribute('placeholder', 'HH:MM');
+	input.setAttribute('maxlength', '5');
+	input.value = String(configValues()[key] || '');
+	input.addEventListener('input', function () { configSet(key, input.value); });
+	row.appendChild(input);
+	return row;
+}
+
+/* A range with its own bounds and its own unit, against settingsSliderRow's fixed
+   0..100. The value beside it is formatted by the caller, because "120 s" and
+   "5000k out" are different enough that one formatter would be a switch. */
+function cfgRangeRow(label, key, min, max, step, fmt) {
+	var row = settingsRow(label);
+	var input = document.createElement('input');
+	input.type = 'range';
+	input.className = 'set-range';
+	input.id = 'setRange' + (++setIdSeq);
+	input.setAttribute('aria-labelledby', row.labelId + ' ' + input.id);
+	input.min = String(min);
+	input.max = String(max);
+	input.step = String(step);
+	input.value = String(configValues()[key]);
+	var out = document.createElement('span');
+	out.className = 'set-value';
+	out.textContent = fmt(Number(input.value));
+	input.addEventListener('input', function () {
+		var n = Math.max(min, Math.min(max, Math.round(Number(input.value) || min)));
+		configSet(key, n);
+		out.textContent = fmt(n);
+	});
+	row.appendChild(input);
+	row.appendChild(out);
+	return row;
+}
+
+/* A heading that spans both columns of the sheet's grid. */
+function settingsSection(text, note) {
+	var el = document.createElement('div');
+	el.className = 'set-section';
+	var h = document.createElement('span');
+	h.className = 'set-section-head';
+	h.textContent = text;
+	el.appendChild(h);
+	if (note) {
+		var n = document.createElement('span');
+		n.className = 'set-section-note';
+		n.textContent = note;
+		el.appendChild(n);
+	}
+	return el;
+}
+
+/* MF-001. The companion's own Save, with its own status line, because it writes
+   somewhere else: the panel settings go to a file on this machine through the host
+   bridge, and these go to the companion over HTTP. One button for both would have
+   been one button with two failure modes and no way to say which had happened. */
+function configActions() {
+	var row = document.createElement('div');
+	row.className = 'set-actions set-actions-cfg';
+	var save = document.createElement('button');
+	save.type = 'button';
+	save.className = 'set-btn set-btn-save';
+	save.textContent = 'Save to companion';
+	save.addEventListener('click', onConfigSave);
+	row.appendChild(save);
+	var status = document.createElement('div');
+	status.className = 'set-status';
+	row.appendChild(status);
+	ui.cfgStatus = status;
+	return row;
+}
+
+/* THE PROJECT PROMPTS ARE SHOWN AND NOT EDITED, and that is a decision rather than
+   an omission. The list is a per-repo vocabulary of full instruction sentences kept
+   in the companion's config.json; a 48 px touch target on a wall display is the
+   wrong editor for a paragraph, and an edit surface here would be a second writer
+   of a file the operator already edits properly somewhere else. What the panel owes
+   is the answer to "which prompts is THIS session offered, and where do they come
+   from", which is what this renders.
+   The file is named without a path: nothing in the feed states one, and a path this
+   panel invented would be a fact it does not have. */
+function configPromptsRow() {
+	/* The session whose vocabulary this is. detailTarget() is deliberately NOT used:
+	   it PICKS a session when none is chosen, which moves the Detail page's subject
+	   and its generation, and a settings sheet must not invalidate an action receipt
+	   by being opened. An already-chosen session or nothing. */
+	var id = laneCActionSessionId() || detailSessionId;
+	var s = id ? findSession(id) : null;
+	var list = continueButtons(s || null);
+	var el = document.createElement('div');
+	el.className = 'set-prompts';
+	var head = document.createElement('div');
+	head.className = 'set-label';
+	head.textContent = s && s.repo ? 'Continue prompts for ' + String(s.repo) : 'Continue prompts';
+	el.appendChild(head);
+	for (var i = 0; i < list.length; i++) {
+		var line = document.createElement('div');
+		line.className = 'set-prompt';
+		line.textContent = list[i].prompt;
+		el.appendChild(line);
+	}
+	var foot = document.createElement('div');
+	foot.className = 'set-foot';
+	foot.textContent = 'edited in the companion config file (continuePrompts, continuePromptsByRepo, continuePromptsByPath)';
+	el.appendChild(foot);
+	return el;
+}
+
+/* One id per settings control, so a label element and the control beside it can be
+   associated without either of them guessing at the other's id. Rows are rebuilt on
+   every save, so the counter rather than the key: a stale id left in the document
+   would otherwise be pointed at by the new row. */
+var setIdSeq = 0;
 
 function settingsRow(label) {
 	var row = document.createElement('div');
 	row.className = 'set-row';
 	var name = document.createElement('div');
 	name.className = 'set-label';
+	name.id = 'setLabel' + (++setIdSeq);
 	name.textContent = label;
 	row.appendChild(name);
+	row.labelId = name.id;
 	return row;
 }
 
+/* SCA-008. The BUTTON'S FACE IS THE STATE ("On"/"Off"), which made the accessible
+   name of all five toggles "On" or "Off" and nothing else - five controls an
+   assistive technology could not tell apart, on a sheet whose whole content is five
+   controls. aria-labelledby names the row label FIRST and the button's own face
+   second, so the name reads "24-hour clock Off"; aria-pressed carries the state as
+   well, for a reader that uses it. The visible layout is untouched. */
 function settingsToggleRow(key, label, values) {
 	var row = settingsRow(label);
 	var btn = document.createElement('button');
 	btn.type = 'button';
 	btn.className = 'set-btn set-toggle';
+	btn.id = 'setToggle' + (++setIdSeq);
 	btn.setAttribute('data-set-key', key);
+	btn.setAttribute('aria-labelledby', row.labelId + ' ' + btn.id);
 	paintSettingsToggle(btn, !!values[key]);
 	btn.addEventListener('click', function () {
 		var next = !settingsValues()[key];
@@ -8421,18 +8466,20 @@ function settingsColorRow(spec, values) {
 	var current = normHex(values[key], spec[2]);
 	if (palette.indexOf(current) === -1) palette.push(current);
 	for (var i = 0; i < palette.length; i++) {
-		wrap.appendChild(settingsSwatch(key, palette[i], current));
+		/* The row's VISIBLE label, not the property name: "Accent #6F94CC" is what
+		   the sheet shows, and "accentColor #6F94CC" was a name only this file uses. */
+		wrap.appendChild(settingsSwatch(key, palette[i], current, spec[1]));
 	}
 	row.appendChild(wrap);
 	return row;
 }
 
-function settingsSwatch(key, hex, current) {
+function settingsSwatch(key, hex, current, label) {
 	var b = document.createElement('button');
 	b.type = 'button';
 	b.className = 'set-swatch';
 	b.setAttribute('data-set-key', key);
-	b.setAttribute('aria-label', key + ' ' + hex);
+	b.setAttribute('aria-label', (label || key) + ' ' + hex);
 	b.setAttribute('title', hex);
 	b.style.background = hex;
 	b.setAttribute('aria-pressed', hex === current ? 'true' : 'false');
@@ -8487,6 +8534,18 @@ function settingsActions() {
 	   from a broken one. The automatic chime keeps its quiet gate. */
 	test.addEventListener('click', function () {
 		var v = settingsValues();
+		/* SCA-026 — MUTED IS NOT BROKEN. playChime returns false for a zero peak
+		   exactly as it does for a host with no AudioContext, and this handler read
+		   both as the second: setting the slider to 0 and pressing Test chime
+		   reported "no audio output on this host", which sent the operator looking
+		   for a driver fault they had caused themselves with the control above.
+		   Asked FIRST, because a muted panel on a host with no audio is still muted
+		   and that is the fact the operator set. The test deliberately reads the
+		   UNSAVED slider value, which is what makes it a test. */
+		if (!(Number(v.chimeVolume) > 0)) {
+			setSettingsStatus('muted ' + EMDASH + ' chime volume is 0', 'note');
+			return;
+		}
 		if (playChime(v.chimeVolume)) setSettingsStatus('played at ' + v.chimeVolume + '%', 'ok');
 		else setSettingsStatus('no audio output on this host', 'err');
 	});
@@ -8522,44 +8581,62 @@ function setSettingsStatus(text, kind) {
 	}
 }
 
-/* What the sheet says about WHERE a save goes. Honest in all three hosts: the file
-   the host named, or the plain statement that there is nothing to save to. */
+/* What the sheet says about WHERE a save goes, and it is honest in all four states
+   a page can be in: no host at all, a host that has not answered the handshake yet,
+   a host that answered and cannot save, and a host that can. */
 function renderSettingsFoot() {
 	if (!ui.setFoot) return;
 	if (!panelBridge()) {
-		setText(ui.setFoot, 'saving needs the SideCrab panel host');
+		setText(ui.setFoot, 'browser preview ' + EMDASH + ' saving needs the SideCrab panel host');
 		return;
 	}
-	if (hostInfo && typeof hostInfo.settingsPath === 'string') {
-		setText(ui.setFoot, 'panel host ' + (hostInfo.version || '') + ' ' + EMDASH + ' ' + hostInfo.settingsPath);
+	if (!hostInfo) { setText(ui.setFoot, 'waiting for the panel host'); return; }
+	if (!hostCan('saveSettings')) {
+		setText(ui.setFoot, 'this panel host does not save settings');
 		return;
 	}
-	setText(ui.setFoot, 'panel host connected');
+	setText(ui.setFoot, 'panel host ' + (hostInfo.version || '') +
+		(typeof hostInfo.settingsPath === 'string' ? ' ' + EMDASH + ' ' + hostInfo.settingsPath : ''));
 }
 
 function onSettingsSave() {
-	var b = panelBridge();
-	if (!b) {
+	if (!panelBridge()) {
 		/* The honest answer, and the whole reason the sheet still renders here: this
 		   page in a plain browser has no file to write and no host to write it. */
 		setSettingsStatus('saving needs the SideCrab panel host', 'err');
 		return;
 	}
-	try { b.postMessage({ type: 'settings', props: settingsValues() }); }
-	catch (e) {
+	if (!hostInfo) { setSettingsStatus('the panel host has not answered yet', 'err'); return; }
+	if (!hostCan('saveSettings')) { setSettingsStatus('this panel host does not save settings', 'err'); return; }
+	var sent = bridgeSend('settings', { props: settingsValues() }, function () {
+		/* SCA-021: a request the host accepted and never answered ends HERE rather
+		   than sitting on "saving" until somebody reloads the panel. */
+		setSettingsStatus('no answer from the host ' + EMDASH + ' nothing was saved', 'err');
+	});
+	if (!sent) {
 		setSettingsStatus('save not sent ' + EMDASH + ' the host refused the message', 'err');
 		return;
 	}
 	setSettingsStatus('saving', 'pending');
 }
 
-/* The host's answer, and the ONLY thing that moves the live props: what it echoes
-   back is what it actually stored, after its own whitelist and clamps, which is
-   not necessarily what this page sent. */
-function onSettingsSaved(props) {
-	if (!props || typeof props !== 'object') { setSettingsStatus('nothing saved', 'err'); return; }
-	var host = typeof window !== 'undefined' ? window.__sidecrabHost : null;
-	if (host && typeof host === 'object' && host.props && typeof host.props === 'object') {
+/* The host's TERMINAL answer to one save, success or failure. What it echoes back
+   in `props` is what it actually stored, after its own whitelist and clamps, which
+   is not necessarily what this page sent - so that, and only that, is what moves
+   the live settings. */
+function onSettingsResult(msg) {
+	if (msg.ok !== true) {
+		var why = typeof msg.error === 'string' && msg.error ? msg.error : 'the host could not write it';
+		setSettingsStatus('not saved ' + EMDASH + ' ' + why, 'err');
+		return;
+	}
+	var props = msg.props;
+	if (!props || typeof props !== 'object' || Array.isArray(props)) {
+		setSettingsStatus('saved, but the host echoed nothing back', 'note');
+		return;
+	}
+	var host = hostBoot();
+	if (host && host.props && typeof host.props === 'object') {
 		for (var k in props) {
 			if (Object.prototype.hasOwnProperty.call(props, k)) host.props[k] = props[k];
 		}
@@ -8590,7 +8667,7 @@ function laneBInit() {
 	bridgeInit();
 	sseStart();
 	/*   &settings=1   open the settings sheet on boot, for the shot. Mock-gated like
-	     every other dev flag, so it is unreachable from the iCUE origin. */
+	     every other dev flag. */
 	if (mockName && /[?&]settings=1\b/.test(window.location.search)) openSettingsSheet();
 }
 
@@ -8598,7 +8675,7 @@ function laneBInit() {
 
 function init() {
 	var ids = ['flash', 'banner', 'bannerText', 'crab', 'crabWrap', 'limitsHead', 'clockHm', 'clockSs', 'clockDate',
-		'quietNote', 'fleet', 'fleetGlow', 'fleetToast',
+		'quietNote', 'fleet', 'fleetToast',
 		'moonChip', 'moonMode', 'moonLeft',
 		'diagChip', 'diagCount',
 		'limitsSource',
@@ -8613,7 +8690,7 @@ function init() {
 		'sheetMeta', 'sheetSubs', 'sheetEvents', 'sheetBurn', 'sheetTimeline', 'sheetWeek', 'sheetHost',
 		'sheetPin', 'sheetBack', 'sheetDayFoot', 'sheetPrevDay', 'sheetNextDay',
 		'sheetApprovalDetail', 'sheetApprovalTool', 'sheetApprovalSummary', 'sheetApprovalLeft',
-		'sheetApprovalThreshold', 'sheetApprove', 'sheetDeny',
+		'sheetApprovalThreshold', 'sheetApprovalReady', 'sheetApprove', 'sheetDeny',
 		'sheetContinue', 'sheetContinueBtns', 'sheetContinueStatus',
 		'notice', 'noticeText',
 		/* lane C: the view switcher's chips and containers, and the canvas crab. */
@@ -8629,8 +8706,8 @@ function init() {
 	var m = /[?&]mock=([a-z]+)/i.exec(window.location.search);
 	if (m && MOCKS.indexOf(m[1].toLowerCase()) !== -1) mockName = m[1].toLowerCase();
 
-	/* Dev-only flags, all gated on mock mode — they must never be reachable from
-	   the iCUE origin, where there is no query string to carry them anyway.
+	/* Dev-only flags, all gated on mock mode: a panel reading a live companion must
+	   never be steerable by a query string somebody put in front of it.
 	     &sheet=<id|prefix|first>   auto-open the ACTION sheet on a needs_input row
 	     &sheet2=<id|prefix|first>  auto-open the DETAIL sheet on any other row
 	     &age=<minutes>             back-date needs_input for the escalation tiers
@@ -8745,58 +8822,6 @@ function init() {
 		     point: a frozen number would photograph a clock, not a countdown. */
 		var hd = /[?&]hold=(\d+)/.exec(window.location.search);
 		if (hd) holdOverrideSec = Number(hd[1]);
-		/*   &approvalsec=<seconds>  stand in for the iCUE `approvalThreshold`
-		     property, the same way &uid= stands in for uniqueId (v0.16.0). A dev
-		     browser has no property sheet at all, so without this the only
-		     observable state of the approval threshold off-glass is its default —
-		     and the whole point of the setting is what happens when it MOVES.
-		     It feeds approvalPropertySec() and nothing else, so what is exercised is
-		     the real baseline/touch/POST path: boot once with no flag (the body logs
-		     no approvalThresholdSec), reload with the flag on the SAME &uid= (the
-		     value moved off the recorded baseline, so the key is now in the body and
-		     stays there). */
-		var apx = /[?&]approvalsec=(\d+)/.exec(window.location.search);
-		if (apx) approvalForcedSec = Number(apx[1]);
-		/*   &sensors=<cpu>[,<gpu>][,C|F]  stand in for the iCUE Sensors bridge
-		     (v0.17.0). Two numbers so the amber (80) and red (90) steps are
-		     reachable, and the unit letter so the Fahrenheit branch — which is
-		     deliberately left uncoloured — has a shot too. */
-		var sn = /[?&]sensors=(\d{1,3})(?:,(\d{1,3}))?(?:,([CF]))?\b/i.exec(window.location.search);
-		if (sn) {
-			sensorForced = {
-				cpu: Number(sn[1]),
-				gpu: sn[2] === undefined ? Number(sn[1]) : Number(sn[2]),
-				units: (sn[3] || 'C').toUpperCase(),
-				/* iCUE's own shape for these on a correctly-configured machine, so the
-				   off-glass default is the row the operator ought to be looking at. */
-				cpuName: 'CPU Package',
-				gpuName: 'GPU Core'
-			};
-		}
-		/*   &sensors=none  the bridge is HERE and neither property holds an id — the
-		     fresh-import case (v0.21.0). Parsed as its own branch rather than as a
-		     number, because "no sensor selected" is not a temperature and the whole
-		     point of the state is that sensorIdFor returns the same empty string an
-		     unset iCUE property gives. */
-		if (/[?&]sensors=none\b/i.test(window.location.search)) {
-			sensorForced = { none: true, cpu: 0, gpu: 0, units: 'C', cpuName: '', gpuName: '' };
-		}
-		/*   &sensornames=<cpu>|<gpu>  what getSensorName answers (v0.21.0). Either
-		     side may be empty for the no-label path; the pipe is the separator
-		     because a sensor name may well contain a comma and cannot contain one of
-		     these without already being a path the shortener splits on. */
-		var snm = /[?&]sensornames=([^&]*)/i.exec(window.location.search);
-		if (snm && sensorForced) {
-			var parts = decodeURIComponent(snm[1].replace(/\+/g, ' ')).split('|');
-			sensorForced.cpuName = parts[0] === undefined ? '' : parts[0];
-			sensorForced.gpuName = parts[1] === undefined ? '' : parts[1];
-		}
-		/*   &sensorsame=1  both properties resolve to ONE id (v0.21.0) — the
-		     operator's measured defect, reproduced rather than simulated. It moves
-		     sensorIdFor and nothing else, so the same-sensor test, the skipped GPU
-		     read and the warning cell are all the shipping path answering about real
-		     state. */
-		if (/[?&]sensorsame=1\b/.test(window.location.search)) sensorForcedSame = true;
 		/*   &quietov=on|off|auto|none  stand in for crabd's quiet OVERRIDE (v0.22.0).
 		     It seeds the harness's daemon, not the widget: applyMockQuietOverride
 		     writes the member into the served document and honours it in `active`
@@ -8814,7 +8839,7 @@ function init() {
 				? { mode: qmode, until: Date.now() + QUIET_OVERRIDE_MIN * 60000 }
 				: { mode: 'auto', until: null };
 		}
-		/*   &touchdiag=1  stand in for the iCUE `touchDiag` switch (v0.23.0), the way
+		/*   &touchdiag=1  stand in for the `touchDiag` setting (v0.23.0), the way
 		     &approvalsec= stands in for the approval slider. A dev browser has no
 		     property sheet, and the capture layer's whole value is what it records on
 		     a real input device — so the one place it can be exercised against a
@@ -8825,21 +8850,6 @@ function init() {
 		/*   &mood=<mood>              hold one crab mood for the shot (v0.17.0) */
 		var md = /[?&]mood=([a-z]+)/i.exec(window.location.search);
 		if (md && MOODS.indexOf(md[1].toLowerCase()) !== -1) moodForced = md[1].toLowerCase();
-		/*   &sensorlog=1  every read outcome to the console, not just the failures
-		     and the health transitions (v0.18.0). Off by default because a healthy
-		     panel reads two sensors every 10 s and would otherwise fill the console
-		     with ~17,000 lines a day saying nothing changed. The ring buffer at
-		     window.__sidecrabSensorLog holds the last SENSOR_LOG_MAX either way,
-		     which is what a debugger attached AFTER a freeze can read. */
-		if (/[?&]sensorlog=1\b/.test(window.location.search)) sensorLogVerbose = true;
-		/*   &sensorfail=1  make every sensor read reject, so the staleness cue can
-		     be watched arriving (v0.18.0). Applied to the forced bridge, so what is
-		     exercised is the real reject path through readSensor: keep the number
-		     for SENSOR_STALE_MS, then dim it. Pair with &sensorstale=<ms> to avoid
-		     waiting the full minute for a screenshot. */
-		if (/[?&]sensorfail=1\b/.test(window.location.search)) sensorForcedFail = true;
-		var ss = /[?&]sensorstale=(\d{1,7})/.exec(window.location.search);
-		if (ss) SENSOR_STALE_MS = Number(ss[1]);
 	}
 
 	/* Before the first render: a pinned session must be in its pinned position on
@@ -8915,8 +8925,7 @@ function init() {
 	});
 
 	ui.ready = true;
-	/* iCUE evaluates tr() in <title>; a browser renders the literal. */
-	if (isStandalone()) { try { document.title = 'SideCrab'; } catch (e) {} }
+	/* CLEAN-07: the title is static in index.html. Nothing repairs it here. */
 	applyProperties();
 	tick();
 	poll();
@@ -8926,7 +8935,6 @@ function init() {
 	setInterval(tick, 1000);
 	if (forcedTrick) startForcedTrick(forcedTrick);
 	scheduleBlink();
-	sensorBootCheck();
 }
 
 /* Dev-only, mock mode only: hold one trick running so it can be photographed.
@@ -9057,14 +9065,9 @@ function autoOpenMatch(target, wantWaiting) {
    for the same reason: an older crabd sends none of this, a current one may send
    any member as null, and both have to land on "the segment is simply absent".
 
-   WHICH SOURCE OWNS A TEMPERATURE. The bridge, when there is one. `sensorApi` is
-   bound only inside iCUE (or behind the dev &sensors= flag), and where it is bound
-   the operator has PICKED the two sensors those cells are about — a companion-side
-   list must not overwrite a choice. Where there is no bridge (the standalone host,
-   and a plain browser) these cells are the only temperatures the panel has, so
-   they render. Deliberately keyed on the BRIDGE and not on isStandalone(): the
-   question this answers is "does something already own these cells", and an iCUE
-   install whose Sensors plugin is missing is the same answer as a dev browser. */
+   WHICH SOURCE OWNS A TEMPERATURE. This block does, and since CLEAN-03 it is the
+   only one: the vendor sensor bridge that used to own the CPU and GPU cells is
+   retired, so the companion's readings are the only temperatures the panel has. */
 
 var hostSensors = [];            /* host.sensors, as served */
 var hostSensorsSource = null;    /* host.sensorsSource, or null when absent */
@@ -9088,11 +9091,9 @@ var laneAPaintedGpu = false;
    the whole feed is called stale at and the number crabd's own sensorsSource uses,
    so the panel has ONE definition of old. */
 var LANE_A_STALE_MS = 30000;
-/* 11 characters, against the bridge row's 13 (SENSOR_NAME_MAX), and it is the row's
-   width guarantee rather than a preference: the CSS cap that backs it is 11 vmin
-   (79.2 px at 2560x720) instead of 13.5, which is what pays for the extra cell. The
-   number is chosen the way v0.21.0 chose 13.5 - off the label that will actually
-   paint. HWiNFO's CPU label here is "CPU (Tctl/Tdie)", which this block shortens to
+/* 11 characters, and it is the row's width guarantee rather than a preference: the
+   CSS cap that backs it is 11 vmin (79.2 px at 2560x720), which is what pays for the
+   extra cell. The number is chosen off the label that will actually paint. HWiNFO's CPU label here is "CPU (Tctl/Tdie)", which this block shortens to
    "Tctl/Tdie": 9 characters, inside the clamp with room, so the most ordinary label
    on this row is not the one that ellipses. */
 var LANE_A_NAME_MAX = 11;
@@ -9103,8 +9104,6 @@ var LANE_A_SENSOR_CLASSES = [
 	['gpu', /\bgpu\b|\bvideo\b/i],
 	['cpu', /\bcpu\b|\btctl\b|\btdie\b|\bccd\d*\b|\bdie\b|package/i]
 ];
-
-function laneASensorsOwnTheRow() { return !sensorApi; }
 
 /* One served sensor's class. Matched on the LABEL in specificity order, the same
    walk crabd ranks with — a VRM probe labelled "CPU VDDCR_VDD VRM (SVI3 TFN)" is a
@@ -9147,10 +9146,10 @@ function laneAFan() {
 	return best ? { sensor: best, count: count, all: all } : null;
 }
 
-/* HWiNFO's labels are already short and already name the sensor, so this is NOT
-   shortSensorName: that one splits on "/" to take the last segment of an iCUE
-   device path, and "CPU (Tctl/Tdie)" — the single most likely label on this row —
-   comes out of it as "Tdie)". Here the cell key already says CPU or GPU, so the
+/* HWiNFO's labels are already short and already name the sensor, so the shortener
+   this replaced - which split on "/" to take the last segment of a vendor device
+   path, and turned "CPU (Tctl/Tdie)" into "Tdie)" - was the wrong tool and went with
+   that bridge. Here the cell key already says CPU or GPU, so the
    leading word is dropped, the brackets go with it, and the trailing
    "Temperature" the degree sign has already said goes too. Same 13-character
    clamp as the bridge's labels, so the row's width guarantee is one number. */
@@ -9207,7 +9206,7 @@ function laneASensorsStale() {
    ONE place from all of the state. */
 /* Does the companion have a temperature of its own? Asked by the shipping sheet
    before it says there are none. Not laneAAnyCell: that one asks whether this block
-   OWNS the row, and inside iCUE the bridge owns it while these readings still exist. */
+   OWNS the row, which since CLEAN-03 it always does. */
 function laneAHasTemps() {
 	for (var i = 0; i < hostSensors.length; i++) {
 		if (hostSensors[i] && hostSensors[i].kind === 'temp' &&
@@ -9219,7 +9218,6 @@ function laneAHasTemps() {
 }
 
 function laneAAnyCell() {
-	if (!laneASensorsOwnTheRow()) return false;
 	return !!(laneAGpuOn() || laneAFirstOfClass('cpu'));
 }
 
@@ -9228,11 +9226,10 @@ function laneAAnyCell() {
    but with a readable HWiNFO mapping would have had its temperature computed, served,
    and then hidden by a visibility test that had never heard of it. */
 function laneACpuOn() {
-	return !!(laneASensorsOwnTheRow() && laneAFirstOfClass('cpu'));
+	return !!laneAFirstOfClass('cpu');
 }
 
 function laneAGpuOn() {
-	if (!laneASensorsOwnTheRow()) return false;
 	return !!(laneAGpuTemp() !== null || (hostGpu && laneANum(hostGpu.utilPct) !== null));
 }
 
@@ -9313,18 +9310,14 @@ function laneAPaintTemp(el, value, unit) {
 /* The row's lane A half, painted after syncSensorRow has decided the rest. */
 function syncLaneASensorCells() {
 	if (!laneABuildCells()) return;   /* the row is not in the DOM yet */
-	var own = laneASensorsOwnTheRow();
 	var stale = laneASensorsStale();
-
-	/* THE CPU AND GPU CELLS ARE SHARED with the bridge, so they are only written
-	   here when nothing else owns them — and when the bridge takes over, what this
-	   block wrote is cleared rather than left behind. */
-	var cpu = own ? laneAFirstOfClass('cpu') : null;
-	var gpuTemp = own ? laneAGpuTemp() : null;
+	var cpu = laneAFirstOfClass('cpu');
+	var gpuTemp = laneAGpuTemp();
 	var cpuName = cpu ? shortHostSensorName(cpu.name) : '';
-	/* The tighter name cap travels with the state that needs it, so a row the bridge
-	   owns keeps its own 13.5 vmin exactly as it does today. */
-	ui.sensors.classList.toggle('host-sensors', own);
+	/* The class carries the tighter name cap this block's labels are measured
+	   against. Since CLEAN-03 it is the row's only state, so it is set once here
+	   rather than switched with an owner. */
+	ui.sensors.classList.add('host-sensors');
 
 	if (cpu && ui.sensorCpuVal) {
 		laneAPaintTemp(ui.sensorCpuVal, cpu.value, cpu.unit);
@@ -9340,9 +9333,8 @@ function syncLaneASensorCells() {
 		/* WHAT THIS BLOCK WROTE, THIS BLOCK CLEARS, and the NAME goes with the value:
 		   a crabd that stops serving `host.sensors` (a downgrade, or HWiNFO closing)
 		   left "Tctl/Tdie" sitting beside the load percentage with no reading behind
-		   it - a label for a temperature that is no longer on the glass. That is
-		   v0.21.0's hideSensor lesson, one source along. Guarded on having painted,
-		   so this can never blank a cell the BRIDGE owns. */
+		   it - a label for a temperature that is no longer on the glass. Guarded on
+		   having painted, so a cell nothing wrote is a cell nothing clears. */
 		laneAPaintedCpu = false;
 		setText(ui.sensorCpuVal, '');
 		ui.sensorCpuVal.classList.remove('stale');
@@ -9352,7 +9344,7 @@ function syncLaneASensorCells() {
 		ui.sensorCpuName.removeAttribute('aria-label');
 	}
 
-	if ((own || laneAPaintedGpu) && ui.sensorGpuVal) {
+	if (ui.sensorGpuVal) {
 		laneAPaintedGpu = gpuTemp !== null;
 		if (gpuTemp !== null) {
 			var gpuUnit = hostGpu && laneANum(hostGpu.tempC) !== null ? 'C'
@@ -9362,7 +9354,7 @@ function syncLaneASensorCells() {
 		} else {
 			setText(ui.sensorGpuVal, '');
 		}
-		var util = own && hostGpu ? laneANum(hostGpu.utilPct) : null;
+		var util = hostGpu ? laneANum(hostGpu.utilPct) : null;
 		if (ui.hostGpuVal) {
 			setText(ui.hostGpuVal, util === null ? '' : Math.round(util) + '%');
 			ui.hostGpuVal.classList.toggle('shown', util !== null);
@@ -9394,10 +9386,7 @@ function laneASampleHost(doc) {
 		disk: laneASum(load, 'diskReadBps', 'diskWriteBps'),
 		net: laneASum(load, 'netRxBps', 'netTxBps')
 	});
-	var cut = now - HOST_WINDOW_MS;
-	while (laneARing.length && (laneARing[0].t < cut || laneARing.length > HOST_RING_MAX)) {
-		laneARing.shift();
-	}
+	hostRingTrim(laneARing, now);
 }
 
 /* Two halves of one throughput figure. Null unless BOTH are readable: "1.2 MB/s of
@@ -9768,10 +9757,10 @@ function laneAPlot(key, scaleMax) {
    is prompt injection wearing a different hat. Bringing the window forward is the
    mitigation, and the person answers.
 
-   STANDALONE ONLY, gated on the BRIDGE rather than on isStandalone() - the rule
-   lane B's settings sheet keeps. iCUE has no host to ask and a plain browser at
-   /panel/ has no desktop to reach, and both of those are "no bridge". The controls
-   are BUILT rather than hidden, so in iCUE they do not exist at all.
+   GATED ON THE HOST'S OWN ANSWER, not on the page's address - the rule the settings
+   save keeps. A browser preview at /panel/ has no desktop to reach and no host to
+   ask, and a panel host that does not offer focusSession says so. The controls are
+   BUILT rather than hidden, so where the capability is absent they do not exist.
 
    ONE STATUS, TWO SURFACES. The sheet's shared status line is display:none in
    detail mode (.sheet[data-mode="detail"] .sheet-status), which is why the continue
@@ -9799,7 +9788,10 @@ var laneEPending = null;
 var laneESheetStatus = null;
 var laneEDetailStatus = null;
 
-function laneEAvailable() { return panelBridge() !== null; }
+/* The control exists when a host is there to answer it AND has said it can focus a
+   window. Before the handshake lands this is false, so the button appears with the
+   host rather than promising ahead of it. */
+function laneEAvailable() { return panelBridge() !== null && hostCan('focusSession'); }
 
 function laneEButton(cls, label) {
 	var b = document.createElement('button');
@@ -9826,32 +9818,40 @@ function laneETarget() {
 }
 
 function laneESendFocus() {
-	var b = panelBridge();
 	var s = laneETarget();
-	if (!b || !s || !s.id) return;
+	if (!s || !s.id) return;
+	if (!laneEAvailable()) { laneESetStatus('this panel host cannot bring a window to the front', 'err'); return; }
 	laneEPending = String(s.id);
 	laneESetStatus('bringing it to the front', 'pending');
-	try {
-		/* Four FACTS about a session, and never a window handle: the host ranks the
-		   windows it enumerated itself. A handle from here would be a window picker
-		   a visited page could aim anywhere on the desktop. */
-		b.postMessage({
-			type: 'focus-session',
-			sessionId: String(s.id),
-			title: typeof s.title === 'string' ? s.title : '',
-			cwd: typeof s.cwd === 'string' ? s.cwd : '',
-			repo: typeof s.repo === 'string' ? s.repo : ''
-		});
-	} catch (e) {
+	/* Four FACTS about a session, and never a window handle: the host ranks the
+	   windows it enumerated itself. A handle from here would be a window picker a
+	   visited page could aim anywhere on the desktop. */
+	var sent = bridgeSend('focus-session', {
+		sessionId: String(s.id),
+		title: typeof s.title === 'string' ? s.title : '',
+		cwd: typeof s.cwd === 'string' ? s.cwd : '',
+		repo: typeof s.repo === 'string' ? s.repo : ''
+	}, function () {
+		/* SCA-021: the deadline, and the one place a focus request that was accepted
+		   and never answered stops reading as still running. */
+		laneEPending = null;
+		laneESetStatus('no answer from the host', 'err');
+	});
+	if (!sent) {
 		laneEPending = null;
 		laneESetStatus('the host refused the message', 'err');
 	}
 }
 
 function laneEOnFocusResult(msg) {
-	/* A reply carrying a different session is a late answer to an earlier tap. The
-	   operator has moved on and the line belongs to the newer attempt. */
-	if (laneEPending !== null && String(msg.sessionId) !== laneEPending) return;
+	/* The requestId has already matched by the time this runs. The session is checked
+	   as well because the two are meant to agree, and a host that answers about a
+	   different session is one whose answer this page cannot use. */
+	if (laneEPending !== null && String(msg.sessionId) !== laneEPending) {
+		laneEPending = null;
+		laneESetStatus('the host answered about a different session', 'err');
+		return;
+	}
 	laneEPending = null;
 	if (msg.ok === true) {
 		/* Two different true answers, and the page must not blur them. The desktop app
@@ -9906,10 +9906,20 @@ function laneEDetailStatusNode() {
 	return el;
 }
 
+/* BOOT ORDER, and it moved in v0.32.0. The control used to need only a bridge,
+   which is known synchronously at boot; it now needs the host to have SAID it can
+   focus a window, and that answer arrives a round trip later. So this runs at boot
+   AND again when the handshake lands, and is idempotent - without the second call
+   the row would never be built at all, which is what the recheck of this diff
+   caught. The Detail page's own button is rebuilt on every render and needs no
+   equivalent. */
+var laneERowBuilt = false;
+
 function laneEInit() {
-	if (!laneEAvailable()) return;
+	if (laneERowBuilt || !laneEAvailable()) return;
 	var pinRow = ui.sheetPin ? ui.sheetPin.parentNode : null;
 	if (!pinRow || !pinRow.parentNode) return;
+	laneERowBuilt = true;
 	/* Its OWN row, below the pin row and not in it. The pin row's own comment is the
 	   argument: it carries Pin and Full view at a 48 px fingertip floor, and a third
 	   control joining them moves both under a finger already travelling toward one. */
@@ -9955,20 +9965,31 @@ function laneEInit() {
    panel is built to avoid. */
 
 var VIEWS = [
-	{ key: 'sessions', chip: 'chipViewSessions' },
-	{ key: 'burn',     chip: 'chipViewBurn' },
-	{ key: 'week',     chip: 'chipViewWeek' },
-	{ key: 'detail',   chip: 'chipViewDetail' }
+	{ key: 'sessions', chip: 'chipViewSessions', el: null },
+	{ key: 'burn',     chip: 'chipViewBurn',     el: 'viewBurn' },
+	{ key: 'week',     chip: 'chipViewWeek',     el: 'viewWeek' },
+	{ key: 'detail',   chip: 'chipViewDetail',   el: 'viewDetail' }
 ];
 /* The property NAME inside the same vendor-storage object the filter, the
    density and the pin map already share (see savePrefs). One object per widget
    instance is the vendor's own pattern; a second key would be a second thing to
    keep in step. */
+/* The heading each alternate view keeps while it has nothing to draw. The view's
+   own name, not a shared "no data": the operator chose this page and it is still
+   the page they are on. */
+var VIEW_FEED_HEADS = { burn: 'Today', week: 'Last 7 days', detail: 'Session' };
+var viewFeedSig = null;
 var VIEW_PROP = 'gridView';
 var viewIdx = 0;
 var viewStoredUnknown = null;  /* a value a NEWER build wrote — round-tripped, not replaced */
 var viewForced = null;         /* dev-only &view=, mock mode only, in memory only */
 var detailSessionId = null;    /* never persisted: a stored id restores a page for a session that has gone */
+/* SCA-006. The Detail page's half of the surface generation. sheetGen is the
+   sheet's half and already moves on every open and close; this moves whenever the
+   page changes its subject, including the fall-through pick in detailTarget. A
+   receipt writes itself only while BOTH still read what they read when it was
+   sent. */
+var detailGen = 0;
 var viewAlerts = {};           /* ids that started waiting while another view was up */
 var viewPrevState = {};
 var viewPrevSeeded = false;
@@ -10017,6 +10038,62 @@ function applyGridView() {
 	if (document.body.getAttribute('data-grid-view') !== key) {
 		document.body.setAttribute('data-grid-view', key);
 	}
+	syncViewVisibility();
+}
+
+/* Whether the stylesheet is SHOWING the view switcher at this size. Read off a
+   chip's computed display rather than a breakpoint copied into JS: the stylesheet
+   owns the breakpoints in this zone (the 1660 px block, and gridCapacity reads its
+   track lists the same way), and a second copy of the number would drift the first
+   time either moved. Defaults to "usable" where there is no computed style to read,
+   because that is the wide case this panel normally runs in. */
+function viewSwitcherUsable() {
+	var chip = ui[VIEWS[1].chip];
+	if (!chip || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return true;
+	try { return window.getComputedStyle(chip).display !== 'none'; } catch (e) { return true; }
+}
+
+/* SCA-007 — THE ACCESSIBILITY TREE AND THE TAB ORDER FOLLOW THE VISIBLE VIEW.
+
+   The three alternate views shipped with a static aria-hidden="true" and nothing
+   ever cleared it, so a visible Burn, Week or Detail page was a page a screen
+   reader could not see. The card grid is the other half and the worse one: it is
+   never display:none while a view is up (gridCapacity reads its computed track
+   lists, and a display:none grid computes both axes to the single token "none"), so
+   its cards stayed in the tab order as zero-height targets - Tab reached a card
+   nobody could see and Enter opened its sheet.
+
+   THE NARROW FALLBACK IS THE CASE THAT IS EASY TO MISS: below 1660 px the
+   stylesheet hides every alternate view and brings the cards back whatever the
+   stored view says, so the visible view there is the cards and this has to agree
+   with the stylesheet rather than with the stored preference. */
+function syncViewVisibility() {
+	var shown = viewSwitcherUsable() ? currentView().key : 'sessions';
+	var cardsHidden = shown !== 'sessions';
+	setRegionInert(ui.cards, cardsHidden);
+	setRegionInert(ui.gridEmpty, cardsHidden);
+	for (var i = 0; i < VIEWS.length; i++) {
+		if (!VIEWS[i].el) continue;
+		setRegionInert(ui[VIEWS[i].el], VIEWS[i].key !== shown);
+	}
+}
+
+/* aria-hidden AND inert, together, because they answer two different questions: one
+   takes the region out of the accessibility tree, the other takes everything inside
+   it out of the tab order and out of reach of a pointer.
+   INERT RATHER THAN A TABINDEX SWEEP: the cards are rebuilt from scratch on every
+   render and each carries its own focusable controls, so a sweep would have to run
+   again after every rebuild and would be wrong for the frame in between. inert is
+   inherited by whatever is inside and survives the rebuild. */
+function setRegionInert(el, hidden) {
+	if (!el) return;
+	if ((el.getAttribute('aria-hidden') === 'true') !== hidden) {
+		el.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+	}
+	if (!el.hasAttribute || el.hasAttribute('inert') !== hidden) {
+		if (hidden) el.setAttribute('inert', '');
+		else el.removeAttribute('inert');
+	}
 }
 
 function stepGridView(delta) {
@@ -10029,10 +10106,57 @@ function stepGridView(delta) {
 function laneCRenderViews(doc, sessions, status, quiet) {
 	trackViewAlerts(sessions);
 	syncViewChips();
+	/* A slot change is a media query, not an event this file hears about: render()
+	   is debounced onto the resize, so re-deciding here is what keeps the narrow
+	   fallback's tab order right after the panel is made narrower. */
+	syncViewVisibility();
 	var key = currentView().key;
+	if (key === 'sessions') { viewFeedSig = null; return; }
+	/* SCA-018 — AN UNAVAILABLE FEED IS NOT AN EMPTY ONE, in every view and not only
+	   in the Sessions page. A panel saved on Detail and restarted against a
+	   companion that was absent, or that answered with a schema this build cannot
+	   read, rendered "No active Claude sessions." - a confident statement about a
+	   fleet nobody had managed to ask about. Each alternate view had its own empty
+	   wording and none of them knew the difference, so the state is decided ONCE
+	   here and the three views are handed it. */
+	if (!everHadData) {
+		if (renderViewFeedState(key)) burnViewSig = weekViewSig = detailViewSig = null;
+		return;
+	}
+	viewFeedSig = null;
 	if (key === 'burn') renderBurnView(doc);
 	else if (key === 'week') renderWeekView(doc);
 	else if (key === 'detail') renderDetailView(sessions, quiet);
+}
+
+/* The one sentence about a feed that has told this panel nothing it can use. Two
+   of them, because the two causes send the operator to different places: a
+   companion that is not running is a setup step, and a companion that IS running
+   and speaks a shape this build does not know is a version mismatch. Neither is
+   ever phrased as a fact about the sessions. */
+function feedAbsentNote() {
+	return feedUnreadable
+		? 'The SideCrab companion is answering with a feed this panel cannot read ' +
+		  EMDASH + ' the two need to be the same release.'
+		: 'Claude Code stats need the SideCrab companion ' + EMDASH +
+		  ' see the setup notes for how to start it.';
+}
+
+/* Paints the shared state into ONE alternate view. Returns true when it painted, so
+   the caller can drop the view's own signature and make the next good document a
+   full rebuild. The view chips are untouched and stay reachable (the stylesheet's
+   connecting rule keeps them), so this state always has a way out of it. */
+function renderViewFeedState(key) {
+	var i = prefIndexOrNone(VIEWS, key);
+	var root = i >= 0 && VIEWS[i].el ? ui[VIEWS[i].el] : null;
+	if (!root) return false;
+	var sig = key + '#' + (feedUnreadable ? 'unreadable' : 'absent');
+	if (sig === viewFeedSig) return false;
+	viewFeedSig = sig;
+	root.textContent = '';
+	root.appendChild(viewHead(VIEW_FEED_HEADS[key] || 'SideCrab', ''));
+	root.appendChild(viewNote(feedAbsentNote()));
+	return true;
 }
 
 /* The EDGE, never the value — the rule detectTricks states for the party hat and
@@ -10133,11 +10257,22 @@ function renderBurnView(doc) {
 	var budget = burn && burn.budget && typeof burn.budget === 'object' && !Array.isArray(burn.budget)
 		? burn.budget : null;
 
-	var sig = rows.map(function (r) { return r.id + ':' + r.tokens + ':' + r.model; }).join('|') +
+	/* SCA-013 — EVERY RENDERED FIELD IS IN THE SIGNATURE, and that is the rule
+	   rather than a list to keep in step by hand: a cache key that omits a field
+	   this function paints is a field that goes stale on the glass until something
+	   unrelated moves. Two were missing and both were visible. The session TITLE is
+	   the first column of the by-session list, so a session renamed mid-run (a
+	   resolved title arriving after the first transcript line) went on being
+	   attributed to its old name. today.inputTokens is a figure in the head line,
+	   so a burn that was all input - a long read with nothing written back - left
+	   the head reading the same number for as long as it lasted.
+	   The rows are keyed on what is DRAWN (title, model, tokens), not on the raw
+	   session, so a change nothing paints still costs no rebuild. */
+	var sig = rows.map(function (r) { return r.id + ':' + r.tokens + ':' + r.model + ':' + r.title; }).join('|') +
 		'#' + byModel.map(function (m) { return String(m && m.model) + ':' + (m && m.outputTokens); }).join(',') +
 		'#' + hourly.map(function (h) { return String(h && h.hourStart) + ':' + (h && h.outputTokens); }).join(',') +
-		'#' + (today ? today.outputTokens + '/' + today.messages : '') + '#' + cost +
-		'#' + (budget ? budget.dailyOutputTokens + '/' + budget.todayPct : '');
+		'#' + (today ? today.outputTokens + '/' + today.inputTokens + '/' + today.messages : '') +
+		'#' + cost + '#' + (budget ? budget.dailyOutputTokens + '/' + budget.todayPct : '');
 	if (sig === burnViewSig) return;
 	burnViewSig = sig;
 
@@ -10503,7 +10638,10 @@ function detailTarget() {
 	for (var b = 0; b < order.length; b++) {
 		for (var i = 0; i < sessions.length; i++) {
 			if (sessions[i] && sessions[i].state === order[b]) {
-				detailSessionId = String(sessions[i].id);
+				if (detailSessionId !== String(sessions[i].id)) {
+					detailSessionId = String(sessions[i].id);
+					detailGen++;
+				}
 				return sessions[i];
 			}
 		}
@@ -10513,6 +10651,7 @@ function detailTarget() {
 
 function laneCOpenDetail(id) {
 	if (!id) return;
+	if (detailSessionId !== String(id)) detailGen++;
 	detailSessionId = String(id);
 	detailViewSig = null;
 	/* The button lives in the sheet and the page is behind it. */
@@ -10639,8 +10778,8 @@ function detailHead(s, pend) {
 		chips.appendChild(p);
 	}
 	head.appendChild(chips);
-	/* lane E: standalone only, so the chip does not exist in iCUE at all. Its status
-	   is NOT in this row: measured at 2560 px on 2026-09-21, the head already spends
+	/* lane E: built only where the host says it can focus a window. Its status is NOT
+	   in this row: measured at 2560 px on 2026-09-21, the head already spends
 	   its width on the title, three chips and this button, and the status line ended
 	   up ellipsed to "Brought t..." - a result nobody can read. It goes below. */
 	if (laneEAvailable()) head.appendChild(laneEButton('head-chip dv-focus', 'Bring to front'));
@@ -10748,7 +10887,17 @@ function detailMain(s, pend, qLabel) {
 	if (qLabel) {
 		var queued = document.createElement('div');
 		queued.className = 'dv-queued';
-		queued.textContent = 'queued: ' + qLabel;
+		var qt = document.createElement('span');
+		qt.textContent = 'queued: ' + qLabel;
+		queued.appendChild(qt);
+		/* MF-002: the same control as the sheet's, carrying the same attribute, so
+		   both surfaces reach one implementation of the write. */
+		var cancel = document.createElement('button');
+		cancel.type = 'button';
+		cancel.className = 'dv-btn dv-btn-cancel';
+		cancel.setAttribute('data-cancel-continue', '1');
+		cancel.textContent = 'Cancel';
+		queued.appendChild(cancel);
 		col.appendChild(queued);
 	}
 
@@ -10915,6 +11064,7 @@ function onGridViewClick(ev) {
 	   button branch to fall through to. */
 	var decide = t.closest('[data-decide]');
 	if (decide) { onSheetDecide(decide.getAttribute('data-decide')); return; }
+	if (t.closest('[data-cancel-continue]')) { onCancelContinue(); return; }   /* MF-002 */
 	var cont = t.closest('[data-continue-prompt]');
 	if (cont) { onSheetContinue(cont.getAttribute('data-continue-prompt'), cont.getAttribute('data-continue-label') || 'Continue'); return; }
 	/* lane E: the Detail head's Bring-to-front chip reaching the same one sender. */
@@ -10951,6 +11101,13 @@ function onHeadPointerUp(ev) {
 	var dx = headSwipe.dx, dy = headSwipe.dy;
 	headSwipe = null;
 	if (Math.abs(dx) < HEAD_SWIPE_PX || Math.abs(dx) <= Math.abs(dy)) return;
+	/* SCA-025 — THE GESTURE IS GATED BY THE SAME THING THE CHIPS ARE. Below the
+	   stylesheet's 1660 px breakpoint the switcher is hidden and the card grid comes
+	   back whatever the stored view says, so a swipe there moved a view nobody could
+	   see, wrote the new value to storage, and the panel came back on a different
+	   page the next time it was opened wide. The stored view is meant to SURVIVE the
+	   narrow slots untouched, which is what this restores. */
+	if (!viewSwitcherUsable()) return;
 	/* Left is forward, the direction the chips read in. It wraps, because four
 	   chips in a row are a cycle and a swipe that dead-ends at Detail would be a
 	   gesture that works three times out of four. */
@@ -11193,7 +11350,7 @@ function crabResize() {
 /* Every colour is read from the SVG's own computed custom properties, never
    baked in: the mood sets --crab-fill, the stylesheet sets the costume tokens
    and applyProperties writes the personalization ones onto documentElement at
-   runtime, so a getComputedStyle here is what keeps an iCUE override winning.
+   runtime, so a getComputedStyle here is what keeps a saved override winning.
    Cached for three seconds, and dropped outright on any mutation — a forced
    style read per frame would put a recalc in the animation loop. */
 function crabPalette() {

@@ -38,38 +38,16 @@ function Get-SideCrabComponentSpec {
             Port        = 2722
             # EVERY file whose mtime makes the running process stale, not just the entry point.
             # The doctor's freshness check reads the NEWEST of these: a component whose entry
-            # point is a three-line launcher (glow) would otherwise report "current" after a
-            # rewrite of the module that does all the work. Entry point first by convention.
+            # point is a thin launcher would otherwise report "current" after a rewrite of the
+            # module that does all the work. Entry point first by convention.
             WatchFiles  = @((Join-Path $RepoRoot 'companion\crabd.py'))
-            # $null = stdlib only, nothing to import-check. Present on every row so a caller
+            # $true = part of the supported default install. Present on every row so a caller
             # under Set-StrictMode can read it without testing for the property first.
-            PyImport    = $null
-            PyRequires  = $null
-            Description = 'SideCrab companion (crabd) - serves /v1/state to the Xeneon Edge widget.'
-        }
-        [pscustomobject]@{
-            Key         = 'glow'
-            TaskName    = 'SideCrab-glow'
-            Launch      = 'python'
-            Port        = 0
-            # glow_launcher.pyw, NOT sidecrab_glow.py: cuesdk hard-crashes (0xC000001D) under a
-            # console-less pythonw; the launcher hands off to python.exe with CREATE_NO_WINDOW.
-            Script      = (Join-Path $RepoRoot 'lighting\glow_launcher.pyw')
-            # The launcher is 26 lines that import sidecrab_glow.main. Watching it alone made
-            # every change to the glow itself invisible to the stale-code check.
-            WatchFiles  = @(
-                (Join-Path $RepoRoot 'lighting\glow_launcher.pyw')
-                (Join-Path $RepoRoot 'lighting\sidecrab_glow.py')
-                (Join-Path $RepoRoot 'lighting\icue.py')
-                (Join-Path $RepoRoot 'lighting\decision.py')
-            )
-            Required    = $false
-            Switch      = '-WithGlow'
-            # Importable-at-install-time, checked before the task is registered: a glow task
-            # whose cuesdk is missing registers, runs, exits and reads as installed.
-            PyImport    = 'cuesdk'
-            PyRequires  = (Join-Path $RepoRoot 'lighting\requirements.txt')
-            Description = 'SideCrab glow - drives iCUE lighting from crabd state.'
+            DefaultInstall = $true
+            # $true = the installer can produce Script when it is missing (dotnet publish).
+            # A missing script is then a step, not a Problem.
+            Buildable   = $false
+            Description = 'SideCrab companion (crabd) - serves /v1/state to the panel.'
         }
         [pscustomobject]@{
             Key         = 'toast'
@@ -82,51 +60,62 @@ function Get-SideCrabComponentSpec {
             WatchFiles  = @((Join-Path $RepoRoot 'notifier\sidecrab_toast.py'))
             Required    = $false
             Port        = 0
+            # Accepted and documented, but no longer what selects the component: the notifier
+            # is part of the default install. The switch still means "I asked for this by
+            # name", which is what makes a missing script a Problem instead of a skip.
             Switch      = '-WithToast'
-            # Measured 2026-08-27: sidecrab_toast.py imports stdlib only (it raises toasts by
-            # shelling out, not through a binding), so there is nothing to import-check.
-            PyImport    = $null
-            PyRequires  = $null
+            DefaultInstall = $true
+            Buildable   = $false
             Description = 'SideCrab toast - raises Windows notifications from crabd state.'
         }
         [pscustomobject]@{
             Key         = 'panel'
             TaskName    = 'SideCrab-panel'
             # A NATIVE exe, not a Python script: the task runs it directly. It exists only
-            # after setup\Build-SideCrabPanel.ps1 (dotnet publish), so presence on disk means
-            # "built" and -Panel builds it first. The window loads /panel/ from crabd (0.31.0+)
-            # and pins itself to the Xeneon Edge; it replaces the iCUE widget as the host on a
-            # PC where iCUE 5.51.40 or newer blocks widget requests to 127.0.0.1.
+            # after setup\Build-SideCrabPanel.ps1 (dotnet publish), which is why this row is
+            # Buildable: a missing exe on a first install is a build step, not a fault. The
+            # window loads /panel/ from crabd and pins itself to the Xeneon Edge.
             Launch      = 'exe'
             Script      = (Join-Path $RepoRoot 'panel-host\dist\SideCrab.Panel.exe')
             WatchFiles  = @((Join-Path $RepoRoot 'panel-host\dist\SideCrab.Panel.exe'))
             Required    = $false
             Port        = 0
             Switch      = '-Panel'
-            PyImport    = $null
-            PyRequires  = $null
+            DefaultInstall = $true
+            Buildable   = $true
             Description = 'SideCrab panel - the standalone panel window on the Xeneon Edge (WebView2), loading /panel/ from crabd.'
         }
     )
 }
 
 function Select-SideCrabComponent {
-    <# Decides which components an install covers, from three inputs only:
-       the catalogue, which script files exist, and which switches were passed.
+    <# Decides which components an install covers, from four inputs only: the catalogue,
+       which script files exist, which switches were passed, and which were declined.
 
-       Required components are always selected. An optional one is selected when its
-       switch was passed OR - the default path - when its script file is present.
-       A switch passed for a script that is not there is a Problem, never a silent
-       skip: asking for -WithGlow and getting nothing is the worst outcome. #>
+       THE SUPPORTED INSTALL IS companion + notifier + panel. Every catalogue row carries
+       DefaultInstall = $true, so all three are selected with no switch at all; -Skip*
+       declines one. The switches (-WithToast, -Panel) are still accepted and still mean
+       something - "I asked for this by name" - which is what turns a missing script into a
+       Problem instead of a skip, and what makes a failed panel build fatal in the installer.
+
+       A Buildable component (the panel host) is exempt from the missing-script Problem: its
+       exe does not exist until dotnet publish runs, so absence there is a step, not a fault. #>
     param(
         [Parameter(Mandatory)][object[]] $Spec,
         [System.Collections.IDictionary] $Present   = @{},   # Key -> [bool] script file exists
-        [System.Collections.IDictionary] $Requested = @{}    # Key -> [bool] switch was passed
+        [System.Collections.IDictionary] $Requested = @{},   # Key -> [bool] switch was passed
+        [System.Collections.IDictionary] $Declined  = @{}    # Key -> [bool] -Skip* was passed
     )
 
     foreach ($c in $Spec) {
         $isPresent   = [bool]($Present.Contains($c.Key)   -and $Present[$c.Key])
         $isRequested = [bool]($Requested.Contains($c.Key) -and $Requested[$c.Key])
+        $isDeclined  = [bool]($Declined.Contains($c.Key)  -and $Declined[$c.Key])
+        $isDefault   = [bool]($c.PSObject.Properties.Name -contains 'DefaultInstall' -and $c.DefaultInstall)
+        $buildable   = [bool]($c.PSObject.Properties.Name -contains 'Buildable' -and $c.Buildable)
+        # Missing is only a Problem for something that cannot be produced. Said once here so
+        # the four branches below cannot drift apart.
+        $missing     = (-not $isPresent) -and (-not $buildable)
 
         $selected = $false
         $reason   = 'not-installed'
@@ -135,18 +124,30 @@ function Select-SideCrabComponent {
         if ($c.Required) {
             $selected = $true
             $reason   = 'required'
-            if (-not $isPresent) { $problem = "$($c.Key) script not found at $($c.Script)" }
+            if ($missing) { $problem = "$($c.Key) script not found at $($c.Script)" }
+        }
+        elseif ($isDeclined) {
+            # Declined beats requested AND default: passing both switches is a contradiction,
+            # and the safe reading of a contradiction is the one that installs less.
+            $reason = 'declined'
         }
         elseif ($isRequested) {
             $selected = $true
             $reason   = 'requested'
-            if (-not $isPresent) {
+            if ($missing) {
                 $problem = "$($c.Switch) was specified but $($c.Script) does not exist"
             }
         }
         elseif ($isPresent) {
             $selected = $true
             $reason   = 'auto-detected'
+        }
+        elseif ($isDefault) {
+            $selected = $true
+            $reason   = 'default'
+            if ($missing) {
+                $problem = "$($c.Key) is part of the default install but $($c.Script) does not exist"
+            }
         }
 
         [pscustomobject]@{
@@ -157,16 +158,16 @@ function Select-SideCrabComponent {
             Required    = $c.Required
             Switch      = $c.Switch
             # Carried through, not re-derived: a plan row that lost the port would send a
-            # restart path back to guessing which component binds one. Same for WatchFiles
-            # and PyImport - a plan row that dropped them silently re-narrows the freshness
-            # check to the entry point and drops the import preflight.
+            # restart path back to guessing which component binds one. Same for WatchFiles -
+            # a plan row that dropped them silently re-narrows the freshness check to the
+            # entry point.
             Port        = $c.Port
             WatchFiles  = @($c.WatchFiles)
-            PyImport    = $c.PyImport
-            PyRequires  = $c.PyRequires
+            Buildable   = $buildable
             Description = $c.Description
             Present     = $isPresent
             Requested   = $isRequested
+            Declined    = $isDeclined
             Selected    = $selected
             Reason      = $reason
             Problem     = $problem
@@ -314,9 +315,8 @@ function Get-SideCrabTaskEnableDecision {
     <# Should a re-registration leave the task DISABLED, and should it be started? Pure.
 
        The defect this exists for (measured 2026-08-26): Register-ScheduledTask -Force always
-       writes an enabled task, so re-running the installer resurrected SideCrab-glow - parked
-       with Disable-ScheduledTask because the Corsair SDK crashes headless (docs/BACKLOG.md) -
-       and then started it into that crash. Re-registering a disabled task is fine and keeps
+       writes an enabled task, so re-running the installer resurrected a task the operator had
+       parked with Disable-ScheduledTask and then started it. Re-registering a disabled task is fine and keeps
        its action/path current; STARTING it, or leaving it enabled, overturns a decision the
        operator made deliberately. -ForceEnable is the only way to overturn it. #>
     param(
@@ -543,10 +543,11 @@ function Get-SideCrabPanelApprovalsState {
 function Get-SideCrabPanelToken {
     <# Read-only probe of the approval PAIRING CODE crabd mints into ~/.sidecrab/panel-token
        (crabd 0.29.0, SEC-a). Never throws: an absent file means crabd 0.29.0 has not started
-       yet (or is older), which is a state the callers report, not an error. The code is
-       returned normalised (upper-case, hyphen shown) so it can be printed for the operator
-       to type into iCUE's widget settings. Present=$false when the file is missing or does
-       not hold a usable code. #>
+       yet (or is older), which is a state the callers report, not an error. The panel host
+       reads this file itself, so the code is normally never displayed; it is returned
+       normalised (upper-case, hyphen shown) only so -PairingCode can print it when an
+       operator needs to check a pairing by eye. Present=$false when the file is missing or
+       does not hold a usable code. #>
     param([Parameter(Mandatory)][string] $TokenPath)
 
     $out = [pscustomobject]@{ TokenPath = $TokenPath; Present = $false; Code = $null }
@@ -766,15 +767,22 @@ function Get-SideCrabTaskState {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $task) {
         return [pscustomobject]@{
-            TaskName = $TaskName; Registered = $false; State = $null
+            TaskName = $TaskName; Registered = $false; State = $null; Action = ''
             LastRunTime = $null; LastTaskResult = $null
         }
     }
     $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+    # Execute + Arguments of every action, joined. The retirement migration needs it to tell
+    # "the glow task THIS checkout registered" from a same-named task somebody else owns, and
+    # for a python component the checkout path is in Arguments, never in Execute.
+    $action = (@($task.Actions | ForEach-Object {
+                    (@("$($_.Execute)", "$($_.Arguments)") | Where-Object { $_ }) -join ' '
+               }) -join ' ').Trim()
     [pscustomobject]@{
         TaskName       = $TaskName
         Registered     = $true
         State          = [string] $task.State
+        Action         = $action
         LastRunTime    = if ($info) { $info.LastRunTime }    else { $null }
         LastTaskResult = if ($info) { $info.LastTaskResult } else { $null }
     }
@@ -1376,17 +1384,194 @@ function Get-SideCrabServiceVerdict {
 }
 
 function Get-SideCrabWidgetVersion {
-    <# The widget ships through iCUE, not through this repo's install path - its
-       manifest version is reported for comparison only. #>
+    <# The version of the panel assets crabd serves at /panel/, read from widget\version.json.
+
+       ONE SOURCE, AND IT IS IN THIS REPO. The version used to come out of the vendor package
+       manifest, which described a copy imported into another application - so the number the
+       installer printed was the number of a file nobody here installed. widget\version.json
+       is the shipped asset tree's own version, and the tree is what crabd serves.
+
+       ABSENT IS A REPORTED STATE, NOT A CRASH: every caller prints Reason rather than a bare
+       'unknown', because "the version file is missing" and "the version file is malformed"
+       are different faults and both used to read as blank. #>
     param([Parameter(Mandatory)][string] $RepoRoot)
 
-    $manifest = Join-Path $RepoRoot 'widget\manifest.json'
-    if (-not (Test-Path -LiteralPath $manifest)) { return $null }
+    $path = Join-Path $RepoRoot 'widget\version.json'
+    $out  = [pscustomobject]@{ Path = $path; Present = $false; Version = $null; Reason = '' }
+
+    if (-not (Test-Path -LiteralPath $path)) {
+        $out.Reason = "$path not found - the panel asset tree is not in this checkout"
+        return $out
+    }
+    try { $doc = [IO.File]::ReadAllText($path) | ConvertFrom-Json -Depth 20 }
+    catch { $out.Reason = "$path does not parse as JSON - $($_.Exception.Message)"; return $out }
+
+    if ($null -eq $doc -or @($doc.PSObject.Properties.Name) -notcontains 'version' -or -not "$($doc.version)".Trim()) {
+        $out.Reason = "$path has no version member"
+        return $out
+    }
+    $out.Present = $true
+    $out.Version = [string] $doc.version
+    $out.Reason  = "widget assets $($out.Version)"
+    $out
+}
+
+function Get-SideCrabViewportVerdict {
+    <# Does panel.log prove that THE PROCESS RUNNING NOW has drawn the page at the right size?
+       Pure: it is handed the log lines and the live process's identity, and reads nothing.
+
+       THE DEFECT THIS CLOSES (SCA-004). The old check took the last line matching 'viewport: '
+       out of the tail and compared its two pairs of numbers. panel.log is append-only across
+       restarts, so a good line from a run that ended days ago certified a host that had since
+       started, found no target display and never loaded a page at all. The smoke test passed
+       on evidence the current process did not produce.
+
+       THE BINDING IS pid + started, both of which the host now writes on every line (contract
+       C7). Same pid AND same process start time = this line came from the process answering
+       now. A pid can be reused after a reboot; a pid that was reused AND started at the same
+       second is not a case worth defending against.
+
+       HIDDEN IS ITS OWN STATE, NEVER A PASS. 'hidden: target display absent' means the host is
+       alive and deliberately showing nothing - a real and reportable condition, and the one
+       the stale-line bug was hiding behind. It is not a geometry failure, and it is not ok. #>
+    param(
+        [string[]] $Lines      = @(),
+        [bool]     $Registered = $false,
+        [bool]     $Disabled   = $false,
+        [int]      $ProcessId  = 0,
+        [datetime] $ProcessStart = [datetime]::MinValue,
+        # The host reports css px and physical px separately. A 150% monitor corrected by zoom
+        # reads back 2561 for 2560, so within 2 px is the same size.
+        [int]      $TolerancePx = 2
+    )
+
+    $r = { param($p, $s, $d) [pscustomobject]@{ Pass = $p; State = $s; Detail = $d } }
+
+    if (-not $Registered -or $Disabled) {
+        return & $r $true 'n-a' 'SideCrab-panel not installed or disabled - n/a'
+    }
+    if ($ProcessId -le 0) {
+        return & $r $false 'no-process' 'no SideCrab.Panel process is running - nothing can have drawn the page'
+    }
+
+    # The LAST line of either kind, not the last viewport line: a hidden line written after a
+    # good viewport line is the newer fact, and picking the viewport one is the bug.
+    $line = @($Lines | Where-Object { $_ -match '(?:^|\s)(viewport|hidden):' }) | Select-Object -Last 1   # every host line starts with a timestamp
+    if (-not $line) {
+        return & $r $false 'no-line' 'no viewport or hidden line in panel.log - the host has logged neither a load nor a hidden state'
+    }
+
+    $pidM = [regex]::Match($line, 'pid (\d+)')
+    $stM  = [regex]::Match($line, 'started (\S+)')
+    if (-not $pidM.Success -or -not $stM.Success) {
+        return & $r $false 'unbindable' "the last panel.log line carries no pid/started, so it cannot be tied to the running host (it predates contract C7): $line"
+    }
+    if ([int] $pidM.Groups[1].Value -ne $ProcessId) {
+        return & $r $false 'stale' "the last panel.log line is from pid $($pidM.Groups[1].Value); the host running now is pid $ProcessId - this line is a previous run's"
+    }
+    $lineStart = [datetime]::MinValue
     try {
-        $json = Get-Content -LiteralPath $manifest -Raw -Encoding utf8 | ConvertFrom-Json -Depth 20
-        if ($json.PSObject.Properties.Name -contains 'version') { return [string] $json.version }
-        return $null
-    } catch { return $null }
+        # The host stamps `started` in LOCAL time with no offset (its Log.Write clock); a stamp
+        # that carries Z or an offset is taken as written. Assuming UTC for an offset-less stamp
+        # put the deployed host six hours off its own process and read every line as stale
+        # (measured 2026-09-21 on the first deploy of contract C7).
+        $stamp  = $stM.Groups[1].Value
+        $assume = if ($stamp -match '(Z|[+-]\d\d:?\d\d)$') { [System.Globalization.DateTimeStyles]::AssumeUniversal }
+                  else { [System.Globalization.DateTimeStyles]::AssumeLocal }
+        $lineStart = [datetime]::Parse($stamp, [cultureinfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor $assume)
+    } catch {
+        return & $r $false 'unbindable' "unparseable start stamp '$($stM.Groups[1].Value)' in: $line"
+    }
+    if ([math]::Abs(($lineStart - $ProcessStart.ToUniversalTime()).TotalSeconds) -gt 2) {
+        return & $r $false 'stale' ("the last panel.log line says the host started $($lineStart.ToString('o')); the process holding pid $ProcessId " +
+                                    "started $($ProcessStart.ToUniversalTime().ToString('o')) - pid $ProcessId was reused and this line is a previous run's")
+    }
+
+    if ($line -match '(?:^|\s)hidden:') {
+        return & $r $false 'hidden' "the host is running and showing nothing: $($line.Trim())"
+    }
+    $m = [regex]::Match($line, 'viewport: (\d+)x(\d+) css px.*window (\d+)x(\d+) physical')
+    if (-not $m.Success) {
+        return & $r $false 'unparseable' "unparseable viewport line: $line"
+    }
+    $cw, $ch = [int] $m.Groups[1].Value, [int] $m.Groups[2].Value
+    $pw, $ph = [int] $m.Groups[3].Value, [int] $m.Groups[4].Value
+    $same = ([math]::Abs($cw - $pw) -le $TolerancePx) -and ([math]::Abs($ch - $ph) -le $TolerancePx)
+    if ($same) { return & $r $true 'ok' "${cw}x${ch} css px on a ${pw}x${ph} window, pid $ProcessId" }
+    & $r $false 'scaled' "${cw}x${ch} css px on a ${pw}x${ph} window (pid $ProcessId) - scaled; the host corrects the zoom on its next check"
+}
+
+function Get-SideCrabComponentVersion {
+    <# The version of each of the three things this product ships, read off the artefact that
+       carries it. Read-only.
+
+       THERE IS NO SINGLE "SideCrab VERSION" and this deliberately does not invent one. The
+       companion, the panel assets and the native host are built and shipped independently, so
+       one printed number would be right about at most one of them. Each row is read from its
+       own source and each carries its own 'unknown' reason:
+         crabd   the VERSION constant in companion\crabd.py - the SOURCE in this checkout,
+                 which is not necessarily the version of the process currently running (that
+                 one answers /v1/health).
+         widget  widget\version.json
+         host    the FileVersion of the built exe, absent until it has been built. #>
+    param(
+        [Parameter(Mandatory)][string] $RepoRoot,
+        [string] $PanelExe = ''
+    )
+
+    $notes = @()
+
+    $crabd = 'unknown'
+    $crabdPy = Join-Path $RepoRoot 'companion\crabd.py'
+    if (-not (Test-Path -LiteralPath $crabdPy)) { $notes += "crabd: $crabdPy not found" }
+    else {
+        $m = [regex]::Match([IO.File]::ReadAllText($crabdPy), '(?m)^VERSION\s*=\s*"([^"]+)"')
+        if ($m.Success) { $crabd = $m.Groups[1].Value }
+        else { $notes += "crabd: no VERSION constant in $crabdPy" }
+    }
+
+    $w = Get-SideCrabWidgetVersion -RepoRoot $RepoRoot
+    $widget = if ($w.Present) { $w.Version } else { 'unknown' }
+    if (-not $w.Present) { $notes += "widget: $($w.Reason)" }
+
+    $hostVer = 'not built'
+    if ($PanelExe -and (Test-Path -LiteralPath $PanelExe)) {
+        try {
+            $fv = (Get-Item -LiteralPath $PanelExe).VersionInfo.FileVersion
+            if ("$fv".Trim()) { $hostVer = "$fv".Trim() } else { $hostVer = 'unknown'; $notes += "host: $PanelExe carries no file version" }
+        } catch { $hostVer = 'unknown'; $notes += "host: $PanelExe version unreadable - $($_.Exception.Message)" }
+    }
+
+    [pscustomobject]@{ Crabd = $crabd; Widget = $widget; Host = $hostVer; Notes = $notes }
+}
+
+function Get-SideCrabApprovalReadiness {
+    <# approvals.readiness off /v1/state, as the COMPANION reports it (contract C4:
+       off, no-token, unverified, ready). Read-only, never throws.
+
+       ASKED, NOT RE-DERIVED. Only crabd knows whether a tap would actually be honoured -
+       whether approvals are on, whether a pairing code exists and whether one has verified.
+       A second opinion computed here from config.json would read 'ready' on a machine where
+       the real gate is shut, which is the failure mode worth avoiding on a security control. #>
+    param(
+        [string] $BaseUri = 'http://127.0.0.1:2722',
+        [int]    $TimeoutSec = 5,
+        [scriptblock] $Probe
+    )
+
+    try {
+        $state = if ($Probe) { & $Probe } else { Invoke-RestMethod -Uri "$BaseUri/v1/state" -TimeoutSec $TimeoutSec -ErrorAction Stop }
+    } catch { return "not read - $($_.Exception.Message)" }
+
+    if ($null -eq $state -or @($state.PSObject.Properties.Name) -notcontains 'approvals') {
+        return 'not reported by this crabd'
+    }
+    $a = $state.approvals
+    if ($null -eq $a -or @($a.PSObject.Properties.Name) -notcontains 'readiness') {
+        return 'not reported by this crabd'
+    }
+    "$($a.readiness)"
 }
 
 function Read-SideCrabSettings {
@@ -1708,6 +1893,11 @@ function Get-SideCrabResidueSpec {
          data    - the operator's, or about the operator's work; outlives the install.
          cache   - derived, rebuildable, no operator value; grouped with data because deleting
                    it is never urgent and never required.
+         credential - a secret this machine holds. Removed by -Purge like data, and listed as
+                   retained without it, because leaving one behind silently is how an
+                   "uninstalled" machine keeps a live approval secret. NEVER read or printed
+                   by this table or by anything that renders it: the rows carry a path and a
+                   sentence, and the value stays on disk until -Purge deletes the file.
          backup  - the way BACK from an install. Never removed by an uninstall at any switch:
                    the moment you most need last week's settings.json is the moment after an
                    uninstall went wrong. Pruned deliberately, by Restore-SideCrab -PruneOlderThan. #>
@@ -1741,8 +1931,16 @@ function Get-SideCrabResidueSpec {
             Why = 'derived from the usage feed and rebuilt on the next read; holds no secrets'
         }
         [pscustomobject]@{
+            Key = 'pairing'; Path = (Join-Path (Split-Path -Parent $ConfigPath) 'panel-token'); Kind = 'credential'; Disposition = 'purge'
+            Why = 'the approval PAIRING CODE crabd mints - it is what makes an Approve/Deny tap count, so an uninstall that leaves it leaves a live secret; -Purge deletes the file and never reads it'
+        }
+        [pscustomobject]@{
+            Key = 'limitstoken'; Path = (Join-Path (Split-Path -Parent $ConfigPath) 'limits-token.dpapi'); Kind = 'credential'; Disposition = 'purge'
+            Why = 'a long-lived Claude token, DPAPI-protected to this Windows account; -Purge deletes the file and never decrypts it'
+        }
+        [pscustomobject]@{
             Key = 'glowlog'; Path = (Join-Path $stateDir 'glow.log'); Kind = 'log'; Disposition = 'purge'
-            Why = 'the evidence for why the glow is parked (docs/BACKLOG.md) - keep it unless the operator asks'
+            Why = 'the account of what the retired RGB component did; a retirement is not the place to delete it - keep it unless the operator asks'
         }
         [pscustomobject]@{
             Key = 'logs'; Path = (Join-Path $stateDir 'logs'); Kind = 'log'; Disposition = 'purge'
@@ -1772,7 +1970,7 @@ function Get-SideCrabUninstallScope {
     <# WHICH SURFACES a `-TaskName <name>` uninstall is allowed to remove. Pure.
 
        THE DEFECT THIS CLOSES: -TaskName narrowed the TASK deletion and nothing else, so
-       `-TaskName SideCrab-glow` unregistered the glow task and then went on to strip the hooks,
+       `-TaskName SideCrab-panel` unregistered the panel task and then went on to strip the hooks,
        restore the status line and clear panelApprovals - tearing down a crabd install the
        operator had not asked about. (The two HKCU registrations were already narrowed; every
        other surface was not.)
@@ -1782,8 +1980,10 @@ function Get-SideCrabUninstallScope {
          crabd -> the settings.json hooks (they POST to crabd), the status line (it feeds
                   crabd) and the panelApprovals key (crabd's gate)
          toast -> the AUMID and the button schemes
-         glow  -> its task, and nothing else
-       A -TaskName that matches no component in the catalogue owns nothing beyond that task:
+         panel -> its task, and nothing else
+       A -TaskName that matches no component in the catalogue owns nothing beyond that task -
+       which is also what a RETIRED name (SideCrab-glow) now hits, so a hand-run uninstall of
+       one can still remove it without touching anything else:
        it is a name we do not recognise, and guessing what else it implies is how a targeted
        uninstall becomes a full one. #>
     param(
@@ -1907,36 +2107,192 @@ function Get-SideCrabPullPreflight {
     }
 }
 
-function Get-SideCrabGlowPreflight {
-    <# Should the glow task be registered, given whether its binding actually imports? Pure.
+# ------------------------------------------------------ retired components (CLEAN-06)
 
-       THE DEFECT THIS CLOSES: glow auto-installs the moment lighting\glow_launcher.pyw exists,
-       and cuesdk was never checked. Without it the launcher starts, raises ImportError, exits,
-       and the task reads Registered/Ready - a green-looking install that has never once
-       controlled a light.
+function Get-SideCrabRetiredComponentSpec {
+    <# Components this product used to install and no longer does. Pure.
 
-       AUTO-DETECTION IS AN INFERENCE and a failed import refutes it: skip, loudly, with the
-       pip line. AN EXPLICIT -WithGlow IS AN INSTRUCTION: register it and say plainly that it
-       will not light until the dependency is installed. Refusing there would block the whole
-       install (crabd included) over a lighting dependency, which is the worse failure. #>
+       A retired component is NOT the same as a deleted catalogue row. Dropping glow from
+       Get-SideCrabComponentSpec stops new installs creating it and simultaneously makes every
+       EXISTING SideCrab-glow task invisible to Install, Update, Repair and Uninstall - an
+       orphan logon task nothing in the product can see or remove. This table is what keeps
+       the old name known long enough to retire it deliberately. #>
+
+    @(
+        [pscustomobject]@{
+            TaskName = 'SideCrab-glow'
+            Reason   = 'RGB retired'
+            # Kept, not purged: the account of what the glow did is evidence, and a migration
+            # is not the place to delete the operator's logs.
+            KeepLogs = @('glow.log')
+        }
+    )
+}
+
+function Test-SideCrabTaskIsOurs {
+    <# Does this task's action run code out of THIS checkout? Pure: string work only.
+
+       The migration hinges on it. A task named SideCrab-glow whose action points somewhere
+       else is somebody else's - a second checkout, a colleague's copy, a hand-made task - and
+       unregistering it would be reaching outside our own install.
+
+       Compared with a trailing separator on both sides so C:\dev\sidecrab does not claim
+       C:\dev\sidecrab-fork, and case-insensitively because Windows paths are. #>
     param(
-        [bool]   $Selected,
-        [bool]   $Requested,
-        [bool]   $Importable,
-        [string] $Module        = 'cuesdk',
-        [string] $RequirementsPath = ''
+        [string] $Action,
+        [Parameter(Mandatory)][string] $RepoRoot
     )
 
-    $pip = if ($RequirementsPath) { "pip install -r `"$RequirementsPath`"" } else { "pip install $Module" }
+    if (-not $Action -or -not $RepoRoot) { return $false }
+    $root = ($RepoRoot -replace '/', '\').TrimEnd('\') + '\'
+    $act  = ($Action   -replace '/', '\')
+    return $act.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
 
-    if (-not $Selected)  { return [pscustomobject]@{ Install = $false; Status = 'not-selected'; Reason = 'glow is not part of this install'; Command = '' } }
-    if ($Importable)     { return [pscustomobject]@{ Install = $true;  Status = 'ok';           Reason = "$Module imports";                  Command = '' } }
-    if ($Requested)      { return [pscustomobject]@{ Install = $true;  Status = 'requested-broken'
-                                                     Reason = "$Module does NOT import - the task is registered because you asked for it by name, and it will exit on every start until this is fixed"
-                                                     Command = $pip } }
-    [pscustomobject]@{ Install = $false; Status = 'skipped'
-                       Reason  = "$Module does NOT import - glow was auto-detected from its script file, and a glow that cannot import its SDK would register green and never light"
-                       Command = $pip }
+function Get-SideCrabRetirementDecision {
+    <# Should this run unregister a retired task, and should it write the record? Pure.
+
+       THE FOUR CASES, and why each ends where it does:
+         absent            nothing to unregister. Record only if it was never recorded, so a
+                           machine that never had glow does not grow a retirement record.
+         Disabled/Running  ours, so unregister it. STATE IS IRRELEVANT: a parked task is still
+                           a logon task pointing at code this product no longer ships, and
+                           "Running" must never become "so leave it running".
+         foreign path      not ours. Reported, never touched, never recorded.
+       Idempotent by construction: the second run sees absent + AlreadyRecorded and does
+       nothing at all. NEVER STARTS ANYTHING - there is no branch here that can. #>
+    param(
+        [Parameter(Mandatory)][string] $TaskName,
+        [bool]   $Registered,
+        [string] $State,
+        [string] $Action,
+        [Parameter(Mandatory)][string] $RepoRoot,
+        [bool]   $AlreadyRecorded,
+        [string] $Reason = 'RGB retired'
+    )
+
+    if (-not $Registered) {
+        if ($AlreadyRecorded) {
+            return [pscustomobject]@{ TaskName = $TaskName; Unregister = $false; Record = $false
+                                      Verdict = 'already-retired'; Detail = 'not registered and already recorded - nothing to do' }
+        }
+        return [pscustomobject]@{ TaskName = $TaskName; Unregister = $false; Record = $true
+                                  Verdict = 'absent'; Detail = 'not registered - recorded as retired'; Reason = $Reason }
+    }
+
+    if (-not (Test-SideCrabTaskIsOurs -Action $Action -RepoRoot $RepoRoot)) {
+        return [pscustomobject]@{ TaskName = $TaskName; Unregister = $false; Record = $false
+                                  Verdict = 'foreign'
+                                  Detail  = "registered, but its action is not under $RepoRoot - another install owns it and this run leaves it alone" }
+    }
+
+    [pscustomobject]@{
+        TaskName = $TaskName; Unregister = $true; Record = (-not $AlreadyRecorded)
+        Verdict  = 'retire'
+        Detail   = "registered ($(if ($State) { $State } else { 'no state' })) and owned by this checkout - unregistered"
+        Reason   = $Reason
+    }
+}
+
+function Get-SideCrabRetiredRecord {
+    <# ~/.sidecrab/state/retired.json as a hashtable of TaskName -> record, or an empty one.
+       Never throws: an absent or corrupt file means "nothing recorded yet", which is the
+       state a first migration is meant to find. #>
+    param([Parameter(Mandatory)][string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return @{} }
+    try {
+        $raw = [IO.File]::ReadAllText($Path)
+        if (-not "$raw".Trim()) { return @{} }
+        $doc = $raw | ConvertFrom-Json -AsHashtable -Depth 10
+        if ($doc -is [System.Collections.IDictionary] -and $doc.Contains('retired') -and
+            $doc['retired'] -is [System.Collections.IDictionary]) {
+            # ConvertFrom-Json turns an ISO string into a [datetime] whether you want it or
+            # not, so a record written as text reads back as an object and every consumer
+            # that formats it gets a different string. Coerced back here, once.
+            foreach ($k in @($doc['retired'].Keys)) {
+                $e = $doc['retired'][$k]
+                if ($e -is [System.Collections.IDictionary] -and $e['at'] -is [datetime]) {
+                    $e['at'] = ([datetime] $e['at']).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                }
+            }
+            return $doc['retired']
+        }
+        return @{}
+    } catch { return @{} }
+}
+
+function Set-SideCrabRetiredRecord {
+    <# Add one TaskName -> { at, reason } to retired.json, creating the state folder.
+
+       MERGES, never rewrites: a second retired component must not erase the first, and an
+       entry that is already there keeps its original `at` - the day it was retired is a fact,
+       and re-stamping it on every update would erase it. #>
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][string] $TaskName,
+        [Parameter(Mandatory)][string] $Reason,
+        [string] $At = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    )
+
+    $retired = Get-SideCrabRetiredRecord -Path $Path
+    if ($retired.Contains($TaskName)) {
+        return [pscustomobject]@{ Path = $Path; TaskName = $TaskName; Action = 'already-recorded' }
+    }
+    $retired[$TaskName] = @{ at = $At; reason = $Reason }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    [IO.File]::WriteAllText($Path, (@{ retired = $retired } | ConvertTo-Json -Depth 10))
+    [pscustomobject]@{ Path = $Path; TaskName = $TaskName; Action = 'recorded'; At = $At }
+}
+
+function Invoke-SideCrabRetirement {
+    <# The one-time, idempotent retirement of every task in Get-SideCrabRetiredComponentSpec.
+       Install and Update both call this rather than carrying a copy each.
+
+       Touches ONLY the retired names. It never enumerates SideCrab-*, so a supported
+       component cannot be caught by it even if this spec grows a typo, and it never starts
+       anything: Unregister is the only verb.
+
+       -StateProbe / -Unregister are injected by the suite, so the four fixture cases
+       (Disabled, Running, absent, foreign-path) run with no scheduler at all. #>
+    param(
+        [Parameter(Mandatory)][string] $RepoRoot,
+        [Parameter(Mandatory)][string] $RetiredPath,
+        [object[]] $Spec,
+        [scriptblock] $StateProbe,
+        [scriptblock] $Unregister,
+        [switch] $WhatIf
+    )
+
+    if (-not $Spec) { $Spec = @(Get-SideCrabRetiredComponentSpec) }
+    if (-not $StateProbe) { $StateProbe = { param($n) Get-SideCrabTaskState -TaskName $n } }
+    if (-not $Unregister) { $Unregister = { param($n) Unregister-ScheduledTask -TaskName $n -Confirm:$false } }
+
+    foreach ($r in @($Spec)) {
+        $state    = & $StateProbe $r.TaskName
+        $recorded = (Get-SideCrabRetiredRecord -Path $RetiredPath).Contains($r.TaskName)
+        $decision = Get-SideCrabRetirementDecision -TaskName $r.TaskName `
+                        -Registered ([bool] $state.Registered) -State "$($state.State)" `
+                        -Action "$($state.Action)" -RepoRoot $RepoRoot `
+                        -AlreadyRecorded $recorded -Reason $r.Reason
+
+        $did = 'none'
+        if ($decision.Unregister -and -not $WhatIf) { & $Unregister $r.TaskName; $did = 'unregistered' }
+        elseif ($decision.Unregister)               { $did = 'would-unregister' }
+
+        $wrote = 'none'
+        if ($decision.Record -and -not $WhatIf) {
+            $wrote = (Set-SideCrabRetiredRecord -Path $RetiredPath -TaskName $r.TaskName -Reason $r.Reason).Action
+        } elseif ($decision.Record) { $wrote = 'would-record' }
+
+        [pscustomobject]@{
+            TaskName = $r.TaskName; Verdict = $decision.Verdict; Detail = $decision.Detail
+            Task     = $did;        Record  = $wrote
+        }
+    }
 }
 
 # ------------------------------------------------------------- doctor decisions (pure)
@@ -1945,10 +2301,10 @@ function Get-SideCrabWatchedWriteTime {
     <# The NEWEST LastWriteTime across a component's watched files, and which file set it.
        Touches the filesystem (stat only) - the decision that uses it stays pure.
 
-       Newest, not the entry point's: glow's entry point is a 26-line launcher that has not
-       changed in months while sidecrab_glow.py / icue.py / decision.py move constantly. Taking
-       the launcher's mtime reported "started after the script was last written" for a process
-       running code from three rewrites ago. #>
+       Newest, not the entry point's. Measured on the retired RGB component, whose entry point
+       was a 26-line launcher that had not changed in months while the modules it called moved
+       constantly: taking the launcher's mtime reported "started after the script was last
+       written" for a process running code from three rewrites ago. #>
     param([string[]] $Path)
 
     $newest = $null
@@ -1968,7 +2324,7 @@ function Get-SideCrabRunStateDecision {
        execution time limit, restart x3 - so for these three, Ready means the process is gone,
        not that it is waiting its turn. The doctor's only liveness question was crabd's health
        probe, and the freshness check answered "task is Ready - nothing is executing" as an OK
-       row. A toast or glow task that had died read GREEN, and only crabd was ever offered a
+       row. A toast or panel task that had died read GREEN, and only crabd was ever offered a
        start.
 
        crabd is deliberately EXCLUDED by the caller, not here: its liveness is the health and
@@ -1983,7 +2339,7 @@ function Get-SideCrabRunStateDecision {
                                   Reason = 'not registered - not expected to run' }
     }
     if ($State -eq 'Disabled') {
-        # A stated decision (the glow is parked on the headless SDK crash, docs/BACKLOG.md).
+        # A stated decision: the operator ran Disable-ScheduledTask, and this does not overturn it.
         return [pscustomobject]@{ Ok = $true; Fault = $false; Verdict = 'disabled'
                                   Reason = 'disabled on purpose - not expected to run' }
     }

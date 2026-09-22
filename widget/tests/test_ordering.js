@@ -368,41 +368,68 @@ eq(W.hourLabel('nonsense'), '', 'and so does a string with no hour in it');
 
 /* ------------------------------------------ lane E: bring a session to the front */
 
-/* THE GATE. The control exists only where a panel host is listening. iCUE has no
-   host and a plain browser at /panel/ has no desktop to reach, and both of those
-   are "no bridge" — the same test lane B's settings save makes, for the same
-   reason. The vm context has no window.chrome at all, which is exactly the iCUE
-   shape, so the default here must be false. */
+/* THE GATE, and it moved in v0.32.0. A bridge being present is no longer enough:
+   what a host CAN do is a thing only the host can state, so the control waits for
+   the host-info handshake to say focusSession. A browser preview never gets one. */
 eq(W.laneEAvailable(), false, 'with no host bridge the control does not exist');
 eq(W.laneETarget(), null, 'and with no sheet and no Detail page there is nothing to focus');
 
 /* A stub bridge is the standalone shape. It is installed and removed around the
    check so nothing after this point runs against a fake host. */
 var leSent = [];
-W.chrome = { webview: { postMessage: function (m) { leSent.push(m); }, addEventListener: function () {} } };
-ok(W.laneEAvailable(), 'with the host bridge present the control exists');
+var leListener = null;
+W.chrome = { webview: {
+	postMessage: function (m) { leSent.push(m); },
+	addEventListener: function (type, fn) { if (type === 'message') leListener = fn; }
+} };
+eq(W.laneEAvailable(), false, 'a bridge that has not answered the handshake promises nothing');
+
+W.bridgeInit();
+eq(leSent.length, 1, 'boot asks the host what it is');
+eq(leSent[0].type, 'host-info', 'with host-info');
+ok(typeof leSent[0].requestId === 'string' && leSent[0].requestId.length > 0 &&
+	leSent[0].requestId.length <= 64,
+	'carrying a page-generated requestId of at most 64 characters');
+
+/* A LATE OR UNSOLICITED REPLY IS DROPPED. This is the half that stops an answer to
+   a superseded request from landing on the newer one, and it is proved with a
+   reply that would otherwise have granted every capability. */
+leListener({ data: { type: 'host-info', requestId: 'not-a-request-this-page-made',
+	version: '9.9.9', capabilities: { saveSettings: true, focusSession: true } } });
+eq(W.laneEAvailable(), false, 'a reply this page never asked for grants nothing');
+
+leListener({ data: { type: 'host-info', requestId: leSent[0].requestId, version: '0.4.0',
+	pid: 4242, startedAt: '2026-09-21T09:00:00Z', settingsPath: 'D:\\panel\\panel-settings.json',
+	hasToken: true, capabilities: { saveSettings: true, focusSession: true, pickDisplay: false } } });
+ok(W.laneEAvailable(), 'once the host says it can focus a window, the control exists');
+eq(W.hostCan('pickDisplay'), false, 'a capability the host declined stays declined');
+eq(W.hostCan('somethingElse'), false, 'and one it never mentioned is not invented');
 
 /* Four facts and NEVER a window handle: the host ranks the windows it enumerated
    itself, and a handle from the page would be a window picker aimed by the page. */
 W.lastGoodDoc = { sessions: [{ id: 's1', state: 'needs_input', stateSince: '2026-09-21T12:00:00Z',
-	title: 'SideCrab Panel Windows app', cwd: 'C:\\Dev\\sidecrab', repo: 'sidecrab' }] };
+	title: 'SideCrab Panel Windows app', cwd: 'D:\\panel\\app', repo: 'sidecrab' }] };
 W.sheetSessionId = 's1';
 W.laneESendFocus();
-eq(leSent.length, 1, 'a tap sends exactly one message');
-eq(leSent[0].type, 'focus-session', 'and it is the focus-session type');
-eq(leSent[0].sessionId, 's1', 'carrying the session id');
-eq(leSent[0].title, 'SideCrab Panel Windows app', 'the title');
-eq(leSent[0].cwd, 'C:\\Dev\\sidecrab', 'the cwd');
-eq(leSent[0].repo, 'sidecrab', 'and the repo');
-eq(Object.keys(leSent[0]).length, 5, 'and nothing else at all — no handle, no command');
+eq(leSent.length, 2, 'a tap sends exactly one message');
+var leFocus = leSent[1];
+eq(leFocus.type, 'focus-session', 'and it is the focus-session type');
+eq(leFocus.sessionId, 's1', 'carrying the session id');
+eq(leFocus.title, 'SideCrab Panel Windows app', 'the title');
+eq(leFocus.cwd, 'D:\\panel\\app', 'the cwd');
+eq(leFocus.repo, 'sidecrab', 'and the repo');
+ok(typeof leFocus.requestId === 'string' && leFocus.requestId !== leSent[0].requestId,
+	'and its own requestId, which is not the handshake\'s');
+eq(Object.keys(leFocus).length, 6, 'and nothing else at all — no handle, no command');
 eq(W.laneEStatusText, 'bringing it to the front', 'the line says the ask is in flight');
 
-/* The host's answer is what moves the line, and only for the session just asked
-   for: a reply carrying an older id is a late answer the operator has moved past. */
-W.laneEOnFocusResult({ type: 'focus-result', sessionId: 'other', ok: true });
-eq(W.laneEStatusText, 'bringing it to the front', 'a reply for another session is ignored');
-W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: true, reason: 'focused' });
-eq(W.laneEStatusText, 'brought to front', 'the session that was asked for is reported');
+/* The host's answer is what moves the line, and only for the request just made: a
+   reply for a requestId this page is not waiting for is a late answer to something
+   the operator has moved past. */
+leListener({ data: { type: 'focus-result', requestId: 'stale-request', sessionId: 's1', ok: true, reason: 'focused' } });
+eq(W.laneEStatusText, 'bringing it to the front', 'a reply for a superseded request is dropped');
+leListener({ data: { type: 'focus-result', requestId: leFocus.requestId, sessionId: 's1', ok: true, reason: 'focused' } });
+eq(W.laneEStatusText, 'brought to front', 'the request that was made is reported');
 
 /* Two different true answers. The desktop app holds every session that has no window
    of its own in ONE window, so the host found the APP and not this session's window;
@@ -429,7 +456,15 @@ W.laneEPending = 's1';
 W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: 'yes' });
 eq(W.laneEStatusText, 'no window found for this session', 'only a real true counts as brought forward');
 
+/* SCA-021: a result about a DIFFERENT session ends the pending state rather than
+   leaving it running. Every pending state has a terminal end. */
+W.laneEPending = 's1';
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 'another', ok: true, reason: 'focused' });
+eq(W.laneEStatusText, 'the host answered about a different session', 'a mismatched session is said out loud');
+eq(W.laneEPending, null, 'and the pending state ends');
+
 delete W.chrome;
+W.hostInfo = null;
 eq(W.laneEAvailable(), false, 'and the gate closes again with the bridge gone');
 W.sheetSessionId = null;
 W.lastGoodDoc = null;

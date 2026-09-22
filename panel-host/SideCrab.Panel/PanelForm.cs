@@ -10,7 +10,7 @@ namespace SideCrab.Panel;
 
 /// <summary>The kiosk window. Borderless, topmost, a tool window (no taskbar or Alt+Tab
 /// entry) that never activates: WS_EX_NOACTIVATE plus MA_NOACTIVATE on every mouse or
-/// touch press, the same shape iCUE's own dashboard window uses on the Edge. It pins
+/// touch press, the shape a vendor dashboard window takes on the Edge. It pins
 /// itself to the target monitor on a 5 s timer and on every display, power and session
 /// event, hides while that monitor is absent, and shows its own dark fallback page while
 /// crabd is unreachable.</summary>
@@ -32,28 +32,45 @@ public sealed class PanelForm : Form
     private readonly HostOptions _opts;
     private readonly string _dir;
     private readonly Log _log;
+    private readonly DateTime _startedAt;
     private PanelSettings _settings;
     private Uri _panelUrl;
     private WebView2? _web;
     private DisplayInfo? _target;
+    private string _targetReason = PanelLogic.DisplayReasonNone;
     private bool _allowVisible;
     private bool _displayMissingLogged;
+    private DateTime? _hiddenLoggedAt;
+    private bool _paused;
     private bool _pageFailed;
     private bool _showingFallback;
     private bool _reinitPending;
+    private bool _servicesStarted;
     private int _viewportChecks;
+    private int _unexpectedDocuments;
+    private string? _lastFailure;
     private string? _hostScriptId;
     private FileSystemWatcher? _watcher;
+    private TrayUi? _tray;
+    private readonly PanelLogic.BridgeGate _bridge = new();
     private readonly System.Windows.Forms.Timer _repin = new() { Interval = 5000 };
     private readonly System.Windows.Forms.Timer _retry = new() { Interval = 5000 };
     private readonly System.Windows.Forms.Timer _viewport = new() { Interval = 700 };
     private readonly System.Windows.Forms.Timer _settingsDebounce = new() { Interval = 1000 };
+    // SCA-002: the message loop's first tick, not the first VISIBLE OnLoad. A kiosk that
+    // starts with its monitor absent is hidden by SetVisibleCore, OnLoad never fires, and
+    // everything that was hooked there never started: the re-pin poll that would find the
+    // monitor when it appears, the watcher that would see a settings edit, and the
+    // WebView. The audit measured it - 6.5 s in, loaded=false, repinEnabled=false,
+    // watcherCreated=false - with the task reporting Running the whole time.
+    private readonly System.Windows.Forms.Timer _startup = new() { Interval = 1 };
 
-    public PanelForm(HostOptions opts, string dir, Log log)
+    public PanelForm(HostOptions opts, string dir, Log log, DateTime startedAt)
     {
         _opts = opts;
         _dir = dir;
         _log = log;
+        _startedAt = startedAt;
         _settings = PanelSettings.Load(dir, log.Write);
         _panelUrl = PanelLogic.PanelUrl(opts.Port ?? _settings.CrabdPort);
 
@@ -77,19 +94,21 @@ public sealed class PanelForm : Form
             // the primary. A missing target starts hidden (SetVisibleCore) and shows when
             // the 5 s repin finds it.
             var displays = SafeEnumerate();
-            var initial = PanelLogic.SelectDisplay(displays, opts.DisplayDeviceId ?? _settings.DisplayDeviceId,
+            var initial = PanelLogic.ChooseDisplay(displays, opts.DisplayDeviceId ?? _settings.DisplayDeviceId,
                                                    _settings.DisplayWidth, _settings.DisplayHeight);
             _log.Write($"displays: {string.Join(" | ", displays.Select(Describe))}");
-            if (initial is not null)
+            _targetReason = initial.Reason;
+            if (initial.Display is not null)
             {
-                _target = initial;
-                Bounds = initial.Bounds;
+                _target = initial.Display;
+                Bounds = initial.Display.Bounds;
                 _allowVisible = true;
-                _log.Write($"target: {Describe(initial)}");
+                _log.Write($"target ({initial.Reason}): {Describe(initial.Display)}");
             }
             else
             {
-                _log.Write("target display not found at startup; starting hidden until the 5 s repin finds it");
+                _log.Write($"target display not found at startup ({initial.Reason}); " +
+                           "starting hidden until the 5 s repin finds it");
             }
         }
 
@@ -97,9 +116,69 @@ public sealed class PanelForm : Form
         _retry.Tick += async (_, _) => await RetryAsync();
         _viewport.Tick += async (_, _) => { _viewport.Stop(); await MeasureViewportAsync(); };
         _settingsDebounce.Tick += async (_, _) => { _settingsDebounce.Stop(); await ReloadSettingsAsync(); };
+        _startup.Tick += (_, _) => { _startup.Stop(); BeginStartup(); };
+        _startup.Start();
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionSwitch += OnSessionSwitch;
+    }
+
+    // ------------------------------------------------------------------ startup
+
+    /// <summary>What a test asks after calling <see cref="StartServices"/>. Public so the
+    /// SCA-002 acceptance test can assert the poll and the watcher are running on a host
+    /// whose target display is absent and whose window was therefore never shown.</summary>
+    public bool ServicesStarted => _servicesStarted;
+    public bool RepinRunning => _repin.Enabled;
+    public bool WatcherRunning => _watcher?.EnableRaisingEvents == true;
+    public bool AllowVisible => _allowVisible;
+    public string TargetReason => _targetReason;
+
+    private bool _webStarted;
+
+    private void BeginStartup()
+    {
+        StartServices();
+        StartUi();
+        if (_webStarted) return;
+        _webStarted = true;
+        _ = InitWebViewAsync();
+    }
+
+    /// <summary>The poll and the watcher. Idempotent: the startup tick and OnLoad both
+    /// call it, and on a host that does show a window they both arrive.</summary>
+    public void StartServices()
+    {
+        if (_servicesStarted) return;
+        _servicesStarted = true;
+        // The handle FIRST, and on this thread. A hidden kiosk never creates one by
+        // itself: SetVisibleCore refuses the show, and the only other line that touches
+        // Handle is the SetWindowPos in Repin, which the absent-target path returns before
+        // reaching. Control.InvokeRequired answers FALSE for a handleless control, so
+        // SafeInvoke then ran the settings watcher's callback on the watcher's own
+        // threadpool thread, _settingsDebounce created its native window there, and its
+        // tick was posted to a thread with no message loop. Measured 2026-09-21 on a dev
+        // host: MainWindowHandle 0, an edit to panel-settings.json, and no reload, ever.
+        // The window is created, not shown; SetVisibleCore still holds it back.
+        if (!IsHandleCreated) _ = Handle;
+        Repin("startup");
+        _repin.Start();
+        StartWatcher();
+    }
+
+    private void StartUi()
+    {
+        if (_tray is not null) return;
+        try
+        {
+            _tray = new TrayUi(this, _log);
+        }
+        catch (Exception ex)
+        {
+            // MF-003 is the reachable control, not a dependency of the panel: a tray that
+            // will not create must not stop the glass from rendering.
+            _log.Write("tray icon not created: " + ex.GetType().Name + ": " + ex.Message);
+        }
     }
 
     // ------------------------------------------------------------------ window shape
@@ -146,13 +225,12 @@ public sealed class PanelForm : Form
         base.WndProc(ref m);
     }
 
-    protected override async void OnLoad(EventArgs e)
+    protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        Repin("startup");
-        _repin.Start();
-        StartWatcher();
-        await InitWebViewAsync();
+        // Kept as a second door onto the same idempotent call. The startup tick is the
+        // one that fires on a hidden host; this one fires first when a window is shown.
+        BeginStartup();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
@@ -161,6 +239,7 @@ public sealed class PanelForm : Form
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         _watcher?.Dispose();
+        _tray?.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -208,23 +287,41 @@ public sealed class PanelForm : Form
     private void Repin(string why)
     {
         if (_opts.Windowed || IsDisposed) return;
+        if (_paused)
+        {
+            _allowVisible = false;
+            if (Visible) Hide();
+            return;
+        }
         var displays = SafeEnumerate();
         var wanted = _opts.DisplayDeviceId ?? _settings.DisplayDeviceId;
-        var target = PanelLogic.SelectDisplay(displays, wanted, _settings.DisplayWidth, _settings.DisplayHeight);
+        var choice = PanelLogic.ChooseDisplay(displays, wanted, _settings.DisplayWidth, _settings.DisplayHeight);
+        _targetReason = choice.Reason;
+        var target = choice.Display;
         if (target is null)
         {
             if (!_displayMissingLogged)
             {
-                _log.Write($"repin({why}): target display not found (id '{wanted}' or " +
+                _log.Write($"repin({why}): target display not found ({choice.Reason}: id " +
+                           $"'{PanelLogic.EscapeForLog(wanted, 80)}' or " +
                            $"{_settings.DisplayWidth}x{_settings.DisplayHeight}); displays: " +
                            string.Join(" | ", displays.Select(Describe)));
                 _displayMissingLogged = true;
             }
             _allowVisible = false;
-            if (Visible) { Hide(); _log.Write("hidden until the display returns"); }
+            if (Visible) Hide();
+            // C7: the line the setup lane reads while the target is absent. At start and
+            // then at most once a minute - the poll behind it runs every five seconds.
+            var now = DateTime.Now;
+            if (PanelLogic.ShouldLogHidden(_hiddenLoggedAt, now))
+            {
+                _hiddenLoggedAt = now;
+                _log.Write(PanelLogic.HiddenLine(Environment.ProcessId, Iso(_startedAt)));
+            }
             return;
         }
         _displayMissingLogged = false;
+        _hiddenLoggedAt = null;
         _allowVisible = true;
         var moved = _target is null || _target.DeviceName != target.DeviceName
                     || _target.Bounds != target.Bounds || _target.Dpi != target.Dpi;
@@ -232,7 +329,7 @@ public sealed class PanelForm : Form
         var wasHidden = !Visible;
         if (Bounds != target.Bounds) Bounds = target.Bounds;
         if (wasHidden) Show();
-        // Re-assert topmost without moving: another topmost window (iCUE's own dashboard,
+        // Re-assert topmost without moving: another topmost window (a vendor dashboard,
         // if it is still on) can stack above after a display or session event.
         SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         if (moved || wasHidden)
@@ -245,7 +342,10 @@ public sealed class PanelForm : Form
 
     private static string Describe(DisplayInfo d) =>
         $"{d.DeviceName} {d.Bounds.Width}x{d.Bounds.Height} at {d.Bounds.X},{d.Bounds.Y} {d.ScalePercent}%" +
-        $"{(d.Primary ? " primary" : "")} [{d.DeviceId}]";
+        $"{(d.Primary ? " primary" : "")} [{PanelLogic.EscapeForLog(d.DeviceId, 160)}]";
+
+    /// <summary>The one timestamp format the C7 log lines carry.</summary>
+    private static string Iso(DateTime t) => t.ToString("yyyy-MM-ddTHH:mm:ss");
 
     // ------------------------------------------------------------------ the web view
 
@@ -259,8 +359,13 @@ public sealed class PanelForm : Form
             var web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Black, TabStop = false };
             Controls.Add(web);
             _web = web;
-            var userData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                        "SideCrab", "Panel", "WebView2");
+            // SCA-024: per-profile, so a --windowed QA host asking for its own
+            // --remote-debugging-port does not meet the kiosk's environment in the same
+            // folder. CreateAsync answers that with COMException 0x8007139F and the host
+            // retries forever against a profile it can never open.
+            var profile = PanelLogic.ProfileName(_opts.Windowed, _opts.Profile);
+            var userData = PanelLogic.WebViewUserDataDir(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), profile);
             var envOpts = new CoreWebView2EnvironmentOptions();
             // The command line wins; the settings file is how the scheduled-task instance
             // (which takes no arguments) opens the port for a desk-side measurement.
@@ -298,12 +403,33 @@ public sealed class PanelForm : Form
             try { s.UserAgent = s.UserAgent + " SideCrab.Panel/" + Program.Version; }
             catch (Exception ex) { _log.Write("user agent not set: " + ex.GetType().Name); }
             core.NavigationStarting += OnNavigationStarting;
-            core.NewWindowRequested += (_, e) => { e.Handled = true; _log.Write("new window refused: " + e.Uri); };
+            core.NewWindowRequested += (_, e) =>
+            {
+                e.Handled = true;
+                _log.Write("new window refused: " + PanelLogic.EscapeForLog(e.Uri));
+            };
+            // SCA-022. Three refusals a kiosk owes, none of which the panel needs:
+            // a child frame anywhere but the panel's own origin, any permission prompt
+            // (there is no one at the glass to answer it, and a defaulted prompt is a
+            // grant nobody made), and any download (a borderless window has no download
+            // bar, so the file would arrive with no trace on the screen).
+            core.FrameNavigationStarting += OnFrameNavigationStarting;
+            core.PermissionRequested += (_, e) =>
+            {
+                e.State = CoreWebView2PermissionState.Deny;
+                e.Handled = true;
+                _log.Write($"permission denied: {e.PermissionKind} for {PanelLogic.EscapeForLog(e.Uri)}");
+            };
+            core.DownloadStarting += (_, e) =>
+            {
+                e.Cancel = true;
+                _log.Write("download cancelled: " + PanelLogic.EscapeForLog(e.DownloadOperation.Uri));
+            };
             core.NavigationCompleted += OnNavigationCompleted;
             core.ProcessFailed += OnProcessFailed;
             core.WebMessageReceived += OnWebMessageReceived;   // lane B: the settings bridge
             _hostScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(HostScript());
-            _log.Write($"webview2 {env.BrowserVersionString} ready; user data {userData}; " +
+            _log.Write($"webview2 {env.BrowserVersionString} ready; profile {profile}; user data {userData}; " +
                        $"props {_settings.Props.Count} ({_settings.Source}); " +
                        $"pairing code {(_settings.PanelToken is null ? "ABSENT" : "present")}; " +
                        $"devtools {(devtools > 0 ? "port " + devtools : "off")}");
@@ -314,6 +440,7 @@ public sealed class PanelForm : Form
             // The WebView2 Runtime missing is the usual cause. Nothing to render, so log
             // it and keep retrying: the task is up, the log says why the glass is dark.
             _log.Write("webview2 init failed: " + ex);
+            _lastFailure = "WebView2 would not start: " + ex.GetType().Name;
             _pageFailed = true;
             _retry.Start();
         }
@@ -332,8 +459,27 @@ public sealed class PanelForm : Form
     {
         if (PanelLogic.IsAllowedNavigation(e.Uri, _panelUrl)) return;
         e.Cancel = true;
-        _log.Write("navigation refused: " + e.Uri);
+        _log.Write("navigation refused: " + PanelLogic.EscapeForLog(e.Uri));
     }
+
+    private void OnFrameNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (PanelLogic.IsAllowedFrameNavigation(e.Uri, _panelUrl)) return;
+        e.Cancel = true;
+        _log.Write("frame navigation refused: " + PanelLogic.EscapeForLog(e.Uri));
+    }
+
+    /// <summary>SCA-028: a navigation that SUCCEEDED is not the same fact as the panel
+    /// being on the glass. The completion event carries no URI, so the document is read
+    /// from CoreWebView2.Source. about:blank is the case that matters: the WebView starts
+    /// there, and a later arrival at it - a cancelled navigation, a renderer rebuild -
+    /// used to clear the failure flag and STOP the retry, leaving a black 2560x720 window
+    /// with nothing scheduled to notice.
+    ///
+    /// The re-navigations are bounded. An unexpected document that keeps coming back is a
+    /// loop this host cannot win, so after <see cref="UnexpectedDocumentMax"/> tries it
+    /// shows the fallback page, which names the tray's Reload panel.</summary>
+    private const int UnexpectedDocumentMax = 5;
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
@@ -343,12 +489,36 @@ public sealed class PanelForm : Form
         {
             var reason = e.IsSuccess ? $"HTTP {http}" : e.WebErrorStatus.ToString();
             _log.Write($"panel failed to load: {reason}");
+            _lastFailure = reason;
             _pageFailed = true;
             ShowFallback(reason);
             _retry.Start();
             return;
         }
+
+        var source = _web?.CoreWebView2?.Source;
+        if (!PanelLogic.IsPanelDocument(source, _panelUrl))
+        {
+            _pageFailed = true;
+            _unexpectedDocuments++;
+            var what = PanelLogic.EscapeForLog(source, 120);
+            if (_unexpectedDocuments > UnexpectedDocumentMax)
+            {
+                _lastFailure = $"the window is showing {what}, not the panel";
+                _log.Write($"navigation succeeded to '{what}', not the panel, " +
+                           $"{_unexpectedDocuments} times; showing the fallback page");
+                ShowFallback($"the window is showing {what}");
+                _retry.Stop();
+                return;
+            }
+            _log.Write($"navigation succeeded to '{what}', not the panel; retrying " +
+                       $"({_unexpectedDocuments}/{UnexpectedDocumentMax})");
+            _retry.Start();
+            return;
+        }
+
         _pageFailed = false;
+        _unexpectedDocuments = 0;
         _retry.Stop();
         _log.Write("panel loaded");
         _viewportChecks = 0;
@@ -358,6 +528,7 @@ public sealed class PanelForm : Form
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
         _log.Write($"webview2 process failed: {e.ProcessFailedKind} reason {e.Reason} exit {e.ExitCode}");
+        _lastFailure = $"WebView2 {e.ProcessFailedKind} ({e.Reason})";
         if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited
             or CoreWebView2ProcessFailedKind.RenderProcessExited
             or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
@@ -417,7 +588,8 @@ public sealed class PanelForm : Form
                ".h{font-size:46px;font-weight:600;color:#6F94CC}.m{opacity:.7;font-size:22px}</style></head><body><div class=\"w\">" +
                "<div class=\"h\">SideCrab companion not reachable</div>" +
                $"<div>{u}: {r}</div>" +
-               "<div class=\"m\">The panel retries every 5 seconds. Start or update the companion with Update-SideCrab.ps1.</div>" +
+               "<div class=\"m\">The panel retries every 5 seconds. Start or update the companion with " +
+               "Update-SideCrab.ps1, or use Reload the panel in the SideCrab tray menu.</div>" +
                "</div></body></html>";
     }
 
@@ -440,7 +612,10 @@ public sealed class PanelForm : Form
             var h = doc.RootElement.GetProperty("h").GetInt32();
             var dpr = doc.RootElement.GetProperty("dpr").GetDouble();
             var physical = _target?.Bounds.Width ?? Width;
-            _log.Write($"viewport: {w}x{h} css px, dpr {dpr:0.###}, zoom {web.ZoomFactor:0.###}, window {Width}x{Height} physical");
+            // C7: field order is the setup lane's smoke check. pid and started are what
+            // stop yesterday's line passing for this run's.
+            _log.Write(PanelLogic.ViewportLine(w, h, dpr, web.ZoomFactor, Width, Height,
+                                               Environment.ProcessId, Iso(_startedAt)));
             // Within 2 css px is equal: 2560 / 1.5 rounds to 1707 logical px, which reads back
             // as 2561 at zoom 0.667, and chasing that last pixel would loop the correction.
             if (Math.Abs(w - physical) <= 2) return;
@@ -474,19 +649,33 @@ public sealed class PanelForm : Form
             // else, so this is the second half of the same guarantee.
             if (!PanelLogic.IsAllowedNavigation(e.Source, _panelUrl))
             {
-                _log.Write("web message refused: source " + e.Source);
+                _log.Write("web message refused: source " + PanelLogic.EscapeForLog(e.Source));
                 return;
             }
             using var doc = JsonDocument.Parse(e.WebMessageAsJson);
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return;
-            if (!root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String) return;
-            switch (type.GetString())
+            var req = PanelLogic.ParseBridgeRequest(root);
+            if (req is null) { _log.Write("web message ignored: no usable type"); return; }
+            switch (req.Type)
             {
-                case "host-info": SendHostInfo(); return;
-                case "settings": SaveSettingsFromPage(root); return;
-                case "focus-session": FocusSessionFromPage(root); return;   // lane E
-                default: _log.Write("web message ignored: type " + type.GetString()); return;
+                case PanelLogic.ChannelHostInfo:
+                    Accept(PanelLogic.ChannelHostInfo, req.RequestId);
+                    SendHostInfo(req.RequestId);
+                    return;
+                case PanelLogic.ChannelSettings:
+                    Accept(PanelLogic.ChannelSettings, req.RequestId);
+                    SaveSettingsFromPage(root, req.RequestId);
+                    return;
+                case PanelLogic.ChannelFocus:                                // lane E
+                    Accept(PanelLogic.ChannelFocus, req.RequestId);
+                    FocusSessionFromPage(root, req.RequestId);
+                    return;
+                default:
+                    // SCA-030: the type is a string the PAGE chose. Unescaped, a \n in it
+                    // wrote a second, unprefixed line into the only account of what this
+                    // host did.
+                    _log.Write("web message ignored: type " + PanelLogic.EscapeForLog(req.Type, 80));
+                    return;
             }
         }
         catch (Exception ex)
@@ -504,59 +693,89 @@ public sealed class PanelForm : Form
         catch (Exception ex) { _log.Write("web message not posted: " + ex.GetType().Name); }
     }
 
-    /// <summary>What the sheet says about where a save goes. `hasToken` and never the
-    /// token: the page has the code already (the host script injects it as a prop), and
-    /// re-serving it here would be a second door to the same secret for no gain.</summary>
-    private void SendHostInfo() => Post(new
-    {
-        type = "host-info",
-        version = Program.Version,
-        settingsPath = Path.Combine(_dir, "panel-settings.json"),
-        hasToken = _settings.PanelToken is not null,
-    });
+    /// <summary>SCA-021 / C2. Records which attempt on a channel is the newest, so a
+    /// reply that arrives after the operator has already asked again is LOGGED as
+    /// superseded. Every accepted request still gets its own reply, carrying the id it
+    /// answers; that id is what stops a late reply being read as the answer to the newer
+    /// attempt.</summary>
+    private void Accept(string channel, string? requestId) => _bridge.Accepted(channel, requestId);
 
-    private void SaveSettingsFromPage(JsonElement root)
+    private void Reply(string channel, string? requestId, object payload)
     {
-        if (!root.TryGetProperty("props", out var props))
+        if (!_bridge.IsCurrent(channel, requestId))
+            _log.Write($"bridge: replying to a superseded {channel} request " +
+                       $"({PanelLogic.EscapeForLog(requestId, PanelLogic.RequestIdMax)})");
+        Post(payload);
+    }
+
+    /// <summary>What the sheet says about where a save goes, and what this host can do.
+    /// `hasToken` and never the token: the page has the code already (the host script
+    /// injects it as a prop), and re-serving it here would be a second door to the same
+    /// secret for no gain.</summary>
+    private void SendHostInfo(string? requestId) =>
+        Reply(PanelLogic.ChannelHostInfo, requestId,
+              PanelLogic.HostInfoReply(requestId, Program.Version, Environment.ProcessId, Iso(_startedAt),
+                                       Path.Combine(_dir, "panel-settings.json"),
+                                       _settings.PanelToken is not null));
+
+    /// <summary>SCA-021: EXACTLY ONE terminal reply per accepted request, on every path.
+    /// Four of them used to end in a log line and a return - no props, nothing past the
+    /// whitelist, a write failure, and a throw - and the sheet sat on "saving" with no
+    /// deadline. The audit held one open for sixty seconds with the bridge connected.
+    ///
+    /// The error strings are for a human reading the sheet; the log keeps the exception
+    /// type and message.</summary>
+    private void SaveSettingsFromPage(JsonElement root, string? requestId)
+    {
+        void Fail(string error)
         {
-            _log.Write("settings save ignored: no props");
-            return;
+            _log.Write("settings save refused: " + error);
+            Reply(PanelLogic.ChannelSettings, requestId, PanelLogic.SettingsReply(requestId, false, error));
         }
+
+        if (!root.TryGetProperty("props", out var props)) { Fail("the message carried no props"); return; }
         var clean = PanelLogic.ValidateSettingsProps(props);
         if (clean.Count == 0)
         {
             // Nothing survived the whitelist, so nothing is written. A page that posts
             // rubbish must not be able to rewrite the operator's file at all.
-            _log.Write("settings save ignored: nothing in it passed the whitelist");
+            Fail("nothing in it passed the whitelist");
             return;
         }
-        var path = Path.Combine(_dir, "panel-settings.json");
         try
         {
+            var path = Path.Combine(_dir, "panel-settings.json");
             string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
-            var merged = PanelLogic.MergeSettingsJson(existing, clean);
-            // Atomic: a half-written settings file is one the host reads as unparseable
-            // and silently replaces with defaults on the next start, which would lose
-            // the port and the display along with everything else. Same-directory temp,
-            // so the move is a rename and not a copy across volumes.
-            var tmp = path + ".tmp";
-            Directory.CreateDirectory(_dir);
-            File.WriteAllText(tmp, merged);
-            File.Move(tmp, path, overwrite: true);
-            _selfWriteAt = DateTime.UtcNow;
+            WriteSettingsAtomic(PanelLogic.MergeSettingsJson(existing, clean));
             _log.Write($"settings saved from the panel: {string.Join(", ", clean.Keys)}");
         }
         catch (Exception ex)
         {
             _log.Write("settings save failed: " + ex.GetType().Name + ": " + ex.Message);
+            Reply(PanelLogic.ChannelSettings, requestId,
+                  PanelLogic.SettingsReply(requestId, false, "the settings file could not be written"));
             return;
         }
 
         _settings = PanelSettings.Load(_dir, _log.Write);
         ReinjectHostScript();
-        // What was ACTUALLY stored, not what the page sent: the whitelist and the clamps
-        // sit between the two, and the sheet repaints itself from this reply.
-        Post(new { type = "settings-saved", props = clean });
+        Reply(PanelLogic.ChannelSettings, requestId, PanelLogic.SettingsReply(requestId, true, null));
+    }
+
+    /// <summary>The one writer for panel-settings.json. Atomic: a half-written settings
+    /// file is one the host reads as unparseable and silently replaces with defaults on
+    /// the next start, which would lose the port and the display along with everything
+    /// else. Same-directory temp, so the move is a rename and not a copy across volumes.
+    ///
+    /// Throws. Every caller owes the operator an answer about the failure.</summary>
+    private void WriteSettingsAtomic(string json)
+    {
+        var path = Path.Combine(_dir, "panel-settings.json");
+        var tmp = path + ".tmp";
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(tmp, json);
+        File.Move(tmp, path, overwrite: true);
+        _selfWriteAt = DateTime.UtcNow;
     }
 
     // ------------------------------------------- lane E: bring a session to the front
@@ -569,12 +788,17 @@ public sealed class PanelForm : Form
     /// The page never names a window: it sends four facts about a session and this host
     /// decides. A handle from the page would be a window picker a visited page could aim
     /// anywhere on the desktop.</summary>
-    private void FocusSessionFromPage(JsonElement root)
+    private void FocusSessionFromPage(JsonElement root, string? requestId)
     {
         var req = PanelLogic.ValidateFocusRequest(root);
         if (req is null)
         {
-            _log.Write("focus ignored: no usable sessionId in the message");
+            // SCA-021: a refused payload is a terminal answer too. This path used to be a
+            // log line and a return, and the page's button stayed on "bringing it to the
+            // front" until something else redrew it.
+            _log.Write("focus refused: no usable sessionId in the message");
+            Reply(PanelLogic.ChannelFocus, requestId,
+                  PanelLogic.FocusReply(requestId, string.Empty, false, "invalid-request", null));
             return;
         }
 
@@ -584,16 +808,19 @@ public sealed class PanelForm : Form
         catch (Exception ex)
         {
             _log.Write("focus failed: window enumeration threw " + ex.GetType().Name);
-            Post(new { type = "focus-result", sessionId = req.SessionId, ok = false, reason = "enumerate-failed" });
+            Reply(PanelLogic.ChannelFocus, requestId,
+                  PanelLogic.FocusReply(requestId, req.SessionId, false, "enumerate-failed", null));
             return;
         }
 
         var choice = PanelLogic.SelectWindow(candidates, req);
         if (choice.Window is null)
         {
-            _log.Write($"focus({req.SessionId}) '{req.Title}': {choice.Reason}; " +
+            _log.Write($"focus({PanelLogic.EscapeForLog(req.SessionId, PanelLogic.FocusIdMax)}) " +
+                       $"'{PanelLogic.EscapeForLog(req.Title)}': {choice.Reason}; " +
                        $"{candidates.Count} candidate window(s) on the primary display in {sw.ElapsedMilliseconds} ms");
-            Post(new { type = "focus-result", sessionId = req.SessionId, ok = false, reason = choice.Reason });
+            Reply(PanelLogic.ChannelFocus, requestId,
+                  PanelLogic.FocusReply(requestId, req.SessionId, false, choice.Reason, null));
             return;
         }
 
@@ -602,21 +829,21 @@ public sealed class PanelForm : Form
         // The panel's own window is re-read on every attempt, not assumed: WS_EX_NOACTIVATE
         // is the whole reason a tap on the glass does not steal the keyboard, and a focus
         // handover that ended with this window in front would be that guarantee broken.
-        _log.Write($"focus({req.SessionId}) '{req.Title}' -> {target.ProcessName} '{target.Title}' " +
-                   $"[{target.ClassName}] score {choice.Score}, {candidates.Count} candidates, " +
-                   $"{(target.Minimised ? "restored, " : "")}{outcome.How}, " +
+        //
+        // SCA-030: the window title came off the DESKTOP, not from this host. Any window
+        // on the primary display can carry a newline in its title.
+        _log.Write($"focus({PanelLogic.EscapeForLog(req.SessionId, PanelLogic.FocusIdMax)}) " +
+                   $"'{PanelLogic.EscapeForLog(req.Title)}' -> {PanelLogic.EscapeForLog(target.ProcessName, 64)} " +
+                   $"'{PanelLogic.EscapeForLog(target.Title)}' " +
+                   $"[{PanelLogic.EscapeForLog(target.ClassName, 64)}] score {choice.Score}, " +
+                   $"{candidates.Count} candidates, {(target.Minimised ? "restored, " : "")}{outcome.How}, " +
                    $"ok={outcome.Ok}, panel took focus={outcome.PanelTookFocus}, {sw.ElapsedMilliseconds} ms");
-        Post(new
-        {
-            type = "focus-result",
-            sessionId = req.SessionId,
-            ok = outcome.Ok,
-            // The FALLBACK travels to the page under its own name. A session with no
-            // window of its own ends up in front of the Claude app, and the page must be
-            // able to say that rather than claim the session's own window was found.
-            reason = outcome.Ok ? (choice.Reason == "desktop-app" ? "desktop-app" : "focused") : "refused",
-            window = target.Title,
-        });
+        // The FALLBACK travels to the page under its own name. A session with no window of
+        // its own ends up in front of the Claude app, and the page must be able to say
+        // that rather than claim the session's own window was found.
+        var reason = outcome.Ok ? (choice.Reason == "desktop-app" ? "desktop-app" : "focused") : "refused";
+        Reply(PanelLogic.ChannelFocus, requestId,
+              PanelLogic.FocusReply(requestId, req.SessionId, outcome.Ok, reason, target.Title));
     }
 
     private async void ReinjectHostScript()
@@ -675,5 +902,172 @@ public sealed class PanelForm : Form
         }
         catch (Exception ex) { _log.Write("settings reload failed: " + ex.GetType().Name); }
         Repin("settings changed");
+    }
+
+    // ------------------------------------------- MF-003: what the tray menu can do
+
+    /// <summary>The facts the status window shows. Read on every open, never cached: a
+    /// status window that shows what was true when the tray was created is the control
+    /// that reports success forever.</summary>
+    public PanelLogic.HostStatus Status() => new(
+        Mode: _opts.Windowed ? "windowed" : "kiosk",
+        Version: Program.Version,
+        Pid: Environment.ProcessId,
+        StartedAt: _startedAt,
+        Visible: Visible,
+        Paused: _paused,
+        // DisplayLabel and not Describe: Describe is the LOG form and doubles every
+        // backslash, which is right in a log line and reads as a typo in a window.
+        TargetLabel: _target is null ? null : PanelLogic.DisplayLabel(_target),
+        TargetReason: _targetReason,
+        PanelLoaded: !_pageFailed && !_showingFallback && _web?.CoreWebView2 is not null,
+        LastFailure: _lastFailure,
+        LogPath: _log.Path,
+        PriorStartsInWindow: PriorStartsInLog());
+
+    /// <summary>How many earlier starts this log records in the last hour. The scheduled
+    /// task restarts a failed host three times, a minute apart, and then stops; without
+    /// this the status window could only state the policy and not whether it was being
+    /// used. Bounded: the last 64 KB of the file, nothing older.</summary>
+    private int PriorStartsInLog()
+    {
+        try
+        {
+            var path = _log.Path;
+            if (!File.Exists(path)) return 0;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            const int window = 64 * 1024;
+            if (fs.Length > window) fs.Seek(-window, SeekOrigin.End);
+            using var sr = new StreamReader(fs);
+            var cutoff = DateTime.Now.AddHours(-1);
+            // By PID and not by timestamp. _startedAt is read a moment BEFORE the startup
+            // line is written, so the two can straddle a second and this run's own line
+            // would be counted as an earlier start: a status window that occasionally
+            // invents a restart is worse than one that does not count them.
+            var mine = $"pid {Environment.ProcessId};";
+            var starts = 0;
+            while (sr.ReadLine() is { } line)
+            {
+                if (!line.Contains("SideCrab.Panel", StringComparison.Ordinal)
+                    || !line.Contains(" starting; pid ", StringComparison.Ordinal)) continue;
+                if (line.Length < 19) continue;
+                if (!DateTime.TryParse(line[..19], out var at) || at < cutoff) continue;
+                if (line.Contains(mine, StringComparison.Ordinal)) continue;   // this run's own line
+                starts++;
+            }
+            return starts;
+        }
+        catch (Exception ex)
+        {
+            _log.Write("restart history unreadable: " + ex.GetType().Name);
+            return 0;
+        }
+    }
+
+    public IReadOnlyList<DisplayInfo> CurrentDisplays() => SafeEnumerate();
+
+    public string SettingsPath => Path.Combine(_dir, "panel-settings.json");
+
+    public bool Paused => _paused;
+
+    public void ReloadPanel()
+    {
+        _log.Write("tray: reload the panel");
+        _unexpectedDocuments = 0;
+        var core = _web?.CoreWebView2;
+        if (core is null) { _ = ReinitWebViewAsync(); return; }
+        NavigateToPanel("tray reload");
+    }
+
+    public void RepinNow() => Repin("tray");
+
+    /// <summary>Hide until resumed. Distinct from Quit until next logon, and from
+    /// disabling the scheduled task, which is Install-SideCrab.ps1's job and not this
+    /// menu's: a paused panel is still running and comes back from this same menu.</summary>
+    public void SetPaused(bool paused)
+    {
+        if (_paused == paused) return;
+        _paused = paused;
+        _log.Write(paused ? "tray: paused, hiding until resumed" : "tray: resumed");
+        if (paused)
+        {
+            _allowVisible = false;
+            if (Visible) Hide();
+        }
+        else
+        {
+            _displayMissingLogged = false;
+            Repin("resumed");
+        }
+    }
+
+    /// <summary>Exit 0 so the task's restart-on-failure does NOT relaunch. The logon
+    /// trigger brings it back next time; the startup entry itself is untouched.</summary>
+    public void QuitUntilLogon()
+    {
+        _log.Write("tray: quit until next logon (the scheduled task's logon trigger is unchanged)");
+        Close();
+    }
+
+    public void OpenLogFolder()
+    {
+        var dir = Path.GetDirectoryName(_log.Path);
+        if (dir is null) return;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{_log.Path}\"",
+                UseShellExecute = true,
+            });
+            _log.Write("tray: opened the log folder");
+        }
+        catch (Exception ex) { _log.Write("log folder not opened: " + ex.GetType().Name); }
+    }
+
+    // ------------------------------------------- MF-004: the display picker
+
+    /// <summary>Write <c>display.deviceId</c> and re-pin. Returns the previous value so
+    /// the caller can put it back; the caller owns the revert timer, because the window
+    /// that asks "keep this display?" is on the primary and this class is on the Edge.
+    ///
+    /// Only the deviceId is written. Width and height stay whatever the file said, so the
+    /// size fallback is still there the day the monitor's id changes.</summary>
+    public string? ApplyDisplayDeviceId(string deviceId)
+    {
+        var previous = _settings.DisplayDeviceId;
+        try
+        {
+            var path = SettingsPath;
+            string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
+            WriteSettingsAtomic(PanelLogic.MergeDisplayDeviceIdJson(existing, deviceId));
+        }
+        catch (Exception ex)
+        {
+            _log.Write("display pick not saved: " + ex.GetType().Name + ": " + ex.Message);
+            throw;
+        }
+        _settings = PanelSettings.Load(_dir, _log.Write);
+        _displayMissingLogged = false;
+        _log.Write($"tray: display set to '{PanelLogic.EscapeForLog(deviceId, 160)}' " +
+                   $"(was '{PanelLogic.EscapeForLog(previous, 160)}')");
+        Repin("display picked");
+        return previous;
+    }
+
+    /// <summary>Undo an ApplyDisplayDeviceId. A null previous value means the file had no
+    /// deviceId at all, and the default goes back in rather than an empty string: an
+    /// empty id would make the size fallback the only route and that is not what was
+    /// there before.</summary>
+    public void RevertDisplayDeviceId(string? previous)
+    {
+        try
+        {
+            ApplyDisplayDeviceId(previous ?? PanelLogic.DefaultDisplayDeviceId);
+            _log.Write("tray: display selection reverted");
+        }
+        catch (Exception ex) { _log.Write("display revert failed: " + ex.GetType().Name); }
     }
 }

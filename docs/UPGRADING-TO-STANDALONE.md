@@ -1,29 +1,12 @@
-# Install notes: SideCrab moved from the iCUE widget to a standalone panel
+# Install notes: the standalone panel
 
-**Short version.** From 0.29.0 (2026-09-21) the recommended way to run SideCrab is the
-**standalone panel host**: a small window of our own that shows the panel full-screen on the
-Xeneon Edge, with iCUE nowhere in the loop. The iCUE widget still exists and still works on iCUE
-builds **before 5.51.40**, but it is no longer the primary host and it cannot be made to work on
-5.51.40 or newer.
-
-If you are new, follow "Fresh install" below. If you have the widget today, follow "Upgrading
-from the iCUE widget". Either way it is about ten minutes.
-
----
-
-## Why this changed
-
-iCUE 5.51.40 added a URL-permission layer for widgets. Every request the SideCrab widget makes to
-the companion on `127.0.0.1` is refused inside iCUE (`net::ERR_ACCESS_DENIED`, then
-`net::ERR_BLOCKED_BY_CLIENT` after the grant is rebuilt). A `permissions` entry in the widget
-manifest works right after an import and dies on the next iCUE start, because iCUE saves the grant
-without the port a loopback grant needs. Nothing in a widget package can change that. The symptom
-is a panel that reads "data as of HH:MM" or shows no cards while the companion is perfectly
-healthy.
-
-So the panel now has a second host. The companion serves the same panel page itself at
+**Short version.** SideCrab is a standalone application. The companion serves the panel page at
 `http://127.0.0.1:2722/panel/`, and `SideCrab.Panel`, a .NET 10 window using WebView2, shows it
-on the Edge. One panel, one codebase, two hosts.
+full-screen on the Xeneon Edge. Nothing else is needed and nothing is imported anywhere.
+
+If you are new, follow "Fresh install" below. If you ran the old widget, follow "Upgrading from
+the widget". Either way it is about fifteen minutes. What the widget was and why it was retired
+is recorded in the maintainers' history.
 
 ---
 
@@ -34,12 +17,12 @@ on the Edge. One panel, one codebase, two hosts.
 | Windows 10 or 11 | |
 | Claude Code, used on this PC | The companion reads its local session data |
 | PowerShell 7 and Python 3.13 | For the companion, unchanged |
-| **.NET 10 SDK** | Builds the panel host once; `Install-SideCrab.ps1 -Panel` runs the build. The Desktop Runtime it installs runs the host. https://dotnet.microsoft.com/download |
+| **.NET 10 SDK** | Builds the panel host once; the installer runs the build. The Desktop Runtime it installs runs the host. https://dotnet.microsoft.com/download. Without it, install with `-SkipPanel` |
 | **WebView2 Runtime** | Ships with Windows 11 and most Windows 10 installs |
 | The Xeneon Edge | Found by its device id. Any 2560x720 display works, and `panel-settings.json` can name another one |
 
-iCUE is **not** required. If you have it, it keeps running your fans and lighting. Only its own
-dashboard on the Edge must be turned off, or the two full-screen windows fight for the top.
+If anything else is drawing its own dashboard on the Edge, turn that dashboard off for that
+screen, or the two full-screen windows fight for the top.
 
 ---
 
@@ -48,11 +31,13 @@ dashboard on the Edge must be turned off, or the two full-screen windows fight f
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
 cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1 -WithToast -Panel
+pwsh -File .\setup\Install-SideCrab.ps1
 ```
 
-That one command installs the companion (`SideCrab-crabd`), the notifier (`SideCrab-toast`),
-builds the panel host and registers it (`SideCrab-panel`), all as logon tasks, and starts them.
+That one command installs all three components - the companion (`SideCrab-crabd`), the notifier
+(`SideCrab-toast`) and the panel host (`SideCrab-panel`, built first) - as logon tasks, and starts
+them. `-SkipPanel` and `-SkipToast` leave one out; `-WhatIf` describes every step and performs
+none of them, including the build.
 
 **What you should see:** within a few seconds the panel fills the Edge: the crab, the clock, the
 limit gauges, and a card for each Claude Code session as you start them. Then check it:
@@ -74,30 +59,29 @@ pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
 
 ---
 
-## Upgrading from the iCUE widget
+## Upgrading from the widget
 
-1. Pull and update the companion. The panel page is served from companion 0.31.0 on, so this step
-   is required:
+1. Update the checkout and every component:
 
    ```powershell
-   git -C C:\Dev\sidecrab pull
    pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1
    ```
 
-2. Build and start the panel host:
+2. Install the panel host, which a widget-era install did not have:
 
    ```powershell
-   pwsh -File C:\Dev\sidecrab\setup\Install-SideCrab.ps1 -Panel
+   pwsh -File C:\Dev\sidecrab\setup\Install-SideCrab.ps1
    ```
 
-3. In iCUE, select the Xeneon Edge and turn its **dashboard off** for that screen. Leave iCUE
-   running; fans and lighting are unaffected. Until you do this, iCUE's dashboard and the panel host
-   are both "always on top" and take turns.
-4. Remove the SideCrab widget from the Edge in iCUE if it is still there. On 5.51.40 or newer it
-   can no longer reach the companion anyway.
-5. Move your settings, if you had changed any:
+   The same run unregisters the old `SideCrab-glow` task if you had one and records it in
+   `~/.sidecrab/state/retired.json`. Its log is kept.
 
-   | Was in the widget's iCUE settings | Now lives in |
+3. Turn off any other dashboard still drawn on the Edge, and remove the old widget from the Edge
+   wherever you placed it. It can no longer reach the companion.
+
+4. Move your settings, if you had changed any:
+
+   | Was in the widget's settings | Now lives in |
    |---|---|
    | Colours, 24-hour clock, flash on alert, crab accessories, transparency, touch diagnostics | `~/.sidecrab/panel-settings.json`, under `props`, same names (`clock24`, `alertFlash`, `crabStyle`, `textColor`, `accentColor`, `backgroundColor`, `transparency`, `touchDiag`) |
    | Quiet hours, toast, digest, budget | `~/.sidecrab/config.json`, where they already were; the host does not push these from a property sheet |
@@ -120,8 +104,9 @@ pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
 
 ## What is different day to day
 
-- **Updating.** `git pull` then `Update-SideCrab.ps1`. It rebuilds the host from the pulled
-  source and restarts it. There is no `.icuewidget` to import at the desk any more.
+- **Updating.** `Update-SideCrab.ps1`. It pulls, rebuilds the host from the pulled source,
+  restarts the tasks and verifies the result, exiting non-zero if the host did not rebuild or did
+  not come back. There is nothing to import at the desk any more.
 - **The window.** Borderless, always on top on the Edge, hidden from the taskbar and Alt+Tab, and
   it never takes keyboard focus, so a tap on the Edge does not interrupt what you are typing. It
   comes back on its own after the display sleeps or the resolution changes.
@@ -173,23 +158,17 @@ removes the need for it.
 
 ---
 
-## Staying on the iCUE widget (iCUE 5.44 to 5.51.39)
-
-The widget is still built and still released: download `SideCrab-<version>.icuewidget` from the
-releases page and import it as before. It stops working the day iCUE updates itself past
-5.51.39, and the companion cannot help with that. When it happens, come back to "Upgrading" above.
-
----
-
 ## Troubleshooting the standalone panel
 
 | You see | Do |
 |---|---|
-| "SideCrab companion not reachable" on the Edge | `Update-SideCrab.ps1`. A `404` in that message means the companion is older than 0.31.0 or the `widget\` folder is missing beside `companion\` |
+| "SideCrab companion not reachable" on the Edge | `Update-SideCrab.ps1`. A `404` in that message means the `widget\` folder is missing beside `companion\` |
 | Nothing on the Edge, no window | `~/.sidecrab/logs/panel.log` lists every display it saw and which it picked. Set `display.deviceId` (or `width`/`height`) in `panel-settings.json` |
-| The panel looks cropped or scaled | `Test-SideCrab.ps1` has a `panel viewport` row; the host corrects its zoom on the next check. Set the Edge to 100% scale in Windows display settings if you can |
-| Two dashboards flicker on the Edge | iCUE's own dashboard is still on for the Edge. Turn it off in iCUE |
-| `-Panel` fails with "dotnet not found" or an SDK version error | Install the .NET 10 SDK and re-run |
+| The panel looks cropped or scaled | `Test-SideCrab.ps1` has a `panel viewport` row that judges only the line the running host wrote; the host corrects its zoom on the next check. Set the Edge to 100% scale in Windows display settings if you can |
+| `panel viewport` says `hidden` | The host is running and deliberately showing nothing because the target display is absent. Check `display.deviceId` and that the Edge is connected |
+| `panel viewport` says `stale` | The newest line in `panel.log` belongs to an earlier run, so the host running now has not drawn anything. Restart `SideCrab-panel` and look at the log |
+| Two dashboards flicker on the Edge | Something else still draws its own dashboard there. Turn it off for that screen |
+| The build fails with "dotnet not found" or an SDK version error | Install the .NET 10 SDK and re-run, or install with `-SkipPanel` |
 | Approve or Deny says "not paired" | The host reads `~/.sidecrab/panel-token`; make sure the companion has started at least once (it mints the code) and restart `SideCrab-panel` |
 | No temperatures; the host sheet names HWiNFO | Install HWiNFO, turn on Shared Memory Support, open its Sensors window; `Test-SideCrab.ps1` has a `sensors` row that says which source is missing |
 | Temperatures dimmed with the 12-hour note | Relaunch HWiNFO, or register the `SideCrab-hwinfo` task |
@@ -205,4 +184,23 @@ pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1                         
 ```
 
 `panel-settings.json` is your data and stays unless you pass `-Purge`. The WebView2 profile lives
-under `%LOCALAPPDATA%\SideCrab\Panel` and goes with `-Purge` too.
+under `%LOCALAPPDATA%\SideCrab\Panel` and goes with `-Purge` too, as do the two credential files:
+the approval pairing code (`~/.sidecrab/panel-token`) and the stored limits token
+(`~/.sidecrab/limits-token.dpapi`). An uninstall without `-Purge` lists both as retained rather
+than removing them quietly. Backups of `settings.json` are never removed at any switch.
+
+---
+
+## What 0.32.0 adds on the glass and in the host
+
+- **Panel settings** has two halves: this panel's look and chime (saved by the host) and the
+  companion's quiet hours, toasts, digest and budget (sent to the companion). Only what you change is
+  sent.
+- **Cancel** beside a queued prompt, with an honest answer when the session already took it.
+- **Sources** in the hardware sheet, and an **approval readiness** line with what to do about it.
+- **A tray icon** on your main display: status, logs, reload, re-pin, pause, a display picker with a
+  ten-second revert, quit until next logon. The host never parks on your primary display by accident
+  and recovers from a hidden start on its own.
+- **Pull down** always fetches or restarts a quiet connection; a stalled stream no longer blocks the
+  refresh.
+- **One log per host instance** (`panel.log`, `panel-windowed.log`, `panel-<profile>.log`).
