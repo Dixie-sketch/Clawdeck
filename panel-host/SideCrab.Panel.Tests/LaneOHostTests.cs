@@ -268,10 +268,19 @@ public sealed class LaneOHostTests
             Assert.IsTrue(host.Get(() => host.Form.WatcherRunning), "the watcher starts with the host");
 
             // The trigger, and the proof the defect is real: after this the watcher is
-            // still an object and is raising nothing.
+            // still an object and is raising nothing. Two filesystems cannot establish that
+            // premise, and both showed up on GitHub's hosted Windows runner (CI #31): one
+            // refuses to delete a directory a watcher holds open, the other deletes it and
+            // never tells the watcher, so EnableRaisingEvents stays true on a directory
+            // that is gone. Neither is the defect this test pins (the poll re-arming a
+            // watcher that HAS stopped), so the test is inconclusive there, not red.
             HostHarness.Cleanup(dir);
-            Assert.IsTrue(host.WaitFor(() => !host.Form.WatcherRunning, "the watcher stops raising events", 10),
-                          "a deleted settings directory must be the state this test is about");
+            if (Directory.Exists(dir))
+                Assert.Inconclusive("this filesystem refuses to delete a directory a watcher holds open; " +
+                                    "the premise cannot be established here");
+            if (!host.WaitFor(() => !host.Form.WatcherRunning, "the watcher stops raising events", 10))
+                Assert.Inconclusive("this filesystem deleted the watched directory without stopping the " +
+                                    "watcher; the premise cannot be established here");
 
             // Nothing is called by hand: the five second poll is what puts it back.
             host.Expect(() => host.Form.WatcherRunning, "the poll re-arms the settings watcher");
@@ -413,7 +422,12 @@ public sealed class LaneOHostTests
             Assert.AreEqual(other.DeviceName, host.Get(() => host.Form.TargetDeviceName));
 
             host.Do(() => host.Form.RevertDisplayDeviceId(previous));
-            Assert.AreEqual(FakeDisplay.Edge().Bounds, host.Get(() => host.Form.Bounds));
+            // The revert puts the window back on the Edge; its size is whatever Windows
+            // allows against the primary (LO-011), which on GitHub's hosted runner is
+            // narrower than the Edge (CI #31 measured 1044 for 2560).
+            var reverted = host.Get(() => host.Form.Bounds);
+            Assert.AreEqual(FakeDisplay.Edge().Bounds.Location, reverted.Location);
+            Assert.AreEqual(HostHarness.AsWindowsAllows(FakeDisplay.Edge().Bounds.Size), reverted.Size);
 
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "panel-settings.json")));
             Assert.AreEqual("CRXED00", doc.RootElement.GetProperty("display").GetProperty("deviceId").GetString());
