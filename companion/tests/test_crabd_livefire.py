@@ -61,15 +61,16 @@ def setUpModule():
     _MODULE_TMP = tempfile.TemporaryDirectory()
     root = Path(_MODULE_TMP.name)
     setUpModule.originals = (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-                             crabd.HISTORY_FILE)
+                             crabd.HISTORY_FILE, crabd.CRABD_LOG_FILE)
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
+    crabd.CRABD_LOG_FILE = root / "crabd.log"      # v0.35.0, see test_crabd's setUpModule
 
 
 def tearDownModule():
     (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-     crabd.HISTORY_FILE) = setUpModule.originals
+     crabd.HISTORY_FILE, crabd.CRABD_LOG_FILE) = setUpModule.originals
     # SELF-ISOLATING (2026-08-27): the fixtures leave a builder on the Handler CLASS, and
     # a builder outliving its module points at a TemporaryDirectory that is about to be
     # deleted. unittest happens to run these modules one after another; pytest gives no
@@ -1074,7 +1075,7 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.34.0")
+        self.assertEqual(crabd.VERSION, "0.35.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),

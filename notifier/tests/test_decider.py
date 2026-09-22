@@ -381,6 +381,40 @@ class ConfigTests(unittest.TestCase):
             ConfigReader(path).read()
             self.assertFalse(path.exists(), "notifier must never write the companion's config")
 
+    def test_a_stat_that_fails_is_not_a_file_that_is_absent(self) -> None:
+        """THE MUTE MUST NOT FAIL OPEN. The absent-file branch falls back to the defaults, and
+        the default is enabled=True. It used to catch every OSError, so one PermissionError on
+        a redirected or roamed home silently turned every toast back on for a box whose
+        operator had switched them off. Reproduced 2026-09-22 with a stat() that raises."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"toast": {"enabled": False, "thresholdSec": 600}}), encoding="utf-8")
+            reader = ConfigReader(path)
+            self.assertEqual(reader.read(), ToastConfig(False, 600))
+
+            real_stat = Path.stat
+
+            def blip(self, *args, **kwargs):
+                if self == path:
+                    raise PermissionError(13, "the share blinked")
+                return real_stat(self, *args, **kwargs)
+
+            with unittest.mock.patch.object(Path, "stat", blip):
+                self.assertEqual(reader.read(), ToastConfig(False, 600))
+            # And it recovers on the next readable poll rather than latching.
+            self.assertEqual(reader.read(), ToastConfig(False, 600))
+
+    def test_a_missing_file_still_falls_back_to_the_defaults(self) -> None:
+        """The mutation guard for the test above: FileNotFoundError must keep its old
+        behaviour, or "no config yet" would inherit whatever was last read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"toast": {"enabled": False}}), encoding="utf-8")
+            reader = ConfigReader(path)
+            self.assertFalse(reader.read().enabled)
+            path.unlink()
+            self.assertTrue(reader.read().enabled, "a deleted config means defaults, not the last value")
+
 
 class AdapterTests(unittest.TestCase):
     """The Windows call is isolated; only its pure payload construction is asserted here."""

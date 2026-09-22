@@ -335,11 +335,22 @@ class ConfigReader:
         try:
             st = self.path.stat()
             stamp = (st.st_mtime_ns, st.st_size)
-        except OSError:
+        except FileNotFoundError:
             # No config yet is the normal first-run state, not an error.
             self._stamp = None
             self._cached = ToastConfig()
             self._cached_digest = DigestConfig()
+            return
+        except OSError as exc:
+            # "I COULD NOT LOOK" IS NOT "IT IS NOT THERE". This branch used to catch every
+            # OSError and fall back to the defaults, and the default is enabled=True — so one
+            # PermissionError or one blip on a redirected/roamed home silently un-muted every
+            # toast for as long as it lasted, on a box where the operator had switched them
+            # off. A mute must not fail open. Keep the last good config, which is the answer
+            # the unreadable-file branch below already gives for the same reason.
+            if not self._warned:
+                log.warning("config cannot be stat'ed (%s); keeping %s", exc, self._cached)
+                self._warned = True
             return
 
         if stamp == self._stamp:
@@ -1171,11 +1182,16 @@ class SnoozeLedger:
         try:
             st = self.path.stat()
             stamp = (st.st_mtime_ns, st.st_size)
-        except OSError:
+        except FileNotFoundError:
             # No state file yet is the normal state of a box where nobody has snoozed anything.
             self._stamp = None
             self._marks = {}
             self._loaded = True
+            return self._marks
+        except OSError:
+            # Same distinction ConfigReader makes: a stat that FAILED is not a file that is
+            # ABSENT. Clearing the marks here would toast a question the operator deliberately
+            # deferred, one poll after a blip. Keep what was last read; the next poll re-stats.
             return self._marks
 
         if self._loaded and stamp == self._stamp:

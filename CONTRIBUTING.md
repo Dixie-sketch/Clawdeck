@@ -43,6 +43,8 @@ python -m unittest discover -s companion\tests -t companion\tests
 python -m unittest discover -s notifier\tests  -t notifier\tests
 python -m unittest discover -s hooks\tests -t hooks\tests
 node widget\tests\test_ordering.js
+node widget\tests\test_chime.js
+node widget\tests\test_standalone.js
 pwsh -File .\setup\tests\RunTests.ps1
 dotnet test panel-host\SideCrab.Panel.Tests      # the panel host's pure decisions (needs the .NET 10 SDK)
 ```
@@ -59,8 +61,8 @@ that reports success forever.
   slot variants, and the traps that have bitten before.
 - `widget/` is the live asset tree, served as-is by crabd at `http://127.0.0.1:2722/panel/` and
   shown by `panel-host/`. There is nothing to package and nothing to import.
-- Its version is `widget/version.json`. CI parses that file and parses `widget/index.html` as
-  HTML; both are merge gates.
+- Its version is `widget/version.json`. CI runs all three suites, parses that file and parses
+  `widget/index.html` as HTML; each one is a merge gate.
 - **Nothing in current product surface may name the retired vendor integration.** CI greps the
   tree for its names and fails on a hit; the exact pattern and the exemptions are in
   `.github/workflows/ci.yml`, step "No retired vendor integration in current surface". Dated

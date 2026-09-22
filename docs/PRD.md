@@ -1,6 +1,6 @@
 # SideCrab — product & design document
 
-*A full-screen Corsair Xeneon Edge widget that turns a desk display into an ambient Claude Code
+*A full-screen Corsair Xeneon Edge panel that turns a desk display into an ambient Claude Code
 status panel: rate-limit gauges, live session state, attention alerts, a clock, and the crab.*
 
 This is the companion document to the [README](../README.md). The README tells you what SideCrab is
@@ -275,7 +275,7 @@ fall out of that:
 | `notifier/` | Optional Windows toast notifier + Acknowledge handler |
 | `hooks/` | The Claude Code hook fragment and the chained statusline command that feed crabd |
 | `setup/` | Install/update/uninstall/smoke-test/verification scripts |
-| `docs/` | This document, the state contract, the backlog, spikes, and `history/` |
+| `docs/` | This document, the state contract, getting started, the install notes and the screenshots. The backlog, the spikes and the dated history stay with the maintainers |
 
 The merge gates for the page are an HTML parse of `widget/index.html` and a parse of
 `widget/version.json`, plus a tree-wide check that no current surface names the retired vendor
@@ -288,7 +288,7 @@ entries. There is nothing to package and nothing to import.
 
 | Stage | Content |
 |---|---|
-| **Shipped — the panel** | Panel on glass in the native host, all zones live; crabd with hooks, limits, burn, forecast, recap, history and fleet; notifier with five toasts; honest-failure behaviour verified on device |
+| **Shipped — the panel** | Panel on glass in the native host, all zones live; crabd with hooks, limits, burn, forecast, recap, history and fleet; notifier with six toasts; honest-failure behaviour verified on device |
 | **Shipped — the control surface** | Settings from the panel; pins, the day drill and four touch gestures; queued continue prompts; panel approvals (default off); statusline ingest and the OTLP receiver, both with explicit provenance |
 | **Needs a live turn, not more code** | Panel approvals have never been exercised against a real CLI approval — the response shape was settled by reading the shipped binary's schema, and `setup\Verify-PanelApproval.ps1` carries the procedure. Until that runs with the operator present, approvals stay off by default and the feature is "written, not proven" |
 | **Verify before relying on** | The statusline path works when invoked but **this host never invokes it** — the status line appears to render only in an interactive terminal, so OAuth stays the live source here. It is a fallback-grade feed until confirmed on a plain terminal session, and the OAuth path stays regardless |

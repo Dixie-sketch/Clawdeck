@@ -110,7 +110,11 @@ public sealed class TrayUi : IDisposable
             _displays.DropDownItems.Add(new ToolStripMenuItem("No displays were enumerated") { Enabled = false });
             return;
         }
-        var current = _panel.Status().TargetLabel;
+        // LO-007: the WHOLE GDI name, not a Contains over the label. A device name is a
+        // prefix of the next one along (DISPLAY1 inside DISPLAY11, which a PC with a
+        // virtual display adapter does reach), so two items were ticked and the menu said
+        // the panel was on a monitor it was not on.
+        var current = _panel.TargetDeviceName;
         foreach (var d in displays)
         {
             var fragment = PanelLogic.UniqueDeviceIdFragment(d, displays);
@@ -118,7 +122,7 @@ public sealed class TrayUi : IDisposable
             var item = new ToolStripMenuItem(PanelLogic.EscapeMnemonics(text))
             {
                 Enabled = fragment.Length > 0,
-                Checked = current is not null && current.Contains(d.DeviceName, StringComparison.Ordinal),
+                Checked = string.Equals(current, d.DeviceName, StringComparison.Ordinal),
             };
             if (fragment.Length == 0) item.Text += "   (no device id; cannot be selected)";
             else item.Click += (_, _) => PickDisplay(d, fragment);
@@ -130,6 +134,18 @@ public sealed class TrayUi : IDisposable
     {
         _panel.SetPaused(!_panel.Paused);
         BuildMenu();
+        RepaintStatus();
+    }
+
+    /// <summary>LO-009. The status window reads its facts on every OPEN, which left it
+    /// saying "Panel: shown on ..." for the rest of a pause, and naming the old display for
+    /// the rest of a pick, with the operator looking straight at it. Every control that
+    /// changes what it says repaints it, and only while it is already visible, so nothing
+    /// here puts a window on the screen.</summary>
+    private void RepaintStatus()
+    {
+        if (_status is null || _status.IsDisposed || !_status.Visible) return;
+        _status.Repaint(_panel.Status());
     }
 
     private void ShowStatus()
@@ -165,6 +181,7 @@ public sealed class TrayUi : IDisposable
         if (kept) _log.Write("tray: display selection kept");
         else _panel.RevertDisplayDeviceId(previous);
         BuildMenu();
+        RepaintStatus();
     }
 
     public void Dispose()
@@ -243,15 +260,21 @@ public sealed class StatusWindow : Form
 
 /// <summary>"Keep this display?", on the primary, counting down. The same shape Windows
 /// uses for a resolution change and for the same reason: the operator may not be able to
-/// see the result of what they just picked.</summary>
+/// see the result of what they just picked. Shown for EVERY pick, the Edge included: a
+/// pick that cannot be kept is not a choice, and one that cannot be undone is a panel on a
+/// monitor the operator cannot see.</summary>
 public sealed class ConfirmDisplayWindow : Form
 {
     private readonly Label _countdown;
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 1000 };
-    private int _left = PanelLogic.DisplayRevertSeconds;
+    private int _left;
 
-    public ConfirmDisplayWindow(string displayLabel)
+    /// <summary><paramref name="seconds"/> is the production constant everywhere but the
+    /// test that proves a timeout is a REVERT: at ten it would be a ten-second test, and
+    /// showing the window to run it would take the operator's keyboard.</summary>
+    public ConfirmDisplayWindow(string displayLabel, int seconds = PanelLogic.DisplayRevertSeconds)
     {
+        _left = seconds;
         Text = "SideCrab panel";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
@@ -300,21 +323,25 @@ public sealed class ConfirmDisplayWindow : Form
         CancelButton = revert;
 
         Countdown();
-        _tick.Tick += (_, _) =>
-        {
-            _left--;
-            if (_left <= 0)
-            {
-                _tick.Stop();
-                // Timed out is REVERT, never keep. A dialog nobody answered is a dialog
-                // nobody saw.
-                DialogResult = DialogResult.Cancel;
-                Close();
-                return;
-            }
-            Countdown();
-        };
+        _tick.Tick += (_, _) => Advance();
         _tick.Start();
+    }
+
+    /// <summary>One second of the countdown. Internal so the timeout can be run with no
+    /// window on the desktop and without waiting out the real ten.</summary>
+    internal void Advance()
+    {
+        _left--;
+        if (_left <= 0)
+        {
+            _tick.Stop();
+            // Timed out is REVERT, never keep. A dialog nobody answered is a dialog
+            // nobody saw.
+            DialogResult = DialogResult.Cancel;
+            Close();
+            return;
+        }
+        Countdown();
     }
 
     private void Countdown() =>

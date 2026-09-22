@@ -4,7 +4,6 @@ updates:
     directory: /
     schedule:
       interval: monthly
-  - package-ecosystem: pip
-    directory: /lighting
-    schedule:
-      interval: monthly
+  # No pip ecosystem: the companion, the notifier and the hooks are standard-library
+  # Python on purpose, so there is no requirements file anywhere to watch. The entry that
+  # used to sit here pointed at /lighting, which went with the RGB path.

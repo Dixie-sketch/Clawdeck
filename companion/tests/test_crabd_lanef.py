@@ -27,6 +27,42 @@ from test_crabd import (ServedOverASocket, StubHost, StubLimits, TempProjects,  
                         assistant_line, shm_blob, shm_reading, user_line, write_jsonl)
 
 
+# --------------------------------------------------------------- module isolation
+
+_MODULE_TMP = None
+
+
+def setUpModule():
+    """M-06 (v0.35.0). This module had NO isolation at all while the other three had it,
+    so running it - alone, or first under a runner that does not order modules - left
+    crabd.LIMITS_CACHE_FILE, HISTORY_FILE, USER_CONFIG_FILE and CREDENTIALS_FILE pointing
+    at the operator's real ~/.sidecrab and ~/.claude. Measured 2026-09-22: loading this
+    module and running one class left every one of them on the live path. Latent rather
+    than reproduced damage - the classes here happen not to write those files today - but
+    the guarantee the other modules state is what stops the next test from being the one
+    that does, and the limits cache was poisoned exactly this way on 2026-08-26.
+    """
+    global _MODULE_TMP
+    _MODULE_TMP = tempfile.TemporaryDirectory()
+    root = Path(_MODULE_TMP.name)
+    setUpModule.originals = (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
+                             crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE,
+                             crabd.CRABD_LOG_FILE)
+    crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
+    crabd.USER_CONFIG_FILE = root / "config.json"
+    crabd.HISTORY_FILE = root / "history.jsonl"
+    crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
+    crabd.CRABD_LOG_FILE = root / "crabd.log"
+
+
+def tearDownModule():
+    (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
+     crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE,
+     crabd.CRABD_LOG_FILE) = setUpModule.originals
+    crabd.Handler.builder = None
+    _MODULE_TMP.cleanup()
+
+
 # ------------------------------------------------------------------------ SCA-010
 
 class FakePdh:
@@ -863,6 +899,14 @@ class SourceHealthTests(TempProjects):
 
         def __init__(self, ok=True, backoff=False, note=None):
             super().__init__()
+            # M-02 (v0.35.0): health() now GUARANTEES a note whenever the entry it feeds
+            # will be not-ok, so the sources block no longer carries an `or` fallback -
+            # and the double has to model that or it is testing a contract the real
+            # reader does not have. The old fallback was the defect: it looked like the
+            # line that names a lockout and could never fire, because the caveat it was
+            # falling back from was never empty.
+            if backoff and note is None:
+                note = crabd.LIMITS_BACKOFF_NOTE
             self.state = {'ok': ok, 'lastAt': 1_800_000_000.0 - 60,
                           'note': note, 'backoff': backoff}
 

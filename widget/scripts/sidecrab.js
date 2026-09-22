@@ -2735,6 +2735,7 @@ function renderSessions(sessions, status, quiet, recap) {
 			   delivered until something else rebuilt it. The LABEL, not the raw
 			   prompt: two prompts that render the same chip are the same card. */
 			queuedLabel(s) || '',
+			laneNSig(s),   // lane N
 			subList(s).map(function (d) { return String(d && d.label); }).join(',')].join('');
 	}).join('') + '||' + (chipText || '') + '||' + (quiet ? 'q' : '');
 
@@ -3121,7 +3122,14 @@ function buildCard(s, quiet) {
 	dot.className = 'dot';
 	var state = document.createElement('span');
 	state.className = 'card-state';
-	state.textContent = s.state === 'needs_input' ? 'needs input' : (s.state || 'idle');
+	/* lane N: data-state on the card is untouched, so COMPACTING keeps the working
+	   colour, the pulse rules and the escalation ladder exactly as they were. The
+	   attribute is what the 1 Hz tick reads, so the hung hint and this word cannot
+	   disagree; it is written on the card because the tick walks cards. */
+	var laneNCompact = laneNCompacting(s);
+	card.setAttribute('data-compacting', laneNCompact ? '1' : '');
+	state.textContent = laneNCompact ? 'compacting'
+		: s.state === 'needs_input' ? 'needs input' : (s.state || 'idle');
 	top.appendChild(dot);
 	top.appendChild(state);
 	/* Only a working card gets the turn chip. A needs_input session still carries
@@ -3224,14 +3232,25 @@ function buildCard(s, quiet) {
 		event.className = 'card-question';
 		event.textContent = question;
 	} else {
-		event.className = 'card-event';
-		event.textContent = s.lastEvent || '';
+		/* lane N: the activity REPLACES the event line on a working session, the
+		   same trade the question makes two branches up - two renderings of what the
+		   session is doing would cost the card a line and say it twice. */
+		var laneNRow = laneNCardActivity(s);
+		if (laneNRow) event = laneNRow;
+		else {
+			event.className = 'card-event';
+			event.textContent = s.lastEvent || '';
+		}
 	}
 	var badges = document.createElement('div');
 	badges.className = 'card-badges';
 
 	var model = shortModel(s.model);
 	if (model) badges.appendChild(makeBadge(model, 'badge-model'));
+	/* lane N: beside the model chip, because a mode is a property of how that model
+	   is being allowed to run. */
+	var laneNMode = laneNModeLabel(s);
+	if (laneNMode) badges.appendChild(makeBadge(laneNMode, 'badge-mode'));
 	/* contextTokens is optional, and null until a usage record exists, so the chip
 	   is ABSENT rather than showing a zero or an em-dash — an unknown context
 	   window is not a small one. It rides next to the model because it is a
@@ -3247,6 +3266,11 @@ function buildCard(s, quiet) {
 	var running = s.subagents && Number(s.subagents.running);
 	if (isFinite(running) && running > 0) badges.appendChild(makeBadge(running + ' sub', 'badge-sub'));
 	if (acked) badges.appendChild(makeBadge('ACKED', 'badge-ack'));
+	/* lane N: the hairline is the glance and this is the figure behind it. In the
+	   badges row rather than on the bar, because the bar is a 3 px absolute rule
+	   with no room for text and the badges row is where this card's figures live. */
+	var laneNTodo = laneNTodos(s);
+	if (laneNTodo) badges.appendChild(makeBadge(laneNTodo.done + '/' + laneNTodo.total, 'badge-todo'));
 
 	bottom.appendChild(event);
 	/* Under the body, above the badges: the rows explain the "N sub" badge that
@@ -3261,12 +3285,33 @@ function buildCard(s, quiet) {
 	   this card that says what will happen when the session stops. Before this,
 	   a tap on Continue was invisible the moment the sheet closed. */
 	var qLabel = queuedLabel(s);
+	/* lane N: Claude Code's own typed-ahead count rides in this row when there is
+	   one and takes the row itself when there is not, so the field is never
+	   swallowed by the absence of an unrelated one. The two are worded apart. */
+	var laneNQueued = laneNQueueNote(s);
 	if (qLabel) {
 		var queued = document.createElement('div');
 		queued.className = 'card-queued';
-		queued.textContent = 'queued: ' + qLabel;
-		queued.setAttribute('title', 'queued: ' + qLabel);
+		var qtext = document.createElement('span');
+		qtext.className = 'card-queued-text';
+		qtext.textContent = 'queued: ' + qLabel;
+		qtext.setAttribute('title', 'queued: ' + qLabel);
+		queued.appendChild(qtext);
+		if (laneNQueued) queued.appendChild(laneNQueued);
 		bottom.appendChild(queued);
+	} else if (laneNQueued && !question && !pend) {
+		/* lane N: A ROW OF ITS OWN COSTS A LINE, so it follows the ctx chip's rule
+		   (v0.6.0) and is dropped on the two cards that have no line to give. The
+		   approval card is the tightest on the panel - label, tool, summary,
+		   countdown, subagent rows and badges - and measured at 2560x720 it was
+		   already at its cell: adding this row pushed the badges row 15.4 px out of
+		   the card and overflow:hidden cut the model chip in half. Riding INSIDE an
+		   existing queued row costs nothing, so that case is not gated; and the
+		   Detail page carries the count on every card. */
+		var typedRow = document.createElement('div');
+		typedRow.className = 'card-queued card-queued-typed';
+		typedRow.appendChild(laneNQueued);
+		bottom.appendChild(typedRow);
 	}
 	bottom.appendChild(badges);
 
@@ -3298,6 +3343,10 @@ function buildCard(s, quiet) {
 		ctx.setAttribute('aria-label', tip);
 		card.appendChild(ctx);
 	}
+	/* lane N: absolute like the ctx hairline above it, for the same reason - it must
+	   cost the card's flex column nothing. Stacked one bar-height clear of it. */
+	var laneNBar = laneNTodoBar(s);
+	if (laneNBar) card.appendChild(laneNBar);
 	return card;
 }
 
@@ -3375,7 +3424,16 @@ function tickAges(nowMs) {
 		   it the dot ticks. A card whose lastActivityAt did not parse gets neither:
 		   an unknown age is not a fresh one, and it is not a hang either. */
 		var hint = node.querySelector('.card-hint');
-		var hung = !!hint && isFinite(age) && age >= HUNG_MS;
+		/* lane N: never over a COMPACTING card. The hint's whole job is to tell a
+		   session that is thinking from one that has hung, and a session compacting
+		   its context is neither - it is busy, it touches nothing while it works,
+		   and the state chip beside this already says so. A card reading
+		   "COMPACTING 8m quiet 3m" was the panel raising a hang hint against its own
+		   evidence. It is also 61.5 px of card-top the narrow slot does not have:
+		   COMPACTING is three glyphs longer than WORKING, and measured at 840x696
+		   the hint went from 25.0 px past the card to 61.5. */
+		var compacting = node.getAttribute('data-compacting') === '1';
+		var hung = !!hint && !compacting && isFinite(age) && age >= HUNG_MS;
 		if (hint) {
 			setText(hint, hung ? 'quiet ' + fmtDur(age / 1000) : '');
 			/* The class is what hides the right-hand age figure, which is the SAME
@@ -6478,9 +6536,19 @@ function onConfigSave() {
 	if (built.warnings.length) { setConfigStatus(built.warnings.join('; '), 'err'); return; }
 	if (!built.any) { setConfigStatus('nothing changed', 'note'); return; }
 	cfgBusy = true;
+	/* lane N: SCA-006 for the settings sheet, which was the one surface it did not
+	   reach. A save in flight when the sheet is closed and reopened landed on the
+	   NEW sheet: setConfigStatus wrote "saved budget" onto it, and the
+	   buildSettingsRows below threw away whatever the operator had typed into it
+	   since. Reproduced against the shipping file - two edits on the reopened sheet,
+	   cfgTouched null a tick later, with no warning anywhere.
+	   sheetGen is the existing token and both openSettingsSheet and closeSheet
+	   already bump it, so the surface is identified by the thing that defines it. */
+	var cfgGen = sheetGen;
 	setConfigStatus('saving', 'pending');
 	postConfig(JSON.stringify(built.body)).then(function (res) {
 		cfgBusy = false;
+		if (cfgGen !== sheetGen) { logLine('config save landed after its sheet closed; not shown'); return; }
 		if (res.status !== 204 && res.status !== 200) {
 			setConfigStatus('not saved (HTTP ' + res.status + ')', 'err');
 			return;
@@ -6509,6 +6577,7 @@ function onConfigSave() {
 			warn.length ? 'note' : 'ok');
 	}).catch(function () {
 		cfgBusy = false;
+		if (cfgGen !== sheetGen) { logLine('config save failed after its sheet closed; not shown'); return; }   // lane N
 		setConfigStatus('not saved ' + EMDASH + ' crabd not reachable', 'err');
 	});
 }
@@ -7721,6 +7790,8 @@ function noteTransportEvent() {
    the fallback poll resume at the next interval rather than at the next reconnect. */
 function sseDelivering() {
 	if (!sseSource || sseSource.readyState !== 1) return false;
+	/* lane N: a ping is liveness, not delivery - see laneNStateStarved. */
+	if (laneNStateStarved()) return false;
 	return !sseSilent();
 }
 
@@ -7767,6 +7838,10 @@ function sseConnect() {
 		/* The connection IS a liveness signal, and seeding the deadline here is what
 		   makes a connect-then-silence measurable at all. */
 		noteTransportEvent();
+		/* lane N: and the STATE deadline is seeded here for the same reason. Without
+		   it a stream that opens and only ever pings has no state deadline running,
+		   so nothing measures the one case laneNStateStarved exists for. */
+		laneNNoteStateFrame();
 	});
 	es.addEventListener('state', function (ev) { onSseState(ev); });
 	/* A ping is liveness and nothing else: it carries no document, so it must not
@@ -7777,6 +7852,7 @@ function sseConnect() {
 
 function onSseState(ev) {
 	noteTransportEvent();
+	laneNNoteStateFrame();   // lane N
 	setTransportMode('sse', 'state frame');
 	sseRetryMs = SSE_RETRY_MIN_MS;
 	var doc;
@@ -8191,6 +8267,10 @@ function openSettingsSheet() {
 	sheetMode = 'settings';
 	clearSheetTimer();
 	sheetBusy = false;
+	/* lane N: a new sheet is a new surface, so its busy flag starts clear. Without
+	   this a save still on the wire from the PREVIOUS sheet made Save on this one
+	   silently inert - the tap sent nothing and the line did not move. */
+	cfgBusy = false;
 	ui.sheet.classList.remove('busy');
 	setSheetStatus('', '');
 	ui.sheet.setAttribute('data-mode', 'settings');
@@ -10695,8 +10775,12 @@ function renderDetailView(sessions, quiet) {
 		String(ctxPct), qLabel || '',
 		subs.map(function (d) { return String(d && d.label); }).join(','),
 		events.map(function (e) { return String(e && e.at) + String(e && e.text); }).join('|'),
+		laneNSig(s),   // lane N
 		quiet ? 'q' : ''].join('#');
-	if (sig === detailViewSig) { laneCTickDetail(Date.now()); return; }
+	/* lane N: the anchors are refreshed on the short-circuit too - they are ages,
+	   so they are out of the signature, and the signature is exactly the path that
+	   left them stale. */
+	if (sig === detailViewSig) { laneNDetailAnchors(s, pend); laneCTickDetail(Date.now()); return; }
 	detailViewSig = sig;
 	detailContinueSig = null;
 
@@ -10710,6 +10794,7 @@ function renderDetailView(sessions, quiet) {
 	body.appendChild(detailMain(s, pend, qLabel));
 	body.appendChild(detailSide(s, subs, events));
 	root.appendChild(body);
+	laneNDetailAnchors(s, pend);   // lane N
 	laneCTickDetail(Date.now());
 }
 
@@ -10745,7 +10830,9 @@ function detailHead(s, pend) {
 	state.setAttribute('data-state', s.state || 'idle');
 	/* The card's own words, never a second vocabulary. The elapsed figure is filled
 	   by the tick, so the element carries its anchor rather than a rendered age. */
-	state.textContent = (s.state === 'needs_input' ? 'needs input' : (s.state || 'idle')).toUpperCase() + '  ';
+	/* lane N: data-state above is untouched, so the chip keeps the working colour. */
+	state.textContent = (laneNCompacting(s) ? 'compacting'
+		: s.state === 'needs_input' ? 'needs input' : (s.state || 'idle')).toUpperCase() + '  ';
 	var since = document.createElement('span');
 	since.className = 'dv-elapsed';
 	since.setAttribute('data-state-since', String(Date.parse(s.stateSince) || ''));
@@ -10758,6 +10845,13 @@ function detailHead(s, pend) {
 		m.className = 'dv-chip';
 		m.textContent = model;
 		chips.appendChild(m);
+	}
+	var laneNMode = laneNModeLabel(s);   // lane N: beside the model chip, as on the card
+	if (laneNMode) {
+		var md = document.createElement('span');
+		md.className = 'dv-chip dv-chip-mode';
+		md.textContent = laneNMode;
+		chips.appendChild(md);
 	}
 	if (s.speed === 'fast') {
 		var f = document.createElement('span');
@@ -10814,6 +10908,11 @@ function detailCtx(s, pct) {
 function detailMain(s, pend, qLabel) {
 	var col = document.createElement('div');
 	col.className = 'dv-col dv-main';
+
+	/* lane N: above the body, because on a working session it is the newest fact
+	   about the turn and the body below it is the question or the last event. */
+	var laneNAct = laneNDetailActivity(s);
+	if (laneNAct) col.appendChild(laneNAct);
 
 	if (pend) {
 		var box = document.createElement('div');
@@ -10931,6 +11030,10 @@ function detailMain(s, pend, qLabel) {
 		cont.appendChild(status);
 		col.appendChild(cont);
 	}
+	/* lane N: last in the column, because these four annotate the session rather
+	   than being the thing it is asking for. */
+	var laneNRows = laneNDetailBlock(s);
+	if (laneNRows) col.appendChild(laneNRows);
 	return col;
 }
 
@@ -11692,6 +11795,427 @@ function continueButtons(s) {
 		}
 	}
 	return list;
+}
+
+
+/* ======================================================================
+   ---- lane N: the Claude Code activity fields, and two stale anchors ----
+
+   Six additive, presence-gated members of `sessions[]` (contract v0.35.0), plus
+   the two fixes the probe set carried in. Every renderer here returns null when
+   its member is absent: an absent field is an absent element, never a zero and
+   never a placeholder, which is the rule the sensors row and the ctx chip
+   already keep.
+
+   VERSION LABEL: the comments below say v0.33.0. That label is PROVISIONAL -
+   widget/version.json still reads 0.32.0 and the orchestrator assigns the real
+   number when the lanes merge.
+   ====================================================================== */
+
+var LANE_N_MODE_MAX = 12;      /* contract: an unknown mode is capped, not trusted */
+var LANE_N_FILES_MAX = 4;      /* the Detail page's files block; the count says the rest */
+
+/* THE TWO ANCHORS THE DETAIL PAGE WAS NOT REFRESHING (probe detail-permission-anchor).
+
+   renderDetailView's signature is deliberately free of ages, exactly as the card
+   signature is. The cards then refresh their anchors on EVERY render, outside the
+   signature (see the loop at the end of renderSessions); the Detail page built its
+   two anchors once, inside the rebuild, and never touched them again. So a second
+   permission request in the same state, with the same tool and the same summary -
+   crabd re-asking for Bash after the first request expired - moved the signature
+   not at all, and the hold countdown went on counting down from the FIRST
+   request's instant. Measured against the shipping file: a request at 10:01:00
+   still anchored at 10:00:00, so the countdown read 5 s when 65 s were left.
+
+   stateSince has the same shape of bug and the same cause, so both are written
+   here, from the live session, on every call. */
+function laneNDetailAnchors(s, pend) {
+	var root = ui.viewDetail;
+	if (!root || !s) return;
+	var el = root.querySelector('.dv-elapsed');
+	if (el) {
+		var since = Date.parse(s.stateSince);
+		el.setAttribute('data-state-since', isFinite(since) ? String(since) : '');
+	}
+	var ap = root.querySelector('.dv-approval-left');
+	if (ap) {
+		/* Unknown is not expired - approvalRemaining()'s own rule, and the reason
+		   this writes an empty string rather than a zero. */
+		var req = pend ? Date.parse(pend.requestedAt) : NaN;
+		ap.setAttribute('data-approval-at', isFinite(req) ? String(req) : '');
+	}
+	var act = root.querySelector('.dv-activity');
+	var a = s.activity;
+	if (act && a && typeof a === 'object' && !Array.isArray(a)) {
+		var at = Date.parse(a.at);
+		act.setAttribute('data-at', isFinite(at) ? String(at) : '');
+	}
+}
+
+/* A PING IS LIVENESS, NOT DELIVERY (probe sse-ping-only-gates-poll).
+
+   sseDelivering() gates the fallback poll, and it was reading lastEventAt, which
+   the `ping` listener feeds. crabd's ping is documented one screen up as carrying
+   no document; a stream that pings and never sends a state frame is therefore both
+   "delivering" and silent. Measured against the shipping file: 120 poll attempts
+   across ten minutes of ping-only stream, 120 of them gated off, zero fetches - a
+   panel that cannot repair itself, with no reason on glass for why.
+
+   The stream is NOT torn down for this: the pings are evidence the connection is
+   healthy, and reconnecting would drop a working socket. What the state deadline
+   buys is the poll resuming beside it.
+
+   TWO CONDITIONS, NOT ONE, and the second is what answers "would this fire on a
+   healthy night?". The deadline alone would also fire on a night where crabd
+   simply has nothing new to say, and a panel polling every 3 s beside a healthy
+   stream is the cost the stream was added to remove. So the poll resumes only
+   when the deadline has passed AND WHAT IS ON THE GLASS IS ALREADY STALE - the
+   same STALE_MS the banner uses. A panel showing fresh data leaves the stream
+   alone whatever the ping cadence; a panel showing a stale banner polls, which is
+   what the poll is for. Neither number is guessed at: 45 s is the existing
+   liveness deadline and 30 s is the existing staleness contract.
+
+   Seeded at OPEN, not at the first state frame, which is the whole difference:
+   `open` is when a stream owes its first document, so a connection that pings and
+   never sends one starves 45 s later rather than never. Zero means no stream has
+   ever opened, and a page with no stream is already polling. */
+var laneNLastStateAt = 0;
+
+function laneNNoteStateFrame() { laneNLastStateAt = Date.now(); }
+
+function laneNStateStarved() {
+	if (!laneNLastStateAt) return false;
+	var now = Date.now();
+	if ((now - laneNLastStateAt) <= SSE_LIVENESS_MS) return false;
+	/* Never a good document at all is the worst case of stale, not an exemption. */
+	if (!lastGoodAtMs) return true;
+	return (now - lastGoodAtMs) > STALE_MS;
+}
+
+/* ---- mode ---------------------------------------------------------- */
+
+var LANE_N_MODES = { plan: 'PLAN', acceptEdits: 'AUTO-EDIT', bypassPermissions: 'BYPASS' };
+
+/* null for `normal`, for an absent member and for anything that is not a
+   non-empty string. Anything else this build does not know is shown as ITSELF,
+   upper-cased and capped: a newer Claude Code naming a fourth mode should put the
+   word on the glass rather than be silently dropped or rendered as a guess. */
+function laneNModeLabel(s) {
+	var m = s && s.mode;
+	if (typeof m !== 'string') return null;
+	var raw = m.trim();
+	if (!raw || raw === 'normal') return null;
+	if (Object.prototype.hasOwnProperty.call(LANE_N_MODES, raw)) return LANE_N_MODES[raw];
+	return raw.toUpperCase().slice(0, LANE_N_MODE_MAX);
+}
+
+/* ---- activity ------------------------------------------------------ */
+
+/* The member, normalised, or null. WORKING is not tested here: the Detail page
+   shows the activity in every state (it is the page for one session, and the last
+   tool call is a fact about it), while the card replaces its event line only while
+   the session is working - a card reading "Bash - run the tests" under a DONE chip
+   would be the panel narrating a turn that has ended. */
+function laneNActivity(s) {
+	var a = s && s.activity;
+	if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+	var tool = typeof a.tool === 'string' && a.tool.trim() ? a.tool.trim() : null;
+	var detail = typeof a.detail === 'string' && a.detail.trim() ? a.detail.trim() : null;
+	if (!tool && !detail) return null;
+	var calls = Number(a.callsThisTurn);
+	return {
+		tool: tool,
+		detail: detail,
+		at: typeof a.at === 'string' ? a.at : null,
+		/* Above one, or absent. A count of 1 is what every first call reads, so
+		   printing it would put a "1" on most working cards and say nothing. */
+		calls: isFinite(calls) && calls > 1 ? Math.floor(calls) : null
+	};
+}
+
+function laneNCardActivity(s) {
+	var a = laneNActivity(s);
+	if (!a || s.state !== 'working') return null;
+	var row = document.createElement('div');
+	row.className = 'card-event card-activity';
+	if (a.tool) {
+		var t = document.createElement('span');
+		t.className = 'card-act-tool';
+		t.textContent = a.tool;
+		row.appendChild(t);
+	}
+	if (a.detail) {
+		var d = document.createElement('span');
+		d.className = 'card-act-detail';
+		d.textContent = (a.tool ? '· ' : '') + a.detail;
+		row.appendChild(d);
+	}
+	if (a.calls) {
+		var c = document.createElement('span');
+		c.className = 'card-act-calls';
+		c.textContent = '×' + a.calls;
+		c.setAttribute('title', a.calls + ' calls this turn');
+		row.appendChild(c);
+	}
+	row.setAttribute('title', (a.tool ? a.tool + ' · ' : '') + (a.detail || ''));
+	return row;
+}
+
+/* .event-row and .event-age deliberately: laneCTickDetail already relabels every
+   [data-at] row on this page at 1 Hz, so the relative time costs no second tick
+   and cannot drift from the events beside it. The anchor itself is refreshed by
+   laneNDetailAnchors, because `at` moves without the signature moving. */
+function laneNDetailActivity(s) {
+	var a = laneNActivity(s);
+	if (!a) return null;
+	var wrap = document.createElement('div');
+	wrap.className = 'dv-activity event-row';
+	var at = a.at ? Date.parse(a.at) : NaN;
+	wrap.setAttribute('data-at', isFinite(at) ? String(at) : '');
+	var age = document.createElement('span');
+	age.className = 'event-age';
+	age.textContent = EMDASH;
+	wrap.appendChild(age);
+	var body = document.createElement('span');
+	body.className = 'dv-act-body';
+	if (a.tool) {
+		var t = document.createElement('span');
+		t.className = 'dv-act-tool';
+		t.textContent = a.tool;
+		body.appendChild(t);
+	}
+	if (a.detail) {
+		/* WHOLE, the rule .dv-question keeps: this page is the surface that does not
+		   clamp, and a tool call's detail is the line an operator walks over for. */
+		var d = document.createElement('span');
+		d.className = 'dv-act-detail';
+		d.textContent = a.detail;
+		body.appendChild(d);
+	}
+	if (a.calls) {
+		var c = document.createElement('span');
+		c.className = 'dv-act-calls';
+		c.textContent = a.calls + ' calls this turn';
+		body.appendChild(c);
+	}
+	wrap.appendChild(body);
+	return wrap;
+}
+
+/* ---- compaction ---------------------------------------------------- */
+
+/* WORKING ONLY, and that is the guarantee rather than a convenience: the state
+   chip takes its colour from data-state, which this never touches, so a chip
+   reading COMPACTING is always the working colour and can never be mistaken for
+   an alert. Compaction happens inside a turn, so a session compacting in any
+   other state is a feed disagreeing with itself, and the state word wins. */
+function laneNCompacting(s) {
+	var c = s && s.compaction;
+	if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+	return c.inProgress === true && s.state === 'working';
+}
+
+function laneNCompaction(s) {
+	var c = s && s.compaction;
+	if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+	var count = Number(c.count);
+	var at = typeof c.lastAt === 'string' ? Date.parse(c.lastAt) : NaN;
+	var have = (isFinite(count) && count >= 0) || isFinite(at) || c.inProgress === true;
+	if (!have) return null;
+	return {
+		count: isFinite(count) && count >= 0 ? Math.floor(count) : null,
+		at: isFinite(at) ? at : null,
+		inProgress: c.inProgress === true
+	};
+}
+
+/* ---- todos --------------------------------------------------------- */
+
+function laneNTodos(s) {
+	var t = s && s.todos;
+	if (!t || typeof t !== 'object' || Array.isArray(t)) return null;
+	var done = Number(t.done), total = Number(t.total);
+	/* A list of zero items is not a list. Without this the hairline would be drawn
+	   empty for every session that has opened a todo tool and written nothing. */
+	if (!isFinite(total) || total <= 0) return null;
+	if (!isFinite(done) || done < 0) done = 0;
+	if (done > total) done = total;
+	return {
+		done: Math.floor(done),
+		total: Math.floor(total),
+		pct: Math.round((done / total) * 100),
+		current: typeof t.current === 'string' && t.current.trim() ? t.current.trim() : null
+	};
+}
+
+/* Absolutely positioned, the .card-ctx discipline exactly: it must not join the
+   card's flex column, cost a card a line, or push a badge out of its cell. It sits
+   one bar-height above the ctx hairline so the two read as a stack rather than
+   overprinting when a session has both. */
+function laneNTodoBar(s) {
+	var t = laneNTodos(s);
+	if (!t) return null;
+	var bar = document.createElement('div');
+	bar.className = 'card-todo';
+	setVar(bar, '--w', String(t.pct));
+	var tip = 'todos ' + t.done + '/' + t.total + (t.current ? ' · ' + t.current : '');
+	bar.setAttribute('title', tip);
+	bar.setAttribute('aria-label', tip);
+	return bar;
+}
+
+/* ---- the typed-ahead prompt queue ---------------------------------- */
+
+/* TWO QUEUES, AND THE PANEL MUST NOT BLUR THEM. SideCrab's own queue is one
+   prompt the operator tapped Continue on, and it is the "queued: <label>" line
+   with the Cancel beside it. This is Claude Code's, counted: prompts typed at the
+   terminal while a turn runs, which SideCrab neither wrote nor can cancel. So the
+   Cancel stays with the line it can actually cancel, and this rides beside it as a
+   count that names its own owner - on the tooltip on a card, and in full words on
+   the Detail page, which has the width for them. */
+function laneNPromptQueue(s) {
+	var n = s && s.promptQueue;
+	if (typeof n !== 'number' || !isFinite(n) || n < 1) return null;
+	return Math.floor(n);
+}
+
+var LANE_N_QUEUE_TIP = 'typed ahead in Claude Code, not SideCrab’s continue queue';
+
+function laneNQueueNote(s) {
+	var n = laneNPromptQueue(s);
+	if (n === null) return null;
+	var el = document.createElement('span');
+	el.className = 'card-typed';
+	el.textContent = n + ' queued';
+	el.setAttribute('title', n + ' queued — ' + LANE_N_QUEUE_TIP);
+	el.setAttribute('aria-label', n + ' prompts ' + LANE_N_QUEUE_TIP);
+	return el;
+}
+
+/* ---- filesTouched (the Detail page only) --------------------------- */
+
+function laneNFiles(s) {
+	var f = s && s.filesTouched;
+	if (!f || typeof f !== 'object' || Array.isArray(f)) return null;
+	var count = Number(f.count);
+	var recent = Array.isArray(f.recent) ? f.recent.filter(function (x) {
+		return typeof x === 'string' && x.trim();
+	}) : [];
+	if (!isFinite(count) || count < 0) {
+		if (!recent.length) return null;
+		count = null;
+	} else count = Math.floor(count);
+	if (count === 0 && !recent.length) return null;
+	return { count: count, recent: recent };
+}
+
+/* The LEAF, with the whole path on the tooltip. A wall panel read from across a
+   room cannot spend a line on a repository prefix that is the same on every row,
+   and the path is still recoverable without one. */
+function laneNLeaf(p) {
+	var s = String(p).replace(/[\\/]+$/, '');
+	var cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+	return cut >= 0 ? (s.slice(cut + 1) || s) : s;
+}
+
+function laneNFilesBlock(s) {
+	var f = laneNFiles(s);
+	if (!f) return null;
+	var wrap = document.createElement('div');
+	wrap.className = 'dv-files';
+	var head = document.createElement('div');
+	head.className = 'bv-panel-head';
+	head.textContent = f.count === null
+		? 'files touched'
+		: f.count + (f.count === 1 ? ' file touched' : ' files touched');
+	wrap.appendChild(head);
+	var list = document.createElement('div');
+	list.className = 'dv-files-list';
+	for (var i = 0; i < f.recent.length && i < LANE_N_FILES_MAX; i++) {
+		var row = document.createElement('div');
+		row.className = 'dv-file';
+		row.textContent = laneNLeaf(f.recent[i]);
+		row.setAttribute('title', String(f.recent[i]));
+		list.appendChild(row);
+	}
+	if (list.children.length) wrap.appendChild(list);
+	return wrap;
+}
+
+/* ---- the Detail page's block for the four it owns ------------------ */
+
+function laneNDetailBlock(s) {
+	var rows = [];
+	var t = laneNTodos(s);
+	if (t) {
+		var tr = document.createElement('div');
+		tr.className = 'dv-todo';
+		var th = document.createElement('div');
+		th.className = 'bv-panel-head';
+		th.textContent = 'todos ' + t.done + '/' + t.total;
+		tr.appendChild(th);
+		var track = document.createElement('div');
+		track.className = 'dv-todo-track';
+		setVar(track, '--w', String(t.pct));
+		tr.appendChild(track);
+		if (t.current) {
+			/* NOT CLAMPED, and that is the whole point of putting it here: the card has
+			   room for a hairline, and this page has room for the sentence. */
+			var cur = document.createElement('div');
+			cur.className = 'dv-todo-current';
+			cur.textContent = t.current;
+			tr.appendChild(cur);
+		}
+		rows.push(tr);
+	}
+	var n = laneNPromptQueue(s);
+	if (n !== null) {
+		var q = document.createElement('div');
+		q.className = 'dv-typed';
+		q.textContent = n + (n === 1 ? ' prompt ' : ' prompts ') + LANE_N_QUEUE_TIP;
+		rows.push(q);
+	}
+	var c = laneNCompaction(s);
+	if (c) {
+		var cr = document.createElement('div');
+		cr.className = 'dv-compaction';
+		var parts = [];
+		if (c.inProgress) parts.push('compacting now');
+		if (c.count !== null) parts.push(c.count === 1 ? '1 compaction' : c.count + ' compactions');
+		if (c.at !== null) parts.push('last at ' + fmtTimeOfDay(new Date(c.at), use24Clock()));
+		cr.textContent = parts.join('  ·  ');
+		rows.push(cr);
+	}
+	var files = laneNFilesBlock(s);
+	if (files) rows.push(files);
+	if (!rows.length) return null;
+	var wrap = document.createElement('div');
+	wrap.className = 'dv-lanen';
+	for (var i = 0; i < rows.length; i++) wrap.appendChild(rows[i]);
+	return wrap;
+}
+
+/* ---- the signature fragment ---------------------------------------- */
+
+/* Every one of these is card STRUCTURE, not an age: each appears and DISAPPEARS
+   with its member, and the second half is the half that matters - without this a
+   card would go on showing a PLAN chip for a session that left plan mode, or a
+   hairline for a todo list that has been cleared, until something else happened to
+   rebuild it. `at` is the one exception and is deliberately absent: it moves on
+   every poll and is relabelled in place. */
+function laneNSig(s) {
+	var a = laneNActivity(s);
+	var t = laneNTodos(s);
+	var c = laneNCompaction(s);
+	var f = laneNFiles(s);
+	return [
+		laneNModeLabel(s) || '',
+		a ? String(a.tool) + '|' + String(a.detail) + '|' + String(a.calls) : '',
+		t ? t.done + '/' + t.total + '|' + String(t.current) : '',
+		c ? (c.inProgress ? 'C' : '') + String(c.count) + '|' + String(c.at) : '',
+		f ? String(f.count) + '|' + f.recent.join(',') : '',
+		String(laneNPromptQueue(s))
+	].join('~');
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

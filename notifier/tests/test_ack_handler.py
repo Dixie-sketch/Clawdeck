@@ -214,6 +214,18 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(handler.main([uri]), handler.EXIT_BAD_URI)
                 posted.assert_not_called()
 
+    def test_a_non_string_argument_is_refused_and_logged(self) -> None:
+        """parse_ack_uri takes Any and is documented "never an error"; main() then called
+        len() on it bare, so a non-string RAISED and the module-level catch turned that into
+        EXIT_UNEXPECTED with NO log line — the one outcome a silent handler must not produce.
+        The shell always hands back a str, so this is about main() being callable."""
+        for bad in (None, 123, b"sidecrab-ack:abc"):
+            with self.subTest(argument=bad), mock.patch.object(handler, "post_ack") as posted:
+                self.assertEqual(handler.main([bad]), handler.EXIT_BAD_URI)
+                posted.assert_not_called()
+        self.assertIn("NoneType", self.log_text())
+        self.assertIn("int", self.log_text())
+
     def test_a_refused_uri_is_never_echoed_into_the_log(self) -> None:
         """The log is read by humans and by greps; unvalidated shell input does not belong
         in it. Its LENGTH distinguishes a truncation from junk, which is all that is owed."""

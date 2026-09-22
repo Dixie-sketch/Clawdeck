@@ -2,19 +2,44 @@ namespace SideCrab.Panel;
 
 internal static class Program
 {
-    public const string Version = "0.4.0";
+    public const string Version = "0.5.0";
 
     [STAThread]
     private static int Main(string[] args)
     {
         var opts = HostOptions.Parse(args);
         var dir = opts.SideCrabDir ?? PanelSettings.SideCrabDir;
+        if (opts.Error is not null)
+        {
+            // LO-012, measured 2026-09-22 by running it: this used to write the error to a
+            // log file named by the options it had just refused to parse, and a failed
+            // parse names NOTHING - so "--profile --windowed" appended a line to the
+            // installed kiosk's live panel.log, and "--profile kiosk" created a stray
+            // panel-kiosk.log beside it. A second writer on a running host's file is the
+            // line loss SCA-031 is about, over a typo. The console is where the operator
+            // who typed it is; a scheduled task passes no arguments at all
+            // (Install-SideCrab.ps1), and --check is the diagnostic that does write nothing.
+            HostConsole.WriteLine("args: " + opts.Error);
+            return 2;
+        }
+        // Before the log and before the mutex: --check must not append to a running host's
+        // log file, and must not be refused by its single-instance guard.
+        if (opts.Check) return HostCheck.Run(opts, dir);
+
         // SCA-031: per-instance file. The kiosk keeps the bare panel.log name the setup
         // lane's smoke check reads.
         var log = new Log(Path.Combine(dir, "logs", PanelLogic.LogFileName(opts.Windowed, opts.Profile)));
-        if (opts.Error is not null)
+
+        // LO-003. Only for a directory the operator NAMED. Log.Write swallows a write it
+        // cannot make, by design - a full disk must never take the panel down - so a
+        // --sidecrab-dir pointing at a path that cannot be created gave a host that ran
+        // with no log at all, no line anywhere saying so, and exit 0. The default
+        // ~/.sidecrab failing is a bad night and keeps the tolerant path; a named one that
+        // cannot be made is a typo, and it is answered before anything else starts.
+        if (opts.SideCrabDir is not null &&
+            !HostCheck.DirectoryIsUsable(Path.Combine(dir, "logs"), out var dirError))
         {
-            log.Write("args: " + opts.Error);
+            HostConsole.WriteLine($"--sidecrab-dir {dir} cannot be used: {dirError}");
             return 2;
         }
 
@@ -70,6 +95,8 @@ public sealed class HostOptions
     /// <summary>SCA-024: names the WebView2 user-data folder and the log file, so a
     /// second host can be run for native QA without sharing either with the kiosk.</summary>
     public string? Profile { get; private set; }
+    /// <summary>lane O: print what this host would do and exit, showing no window.</summary>
+    public bool Check { get; private set; }
     public string? Error { get; private set; }
 
     public static HostOptions Parse(string[] args)
@@ -77,7 +104,19 @@ public sealed class HostOptions
         var o = new HostOptions();
         for (var i = 0; i < args.Length; i++)
         {
-            string? Next() => i + 1 < args.Length ? args[++i] : null;
+            // LO-004. A value that is itself a switch is the value the operator LEFT OUT.
+            // "--profile --windowed" took the flag as the name: SafeProfileName reduced it
+            // to "windowed", the --windowed switch was consumed and gone, and what started
+            // was a KIOSK - a topmost full-screen window aimed at the Edge - writing to the
+            // windowed host's log file.
+            string? Next()
+            {
+                if (i + 1 >= args.Length) return null;
+                var v = args[i + 1];
+                if (v.StartsWith("--", StringComparison.Ordinal)) return null;
+                i++;
+                return v;
+            }
             switch (args[i])
             {
                 case "--port":
@@ -100,12 +139,27 @@ public sealed class HostOptions
                     o.Windowed = true;
                     break;
                 case "--sidecrab-dir":
-                    o.SideCrabDir = Next();
-                    if (string.IsNullOrWhiteSpace(o.SideCrabDir)) o.Error = "--sidecrab-dir needs a path";
+                    var given = Next();
+                    if (string.IsNullOrWhiteSpace(given)) o.Error = "--sidecrab-dir needs a path";
+                    // Absolute from here on. A relative path resolves against the CURRENT
+                    // directory, which for the scheduled task is system32, so the settings
+                    // and the log would land somewhere nobody would think to look.
+                    else
+                    {
+                        try { o.SideCrabDir = Path.GetFullPath(given); }
+                        catch (Exception ex) { o.Error = "--sidecrab-dir is not a usable path (" + ex.GetType().Name + ")"; }
+                    }
                     break;
                 case "--profile":
                     o.Profile = Next();
                     if (string.IsNullOrWhiteSpace(o.Profile)) o.Error = "--profile needs a name";
+                    else if (PanelLogic.IsReservedProfile(o.Profile))
+                        o.Error = $"--profile {o.Profile} is reserved: it resolves to the unnamed host's " +
+                                  "WebView2 folder or log file. Pick another name.";
+                    break;
+                case "--check":
+                case "--doctor":
+                    o.Check = true;
                     break;
                 default:
                     o.Error = "unknown argument " + args[i];

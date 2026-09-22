@@ -204,3 +204,27 @@ than removing them quietly. Backups of `settings.json` are never removed at any 
 - **Pull down** always fetches or restarts a quiet connection; a stalled stream no longer blocks the
   refresh.
 - **One log per host instance** (`panel.log`, `panel-windowed.log`, `panel-<profile>.log`).
+
+---
+
+## What 0.33.0 adds, and one step to take
+
+- **Re-run the installer once** so the new `PreCompact` hook lands in `~/.claude/settings.json`:
+
+  ```powershell
+  pwsh -File .\setup\Install-SideCrab.ps1
+  ```
+
+  A second run changes nothing, and a hook you added by hand inside one of SideCrab's entries is
+  kept. Skipping this costs you the "compacting now" state and nothing else.
+- **What a session is doing.** A working card shows the tool it is running and what for; a chip
+  shows PLAN, AUTO-EDIT or BYPASS; a task list shows as a thin line with 3/7; the Detail page adds
+  files touched, prompts typed ahead, and compaction. All of it appears only when there is something
+  to show.
+- **The companion keeps a log** at `~/.sidecrab/logs/crabd.log`.
+- **A config file with a typo is no longer replaced.** The companion used to start from the
+  defaults when it could not read `~/.sidecrab/config.json`, so one tap on the quiet button could
+  overwrite your quiet hours, budget, digest and continue prompts. It now refuses the save and says
+  so; fix the JSON and the next save goes through. If it happened to you before this release, the
+  file is the defaults and there is no copy of what was there.
+- **`SideCrab.Panel.exe --check`** prints what the host would do without showing a window.

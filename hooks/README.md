@@ -3,14 +3,22 @@
 `settings-hooks-fragment.json` is the `hooks` object merged into `~/.claude/settings.json`
 by `setup/Install-SideCrab.ps1`. It carries two kinds of entry.
 
-## The five fire-and-forget `command` hooks
+## The six fire-and-forget `command` hooks
 
-`SessionStart`, `UserPromptSubmit`, `Notification`, `SubagentStop`, `SessionEnd` each pipe
-the hook JSON that Claude Code puts on stdin straight to crabd:
+`SessionStart`, `UserPromptSubmit`, `Notification`, `SubagentStop`, `SessionEnd` and
+`PreCompact` each pipe the hook JSON that Claude Code puts on stdin straight to crabd:
 
 ```
 curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0
 ```
+
+`PreCompact` is the one that posts somewhere else, `/v1/hook/precompact` (v0.35.0). It is
+the same fire-and-forget shape behind the same two gates; it has its own path because it
+records a fact about the session rather than a state transition, and crabd's state machine
+must not be asked to interpret an event that moves nothing. It is the only evidence of a
+compaction that is still running: the CLI's `compact_boundary` record only appears once the
+compaction has finished, so `sessions[].compaction.inProgress` is "this hook arrived and
+the transcript has not been written since".
 
 - `curl.exe` is the Windows-native one in `C:\Windows\System32` — not Git Bash's.
 - `-m 2` caps the whole call at 2 s; a refused connection fails in microseconds.
@@ -66,7 +74,7 @@ docs.claude.com/en/docs/claude-code/hooks:
   (default 600). It POSTs the stdin document as the request body.
 - **HTTP hooks are skipped only for `SessionStart` and `Setup`** (the binary logs
   "HTTP hooks are not supported for" those two) — `Stop` and `PermissionRequest` both allow
-  them, which is why the five ingest hooks above stay on curl and only these two are `http`.
+  them, which is why the six ingest hooks above stay on curl and only these two are `http`.
 - **Stop** continuation: BOTH `additionalContext` (non-error, shipped) and top-level
   `decision:"block"` (error-labelled, fallback) push into the same continuation array — the
   forced turn is guaranteed either way; only the labelling differs. `continuationPrompt` does

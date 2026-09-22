@@ -138,7 +138,10 @@
   "sessions": [
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10001",
-      "continuePrompts": ["Rebuild the report", "Run the migrations"],
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
       "title": "acme-api — retry backoff policy",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -160,7 +163,8 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 88420
+      "todayOutputTokens": 88420,
+      "promptQueue": 1
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10002",
@@ -181,7 +185,13 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 61200
+      "todayOutputTokens": 61200,
+      "mode": "plan",
+      "todos": {
+        "done": 1,
+        "total": 4,
+        "current": "Draft the rollback before the first write"
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10003",
@@ -205,11 +215,21 @@
         "running": 2,
         "total": 3
       },
-      "todayOutputTokens": 132400
+      "todayOutputTokens": 132400,
+      "activity": {
+        "tool": "Edit",
+        "detail": "src/routes/index.ts",
+        "at": "2026-08-26T18:04:30Z",
+        "callsThisTurn": 2
+      },
+      "promptQueue": 2
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10004",
-      "continuePrompts": ["Rebuild the report", "Run the migrations"],
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
       "title": "acme-api — migration dry run",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -227,7 +247,18 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 97800
+      "todayOutputTokens": 97800,
+      "activity": {
+        "tool": "Bash",
+        "detail": "migrate --dry-run",
+        "at": "2026-08-26T18:04:30Z",
+        "callsThisTurn": 4
+      },
+      "compaction": {
+        "count": 1,
+        "lastAt": "2026-08-26T18:02:05Z",
+        "inProgress": true
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10005",
@@ -248,11 +279,24 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 74100
+      "todayOutputTokens": 74100,
+      "activity": {
+        "tool": "Grep",
+        "detail": "a detail long enough to prove the card ellipsises it rather than wrapping the row",
+        "at": "2026-08-26T18:04:30Z",
+        "callsThisTurn": 11
+      },
+      "todos": {
+        "done": 6,
+        "total": 6,
+        "current": "Write the summary"
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10006",
-      "continuePrompts": ["Run the smoke suite"],
+      "continuePrompts": [
+        "Run the smoke suite"
+      ],
       "title": "infra-tools — log shipper config",
       "cwd": "C:\\Dev\\infra-tools",
       "repo": "infra-tools",
@@ -270,7 +314,19 @@
         "running": 1,
         "total": 1
       },
-      "todayOutputTokens": 55300
+      "todayOutputTokens": 55300,
+      "mode": "acceptEdits",
+      "activity": {
+        "tool": "Write",
+        "detail": "shipper.toml",
+        "at": "2026-08-26T18:04:30Z",
+        "callsThisTurn": 2
+      },
+      "todos": {
+        "done": 4,
+        "total": 9,
+        "current": "Point the shipper at the new bucket"
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10007",
@@ -294,7 +350,12 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 43900
+      "todayOutputTokens": 43900,
+      "activity": {
+        "tool": "WebFetch",
+        "at": "2026-08-26T18:04:30Z",
+        "callsThisTurn": 1
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10008",
@@ -315,11 +376,19 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 31600
+      "todayOutputTokens": 31600,
+      "activity": {
+        "tool": "Bash",
+        "detail": "npm audit fix",
+        "at": "2026-08-26T18:04:30Z"
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10009",
-      "continuePrompts": ["Rebuild the report", "Run the migrations"],
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
       "title": "acme-api — rate limit tests",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -336,11 +405,20 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 28400
+      "todayOutputTokens": 28400,
+      "filesTouched": {
+        "count": 3,
+        "recent": [
+          "tests/unit/test_api.py",
+          "tests/unit/test_auth.py"
+        ]
+      }
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10010",
-      "continuePrompts": ["Run the smoke suite"],
+      "continuePrompts": [
+        "Run the smoke suite"
+      ],
       "title": "infra-tools — backup verification",
       "cwd": "C:\\Dev\\infra-tools",
       "repo": "infra-tools",
@@ -399,7 +477,8 @@
         "running": 0,
         "total": 0
       },
-      "todayOutputTokens": 8600
+      "todayOutputTokens": 8600,
+      "mode": "bypassPermissions"
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10013",
@@ -447,7 +526,12 @@
     "thresholdSec": 90,
     "enabled": true
   },
-  "host": { "cpuPct": null, "memPct": 71.9, "memUsedGB": 23.0, "memTotalGB": 32.0 },
+  "host": {
+    "cpuPct": null,
+    "memPct": 71.9,
+    "memUsedGB": 23.0,
+    "memTotalGB": 32.0
+  },
   "continuePrompts": [
     "Open a pull request for this work."
   ]

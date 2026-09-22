@@ -168,9 +168,9 @@ at the hook rows.
 
 ## 4b. Keep the limit gauges alive (two commands, once)
 
-The LIMITS gauges read Claude Code's own sign-in token, which expires some hours (about eight on a current build) after the
-last time a terminal `claude` made a request. If you mostly use the desktop app, the gauges will
-show "token expired" by the next morning. Fix it once:
+The LIMITS gauges read Claude Code's own sign-in token. It lives about six hours and is rewritten
+only when a terminal `claude` makes a request, so if you mostly use the desktop app the gauges show
+"token expired" by the next morning. Fix it once:
 
 ```powershell
 claude setup-token
@@ -188,7 +188,7 @@ The file is created for you; every key is optional.
 
 ```jsonc
 {
-  "quietHours": { "start": "22:00", "end": "07:00" },  // dim the panel, no toasts, no glow
+  "quietHours": { "start": "22:00", "end": "07:00" },  // dim the panel, no toasts, no chime
   "toast":  { "enabled": true, "thresholdSec": 120 },  // toast after a session waits this long
   "digest": { "enabled": true, "time": "09:00" },      // one "yesterday" summary toast a day
   "budget": { "dailyOutputTokens": 5000000 },          // a daily token budget marker and toast
@@ -276,7 +276,9 @@ approvals" section has the full guarantees.
 | Pull down from the top | Refresh now |
 | Tap the gear beside the clock | The panel's settings: clock format, colours, the chime, Test chime |
 | Tap the hardware row | Ten minutes of CPU, memory, GPU and disk, plus every other sensor |
+| Read the last line of a working card | The tool it is running and what for, with the call count this turn; a PLAN or BYPASS chip shows the session's permission mode; a thin line with 3/7 is its task list |
 | Tap **Sessions**, **Burn**, **Week** or **Detail** at the top right | Switch the view; a swipe across that header steps through them |
+| Tap **History** beside those chips | Today's events as a timeline, with the week strip to drill another day |
 | Tap **Cancel** beside a queued step | Withdraw it; the panel says if the session already took it |
 | Tap **Bring to front** in a card's sheet | Put that session's window in front on your main display |
 | Tap the SideCrab icon in the notification area | Status, logs, reload, re-pin, pause, the display picker, quit until next logon |
@@ -340,6 +342,8 @@ approval pairing code and the stored limits token. Backups of `settings.json` su
 | Gauges dark, "limits token rejected" | The stored long-lived token is not accepted. Mint a fresh one: `claude setup-token`, then `Install-SideCrab.ps1 -LimitsToken` |
 | Bring to front says "no window found for this session" | The host looks at your main display only. A session in the Claude desktop app answers "brought the Claude app to the front": pick the session in its sidebar |
 | The panel is on the wrong screen | Tap the SideCrab icon in the notification area and use **Show the panel on...**; it reverts by itself after ten seconds if you do not keep the choice |
+| The companion is running but something is off | `~/.sidecrab/logs/crabd.log` has a line for everything it worked around and the full detail of anything that failed; the smoke test's `crabd log` row reads its age |
+| The panel is not where you expect | `.\panel-host\dist\SideCrab.Panel.exe --check \| Out-String` prints every display, the one the host would pick and why, and each problem it sees |
 | Anything else | `pwsh -File .\setup\Test-SideCrab.ps1` prints a PASS/FAIL row for every piece |
 
 Still stuck? [Open an issue](https://github.com/Dixie-sketch/Clawdeck/issues) with the smoke-test

@@ -151,11 +151,19 @@ def main(argv: list[str] | None = None) -> int:
         log_line(f"refused: no argument (expected {ACK_SCHEME}:<sessionId>)")
         return EXIT_BAD_URI
 
-    session_id = parse_ack_uri(argv[0])
+    raw = argv[0]
+    session_id = parse_ack_uri(raw)
     if session_id is None:
         # The rejected URI is NOT echoed: it is unvalidated shell input, and a log file is
         # read by humans and by greps. Its length is enough to tell a truncation from junk.
-        log_line(f"refused: argument ({len(argv[0])} chars) is not {ACK_SCHEME}:{SESSION_ID_PATTERN}")
+        #
+        # The isinstance guard is not decoration. parse_ack_uri takes Any and is documented
+        # "never an error"; a bare len() on the next line then RAISED on a non-string, and the
+        # module-level catch turned that into EXIT_UNEXPECTED with no log line at all — the one
+        # outcome this file exists to prevent. The shell always hands back a str, so this is
+        # about main() being callable, not about a live path.
+        shape = f"{len(raw)} chars" if isinstance(raw, str) else type(raw).__name__
+        log_line(f"refused: argument ({shape}) is not {ACK_SCHEME}:{SESSION_ID_PATTERN}")
         return EXIT_BAD_URI
 
     try:

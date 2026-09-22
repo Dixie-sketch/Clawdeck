@@ -6,21 +6,40 @@
 
 **An ambient Claude Code status panel for the Corsair Xeneon Edge.**
 
-> **New here?** Read [**Getting started**](docs/GETTING-STARTED.md): a 20-minute walkthrough from
-> nothing installed to a working panel, with what you should see at each step.
+SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on your
+PC: session cards, rate-limit gauges with a reset countdown, today's token burn, a clock, and a
+pixel crab whose mood *is* the status. When a session stops to ask you something, you find out
+from across the room instead of by cycling through terminal windows. Then you can answer it from
+the panel.
 
-> **SideCrab is a standalone application.** It installs as three pieces of its own and needs no
-> other desktop software. If you ran the old widget, read
-> [**Install notes: moving to the standalone panel**](docs/UPGRADING-TO-STANDALONE.md); the widget
-> and why it went are recorded in the maintainers' history.
+![The panel, with one session waiting on a permission request](docs/images/panel.png)
 
-SideCrab turns the Xeneon Edge on your desk into a live view of every Claude Code session on
-your PC. Session cards, rate-limit gauges with a reset countdown, today's token burn, a clock, a
-"needs your attention" alert, and a pixel crab whose mood *is* the status. When a session stops to
-ask you something, you find out from across the room instead of by cycling through terminal
-windows. Then you can answer it from the panel.
+## Install
 
-![The panel](docs/images/panel.png)
+Open **PowerShell 7** on the Windows PC where you run Claude Code:
+
+```powershell
+git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
+cd C:\Dev\sidecrab
+pwsh -File .\setup\Install-SideCrab.ps1
+```
+
+That installs all three pieces and starts them. Start a Claude Code session and a card for it
+appears on the panel within a few seconds. Add `-WhatIf` to see every step without performing any
+of it.
+
+You also need **Python 3.13**, the **.NET 10 SDK** and a **Xeneon Edge**; [what you
+need](#what-you-need) is the full list, and [Getting started](docs/GETTING-STARTED.md) is the same
+install as a 20-minute walkthrough, with what you should see at each step.
+
+Everything runs on one PC and talks only over `127.0.0.1`. Nothing is sent anywhere. Panel
+approvals ship **off**; read [Before you turn on panel
+approvals](#before-you-turn-on-panel-approvals) first.
+
+> Coming from the old widget? SideCrab is now a standalone application and needs no other desktop
+> software. [Install notes: moving to the standalone panel](docs/UPGRADING-TO-STANDALONE.md) has
+> the upgrade path, and the widget and why it went are recorded in
+> the maintainers' history.
 
 ---
 
@@ -34,8 +53,6 @@ windows. Then you can answer it from the panel.
 | **PowerShell 7** (`pwsh`) | For the companion installer | Not Windows PowerShell 5.1. |
 | **Python 3.13** | For the companion | A real install on `PATH`. The Microsoft Store "python" alias stub is rejected, because it cannot host a background service. |
 | **.NET 10 SDK** and the **WebView2 Runtime** | For the panel host | The installer builds the host once, which needs the SDK; the Desktop Runtime it installs is what runs it afterwards. WebView2 ships with Windows 11 and most Windows 10 installs. Pass `-SkipPanel` to install the companion and notifier without it. |
-
-Everything runs on one PC and talks only over `127.0.0.1`. Nothing is sent anywhere.
 
 ---
 
@@ -58,7 +75,7 @@ Snooze buttons that reach back into the panel.
 You get live session cards, limit gauges with a depletion forecast, burn history and an optional
 daily token budget, a daily recap with a drillable week strip, and alerts when a session is
 waiting on you. CPU and GPU readings come through the companion from HWiNFO and `nvidia-smi`; see
-[Sensors](#sensors). Pass `-SkipPanel` or `-SkipToast` to install less.
+[Sensors and temperatures](#sensors-and-temperatures). Pass `-SkipPanel` or `-SkipToast` to install less.
 
 ---
 
@@ -96,23 +113,13 @@ em-dash, never as zero. A green-looking panel always means the data is fresh.
 
 ---
 
-## Install
+## Setting it up
 
-One command installs all three pieces.
-[Install notes](docs/UPGRADING-TO-STANDALONE.md) has the same steps with what you should see at
-each one, and the upgrade path from the old widget.
+The three commands are at the top of this page. This section is what they do and what to do next.
 
-### Step 1 — install (15 minutes)
+### What the installer does
 
-Open PowerShell 7 on the PC where you run Claude Code:
-
-```powershell
-git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
-cd C:\Dev\sidecrab
-pwsh -File .\setup\Install-SideCrab.ps1
-```
-
-The installer:
+It:
 
 - builds the panel host (`panel-host\dist\SideCrab.Panel.exe`) when it is not there yet. This
   needs the .NET 10 SDK. Without it the build fails, the installer says so and carries on with the
@@ -122,10 +129,9 @@ The installer:
   duplicates them and other hooks are left alone,
 - registers the toast identity and the `sidecrab-ack:` handler for the notifier, under `HKCU`,
   no elevation needed,
-- leaves panel approvals **off**. Read [Approvals](#approving-from-the-panel) before turning them on.
+- leaves panel approvals **off**. Read [Approving a permission request from the panel](#approving-a-permission-request-from-the-panel) before turning them on.
 
-Add `-WhatIf` to see every one of those without performing any of it. Nothing is built and
-nothing is registered under `-WhatIf`.
+Nothing is built and nothing is registered under `-WhatIf`.
 
 Then check it:
 
@@ -140,7 +146,7 @@ full-screen on the Xeneon Edge.
 If another application is still drawing its own dashboard on that screen, turn that dashboard off
 for the Edge in whatever put it there.
 
-### Step 2 — the panel host's settings (optional)
+### The panel host's settings (optional)
 
 Settings live in `~/.sidecrab/panel-settings.json`. Every key has a default, so the file is
 optional:
@@ -179,7 +185,7 @@ crabd uses the stored token only when the CLI's own token has expired. It is dec
 on each poll, never logged and never served. `Install-SideCrab.ps1 -Status` shows whether one is
 stored; `Test-SideCrab.ps1` shows which token is answering.
 
-### Updating, uninstalling
+### Updating and uninstalling
 
 ```powershell
 pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # pulls, rebuilds the host, restarts the tasks, verifies
@@ -215,11 +221,13 @@ the two credential files** (the approval pairing code and the stored limits toke
 - **The week strip** is the daily recap: sessions, commits in your configured repos, tokens.
 - **The hardware row** shows the CPU temperature with the sensor's own name beside it, the
   graphics card's temperature and utilisation, and memory. They come from the companion, which
-  reads HWiNFO's shared memory and `nvidia-smi` (see [Sensors](#sensors)). Tap
+  reads HWiNFO's shared memory and `nvidia-smi` (see [Sensors and temperatures](#sensors-and-temperatures)). Tap
   the row for the last ten minutes and for everything the row has no width for: the VRM, each
   drive, motherboard and chipset, CPU package power, every fan and pump, the card's VRAM and power
   draw, and what the whole machine is doing with its disks, network and memory. With no HWiNFO
   the row shows what it always showed; with no NVIDIA card the GPU cell is simply not there.
+  On a narrower panel the row drops what it has no room for, the sensor's own name first, then the last
+  reading, then the one before it; the sheet behind it lists every reading whatever the row had space for.
 
 ### Touch
 
@@ -230,15 +238,16 @@ the two credential files** (the approval pairing code and the stored limits toke
 | **Long-press** a card | Pin it to the front (again to unpin) |
 | **Two-finger tap** anywhere | Acknowledge every waiting session at once |
 | **Tap the crab** | Same as two-finger tap |
-| **Pull down** from the top edge | Refresh now |
+| **Pull down** from the top edge | Fetches fresh state now, or restarts a live connection that has gone quiet |
 | **Tap a gauge** | That window's detail: how full, when it resets, when it would fill |
 | **Tap a day** in the week strip | Drill into that day; page with prev/next |
 | **Tap the moon** beside the clock | Quiet for an hour · stay awake through tonight's window · back to schedule |
 | **Filter and density chips** (top right) | Show only waiting / working / finished; comfortable or compact cards |
 | **View chips** at the right of the Sessions header, or **swipe** across that header | Sessions, Burn, Week or Detail; the choice is remembered |
+| **Tap History** beside the view chips | Today's events as a timeline, newest first, with the week strip to drill another day. It is there only while the feed is live |
 | **Bring to front** in a card's sheet, or the chip beside Back on the Detail page (standalone host) | Puts that session's window in front on your main display; the panel keeps its hands off the keyboard |
+| Read the last line of a working card | The tool it is running and what for, with the call count this turn |
 | **Cancel** beside a queued prompt | Removes it, or says it was already sent |
-| **Pull down** from the top edge | Fetches fresh state now, or restarts a live connection that has gone quiet |
 | **Tap the gear** beside the clock (standalone host) | The panel's settings sheet: clock format, alert flash, crab accessories, colours, transparency, the chime and Test chime |
 | **Tap the hardware row** | Ten minutes of CPU, memory, GPU utilisation and disk throughput, plus every other sensor the row has no width for |
 
@@ -264,13 +273,41 @@ remembers the one you picked.
   continue buttons. Open it from a card's sheet with **Full view**, or tap the **Detail** chip,
   which opens whichever session most wants your attention. **Back** returns you to the cards.
 
+![The Burn view: today's tokens by session, by model and by hour](docs/images/burn.png)
+
+![The Week view with a day open underneath the strip](docs/images/week.png)
+
+![The Detail view, showing a permission request with Approve and Deny](docs/images/detail.png)
+
 **A question never hides behind a view.** If a session starts waiting while you are looking at
 Burn, Week or Detail, the Sessions chip grows a pulsing count. The panel never switches views on
 its own, because moving the glass while your finger is on the way to it is worse than the thing
 it would be warning about.
 
+The density chip names the density it is in, and tapping it swaps them: **Comfortable** out of
+the box, **Compact** for a third row of smaller cards in the same space. It narrows the card grid
+and nothing else. Sessions the grid has no room for collect in a tile at the end.
+
+![The Sessions view at compact density: three rows of cards and an overflow tile](docs/images/compact.png)
+
+The **History** chip sits beside the switcher and is not a view: it opens today's events as a
+timeline over the panel, with the week strip underneath to drill another day. It appears only
+while the feed is live, because a companion that has stopped answering `/v1/state` will not
+answer for history either. When a read fails it says **No history** and the next tap tries again.
+
 On a slot too narrow for the switcher the panel shows the cards and hides the chips. Your choice
 comes back on a slot wide enough to show it.
+
+![The panel on a narrow slot: the cards stay, the view chips are gone](docs/images/narrow.png)
+
+### Quiet hours
+
+Quiet hours dim the whole panel, and nothing toasts or chimes. The moon chip beside the clock says
+how long the quiet has left to run, and names an override you tapped rather than the schedule. Tap
+it for an hour of quiet, again to stay awake through tonight's window, again to go back to the
+schedule.
+
+![The panel dimmed under a quiet-hours override, with 58 minutes left on the moon chip](docs/images/quiet.png)
 
 ### The crab
 
@@ -341,6 +378,8 @@ declines or corrects part of a save, its own words appear beside the Save button
 prompts this session is offered are listed below the companion half, read-only: they are edited in
 the config file.
 
+![The settings sheet: this panel on the left, the companion below](docs/images/settings.png)
+
 ### Cancelling a queued continue
 
 A queued prompt has a **Cancel** beside it, on the session sheet and on the Detail page. It answers
@@ -355,6 +394,27 @@ limits token, telemetry, HWiNFO, the GPU), whether it is fresh, and how old it i
 companion cannot take is absent, never a zero. When approvals are turned on in the companion, the
 approval sheet and the settings sheet show whether this panel is ready to decide and, if not, why:
 approvals off, no pairing code minted, or this panel not paired. The pairing code is never shown.
+
+![The host sheet: ten minutes of CPU and memory, then every sensor the row has no width for](docs/images/host.png)
+
+### What a session is doing
+
+The companion reads a few more things out of the transcript Claude Code already writes, so a card
+can show what a session is up to rather than only that it is busy. Each appears only when there is
+something to show; a session the companion has just picked up shows none of them.
+
+- **The tool it is running and what for.** While a session works, its card's last line reads
+  "Bash · run the tests" (the tool and the description Claude Code gave it), with the number of
+  tool calls this turn. The file names and tool descriptions are the only things taken from a tool
+  call; the command itself never leaves the companion, because a command line can carry a
+  password and the panel sits on a desk.
+- **The permission mode**, as a chip beside the model: PLAN, AUTO-EDIT or BYPASS. Normal shows
+  nothing.
+- **Its task list**, when the session keeps one: a thin progress line on the card with "3/7", and
+  the item in progress on the Detail page.
+- **On the Detail page:** how many files it has edited and the last few by name, how many prompts
+  you have typed ahead of it (Claude Code's own queue, which is not the panel's continue queue),
+  and whether it is compacting its context right now and how often it has.
 
 ### The tray icon and the display picker
 
@@ -374,7 +434,27 @@ the size fallback skips the primary and refuses to choose between two matching m
 starts with its monitor unplugged stays hidden, keeps looking every five seconds, and comes back when
 the monitor does.
 
-### Temperatures (standalone host, optional)
+#### Ask the host what it would do
+
+```powershell
+$report = .\panel-host\dist\SideCrab.Panel.exe --check | Out-String
+$report
+```
+
+It prints one fact per line and shows no window: every display with its device id and size, which
+one the host would pick and why, the WebView2 runtime version, the settings file and every warning
+in it, the log path, and whether another host is running. Exit 0 means the panel would show; 2
+means something named in the output stops it. The pipe matters: the host is a windowed program and
+PowerShell only waits for it when the output goes somewhere. It is safe to run beside the installed
+host.
+
+Two things about picking a monitor: if two monitors carry the device id you configured (two Edges
+both contain `CRXED00`), the panel stays hidden and the tray says so; pick one from **Show the panel
+on...** and the host writes an id that matches that monitor and no other. If you pick a display
+larger than your primary monitor, Windows caps the window at the primary's size; the host logs what
+it asked for and what it got, and scales the page to the window it has.
+
+### Sensors and temperatures
 
 The companion reads hardware sensors from **HWiNFO**, a separate free download from `hwinfo.com`
 (free for non-commercial use; the Pro licence covers commercial use and removes the limit below).
@@ -495,6 +575,13 @@ guarantees are worth reading rather than assuming:
 
 ## Troubleshooting
 
+The companion keeps its own log at `~/.sidecrab/logs/crabd.log` (about a megabyte and three older
+copies): a line when it starts, a line for each thing it worked around, and the full detail of
+anything that went wrong. The smoke test's `crabd log` row tells you how old the newest line is; an
+old line is normal, because the companion writes only when something happens. The panel host's log
+is `~/.sidecrab/logs/panel.log`.
+
+
 | You see | It means | Do |
 |---|---|---|
 | Worried grey crab, "data as of HH:MM" | The companion is stopped, or the feed is older than 30 s | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
@@ -531,7 +618,7 @@ guarantees are worth reading rather than assuming:
 
 ## Known issues
 
-The honest list lives in [`docs/BACKLOG.md`](docs/BACKLOG.md). Worth knowing before you install:
+The honest list lives in `docs/BACKLOG.md`. Worth knowing before you install:
 
 - **Panel approvals need pairing** - a widget older than 0.27.0 or a companion older than
   0.29.0 cannot approve anything: the tap is refused and the terminal dialog decides. Update
@@ -559,10 +646,10 @@ the four rules every change is held to.
 | `widget/` | The panel page: HTML/CSS/JS, served as-is by crabd at `/panel/`. Its version is `widget/version.json`; nothing packages it. Dev notes in `widget/DEV.md` |
 | `panel-host/` | **SideCrab.Panel**: the standalone host, a .NET 10 WinForms + WebView2 kiosk window pinned to the Xeneon Edge. `setup\Build-SideCrabPanel.ps1` publishes it; `SideCrab.Panel.Tests` covers its navigation lock, display selection and script injection |
 | `companion/` | **crabd**: hook receiver, session state machine, limits + burn reader, history, `/v1/state` |
-| `notifier/` | Native Windows toasts: waiting session, permission request, daily digest, budget crossed, companion gone quiet |
+| `notifier/` | Native Windows toasts, six of them: waiting session, permission request, long turn finished, daily digest, budget crossed, companion gone quiet |
 | `hooks/` | The Claude Code hook fragment and the status-line command that feed crabd |
 | `setup/` | Install / update / uninstall / smoke-test / verification scripts |
-| `docs/` | [Getting started](docs/GETTING-STARTED.md) · [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · [BACKLOG](docs/BACKLOG.md) · audit findings · the maintainers' history |
+| `docs/` | [Getting started](docs/GETTING-STARTED.md) · [PRD](docs/PRD.md) · [STATE-CONTRACT](docs/STATE-CONTRACT.md), the producer/consumer API and the source of truth for both sides · BACKLOG · audit findings · the maintainers' history |
 
 Design rules that drive most decisions: **honest failure** (unknown is `null` or an em-dash,
 never `0`, never a stale value re-served), **every alert must survive a healthy night** (each
@@ -578,6 +665,8 @@ python -m unittest discover -s notifier\tests  -t notifier\tests
 python -m unittest discover -s hooks\tests     -t hooks\tests
 pwsh -File .\setup\tests\RunTests.ps1
 node widget\tests\test_ordering.js
+node widget\tests\test_chime.js
+node widget\tests\test_standalone.js
 dotnet test panel-host\SideCrab.Panel.Tests
 ```
 

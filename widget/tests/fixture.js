@@ -52,7 +52,7 @@ function Element(tag) {
 	this.parentNode = null;
 	this.handlers = {};
 	this.classes = {};
-	this.className = '';
+	this._className = '';
 	this.value = '';
 	this.type = '';
 	this.id = '';
@@ -75,8 +75,26 @@ function Element(tag) {
 Element.prototype.sync = function () {
 	var out = [];
 	for (var k in this.classes) { if (Object.prototype.hasOwnProperty.call(this.classes, k)) out.push(k); }
-	this.className = out.join(' ');
+	this._className = out.join(' ');
 };
+
+/* lane N: className is the SAME store as classList, because in a browser it is.
+   It was a plain field, so the two disagreed in both directions: a class written
+   as `el.className = 'card'` was invisible to classList and to querySelector, and
+   the next classList.add() rebuilt the string from the map and DELETED it. The
+   shipping card does exactly that pair (`card.className = 'card'` then
+   `classList.add('tappable')`), so the fixture reported the card's class as
+   'tappable' alone and .dv-* selectors - every one of which is set through
+   className - matched nothing at all. */
+Object.defineProperty(Element.prototype, 'className', {
+	get: function () { return this._className; },
+	set: function (v) {
+		this._className = v === null || v === undefined ? '' : String(v);
+		this.classes = {};
+		var parts = this._className.split(/\s+/);
+		for (var i = 0; i < parts.length; i++) { if (parts[i]) this.classes[parts[i]] = 1; }
+	}
+});
 Element.prototype.setAttribute = function (k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); };
 Element.prototype.getAttribute = function (k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; };
 Element.prototype.hasAttribute = function (k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); };

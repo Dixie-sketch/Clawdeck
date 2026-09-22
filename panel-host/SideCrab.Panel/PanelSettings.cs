@@ -84,7 +84,19 @@ public sealed class PanelSettings
             if (root.TryGetProperty("display", out var d) && d.ValueKind == JsonValueKind.Object)
             {
                 if (d.TryGetProperty("deviceId", out var id))
-                    deviceId = id.ValueKind == JsonValueKind.String ? id.GetString() : null;
+                {
+                    // LO-010, the third case SCA-029 left out. A JSON null is an operator
+                    // saying "no id, match on size alone" and is honoured. Any OTHER wrong
+                    // type used to become null just as quietly, which turned a typo into
+                    // "the panel is no longer pinned by identity" with nothing in the log
+                    // to say so; it now keeps the default and names the property, exactly
+                    // as a wrong width does.
+                    if (id.ValueKind == JsonValueKind.String) deviceId = id.GetString();
+                    else if (id.ValueKind == JsonValueKind.Null) deviceId = null;
+                    else
+                        log($"panel-settings.json: display.deviceId is not a string ({id.ValueKind}); " +
+                            $"using {deviceId}. Everything else in {settingsPath} is unchanged.");
+                }
                 // SCA-029: the ValueKind guard the sibling numbers already had. TryGetInt32
                 // THROWS InvalidOperationException on a non-number, and the throw landed in
                 // the file-level catch below, which answers with the whole file defaulted:

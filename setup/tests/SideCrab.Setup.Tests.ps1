@@ -2417,6 +2417,155 @@ Describe 'SideCrab setup' {
         }
     }
 
+    Context 'the PreCompact hook (v0.35.0, provisional label)' {
+
+        # crabd learns that a compaction is RUNNING from this hook and from nothing else:
+        # the CLI's own compact_boundary record only lands once the compaction has finished,
+        # so without it `sessions[].compaction.inProgress` could never be true. The merge is
+        # what has to carry the new event onto an install that predates it - and carry it
+        # without doubling anything on the re-run that delivers it.
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @('Split-SideCrabHookMatcher')
+            script:Import-AstFunction -Path (Join-Path $script:SetupDir 'Install-SideCrab.ps1') `
+                                      -Name @('Merge-HookFragment')
+            $global:HookUrlMarker = '127.0.0.1:2722/v1/hook'
+            $script:FragmentM = (Get-Content -LiteralPath (Join-Path $script:SetupDir '..\hooks\settings-hooks-fragment.json') `
+                                             -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -Depth 40)['hooks']
+            function script:OurHookM   { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0'; timeout = 3 } }
+            function script:TheirHookM { @{ type = 'command'; command = 'echo mine, hand-merged' } }
+        }
+        AfterAll {
+            Remove-Variable -Name HookUrlMarker -Scope Global -ErrorAction SilentlyContinue
+        }
+
+        It 'the shipped fragment registers PreCompact against its own route' {
+            $entry = $script:FragmentM['PreCompact'][0]['hooks'][0]
+            $entry['type']    | Should -Be 'command'
+            $entry['command'] | Should -Match '/v1/hook/precompact'
+            # Fire-and-forget, like the five other command hooks: the session is about to
+            # compact a large context and nothing crabd does may sit in front of that.
+            $entry['command'] | Should -Match 'exit 0'
+        }
+
+        It 'carries PreCompact onto an install that predates it' {
+            # The upgrade case: settings.json already holds the seven pre-v0.35.0 events.
+            $prior = @{}
+            foreach ($e in @('SessionStart','UserPromptSubmit','Notification','Stop',
+                             'SubagentStop','PermissionRequest','SessionEnd')) {
+                $prior[$e] = @(@{ hooks = @(script:OurHookM) })
+            }
+            $settings = @{ hooks = $prior }
+            $settings['hooks'].ContainsKey('PreCompact') | Should -BeFalse
+            Merge-HookFragment -Settings $settings -Fragment $script:FragmentM | Out-Null
+            @($settings['hooks']['PreCompact']).Count | Should -Be 1
+            $settings['hooks']['PreCompact'][0]['hooks'][0]['command'] | Should -Match '/v1/hook/precompact'
+        }
+
+        It 'a re-run duplicates nothing, PreCompact included' {
+            $settings = @{ hooks = @{} }
+            1..3 | ForEach-Object { Merge-HookFragment -Settings $settings -Fragment $script:FragmentM | Out-Null }
+            foreach ($event in $script:FragmentM.Keys) {
+                @($settings['hooks'][$event]).Count | Should -Be 1
+                @($settings['hooks'][$event] | ForEach-Object { $_['hooks'] }).Count | Should -Be 1
+            }
+        }
+
+        It 'the precompact URL carries the marker the uninstaller matches on' {
+            # An entry the marker misses is one no uninstall can find again: it stays in
+            # settings.json forever, POSTing to a crabd that is no longer there.
+            $entry = $script:FragmentM['PreCompact'][0]['hooks'][0]
+            $entry['command'] | Should -BeLike "*$global:HookUrlMarker*"
+            # ...and the splitter therefore claims it as ours on the next merge.
+            $part = Split-SideCrabHookMatcher -Matcher @{ hooks = @($entry) } -Marker $global:HookUrlMarker
+            $part.Foreign | Should -BeNullOrEmpty
+        }
+
+        It 'a hand-merged PreCompact hook of the operators own survives the re-run' {
+            $settings = @{ hooks = @{ PreCompact = @(@{ matcher = '*'; hooks = @(
+                            $script:FragmentM['PreCompact'][0]['hooks'][0],
+                            (script:TheirHookM)) }) } }
+            Merge-HookFragment -Settings $settings -Fragment $script:FragmentM | Out-Null
+            $kept = @($settings['hooks']['PreCompact'])
+            $kept.Count | Should -Be 2
+            $kept[0]['hooks'][0]['command'] | Should -Match 'hand-merged'
+        }
+    }
+
+    Context 'the crabd log row (v0.35.0, provisional label)' {
+
+        # crabd had no log file at all until v0.35.0: every print to stderr and every
+        # traceback out of a worker thread went to a handle the Scheduled Task does not own.
+        # This row reads the newest line's AGE and deliberately does not gate on it - see
+        # the function's own comment for why a max-age rule would fail every quiet night.
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @('Get-SideCrabCrabdLogVerdict')
+            $script:LogNow = [datetime]::Parse('2026-09-22T06:00:00Z', [cultureinfo]::InvariantCulture,
+                                [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                                [System.Globalization.DateTimeStyles]::AssumeUniversal)
+        }
+
+        It 'reports the age of the newest stamped line and passes' {
+            $v = Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $true -Now $script:LogNow `
+                    -Lines @('2026-09-22T05:43:40Z crabd 0.34.0 listening on http://127.0.0.1:2722',
+                             '2026-09-22T05:55:00Z crabd: refresh error: ValueError')
+            $v.Pass   | Should -BeTrue
+            $v.State  | Should -Be 'ok'
+            $v.Detail | Should -Match '5m old'
+            $v.Detail | Should -Match 'refresh error'
+        }
+
+        It 'does NOT fail on an old line - the log is event-driven, not a heartbeat' {
+            # THE HEALTHY-NIGHT CASE. crabd writes a startup line and then, on a quiet
+            # night, nothing for hours. A freshness threshold here would fail every one of
+            # those nights, and a row that always fails is a row nobody reads.
+            $v = Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $true -Now $script:LogNow `
+                    -Lines @('2026-09-20T01:02:03Z crabd 0.34.0 listening on http://127.0.0.1:2722')
+            $v.Pass   | Should -BeTrue
+            $v.Detail | Should -Match 'h old'
+        }
+
+        It 'skips a traceback continuation line and reads the newest STAMPED one' {
+            # The continuation lines are last in the file exactly when something has gone
+            # wrong, which is when this row most has to work.
+            $v = Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $true -Now $script:LogNow `
+                    -Lines @('2026-09-22T05:59:00Z crabd: fleet error: OSError',
+                             'Traceback (most recent call last):',
+                             '  File "crabd.py", line 1, in <module>',
+                             'OSError: the thing broke')
+            $v.Pass   | Should -BeTrue
+            $v.Detail | Should -Match 'fleet error'
+        }
+
+        It 'fails when crabd is answering and there is no log at all' {
+            # crabd writes a startup line on every start, so an absent file means it could
+            # not write one - an unwritable ~/.sidecrab, most likely.
+            $v = Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $false -Now $script:LogNow
+            $v.Pass  | Should -BeFalse
+            $v.State | Should -Be 'absent'
+        }
+
+        It 'fails on an empty log and on one with no ISO stamp anywhere' {
+            (Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $true -Lines @() -Now $script:LogNow).State |
+                Should -Be 'empty'
+            (Get-SideCrabCrabdLogVerdict -Reachable $true -Exists $true -Now $script:LogNow `
+                -Lines @('crabd started', 'something happened')).State | Should -Be 'unstamped'
+        }
+
+        It 'does not judge the log when crabd itself is unreachable' {
+            $v = Get-SideCrabCrabdLogVerdict -Reachable $false -Exists $false -Now $script:LogNow
+            $v.State  | Should -Be 'not-evaluated'
+            $v.Detail | Should -Match 'not evaluated'
+        }
+
+        It 'the smoke test actually calls it' {
+            $text = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrab.ps1') -Raw -Encoding utf8
+            ($text -match 'Get-SideCrabCrabdLogVerdict') | Should -BeTrue
+            ($text -match "Add-Result -Check 'crabd log'") | Should -BeTrue
+        }
+    }
+
     Context 'the restart port race (v0.20.0)' {
 
         # THE INCIDENT, measured live 2026-08-27: Update-SideCrab.ps1 -SkipPull restarted

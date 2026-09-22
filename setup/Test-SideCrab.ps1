@@ -206,6 +206,18 @@ $vp = Get-SideCrabViewportVerdict -Lines $vpLines `
 # faults with different fixes, and a bare FAIL used to hide which one it was.
 Add-Result -Check 'panel viewport' -Pass $vp.Pass -Detail "[$($vp.State)] $($vp.Detail)"
 
+# -- 2d. crabd's own log (v0.35.0) -----------------------------------------------------
+# crabd had no log file until v0.35.0, so a traceback under the Scheduled Task went to a
+# stderr handle nobody owns - which is why two live inconsistencies measured on 2026-09-22
+# left nothing anywhere to diagnose them from. This row reads the newest line's age. It is
+# NOT a freshness gate: see Get-SideCrabCrabdLogVerdict for why a max-age rule here would
+# fail every quiet night.
+$crabdLog   = Join-Path (Split-Path -Parent $ConfigPath) 'logs\crabd.log'
+$crabdLines = if (Test-Path -LiteralPath $crabdLog) { @(Get-Content -LiteralPath $crabdLog -Tail 200) } else { @() }
+$cl = Get-SideCrabCrabdLogVerdict -Lines $crabdLines -Exists (Test-Path -LiteralPath $crabdLog) `
+        -Reachable ([bool] $health.Reachable)
+Add-Result -Check 'crabd log' -Pass $cl.Pass -Detail "[$($cl.State)] $($cl.Detail)"
+
 # -- 3. /v1/state shape and freshness --------------------------------------------------
 $state = Get-StateDocument
 if ($null -eq $state) {

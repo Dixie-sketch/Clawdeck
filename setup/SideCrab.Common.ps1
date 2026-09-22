@@ -1383,6 +1383,62 @@ function Get-SideCrabServiceVerdict {
     }
 }
 
+function Get-SideCrabCrabdLogVerdict {
+    <# Is crabd keeping its own log, and how old is its newest line? (v0.35.0)
+       Pure: it is handed the tail of the file and answers; it reads nothing.
+
+       WHY THERE IS NO FRESHNESS THRESHOLD, deliberately. crabd.log is EVENT-driven - a
+       startup line, a route refusal, a sampler failure, a traceback - and on a healthy quiet
+       night crabd writes the startup line and then nothing for hours. A max-age rule here
+       would fail every quiet night, which is how a row stops being read; and once it is not
+       read it certifies nothing. The age is REPORTED, and the two things that are genuinely
+       faults decide the verdict:
+
+         no file at all while crabd is answering - crabd writes a startup line on every start,
+                                                   so an absent file means it could not write
+                                                   one (an unwritable ~/.sidecrab, most likely)
+         a newest line with no ISO timestamp     - the format is the whole of what makes the
+                                                   file readable afterwards #>
+    param(
+        [string[]] $Lines     = @(),
+        [bool]     $Exists    = $false,
+        [bool]     $Reachable = $false,
+        [datetime] $Now       = [datetime]::UtcNow
+    )
+
+    $r = { param($p, $s, $d) [pscustomobject]@{ Pass = $p; State = $s; Detail = $d } }
+
+    if (-not $Reachable) {
+        return & $r $false 'not-evaluated' 'crabd unreachable - not evaluated'
+    }
+    if (-not $Exists) {
+        return & $r $false 'absent' 'no crabd.log - crabd writes a startup line on every start, so it could not write to ~/.sidecrab/logs'
+    }
+    # The newest line that CARRIES a stamp. A traceback's continuation lines have none, and
+    # they are the last lines in the file exactly when something has gone wrong - reading one
+    # of those as the newest line would report 'no timestamp' on the run that most needs the row.
+    $line = @($Lines | Where-Object { $_ -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ' }) | Select-Object -Last 1
+    if (-not $line) {
+        if (-not @($Lines | Where-Object { "$_".Trim() })) {
+            return & $r $false 'empty' 'crabd.log is empty - crabd has written no startup line'
+        }
+        return & $r $false 'unstamped' "the newest crabd.log line carries no ISO timestamp: $($Lines[-1])"
+    }
+    $stamp = $line.Substring(0, 20)
+    try {
+        $at = [datetime]::Parse($stamp, [cultureinfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                [System.Globalization.DateTimeStyles]::AssumeUniversal)
+    } catch {
+        return & $r $false 'unstamped' "unparseable crabd.log stamp '$stamp'"
+    }
+    $ageSec = [int] [math]::Max(0, ($Now.ToUniversalTime() - $at).TotalSeconds)
+    $age = if ($ageSec -lt 90) { "${ageSec}s" }
+           elseif ($ageSec -lt 5400) { "$([int] ($ageSec / 60))m" }
+           else { "$([int] ($ageSec / 3600))h" }
+    return & $r $true 'ok' "newest line $age old: $($line.Substring(21))"
+}
+
 function Get-SideCrabWidgetVersion {
     <# The version of the panel assets crabd serves at /panel/, read from widget\version.json.
 

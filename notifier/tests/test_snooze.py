@@ -24,6 +24,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -390,6 +391,24 @@ class HandlerWriteTests(unittest.TestCase):
         self.assertNotIn("passwd", text)
         self.assertFalse(self.state.exists())
 
+    def test_main_refuses_a_non_string_argument(self) -> None:
+        """parse_snooze_uri takes Any and is documented "never an error"; main() then called
+        len() on it bare, so a non-string RAISED and the module-level catch turned that into
+        EXIT_UNEXPECTED with NO log line — the one outcome a silent handler must not produce."""
+        log = Path(self.tmp.name) / "snooze.log"
+        real_log, real_state = handler.LOG_PATH, handler.STATE_PATH
+        handler.LOG_PATH, handler.STATE_PATH = log, self.state
+        try:
+            for bad in (None, 123, b"sidecrab-snooze:abc"):
+                with self.subTest(argument=bad):
+                    self.assertEqual(handler.main([bad]), handler.EXIT_BAD_URI)
+        finally:
+            handler.LOG_PATH, handler.STATE_PATH = real_log, real_state
+        text = log.read_text(encoding="utf-8")
+        self.assertIn("NoneType", text)
+        self.assertIn("int", text)
+        self.assertFalse(self.state.exists(), "a refused argument must never write the ledger")
+
     def test_main_refuses_no_argument(self) -> None:
         log = Path(self.tmp.name) / "snooze.log"
         real_log = handler.LOG_PATH
@@ -453,6 +472,35 @@ class LedgerTests(unittest.TestCase):
     def test_the_ledger_never_writes(self) -> None:
         SnoozeLedger(self.state).read()
         self.assertFalse(self.state.exists())
+
+    def test_a_stat_that_fails_does_not_drop_the_marks(self) -> None:
+        """A stat that FAILED is not a file that is ABSENT. The absent branch answers "nobody
+        snoozed anything"; applying that to a blip would toast, one poll later, the question
+        the operator had just deliberately deferred. Reproduced 2026-09-22."""
+        self.write({VALID_ID: iso(T0)})
+        ledger = SnoozeLedger(self.state)
+        self.assertIn(VALID_ID, ledger.read())
+
+        real_stat = Path.stat
+        state = self.state
+
+        def blip(self, *args, **kwargs):
+            if self == state:
+                raise PermissionError(13, "the share blinked")
+            return real_stat(self, *args, **kwargs)
+
+        with unittest.mock.patch.object(Path, "stat", blip):
+            self.assertIn(VALID_ID, ledger.read(), "a blip must not un-snooze a question")
+        self.assertIn(VALID_ID, ledger.read())
+
+    def test_a_deleted_file_still_clears_the_marks(self) -> None:
+        """The mutation guard for the test above: FileNotFoundError keeps its old behaviour,
+        or a snooze would outlive the file that records it."""
+        self.write({VALID_ID: iso(T0)})
+        ledger = SnoozeLedger(self.state)
+        self.assertIn(VALID_ID, ledger.read())
+        self.state.unlink()
+        self.assertEqual(ledger.read(), {})
 
 
 # ---------------------------------------------------------------------- the suppression

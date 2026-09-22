@@ -4500,3 +4500,234 @@ body.crab-canvas-on #crab .ball { animation: none; }
 .sheet-events { flex-shrink: 200; }
 .dv-continue { flex: 0 1 auto; min-height: 0; }
 .dv-continue-btns { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+
+/* ======================================================================
+   ---- lane N: the Claude Code activity fields, and two measured overflows ----
+
+   Version label v0.33.0 throughout this block is PROVISIONAL: version.json still
+   reads 0.32.0 and the orchestrator assigns the number when the lanes merge.
+   ====================================================================== */
+
+/* ---------- the settings chip meets the house fingertip floor ---------- */
+
+/* --touch-min is max(48px, 8.4vmin) and every other control on this panel is
+   sized from it. This chip alone was written with a literal 44 px floor, on the
+   argument that 44 is what a fingertip needs. At 2560x720 the vmin term wins
+   (50.4 px) and the literal never bites; at the three narrow slots it does, and
+   the control paints 44.0 x 44.0 - measured in headless Edge at 416x696, 416x400
+   and 840x344, the only element anywhere in the matrix under the floor.
+   48 is still 8.9 px inside the 56.9 px left-hand budget the block above
+   documents, so this costs the row nothing. */
+.gear-chip {
+	width: max(48px, calc(var(--layout-unit) * 7));
+	height: max(48px, calc(var(--layout-unit) * 7));
+}
+
+/* ---------- the sensors row sheds content as the panel narrows ---------- */
+
+/* THE ROW IS SIZED IN VMIN AND ITS ZONE IN PERCENT OF WIDTH, so the guarantee
+   above (".sensor-n max-width is the row's overflow guarantee ... 543.1 px of
+   561.9, 18.8 px spare") holds at 2560x720 and 2536x696 and nowhere else. It was
+   measured at those two slots only. Measured now, ?mock=rework, comfortable, the
+   right edge of the last sensor cell past the zone's content box:
+
+       2560x720  -157.1     1700x720   +51.0
+       2536x696  -166.7     1400x720  +123.6
+       1905x720    +1.4     1250x720  +159.9
+       1900x720    +2.6     1201x720  +171.8
+       1799x720   +27.0      840x696  +135.2
+       1701x720   +50.8      700x696  +187.0
+
+   body{overflow:hidden} eats every one of them silently: at 840x696 the MEM cell
+   is 135 px off the end of the zone and simply is not on the glass. That is the
+   v0.17.0 failure the .sensors comment documents, alive again below 1905 px.
+   Below 1200 px in the landscape layout the whole zone is display:none, so the
+   live bands are 1201-1905 there and 641-1300 in the portrait-ish layout.
+
+   THREE STEPS, each shedding the least load-bearing thing left, in the order the
+   row's own comments rank them. The name goes first because .sensor-n is the one
+   element the row already designates as shrinkable; then the third cell, because
+   the row's ".sensor-more" chevron already promises a sheet behind the tap and
+   that sheet lists every reading; the second cell last. Verified after: zero
+   overhang at every step boundary and at every named slot, on rework, hot, extras
+   and dense. */
+@media (max-width: 2000px) {
+	.sensor-n.shown { display: none; }
+	.sensors { gap: calc(var(--layout-unit) * 1.2); }
+}
+@media (max-width: 1700px) {
+	.sensors .sensor.shown ~ .sensor.shown ~ .sensor.shown { display: none; }
+}
+@media (max-width: 1300px) {
+	.sensors .sensor.shown ~ .sensor.shown { display: none; }
+}
+
+/* ---------- the card: activity, mode, todos, typed-ahead ---------- */
+
+/* The activity line wears .card-event as well, so it inherits the two-line clamp,
+   the one-line floor and the colour that line already had - this is the same slot
+   on the card, not a new region, and the shrink discipline is unchanged. What it
+   adds is a row: the tool name does not shrink, the detail does. */
+.card-activity {
+	display: flex;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 0.7);
+	/* THE FLEX TRAP, and it is measured rather than defensive. A flex container's
+	   automatic minimum size is its MIN-CONTENT, and every child here is nowrap, so
+	   without this the row refused to shrink and ran 61.5 px off the right of the
+	   card at 840x696 against the 25.0 px the event line it replaced already spent
+	   there. overflow: hidden is inherited from .card-event and does the clipping;
+	   this is what lets the detail ellipsise instead of being clipped. */
+	min-width: 0;
+	/* -webkit-box is what .card-event uses for its clamp, and a flex row cannot be
+	   both. One line here rather than two: the detail ellipsises instead. */
+	-webkit-line-clamp: none;
+	max-height: none;
+	white-space: nowrap;
+}
+.card-act-tool {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	color: var(--accent);
+}
+.card-act-detail {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--muted);
+}
+/* The call count never gives way. It is one or two glyphs and it is the part that
+   says a session is grinding rather than moving. */
+.card-act-calls {
+	flex: 0 0 auto;
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--faint);
+}
+
+/* A mode is not a warning. AUTO-EDIT and BYPASS are states the operator chose,
+   and an amber chip for them would spend the panel's one alert colour on a
+   setting. Accent for a mode that changes what Claude may do without asking,
+   muted for PLAN, which only narrows it. */
+.badge-mode { border-color: var(--accent); color: var(--accent); letter-spacing: 0.1em; }
+.badge-todo { font-variant-numeric: tabular-nums; }
+
+/* Absolute, like .card-ctx, so the card's flex column never sees it. Its bottom
+   offset is exactly the ctx bar's height, so on a card that has both the two read
+   as a stack and on a card that has only this one the 3 px gap costs nothing. */
+.card-todo {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: max(2px, calc(var(--layout-unit) * 0.32));
+	height: max(2px, calc(var(--layout-unit) * 0.32));
+	background: rgba(237, 231, 223, 0.09);
+	pointer-events: none;
+}
+.card-todo::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: calc(var(--w, 0) * 1%);
+	/* GREEN, and it is the only bar on this panel that is. A todo list is the one
+	   quantity here where more is finished rather than fuller, so the ctx bar's
+	   faint-amber-red ladder would read backwards on it. */
+	background: var(--green);
+	opacity: 0.7;
+}
+
+/* The row now carries two things, so it is a row. The SideCrab label keeps the
+   ellipsis it had; the typed-ahead count does not shrink, because a number that
+   can be cut to "1" when it says 12 is worse than no number. */
+.card-queued { display: flex; align-items: baseline; gap: calc(var(--layout-unit) * 1); }
+.card-queued-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card-typed {
+	flex: 0 0 auto;
+	font-variant-numeric: tabular-nums;
+	/* --faint against the row's --faint label, and a different WORD: "queued: Fix
+	   the tests" is SideCrab's one prompt with a Cancel behind it, "3 queued" is
+	   Claude Code's typed-ahead count, which this panel did not write and cannot
+	   cancel. The tooltip and the aria-label say so in full. */
+	color: var(--faint);
+}
+/* When SideCrab has no prompt of its own the count takes the row, right where the
+   queued line would have been. */
+.card-queued-typed { color: var(--faint); }
+
+/* ---------- the Detail page ---------- */
+
+.dv-chip-mode { color: var(--accent); letter-spacing: 0.1em; }
+
+/* .event-row as well, so laneCTickDetail relabels its age with the events below
+   it and the two can never drift. */
+.dv-activity { flex: 0 0 auto; align-items: baseline; }
+.dv-act-body {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: calc(var(--layout-unit) * 0.8);
+}
+.dv-act-tool { font-family: var(--font-mono); color: var(--accent); white-space: nowrap; }
+/* WHOLE and wrapping, the rule .dv-question keeps: this is the surface that does
+   not cut, and a tool call's detail is the line an operator walks over for. */
+.dv-act-detail { min-width: 0; color: var(--text-color); white-space: normal; overflow-wrap: anywhere; }
+.dv-act-calls { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--faint); white-space: nowrap; }
+
+.dv-lanen {
+	flex: 0 1 auto;
+	/* GIVES WAY FIRST, the trade .sheet-events already makes at the end of this
+	   file and for the same reason: flex shares a shrink in proportion to factor x
+	   base size, so at an equal factor this block took its cut out of the continue
+	   row - the one region on this page whose whole point is that the words are on
+	   the glass. Measured at 2560x720 on the ten-button fixture: the row was
+	   219.1 px with 112 px behind a scroll at factor 1, and is 281.1 px with 50
+	   behind it at 200. The one-line floor is deliberate: at 200 alone this block
+	   collapses to zero and an annotation nobody can see is an annotation that is
+	   not there. One line plus its own scroll says there is more.
+	   Inert on a page with room - measured, the same fixture's other three
+	   sessions leave 88 to 197 px free below this block. */
+	flex-shrink: 200;
+	min-height: calc(var(--fs-meta) * 1.4);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--layout-unit) * 0.8);
+}
+.dv-todo { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.5); flex: 0 0 auto; }
+.dv-todo-track {
+	height: calc(var(--layout-unit) * 0.9);
+	border-radius: 999px;
+	background: var(--surface-line);
+	overflow: hidden;
+	position: relative;
+}
+.dv-todo-track::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: calc(var(--w, 0) * 1%);
+	background: var(--green);
+	opacity: 0.7;
+}
+/* NOT CLAMPED. The card has a hairline; this page has the sentence. */
+.dv-todo-current { font-size: var(--fs-meta); color: var(--text-color); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dv-typed { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--faint); }
+.dv-compaction { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); font-variant-numeric: tabular-nums; }
+.dv-files { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.4); flex: 0 0 auto; }
+.dv-files-list { display: flex; flex-direction: column; gap: calc(var(--layout-unit) * 0.2); }
+.dv-file {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sheet-meta);
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

@@ -33,6 +33,10 @@ public sealed class PanelForm : Form
     private readonly string _dir;
     private readonly Log _log;
     private readonly DateTime _startedAt;
+    /// <summary>Where the monitor list comes from. Displays.Enumerate in every build; a
+    /// test hands in its own so attach, detach, a DPI change and two identical Edges can be
+    /// driven through the REAL Repin on a PC that has none of them (lane O).</summary>
+    private readonly Func<IReadOnlyList<DisplayInfo>> _displaySource;
     private PanelSettings _settings;
     private Uri _panelUrl;
     private WebView2? _web;
@@ -65,12 +69,14 @@ public sealed class PanelForm : Form
     // watcherCreated=false - with the task reporting Running the whole time.
     private readonly System.Windows.Forms.Timer _startup = new() { Interval = 1 };
 
-    public PanelForm(HostOptions opts, string dir, Log log, DateTime startedAt)
+    public PanelForm(HostOptions opts, string dir, Log log, DateTime startedAt,
+                     Func<IReadOnlyList<DisplayInfo>>? displaySource = null)
     {
         _opts = opts;
         _dir = dir;
         _log = log;
         _startedAt = startedAt;
+        _displaySource = displaySource ?? Displays.Enumerate;
         _settings = PanelSettings.Load(dir, log.Write);
         _panelUrl = PanelLogic.PanelUrl(opts.Port ?? _settings.CrabdPort);
 
@@ -112,7 +118,10 @@ public sealed class PanelForm : Form
             }
         }
 
-        _repin.Tick += (_, _) => Repin("timer");
+        // LO-002: the watcher check rides the poll that is already running, and runs before
+        // the pin so a re-armed watcher is in place for the settings edit that may be the
+        // reason the operator is watching at all.
+        _repin.Tick += (_, _) => { EnsureWatcher(); Repin("timer"); };
         _retry.Tick += async (_, _) => await RetryAsync();
         _viewport.Tick += async (_, _) => { _viewport.Stop(); await MeasureViewportAsync(); };
         _settingsDebounce.Tick += async (_, _) => { _settingsDebounce.Stop(); await ReloadSettingsAsync(); };
@@ -133,12 +142,31 @@ public sealed class PanelForm : Form
     public bool WatcherRunning => _watcher?.EnableRaisingEvents == true;
     public bool AllowVisible => _allowVisible;
     public string TargetReason => _targetReason;
+    /// <summary>The GDI name of the monitor now pinned to, for the tray's tick. Compared
+    /// whole: DisplayLabel.Contains(DeviceName) marked \\.\DISPLAY1 as current while the
+    /// target was \\.\DISPLAY11 (LO-007).</summary>
+    public string? TargetDeviceName => _target?.DeviceName;
+    /// <summary>How many times the settings file has been re-read since start. The
+    /// debounce coalesces a burst of editor writes into one, and this is what a test
+    /// counts to prove it.</summary>
+    public int SettingsReloadCount => _settingsReloads;
+    public PanelSettings Settings => _settings;
 
     private bool _webStarted;
+
+    /// <summary>The test harness drives this window with a real message loop, and a loop
+    /// means the startup tick fires. Without this it would put a tray icon on the desktop
+    /// of whoever is running the suite and start a browser process per test. Internal and
+    /// false in every shipped path; the poll, the watcher, the window and its messages are
+    /// untouched by it, which is the point of testing them here at all.</summary>
+    /// A field and not a property: WinForms treats a settable property on a Control as
+    /// designer-serializable state and the analyzer refuses it (WFO1000).
+    internal bool HeadlessForTests;
 
     private void BeginStartup()
     {
         StartServices();
+        if (HeadlessForTests) return;
         StartUi();
         if (_webStarted) return;
         _webStarted = true;
@@ -245,9 +273,9 @@ public sealed class PanelForm : Form
 
     // ------------------------------------------------------------------ pinning
 
-    private void OnDisplaySettingsChanged(object? s, EventArgs e) => SafeInvoke(() => Repin("DisplaySettingsChanged"));
+    internal void OnDisplaySettingsChanged(object? s, EventArgs e) => SafeInvoke(() => Repin("DisplaySettingsChanged"));
 
-    private void OnPowerModeChanged(object? s, PowerModeChangedEventArgs e)
+    internal void OnPowerModeChanged(object? s, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.Resume) return;
         SafeInvoke(async () =>
@@ -257,7 +285,7 @@ public sealed class PanelForm : Form
         });
     }
 
-    private void OnSessionSwitch(object? s, SessionSwitchEventArgs e)
+    internal void OnSessionSwitch(object? s, SessionSwitchEventArgs e)
     {
         if (e.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect
             or SessionSwitchReason.RemoteConnect or SessionSwitchReason.SessionLogon)
@@ -274,13 +302,13 @@ public sealed class PanelForm : Form
 
     private void SafeInvoke(Func<Task> a) => SafeInvoke(() => { _ = a(); });
 
-    private List<DisplayInfo> SafeEnumerate()
+    private IReadOnlyList<DisplayInfo> SafeEnumerate()
     {
-        try { return Displays.Enumerate(); }
+        try { return _displaySource(); }
         catch (Exception ex)
         {
             _log.Write($"display enumeration failed: {ex.GetType().Name}: {ex.Message}");
-            return new List<DisplayInfo>();
+            return Array.Empty<DisplayInfo>();
         }
     }
 
@@ -335,6 +363,17 @@ public sealed class PanelForm : Form
         if (moved || wasHidden)
         {
             _log.Write($"repin({why}): {Describe(target)}; window now {Bounds.Width}x{Bounds.Height} at {Bounds.X},{Bounds.Y}");
+            // LO-011. Windows caps EVERY top-level window at SM_CXMAXTRACK by SM_CYMAXTRACK,
+            // which is the PRIMARY monitor plus the sizing border, whatever monitor the
+            // window is on. Measured on this PC 2026-09-22: a 2560x1600 rectangle came back
+            // 2560x1460 against a primary of 2560x1440. The Edge is 2560x720 and never
+            // meets it; a display PICKED from the tray can be larger than the primary, and
+            // silently covering part of it is the kind of thing only a log line finds.
+            if (Bounds.Size != target.Bounds.Size)
+                _log.Write($"the window could not take the whole monitor: asked for " +
+                           $"{target.Bounds.Width}x{target.Bounds.Height}, Windows gave " +
+                           $"{Bounds.Width}x{Bounds.Height} (the cap is the primary monitor's size, " +
+                           $"{SystemInformation.MaxWindowTrackSize.Width}x{SystemInformation.MaxWindowTrackSize.Height})");
             _viewportChecks = 0;
             _viewport.Start();
         }
@@ -484,10 +523,13 @@ public sealed class PanelForm : Form
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         if (_showingFallback) return;
-        var http = e.HttpStatusCode;
-        if (!e.IsSuccess || http >= 400)
+        // The reading itself is pure (PanelLogic.JudgeNavigation), so a refused connection
+        // and a 404 are both run in the test project with no server behind them.
+        var verdict = PanelLogic.JudgeNavigation(e.IsSuccess, e.HttpStatusCode, e.WebErrorStatus.ToString(),
+                                                 _web?.CoreWebView2?.Source, _panelUrl);
+        if (verdict.Outcome == PanelLogic.PageOutcome.Failed)
         {
-            var reason = e.IsSuccess ? $"HTTP {http}" : e.WebErrorStatus.ToString();
+            var reason = verdict.Reason;
             _log.Write($"panel failed to load: {reason}");
             _lastFailure = reason;
             _pageFailed = true;
@@ -496,12 +538,11 @@ public sealed class PanelForm : Form
             return;
         }
 
-        var source = _web?.CoreWebView2?.Source;
-        if (!PanelLogic.IsPanelDocument(source, _panelUrl))
+        if (verdict.Outcome == PanelLogic.PageOutcome.NotThePanel)
         {
             _pageFailed = true;
             _unexpectedDocuments++;
-            var what = PanelLogic.EscapeForLog(source, 120);
+            var what = verdict.Reason;
             if (_unexpectedDocuments > UnexpectedDocumentMax)
             {
                 _lastFailure = $"the window is showing {what}, not the panel";
@@ -595,11 +636,22 @@ public sealed class PanelForm : Form
 
     // ------------------------------------------------------------------ viewport
 
+    /// <summary>LO-011. The width the page is corrected AGAINST: the client area the
+    /// WebView fills, not the monitor's rectangle. They are the same number on the Edge and
+    /// differ the moment Windows caps the window (a picked monitor larger than the primary)
+    /// or a border eats a few pixels in windowed mode. Correcting toward a width the window
+    /// does not have shrinks the page and never converges.</summary>
+    internal int ViewportReferenceWidth => ClientSize.Width > 0 ? ClientSize.Width : Width;
+
     private async Task MeasureViewportAsync()
     {
         var web = _web;
         var core = web?.CoreWebView2;
-        if (web is null || core is null || _pageFailed || _showingFallback) return;
+        if (web is null || core is null) return;
+        // LO-013. A hidden host's C7 line is "hidden:" and nothing else; the re-pin that
+        // shows the window starts this timer again. PanelLogic.ShouldMeasureViewport
+        // carries why it matters.
+        if (!PanelLogic.ShouldMeasureViewport(Visible, _pageFailed, _showingFallback)) return;
         try
         {
             var raw = await core.ExecuteScriptAsync(
@@ -611,20 +663,17 @@ public sealed class PanelForm : Form
             var w = doc.RootElement.GetProperty("w").GetInt32();
             var h = doc.RootElement.GetProperty("h").GetInt32();
             var dpr = doc.RootElement.GetProperty("dpr").GetDouble();
-            var physical = _target?.Bounds.Width ?? Width;
+            var physical = ViewportReferenceWidth;
             // C7: field order is the setup lane's smoke check. pid and started are what
             // stop yesterday's line passing for this run's.
             _log.Write(PanelLogic.ViewportLine(w, h, dpr, web.ZoomFactor, Width, Height,
                                                Environment.ProcessId, Iso(_startedAt)));
-            // Within 2 css px is equal: 2560 / 1.5 rounds to 1707 logical px, which reads back
-            // as 2561 at zoom 0.667, and chasing that last pixel would loop the correction.
-            if (Math.Abs(w - physical) <= 2) return;
-            var corrected = PanelLogic.CorrectedZoom(web.ZoomFactor, w, physical);
-            if (Math.Abs(corrected - web.ZoomFactor) > 0.001 && _viewportChecks < 3)
+            var corrected = PanelLogic.ZoomAfterMeasure(web.ZoomFactor, w, physical);
+            if (corrected is not null && _viewportChecks < 3)
             {
                 _viewportChecks++;
-                web.ZoomFactor = corrected;
-                _log.Write($"zoom corrected to {corrected:0.###} so the viewport is {physical} css px wide");
+                web.ZoomFactor = corrected.Value;
+                _log.Write($"zoom corrected to {corrected.Value:0.###} so the viewport is {physical} css px wide");
                 _viewport.Start();
             }
         }
@@ -637,6 +686,9 @@ public sealed class PanelForm : Form
     /// not reload the page under the operator's hand: the sheet has already applied the
     /// props live and a reload would throw it away.</summary>
     private DateTime _selfWriteAt = DateTime.MinValue;
+
+    /// <summary>When this host last accepted a focus-session request (LO-005).</summary>
+    private DateTime? _lastFocusAt;
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -802,6 +854,19 @@ public sealed class PanelForm : Form
             return;
         }
 
+        // LO-005: the floor between two handovers, checked before the enumeration and the
+        // foreground move, which are the two costs. The reply is still terminal.
+        var askedAt = DateTime.UtcNow;
+        if (!PanelLogic.FocusAllowedNow(_lastFocusAt, askedAt))
+        {
+            _log.Write($"focus({PanelLogic.EscapeForLog(req.SessionId, PanelLogic.FocusIdMax)}): " +
+                       $"refused, {(int)(askedAt - _lastFocusAt!.Value).TotalMilliseconds} ms since the last one");
+            Reply(PanelLogic.ChannelFocus, requestId,
+                  PanelLogic.FocusReply(requestId, req.SessionId, false, "too-soon", null));
+            return;
+        }
+        _lastFocusAt = askedAt;
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         List<PanelLogic.WindowCandidate> candidates;
         try { candidates = WindowFocus.Candidates(Environment.ProcessId); }
@@ -872,14 +937,54 @@ public sealed class PanelForm : Form
             };
             _watcher.Changed += h;
             _watcher.Created += h;
+            // An editor that writes a temp file and renames it over the target raises
+            // Renamed and NOTHING else, with e.Name carrying the new name.
             _watcher.Renamed += (s, e) => h(s, e);
+            // LO-002. A watcher that errors - its buffer overrun by a burst of writes, or
+            // its directory removed - stops raising events and says nothing. EnsureWatcher
+            // on the five-second poll is what puts it back; this line is why the log shows
+            // a reason when it happens.
+            _watcher.Error += (_, e) => _log.Write("settings watcher error: " +
+                                                   e.GetException().GetType().Name + ": " +
+                                                   PanelLogic.EscapeForLog(e.GetException().Message));
         }
         catch (Exception ex) { _log.Write("settings watcher not started: " + ex.GetType().Name); }
     }
 
+    private DateTime? _watcherRearmLoggedAt;
+
+    /// <summary>LO-002. The settings watcher, alive or put back. FileSystemWatcher is not
+    /// self-healing: an internal buffer overrun or the directory being deleted and
+    /// recreated (which is what an installer, a sync client or a cleanup does to
+    /// ~/.sidecrab) leaves the object in place with EnableRaisingEvents false and no
+    /// exception anywhere. Measured 2026-09-22: delete the settings directory and every
+    /// later edit to panel-settings.json is invisible to the host for the rest of its life,
+    /// so the display picker's own file, the port and the widget props all stop taking
+    /// effect until someone restarts it.
+    ///
+    /// The log line is throttled, because the five-second poll would otherwise write 17,000
+    /// of them a day against a path that will never come back.</summary>
+    public void EnsureWatcher()
+    {
+        if (_watcher?.EnableRaisingEvents == true) return;
+        var now = DateTime.Now;
+        var say = PanelLogic.ShouldLogAgain(_watcherRearmLoggedAt, now, PanelLogic.HiddenLineInterval);
+        if (say) _watcherRearmLoggedAt = now;
+        try { _watcher?.Dispose(); } catch { /* the object is being replaced either way */ }
+        _watcher = null;
+        StartWatcher();
+        if (say)
+            _log.Write(_watcher?.EnableRaisingEvents == true
+                           ? "settings watcher was not raising events; re-armed on " + _dir
+                           : "settings watcher is not raising events and could not be re-armed on " + _dir);
+    }
+
+    private int _settingsReloads;
+
     private async Task ReloadSettingsAsync()
     {
         _settings = PanelSettings.Load(_dir, _log.Write);
+        _settingsReloads++;
         var url = PanelLogic.PanelUrl(_opts.Port ?? _settings.CrabdPort);
         var core = _web?.CoreWebView2;
         _log.Write($"settings reloaded ({_settings.Source}); props {_settings.Props.Count}; " +

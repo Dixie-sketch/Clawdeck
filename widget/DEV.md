@@ -52,7 +52,11 @@ stays with the maintainers.
 
 Open `index.html?mock=<fixture>` from a static server (the fixtures are under `mock/`). Flags set
 the same variables a tap sets and write nothing to storage: `&view=<sessions|burn|week|detail>`,
-`&filter=`, `&density=`, `&pin=`, `&crab=<state>`, `&sheet=first`, `&uid=`.
+`&filter=`, `&density=`, `&pin=`, `&crab=<state>`, `&sheet=first`, `&uid=`, `&settings=1` (the
+settings sheet), `&host=1` (the host sheet) and `&day=YYYY-MM-DD` (the history timeline, drilled).
+The Week view's own day drill has no flag: click a `.wv-col[data-week-day]`, and pick a day the
+fixtures have a file for (`mock/mock-history-<day>.json`; 08-20 and 08-23 are deliberately absent,
+so they produce the real 404).
 
 ## Tests
 
@@ -76,3 +80,19 @@ before any script runs. The version lives in `widget/version.json`.
 The panel host's `--devtools-port` opens Chromium's remote debugging on loopback for measuring the
 real page (viewport, console, screenshots) from a script. Headless Edge shots need a fresh
 `--user-data-dir` per run, or a stale profile serves the previous stylesheet.
+
+Three traps in that harness, each measured:
+
+- **Edge's launcher exits as soon as the browser is up**, so terminating the process you spawned
+  kills nothing. Find every `msedge.exe` whose command line carries your `--user-data-dir` and
+  stop those.
+- **A leaked instance still owns its `--remote-debugging-port`.** The next launch on that port
+  then drives the OLD browser, whose profile you have since deleted, so its network service is
+  broken: `index.html` renders and the stylesheet and script never load. The symptom is several
+  byte-identical unstyled PNGs. Check the port is free, and assert the page is styled (a dark
+  `body` background and a non-zero `.zone` count) before keeping a shot.
+- **The served page is not the panel.** A plain browser at `/panel/` is the preview: the settings
+  sheet says saving is unavailable and the Detail page has no Bring-to-front chip, because both
+  are gated on `hostCan()`. To photograph what the host shows, inject `window.__sidecrabHost` and
+  a `chrome.webview` stub that answers `host-info` before any page script runs, which is what the
+  host itself does. `tests/fixture.js` `nativePage()` is the shape.

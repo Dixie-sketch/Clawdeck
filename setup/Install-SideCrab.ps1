@@ -12,7 +12,7 @@
          are attributed to SideCrab rather than to Windows PowerShell, and the toast's
          button protocols (setup\Register-SideCrabProtocol.ps1) - 'sidecrab-ack:' for
          Acknowledge and 'sidecrab-snooze:' for Snooze 30m.
-      2. Merges hooks/settings-hooks-fragment.json into ~/.claude/settings.json (the five
+      2. Merges hooks/settings-hooks-fragment.json into ~/.claude/settings.json (the six
          curl ingest hooks plus the two type-http control hooks, Stop and PermissionRequest).
       3. Installs the status-line command (hooks\sidecrab_statusline.py) into
          ~/.claude/settings.json, SAVING any pre-existing statusLine to

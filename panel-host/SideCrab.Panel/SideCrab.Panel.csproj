@@ -17,7 +17,7 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AssemblyName>SideCrab.Panel</AssemblyName>
     <RootNamespace>SideCrab.Panel</RootNamespace>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationIcon>..\..\notifier\sidecrab.ico</ApplicationIcon>
@@ -29,6 +29,13 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The window's own event handlers (session switch, power resume) are internal rather
+         than public: the test project drives them directly because SystemEvents cannot be
+         raised from outside Windows, and nothing else should be able to call them. -->
+    <InternalsVisibleTo Include="SideCrab.Panel.Tests" />
   </ItemGroup>
 
 </Project>

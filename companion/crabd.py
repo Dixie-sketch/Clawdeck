@@ -61,6 +61,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -77,7 +78,7 @@ from pathlib import Path, PureWindowsPath
 # redeploy together, so shipping schema N+1 dead-feeds the on-glass panel until the page
 # crabd serves has been updated too.
 SCHEMA_BREAKING = 5
-VERSION = "0.34.0"
+VERSION = "0.35.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -138,6 +139,11 @@ LIMITS_LAST_GOOD_MAX_AGE = 10800  # serve last-good through a lockout up to 3 h 
 # Past this age the served reading is QUALIFIED, not withheld: contract v0.4.0 widens
 # limits.note to a caveat that rides alongside available:true.
 LIMITS_NOTE_STALE_SEC = 900
+# The `sources.limitsToken` note while the endpoint is locked out (M-02, v0.35.0). It is
+# the SOURCE's diagnosis, never the `limits` block's caveat: the two answer different
+# questions, and serving the caveat as the diagnosis is what hid the lockout.
+LIMITS_BACKOFF_NOTE = ("the usage endpoint is rate-limited; the gauges are the last "
+                       "good reading")
 LIMITS_CACHE_FILE = SIDECRAB_DIR / "limits-cache.json"  # survives restarts; no secrets in it
 # v0.30.0: an OPTIONAL long-lived token for the usage endpoint. The CLI's own access
 # token in ~/.claude/.credentials.json lives ~6 h and is rewritten only when a terminal
@@ -302,6 +308,25 @@ EVENT_MAX = 120
 QUESTION_MAX = 500          # contract: `question` carries the FULL text, capped
 SUBAGENT_LABEL_MAX = 40
 SUBAGENT_DETAIL_CAP = 5
+# ---- v0.35.0 (provisional label): the six additive session members ----
+# `activity.detail` is capped at 80 by the contract. The tool NAME is capped too, for
+# the reason every other served string is: it comes out of a transcript record crabd
+# does not write, and an unbounded one is a payload.
+ACTIVITY_DETAIL_MAX = 80
+ACTIVITY_TOOL_MAX = 40
+# WHICH INPUT KEY `detail` may read, per tool. An allowlist and not a fallback chain:
+# see FileFacts._note_tool_use for why the command text is never a candidate. `Task` is
+# `Agent`'s other name, exactly as the subagent-label branch already treats it.
+ACTIVITY_DESCRIPTION_TOOLS = frozenset({"Bash", "PowerShell", "Agent", "Task"})
+ACTIVITY_PATH_TOOLS = frozenset({"Edit", "Write", "Read"})
+ACTIVITY_PATTERN_TOOLS = frozenset({"Grep", "Glob"})
+# The two tools that CHANGE a file. Read is deliberately absent: `filesTouched` answers
+# "what has this session edited", and folding reads in would make every card claim a
+# hundred files on a session that changed none.
+FILE_TOUCH_TOOLS = frozenset({"Edit", "Write"})
+FILES_RECENT_CAP = 5
+TODO_CURRENT_MAX = 80
+MODE_MAX = 40
 # A transcript question older than this relative to the needs_input transition belongs
 # to an earlier turn - without the guard a resolved question re-surfaces on the panel.
 QUESTION_FRESH_SEC = 120
@@ -738,6 +763,8 @@ TRANSCRIPT_FILE_LOG_KEY = "transcript-file"
 STATE_SERIALIZE_LOG_KEY = "state-serialize"
 STATE_BUILD_LOG_KEY = "state-build"
 GET_HANGUP_LOG_KEY = "get-hangup"
+TRANSCRIPT_PARSE_LOG_KEY = "transcript-parse"       # M-05 (v0.35.0)
+CONFIG_UNPARSEABLE_LOG_KEY = "config-unparseable"   # M-03 (v0.35.0)
 # The 503 body for a /v1/state that has no snapshot to serve YET. Distinct from every
 # other error body in this file so a reader can tell "crabd is still coming up" from
 # "crabd refused you" (403) and from "no such path" (404).
@@ -969,6 +996,99 @@ def _classify_ua_source(user_agent) -> str:
     return "local"
 
 
+# ------------------------------------------------------- v0.35.0 crabd's own log
+# THE GAP THIS CLOSES: until now crabd had no log file. `~/.sidecrab/logs/` held the
+# panel, notifier and ack-handler logs and nothing of crabd's own, and crabd runs under a
+# Scheduled Task with no console - so every `print(..., file=sys.stderr)` in this file,
+# every _log_once line and every traceback that escaped a worker thread went to a handle
+# nobody owns. Two live inconsistencies were measured on 2026-09-22 (the frozen
+# `sources.limitsToken` verdict and a fleet reading that disagreed with schtasks) and
+# neither left a single line anywhere to diagnose them from.
+#
+# stderr keeps everything it gets today. This is additive: the same line goes to both, so
+# a maintainer running crabd in a console sees no change.
+CRABD_LOG_FILE = Path.home() / ".sidecrab" / "logs" / "crabd.log"
+# ~1 MB and three generations, matching the notifier's own posture. Sized so a crash loop
+# writing a traceback per restart still leaves the first one readable.
+CRABD_LOG_MAX_BYTES = 1_000_000
+CRABD_LOG_GENERATIONS = 3
+
+
+class CrabdLog:
+    """The rotating file behind log_line(). NEVER raises - it is called from inside the
+    exception handlers whose whole job is to keep a failure from reaching the operator,
+    and a logger that can throw turns a swallowed error into a crashed thread.
+
+    A write failure disables the file for the life of the process rather than being
+    retried per line: an unwritable ~/.sidecrab (a locked profile, a full disk) would
+    otherwise cost an OSError on every diagnostic on the busiest path there is. stderr
+    is unaffected either way, so nothing is lost that was not already lost today.
+
+    `path` is read off the module global on every call, never captured in __init__, for
+    the reason LimitsReader.cache_file is: the suites repoint the global at a temp dir,
+    and a captured path is one forgotten patch away from writing the operator's live log.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._disabled = False
+
+    @property
+    def path(self) -> Path:
+        return self._path or CRABD_LOG_FILE
+
+    def write(self, message: str, exc: BaseException | None = None) -> None:
+        if self._disabled:
+            return
+        line = f"{_utc_iso(time.time())} {message}"
+        if exc is not None:
+            # The traceback goes to the FILE and not to stderr: stderr's one-line shape is
+            # what the existing callers print and what a console reader expects, while the
+            # file is the only place a Scheduled Task's traceback can land at all.
+            line += "\n" + "".join(traceback.format_exception(
+                type(exc), exc, exc.__traceback__)).rstrip()
+        with self._lock:
+            try:
+                path = self.path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._rotate(path)
+                with path.open("a", encoding="utf-8", errors="replace", newline="\n") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                self._disabled = True
+
+    @staticmethod
+    def _rotate(path: Path) -> None:
+        """Caller holds the lock. Rolls only when the file is already at the cap, so an
+        ordinary line costs one stat. os.replace, so a generation is never half-moved."""
+        try:
+            if path.stat().st_size < CRABD_LOG_MAX_BYTES:
+                return
+        except OSError:
+            return                      # no file yet, or it cannot be stat'ed: nothing to roll
+        for gen in range(CRABD_LOG_GENERATIONS - 1, 0, -1):
+            src = path.with_name(f"{path.name}.{gen}")
+            if src.exists():
+                os.replace(src, path.with_name(f"{path.name}.{gen + 1}"))
+        os.replace(path, path.with_name(f"{path.name}.1"))
+
+
+_CRABD_LOG = CrabdLog()
+
+
+def log_line(message: str, exc: BaseException | None = None,
+             stderr: bool = True) -> None:
+    """One diagnostic, to crabd.log and (by default) to stderr.
+
+    `stderr=False` is for the lines that already reached stderr through their own
+    print() - the file gets the copy, the console is not told twice.
+    """
+    if stderr:
+        print(message, file=sys.stderr, flush=True)
+    _CRABD_LOG.write(message, exc)
+
+
 # --------------------------------------------------------------------------- utils
 
 _LOG_ONCE_SEEN: set[str] = set()            # keys that are literals in this file
@@ -1005,7 +1125,7 @@ def _log_once(key: str, message: str, config: bool = False) -> None:
                        f"are suppressed for the life of this process")
         else:
             seen.add(key)
-    print(message, file=sys.stderr, flush=True)
+    log_line(message)
 
 
 def _as_count(value) -> int:
@@ -1242,6 +1362,24 @@ def _cwd_title(cwd) -> str | None:
         if parent:
             return _trim(f"{parent}/{tail}", TITLE_MAX)
     return _trim(tail, TITLE_MAX)
+
+
+def _path_leaf(path) -> str | None:
+    """The file name of a tool input's `file_path`, or None (v0.35.0).
+
+    PureWindowsPath for _cwd_title's reason: it parses '/' and '\\' alike, so the same
+    code reads C:\\repo\\a.py, \\\\server\\share\\a.py and /home/u/a.py, on any host. Only
+    the LEAF is ever served - a full path is a machine layout and a user name, and the
+    panel is a screen on a desk.
+
+    A bare drive root and a bare UNC share have no leaf of their own and serve None
+    rather than the drive letter. A TRAILING separator is stripped by PureWindowsPath, so
+    'D:\\work\\' reads as 'work' - measured, and left alone: a tool's `file_path` is a
+    file and never ends in one.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return PureWindowsPath(path.strip()).name or None
 
 
 def _trim_question(text) -> str | None:
@@ -1844,9 +1982,28 @@ class UserConfig:
         with self._lock:
             path = self.path
             try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                loaded = None   # missing/corrupt: start from the defaults, never from {}
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""        # missing or unreadable: start from the defaults, never {}
+            try:
+                loaded = json.loads(raw) if raw.strip() else None
+            except ValueError:
+                # M-03 (v0.35.0). A file that EXISTS and carries text crabd cannot parse
+                # is the operator's own hand-edit - a trailing comma, a half-pasted block
+                # - and starting from the defaults here REWROTE it: one tap on the panel's
+                # quiet button replaced quietHours, budget, digest, panelApprovals and
+                # every continue prompt with {"quietHours":null,"allowReply":false}, with
+                # nothing on the panel or in a log to say a file had just been lost.
+                # Reproduced 2026-09-22 with one trailing comma and one quiet tap.
+                #
+                # Refusing is what the 500 branch in _do_config already exists for. An
+                # EMPTY file is deliberately NOT refused: it holds nothing to lose, and it
+                # is the residue of the pre-A-03 truncating writer, so refusing there
+                # would wedge an operator out of their own settings permanently.
+                _log_once(CONFIG_UNPARSEABLE_LOG_KEY,
+                          f"crabd: {path.name} is not valid JSON - refusing to overwrite "
+                          f"it; fix the file and the next save will take")
+                return False
             data = dict(loaded) if isinstance(loaded, dict) else dict(self.DEFAULTS)
             # v0.23.0: the expired override is swept HERE, on the next write of any kind,
             # and deliberately not by a timer whose only job would be to delete a key
@@ -2286,7 +2443,10 @@ class FileFacts:
         "requests", "custom_title", "ai_title", "last_prompt", "first_prompt",
         "last_cwd", "last_model", "last_speed", "last_ts",
         "question", "question_ts", "question_rank", "agent_labels", "_pending_agents",
-        "context_tokens", "context_ts", "skipped", "_lock",
+        "context_tokens", "context_ts", "skipped", "seen", "_lock",
+        # ---- v0.35.0 (provisional label), the six additive session members ----
+        "mode", "turn_tool", "turn_tool_calls", "files_touched",
+        "queue_depth", "compactions", "compaction_ts", "todos", "todos_ts",
     )
 
     def __init__(self, path: Path, session_id: str, is_subagent: bool) -> None:
@@ -2329,6 +2489,38 @@ class FileFacts:
         # served - it is what makes "the parser skipped something" answerable at all,
         # since the log line only fires once per crabd lifetime.
         self.skipped: int = 0
+        # M-04 (v0.35.0): whether refresh() has completed a read of this file. The
+        # no-change short-circuit used to test `self.offset`, which is 0 for an EMPTY
+        # transcript - so a session's freshly created .jsonl was re-opened and re-read on
+        # every 2 s pass, and refresh() reported "changed" every time, for as long as it
+        # stayed empty. `size`/`mtime` cannot stand in: they are 0 / 0.0 before the first
+        # read, which is exactly what an empty file stats as.
+        self.seen: bool = False
+        # ---- v0.35.0 (provisional label): the six additive members ----
+        # `mode` is the newest `mode` record's value, lower-cased and passed through
+        # whatever the file says - normal/plan/acceptEdits/bypassPermissions today, and
+        # a name this build has never heard of tomorrow. None until one is seen.
+        self.mode: str | None = None
+        # The newest tool_use of the CURRENT turn, and how many that turn has made. Both
+        # reset at the user prompt that opens a turn, so a card that says "Bash x7" is
+        # counting this turn and not the session. None / 0 outside a turn.
+        self.turn_tool: dict | None = None
+        self.turn_tool_calls: int = 0
+        # file_path -> the timestamp it was last written, for the Edit/Write tools only.
+        # DISTINCT paths, so `count` is files and not edits. Unbounded on purpose: it
+        # holds strings and the whole FileFacts is evicted at TRANSCRIPT_WINDOW_SEC, so a
+        # cap here would buy nothing and would make `count` a lie once it bit.
+        self.files_touched: dict[str, float] = {}
+        # Claude Code's OWN typed-ahead queue depth, from its `queue-operation` records.
+        # Floored at zero at the serve: a file crabd started reading mid-session can open
+        # on a dequeue whose enqueue it never saw, and a negative depth is not a thing.
+        self.queue_depth: int = 0
+        self.compactions: int = 0
+        self.compaction_ts: float = 0.0
+        # The newest TodoWrite input, already reduced to {done,total,current}. The raw
+        # list is never kept: it carries prompt text, and nothing serves it.
+        self.todos: dict | None = None
+        self.todos_ts: float = 0.0
         # CRB-F2 SECOND HALF (v0.20.0). The store's lock made `files` safe to iterate;
         # it never covered the mutable state INSIDE a FileFacts. `requests` and
         # `agent_labels` are written by refresh() under the store lock and READ by
@@ -2353,6 +2545,15 @@ class FileFacts:
         self._pending_agents.clear()
         self.context_tokens = None
         self.context_ts = 0.0
+        self.mode = None
+        self.turn_tool = None
+        self.turn_tool_calls = 0
+        self.files_touched.clear()
+        self.queue_depth = 0
+        self.compactions = 0
+        self.compaction_ts = 0.0
+        self.todos = None
+        self.todos_ts = 0.0
 
     def refresh(self) -> bool:
         """Parse whatever is new. Returns True when the file changed."""
@@ -2360,7 +2561,7 @@ class FileFacts:
             st = self.path.stat()
         except OSError:
             return False
-        if st.st_size == self.size and st.st_mtime == self.mtime and self.offset:
+        if st.st_size == self.size and st.st_mtime == self.mtime and self.seen:
             return False
         if st.st_size < self.offset:
             self.reset()  # truncated or rewritten -> full re-read
@@ -2382,6 +2583,7 @@ class FileFacts:
             for raw in lines:
                 if raw.strip():
                     self._consume(raw)
+        self.seen = True
         return True
 
     def usage_records(self) -> dict[str, tuple[float, int, int, int, int, str | None]]:
@@ -2419,11 +2621,29 @@ class FileFacts:
         try:
             obj = json.loads(raw.decode("utf-8", errors="replace"))
         except (ValueError, UnicodeDecodeError):
+            # M-05 (v0.35.0): COUNTED. A record that does not parse is a record crabd
+            # could not read, which is what `skipped` means - and it used to return here
+            # silently, so a byte-order mark on the first line or a record the writer
+            # half-flushed left no evidence anywhere at all. The `skipped` counter is the
+            # only thing that makes "the parser dropped something" answerable.
+            self.skipped += 1
+            _log_once(TRANSCRIPT_PARSE_LOG_KEY,
+                      f"crabd: a transcript record in {self.path.name} is not valid "
+                      f"JSON and was skipped; the rest of the file is still read")
             return
         if not isinstance(obj, dict):
             return
         kind = obj.get("type")
 
+        # v0.35.0 `mode`: {type, mode, sessionId} and no timestamp of its own, so it is
+        # handled up here with the other untimestamped one-key records. Lower-cased and
+        # otherwise passed through: the panel renders what the CLI wrote, and a whitelist
+        # here would silently drop a mode a later CLI introduces.
+        if kind == "mode":
+            value = obj.get("mode")
+            if isinstance(value, str) and value.strip():
+                self.mode = _trim(value.strip().lower(), MODE_MAX)
+            return
         if kind == "custom-title":
             self.custom_title = _trim(obj.get("customTitle"), TITLE_MAX)
             return
@@ -2441,6 +2661,28 @@ class FileFacts:
         if isinstance(cwd, str) and cwd:
             self.last_cwd = cwd
 
+        # v0.35.0 `promptQueue`: Claude Code's own typed-ahead queue, counted from its
+        # `queue-operation` records. Three operations were measured on this host -
+        # enqueue, dequeue, remove - and an operation this build does not know is
+        # deliberately ignored rather than guessed at in either direction.
+        if kind == "queue-operation":
+            operation = obj.get("operation")
+            if operation == "enqueue":
+                self.queue_depth += 1
+            elif operation in ("dequeue", "remove"):
+                self.queue_depth -= 1
+            return
+        # v0.35.0 `compaction`: the boundary record the CLI writes once the compaction has
+        # HAPPENED. The in-progress half cannot come from here - a compaction that has not
+        # finished has written nothing - which is why it takes a PreCompact hook.
+        if kind == "system":
+            if obj.get("subtype") == "compact_boundary":
+                self.compactions += 1
+                at = ts or self.last_ts
+                if at > self.compaction_ts:
+                    self.compaction_ts = at
+            return
+
         # `message` is not guaranteed to be a dict on EITHER branch below. The old
         # `(obj.get("message") or {}).get(...)` reads as a guard and is not one: it
         # defends against null and against nothing else, so a record whose `message` is a
@@ -2453,8 +2695,15 @@ class FileFacts:
         if kind == "user":
             content = message.get("content")
             # A real typed prompt has string content; tool results arrive as a list.
-            if isinstance(content, str) and self.first_prompt is None:
-                self.first_prompt = _trim(content, TITLE_MAX)
+            if isinstance(content, str):
+                if self.first_prompt is None:
+                    self.first_prompt = _trim(content, TITLE_MAX)
+                # v0.35.0 `activity`: a typed prompt OPENS a turn, so both the counter and
+                # the last tool reset HERE and nowhere else. Counting from the session
+                # start instead would make `callsThisTurn` a number that only ever grows,
+                # which is a session total wearing a turn's name.
+                self.turn_tool = None
+                self.turn_tool_calls = 0
             elif isinstance(content, list):
                 self._link_agents(content)
             return
@@ -2534,12 +2783,18 @@ class FileFacts:
             inp = block.get("input")
             if not isinstance(inp, dict):
                 continue
+            # v0.35.0: every tool_use feeds `activity`, and Edit/Write additionally feed
+            # `filesTouched`. Done before the AskUserQuestion / Agent branches below so an
+            # AskUserQuestion still counts as a call of this turn - it is one.
+            self._note_tool_use(name, inp, ts)
             if name == "AskUserQuestion":
                 for question in inp.get("questions") or []:
                     if isinstance(question, dict) and isinstance(question.get("question"), str):
                         text = question["question"].strip()
                         if text:
                             asked.append(text)
+            elif name == "TodoWrite":
+                self._note_todos(inp.get("todos"), ts)
             elif name in ("Agent", "Task"):
                 description = inp.get("description")
                 block_id = block.get("id")
@@ -2550,6 +2805,76 @@ class FileFacts:
             self._remember_question(" · ".join(asked), ts, 2)
         elif isinstance(tail_text, str):
             self._remember_question(self._trailing_question(tail_text), ts, 1)
+
+    def _note_tool_use(self, name, inp: dict, ts: float) -> None:
+        """v0.35.0 `activity` + `filesTouched`, from one tool_use block.
+
+        ⚠ THE COMMAND TEXT IS NEVER TAKEN. `detail` is the tool's own `description` for
+        Bash / PowerShell / Agent, the leaf of `file_path` for Edit / Write / Read, and
+        the `pattern` for Grep / Glob - a shell command, a file's contents and a prompt
+        can all carry a secret, and this member is rendered on a screen on a desk. A tool
+        whose detail is not on that list serves null; it never falls back to some other
+        key of the same input, because "whatever else was in there" is the rule that
+        would eventually put a token on the glass.
+
+        The call is counted whatever the tool is - `callsThisTurn` is how busy the turn
+        is, not how many of its tools this build recognises.
+        """
+        if not isinstance(name, str) or not name:
+            return
+        self.turn_tool_calls += 1
+        detail = None
+        if name in ACTIVITY_DESCRIPTION_TOOLS:
+            value = inp.get("description")
+            detail = value if isinstance(value, str) else None
+        elif name in ACTIVITY_PATH_TOOLS:
+            detail = _path_leaf(inp.get("file_path"))
+        elif name in ACTIVITY_PATTERN_TOOLS:
+            value = inp.get("pattern")
+            detail = value if isinstance(value, str) else None
+        self.turn_tool = {"tool": _trim(name, ACTIVITY_TOOL_MAX),
+                          "detail": _trim(detail, ACTIVITY_DETAIL_MAX),
+                          "at": ts}
+        if name in FILE_TOUCH_TOOLS:
+            path = inp.get("file_path")
+            if isinstance(path, str) and path.strip():
+                # Keyed on the FULL path and served as the leaf: two files called
+                # config.py in different directories are two files, and collapsing them
+                # would under-count. Re-assigning on a repeat is what makes `recent`
+                # order by last touch rather than by first sighting.
+                self.files_touched[path.strip()] = ts
+
+    def _note_todos(self, todos, ts: float) -> None:
+        """v0.35.0 `todos`, reduced at parse time. Only the three numbers and the one
+        line the panel shows are kept - the list itself is the operator's own working
+        notes and nothing serves it.
+
+        NEWEST WINS BY TIMESTAMP, `>=` for the reason the context figure uses it: a
+        streamed repeat carries the same clock, and on a tie the later LINE is the later
+        write in an append-only file.
+        """
+        if not isinstance(todos, list) or ts < self.todos_ts:
+            return
+        total = done = 0
+        current = None
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            total += 1
+            status = item.get("status")
+            if status == "completed":
+                done += 1
+            elif status == "in_progress" and current is None:
+                text = item.get("content") or item.get("activeForm")
+                current = text if isinstance(text, str) else None
+        if not total:
+            # An EMPTY TodoWrite is the list being cleared, which is "no todos" and not
+            # "0 of 0" - the absent-not-zero rule, applied at the record that clears it.
+            self.todos, self.todos_ts = None, ts
+            return
+        self.todos = {"done": done, "total": total,
+                      "current": _trim(current, TODO_CURRENT_MAX)}
+        self.todos_ts = ts
 
     @staticmethod
     def _trailing_question(text: str) -> str | None:
@@ -2786,7 +3111,37 @@ class HookTracker:
                 # has re-raised: the one case where the hold ending must stand the card
                 # down. See note_permission.
                 "permission_alert": False,
+                # v0.35.0, INTERNAL - never served as itself. When a PreCompact hook last
+                # arrived for this session; `compaction.inProgress` is derived from it
+                # against the transcript's own clock. See note_precompact.
+                "precompact_at": None,
                 "events": []}
+
+    def note_precompact(self, session_id: str, now: float) -> bool:
+        """The PreCompact hook (v0.35.0). -> True when it was recorded.
+
+        DELIBERATELY NOT a state transition. A compaction is the CLI reorganising its own
+        context, not the session changing what it is doing: it moves no state, dates no
+        `since`, writes no timeline event and touches no question. All it records is WHEN,
+        because `compaction.inProgress` is "a PreCompact arrived and the transcript has
+        not been written since" and there is no other evidence of the gap - the boundary
+        record only appears once the compaction has finished.
+
+        `at` is left alone for the same reason. It drives pruning and the served
+        lastActivityAt, and a compaction on a session whose transcript has gone quiet is
+        not the session becoming active again.
+
+        The hook counters DO move: a PreCompact is a hook arriving, which is exactly what
+        `sources.hooks` measures and what /v1/health counts.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            self.count += 1
+            self.last_at = now
+            row = self.sessions.setdefault(session_id, self._blank(now))
+            row["precompact_at"] = now
+        return True
 
     def note_titles(self, titles: dict) -> None:
         """Builder -> tracker, once per pass. Titles only; nothing else crosses."""
@@ -3409,7 +3764,16 @@ class LimitsReader:
             last_good = self._last_good_at or None
             note = cached.get("note")
             backoff = self._backoff_until > now
-        if not ok and not note:
+        if backoff:
+            # M-02 (v0.35.0). While locked out, `_cached` is _aged()'s last-good, whose
+            # note is the "limits as of 11:30 PM" CAVEAT - a qualification beside lit
+            # gauges, not a diagnosis. Passing it through made the source entry say NOT
+            # OK and then explain itself with a sentence that describes a healthy
+            # reading, so the one place that names the lockout never got to. Measured on
+            # the live companion 2026-09-22: limitsToken ok false, note "limits as of
+            # 11:30 PM", lastAt 54 minutes old, with limits.available true beside it.
+            note = LIMITS_BACKOFF_NOTE
+        elif not ok and not note:
             note = "the usage endpoint did not answer"
         return {"ok": ok, "lastAt": last_good, "note": note,
                 # A reading being SERVED from last-good while the endpoint is locked out
@@ -6889,6 +7253,15 @@ class StateBuilder:
         if session_id:
             self.permissions.stale(session_id)
 
+    def record_precompact(self, payload) -> None:
+        """POST /v1/hook/precompact -> the tracker (v0.35.0). Total by construction: a
+        payload with no session id is dropped, exactly as record_hook's is."""
+        if not isinstance(payload, dict):
+            return
+        session_id = _session_id(payload)
+        if session_id:
+            self.hooks.note_precompact(session_id, time.time())
+
     def note_session_event(self, session_id: str, text: str) -> bool:
         """OTLP's route onto a session's events ring (v0.12.0).
 
@@ -6962,6 +7335,16 @@ class StateBuilder:
                     row["speed"] = facts.last_speed
                     row["question"] = facts.question
                     row["question_ts"] = facts.question_ts
+                    # v0.35.0. These four are IDENTITY facts for SCA-001's reason: each
+                    # describes what the session is doing NOW, and the identity file is
+                    # the one that owns "now". A session whose cwd moved has a stale main
+                    # file in the old project, and taking its mode or its last tool would
+                    # be the same wrong-project answer the P1 was about.
+                    row["mode"] = facts.mode
+                    row["turn_tool"] = facts.turn_tool
+                    row["turn_tool_calls"] = facts.turn_tool_calls
+                    row["queue_depth"] = facts.queue_depth
+                    row["todos"] = facts.todos
                 # AGGREGATED across every main file, deliberately and unchanged: labels,
                 # usage records, the context figure and the turn clock are facts about
                 # the SESSION, not about which file currently owns its identity.
@@ -6969,6 +7352,16 @@ class StateBuilder:
                 # lock. Iterating the live dicts raced refresh() on another thread - the
                 # half of CRB-F2 the store lock never covered (FileFacts.__init__).
                 row["agent_labels"].update(facts.labels())
+                # v0.35.0, AGGREGATED for the reason the line above is: which files this
+                # session has edited and how often it has compacted are facts about the
+                # SESSION, and a session that moved project did both halves of them. The
+                # merge keeps the NEWER touch of a path so `recent` orders by last write
+                # across both files.
+                for touched, at in facts.files_touched.items():
+                    if at >= row["files_touched"].get(touched, 0.0):
+                        row["files_touched"][touched] = at
+                row["compactions"] += facts.compactions
+                row["compaction_ts"] = max(row["compaction_ts"], facts.compaction_ts)
                 # Newest main transcript wins. A session id can own a main file under
                 # two project dirs (its cwd moved), and the loop order over those is
                 # arbitrary - dating the pick is what stops the served context size
@@ -7084,7 +7477,7 @@ class StateBuilder:
         # C3 / MF-008. Built from `host` rather than by re-reading the samplers, so the
         # verdict and the reading it judges can never disagree. Last, because it reads
         # what everything above produced.
-        sources = self._sources_block(now, host, last_activity)
+        sources = self._sources_block(now, host, last_activity, limits)
         if sources:
             document["sources"] = sources
         return document
@@ -7099,7 +7492,7 @@ class StateBuilder:
                 "note": note if not ok else None}
 
     def _sources_block(self, now: float, host: dict | None,
-                       last_activity: float) -> dict:
+                       last_activity: float, limits: dict | None = None) -> dict:
         """`sources` - one freshness verdict per feed (C3 / MF-008).
 
         A fresh overall document can sit on top of a source that stopped: the builder
@@ -7154,13 +7547,27 @@ class StateBuilder:
                 "the status line has stopped posting; limits fall back to the usage "
                 "endpoint")
 
+        # M-01 (v0.35.0). The entry is OMITTED while the status line is serving `limits`.
+        # _limits_block returns before LimitsReader.get() is reached in that case, and
+        # get() is the reader's ONLY caller - so the reader stops being polled and
+        # health() freezes on whatever the last OAuth fetch said. The panel then showed a
+        # permanently-failed source, with an ageSec that grew forever, about a feed the
+        # served document was not using and no action could fix. Measured on the live
+        # companion 2026-09-22: limits.available true beside limitsToken ok false with
+        # the note "SideCrab limits token rejected" and a lastAt 15 minutes old.
+        #
+        # Absent is this block's own answer for a source it cannot judge, and `statusline`
+        # above is the entry that judges what IS serving the gauges.
         health = getattr(self.limits, "health", None)
         limits_health = health(now) if callable(health) else None
-        if limits_health is not None:
+        serving = limits.get("source") if isinstance(limits, dict) else None
+        if limits_health is not None and serving != LIMITS_SOURCE_STATUSLINE:
             ok = limits_health["ok"] and not limits_health["backoff"]
+            # health() guarantees a note whenever this entry will be not-ok (either the
+            # lockout note or the endpoint's own), so there is no fallback here: one that
+            # could not fire would be a control that reports success forever.
             sources["limitsToken"] = self._source_entry(
-                now, limits_health["lastAt"], ok,
-                limits_health["note"] or "the usage endpoint is rate-limited")
+                now, limits_health["lastAt"], ok, limits_health["note"])
 
         last = getattr(self.otlp, "last_at", None) if self.otlp else None
         if last:
@@ -7358,7 +7765,12 @@ class StateBuilder:
                 # the operator answering, and folding its records in here would clear a
                 # question that is genuinely still standing. 0.0 = no usage record yet,
                 # which fails safe (note_activity is only ever called on a truthy value).
-                "turn_ts": 0.0}
+                "turn_ts": 0.0,
+                # ---- v0.35.0. Internal; _lane_m_session_extras turns these into the
+                # served members, and every one of them is ABSENT rather than zero.
+                "mode": None, "turn_tool": None, "turn_tool_calls": 0,
+                "files_touched": {}, "queue_depth": 0,
+                "compactions": 0, "compaction_ts": 0.0, "todos": None}
 
     @staticmethod
     def _burn(requests, request_owner, now):
@@ -7485,6 +7897,9 @@ class StateBuilder:
                                    if self.continues else None),
                 # lane D: this session's project prompts, or the key is ABSENT.
                 **self._lane_d_session_extras(repo, cwd, now),
+                # v0.35.0: the six additive members, each present only when it has
+                # something to say.
+                **self._lane_m_session_extras(info, hook, state),
             })
         rows.sort(key=lambda r: (order.get(r["state"], 9), -_parse_ts(r["lastActivityAt"])))
         return rows
@@ -7499,6 +7914,63 @@ class StateBuilder:
         """
         extras = self.config.continue_session_extras(now, repo, cwd)
         return {"continuePrompts": extras} if extras else {}
+
+    @staticmethod
+    def _lane_m_session_extras(info: dict, hook, state: str) -> dict:
+        """The six v0.35.0 members, or nothing at all. Schema stays 5: every one of them
+        is presence-detected by the widget, which is why none of them may be served as a
+        zero, an empty list or a null.
+
+        THE HONESTY RULE, once, for all six: a zero here is a CLAIM. "0 files touched",
+        "0 todos", "queue 0" and "never compacted" are things crabd would be asserting
+        about a session it may simply not have parsed yet, and a panel that renders them
+        looks equally confident when it knows and when it does not. Absent renders as
+        nothing, which is the honest picture of nothing known.
+        """
+        out: dict = {}
+        mode = info.get("mode")
+        if mode:
+            out["mode"] = mode
+        # `activity` is the CURRENT turn's newest tool, so it is served only while the
+        # session is working. On a card that has finished or gone quiet the last tool of
+        # the last turn is history, and rendering it beside `done` would read as a tool
+        # still running. Not cleared in the parser - the transcript is the record of what
+        # happened and re-reading it must give the same answer.
+        tool = info.get("turn_tool")
+        if state == "working" and tool:
+            out["activity"] = {"tool": tool["tool"], "detail": tool["detail"],
+                               "at": _utc_iso(tool["at"]) if tool["at"] else None,
+                               "callsThisTurn": info.get("turn_tool_calls", 0)}
+        touched = info.get("files_touched") or {}
+        if touched:
+            recent = sorted(touched.items(), key=lambda kv: -kv[1])[:FILES_RECENT_CAP]
+            # NEWEST FIRST, and leaves only (_path_leaf). A duplicate leaf from two
+            # directories is kept as two entries: they are two files, and de-duplicating
+            # the display would under-count what the panel is showing.
+            out["filesTouched"] = {
+                "count": len(touched),
+                "recent": [leaf for leaf in (_path_leaf(p) for p, _ in recent) if leaf]}
+        # Floored at zero: crabd can start reading a transcript mid-session and meet a
+        # dequeue whose enqueue it never saw. A negative depth is arithmetic, not a queue.
+        depth = max(0, info.get("queue_depth", 0))
+        if depth:
+            out["promptQueue"] = depth
+        precompact = (hook or {}).get("precompact_at")
+        # IN PROGRESS = a PreCompact hook arrived and the transcript has not been written
+        # since. The two clocks are comparable (both are crabd's own wall clock: the hook
+        # at receipt, the file from its mtime), and the compaction's own boundary record
+        # is what ends it - writing the file is exactly the event being waited for.
+        in_progress = bool(precompact and precompact > info.get("mtime", 0.0))
+        count = info.get("compactions", 0)
+        if count or in_progress:
+            at = info.get("compaction_ts", 0.0)
+            out["compaction"] = {"count": count,
+                                 "lastAt": _utc_iso(at) if at else None,
+                                 "inProgress": in_progress}
+        todos = info.get("todos")
+        if todos:
+            out["todos"] = dict(todos)
+        return out
 
     def _context(self, sid: str, info: dict, now: float) -> dict:
         """`contextTokens` + the v0.12.0 `contextSource` provenance.
@@ -8397,6 +8869,19 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.builder.record_hook(payload)
                 except Exception:   # noqa: BLE001
+                    pass
+        elif path == "/v1/hook/precompact":
+            # v0.35.0. Fire-and-forget, the shape /v1/hook has and for its reason: the
+            # CLI is about to compact a large context and nothing crabd does may be in
+            # front of that. The 204 goes out before the parse; the two gates above have
+            # already run, so this route has none of its own to drift from theirs.
+            raw = self._read_body()
+            self._send(204, None)
+            payload = self._json_body(raw)
+            if isinstance(payload, dict):
+                try:
+                    self.builder.record_precompact(payload)
+                except Exception:   # noqa: BLE001 - see /v1/hook; the 204 has gone out
                     pass
         elif path == "/v1/hook/stop":
             self._do_hook_stop(self._read_body())
@@ -9368,6 +9853,22 @@ class CrabdServer(ThreadingHTTPServer):
         self.sse_stop.set()
         super().server_close()
 
+    def handle_error(self, request, client_address) -> None:
+        """socketserver's hook for an exception that escaped a handler. It prints a
+        traceback to stderr, which under the Scheduled Task goes nowhere (v0.35.0) - so
+        the same traceback is written to crabd.log, where it can be read afterwards.
+
+        stderr keeps the default output: a maintainer running crabd in a console sees
+        exactly what they see today."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                            ConnectionAbortedError, TimeoutError)):
+            # The client hung up mid-answer. ORDINARY on this host (see do_GET's own
+            # narrowing) and not worth a traceback in either destination.
+            return
+        log_line("crabd: unhandled error answering a request", exc, stderr=False)
+        super().handle_error(request, client_address)
+
 
 def _refresh_loop(builder: StateBuilder, stop: threading.Event) -> None:
     """The snapshot is built here, not in the request path, so /v1/state is a dict
@@ -9378,7 +9879,7 @@ def _refresh_loop(builder: StateBuilder, stop: threading.Event) -> None:
             with builder._lock:
                 builder._state = state
         except Exception as exc:  # a bad transcript must not kill the feed
-            print(f"crabd: refresh error: {type(exc).__name__}", file=sys.stderr)
+            log_line(f"crabd: refresh error: {type(exc).__name__}", exc)
         stop.wait(REFRESH_INTERVAL_SEC)
 
 
@@ -9389,7 +9890,7 @@ def _recap_loop(recap: RecapReader, stop: threading.Event) -> None:
         try:
             recap.poll(time.time())
         except Exception as exc:  # a wedged repo must not kill the feed
-            print(f"crabd: recap error: {type(exc).__name__}", file=sys.stderr)
+            log_line(f"crabd: recap error: {type(exc).__name__}", exc)
         stop.wait(RECAP_POLL_SEC)
 
 
@@ -9399,7 +9900,7 @@ def _fleet_loop(fleet: FleetReader, stop: threading.Event) -> None:
         try:
             fleet.poll(time.time())
         except Exception as exc:  # a wedged schtasks must not kill the feed
-            print(f"crabd: fleet error: {type(exc).__name__}", file=sys.stderr)
+            log_line(f"crabd: fleet error: {type(exc).__name__}", exc)
         stop.wait(FLEET_POLL_SEC)
 
 
@@ -9416,7 +9917,7 @@ def _lane_a_sampler_loop(reader, label: str, interval: float,
         try:
             reader.poll(time.time())
         except Exception as exc:        # a wedged sampler must not kill the feed
-            print(f"crabd: {label} error: {type(exc).__name__}", file=sys.stderr)
+            log_line(f"crabd: {label} error: {type(exc).__name__}", exc)
         stop.wait(interval)
 
 
@@ -9439,7 +9940,7 @@ def _expiry_loop(builder: StateBuilder, stop: threading.Event) -> None:
             if builder.statusline:
                 builder.statusline.prune(now)
         except Exception as exc:
-            print(f"crabd: expiry error: {type(exc).__name__}", file=sys.stderr)
+            log_line(f"crabd: expiry error: {type(exc).__name__}", exc)
         stop.wait(EXPIRY_POLL_SEC)
 
 
@@ -9492,17 +9993,29 @@ def main() -> int:
         server = CrabdServer((HOST, PORT), Handler)
     except OSError:
         stop.set()
-        print(f"crabd: port {PORT} is already in use - another crabd is running "
-              f"(set CRABD_PORT to run a second instance)", file=sys.stderr, flush=True)
+        log_line(f"crabd: port {PORT} is already in use - another crabd is running "
+                 f"(set CRABD_PORT to run a second instance)")
         return 1
+    # The startup line is what makes crabd.log answerable at all: a log whose newest
+    # line predates the current process says the process never got this far.
+    log_line(f"crabd {VERSION} listening on http://{HOST}:{PORT} "
+             f"(pid {os.getpid()}, projects {PROJECTS_DIR})", stderr=False)
     print(f"crabd {VERSION} listening on http://{HOST}:{PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except Exception as exc:        # noqa: BLE001 - the last place a traceback can land
+        log_line("crabd: the server loop stopped on an unhandled error", exc)
+        raise
     finally:
         stop.set()
         server.server_close()
+        # BEST EFFORT, and the log must not be read as though it were not: the Scheduled
+        # Task stops crabd with TerminateProcess, which runs no finally block. Measured
+        # 2026-09-22 on an isolated live-fire run. So a startup line with no stop line
+        # before it is the ORDINARY shape of a restart, not evidence of a crash.
+        log_line(f"crabd {VERSION} stopped", stderr=False)
     return 0
 
 

@@ -15,13 +15,21 @@ the maintainers' history.
   both). The size fallback never picks your **primary** monitor and refuses a tie between two
   monitors of that size: a 2560x720 desktop monitor is an ordinary thing to own, and the wrong
   answer here is a topmost full-screen window over the display you work on. A device id you
-  name yourself is honoured whatever the monitor is, primary included. Nothing matching means
-  the window stays hidden and the tray menu says why.
+  name yourself is honoured whatever the monitor is, primary included - but **two** monitors
+  carrying that id are refused in the same way, because two Xeneon Edges both contain
+  `CRXED00` and picking the first is picking by index. Nothing matching means the window stays
+  hidden and the tray menu says why, and the display picker is how you name one of the two.
+  Windows caps every window at the size of your **primary** monitor plus its sizing border, so
+  a display larger than that is covered only in part; the host logs it when it happens and
+  corrects the page's zoom toward the window it actually got.
 - **Re-pins itself** on `WM_DISPLAYCHANGE`, `WM_DPICHANGED`, `DisplaySettingsChanged`, power
   resume, session unlock and reconnect, and on a 5 second timer; hides while the Edge is absent
   and returns when it is back. The poll, the settings watcher and the WebView all start from
   the message loop, **not** from the first time a window is shown, so a host that starts with
-  its monitor absent still recovers when you attach or pick one.
+  its monitor absent still recovers when you attach or pick one. The same poll re-arms the
+  settings watcher: a FileSystemWatcher whose directory is removed stops raising events for
+  good and says nothing, which used to make every later edit invisible for the life of the
+  process.
 - **Reachable from the tray**, on whatever display you actually work on: state (which display,
   or hidden and why, and the last failure), open the log folder, reload the panel, re-pin now,
   pause until you resume, quit until next logon, and a display picker listing every monitor
@@ -80,6 +88,7 @@ the maintainers' history.
 | `SideCrab.Panel/PanelSettings.cs` | `panel-settings.json` and `panel-token` |
 | `SideCrab.Panel/WindowFocus.cs` | Enumerating the desktop and handing over the foreground for `focus-session` |
 | `SideCrab.Panel/Program.cs` | Entry point, single-instance mutex, command line |
+| `SideCrab.Panel/HostCheck.cs` | `--check`: the report, its exit code, and stdout for a windowless app |
 | `SideCrab.Panel.Tests/` | MSTest: every gate above, broken on purpose while it was written |
 
 ## Build, run, test
@@ -91,9 +100,32 @@ pwsh -File .\setup\Install-SideCrab.ps1 -Panel        # builds if missing, regis
 ```
 
 Command line (all optional): `--port N`, `--display <id fragment>`, `--devtools-port N`,
-`--windowed`, `--sidecrab-dir <path>`, `--profile <name>`. The scheduled task passes none; the
-settings file carries the same facts, including `"devtoolsPort"` for a desk-side measurement over
-Chromium's remote-debugging endpoint.
+`--windowed`, `--sidecrab-dir <path>`, `--profile <name>`, `--check`. The scheduled task passes
+none; the settings file carries the same facts, including `"devtoolsPort"` for a desk-side
+measurement over Chromium's remote-debugging endpoint. A switch that is missing its value takes
+the next switch as one no longer: `--profile --windowed` is refused instead of starting a kiosk
+called "windowed". `kiosk` and `windowed` are reserved profile names, because they resolve to the
+files the unnamed hosts already own.
+
+### `--check`: what this host would do, without doing it
+
+```powershell
+$report = .\panel-host\dist\SideCrab.Panel.exe --check | Out-String   # the pipe is what makes pwsh wait
+```
+
+One line per fact and no colour: every display with its id and size, which one it would pick and
+why, the WebView2 runtime version, the settings file it would read and every warning reading it,
+the log path and whether it can be appended to, and whether another host is already running. It
+exits **0** when the panel would show and **2** when something named in the output stops it, with
+a `problem:` line for each. It shows no window, takes no single-instance name and never opens the
+log, so it is safe to run while the installed host is live. On a PC with no Edge attached:
+
+```
+pick: none
+pick-reason: none (the target display is not attached)
+problem: no display matched, so the panel would start hidden: the target display is not attached
+result: problem
+```
 
 `--profile` is how you run a **second** host for diagnosis beside the installed one. It takes its
 own WebView2 user-data folder, its own log file and its own single-instance name, so it can ask

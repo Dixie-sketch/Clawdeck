@@ -20,6 +20,167 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.35.0 (2026-09-22 — ADDITIVE: six session members from the transcript, one new hook route; schema stays 5)
+
+Six additive members on `sessions[]`, all derived from the transcript Claude Code already
+writes, plus one new hook event the installer registers. Nothing is removed and no answer
+changes shape.
+
+**The rule that governs all six: absent, never zero.** A member is present only when
+crabd has something to say. `"filesTouched": {"count": 0}`, `"promptQueue": 0`,
+`"todos": {"done": 0, "total": 0}` and `"compaction": {"count": 0}` are all claims about
+a session crabd may simply not have parsed yet, and a panel that renders them looks
+equally confident when it knows and when it does not. Presence is the feature detection,
+exactly as it is for `queuedContinue` and `host`.
+
+### 1. `sessions[].activity`: what the current turn is doing
+
+```jsonc
+"activity": { "tool": "Bash", "detail": "run the tests",
+              "at": "2026-09-22T06:11:04Z", "callsThisTurn": 7 }
+```
+
+The newest `tool_use` of the **current turn**, and how many tool calls that turn has made.
+
+**Present only while the session is `working`, and only when this turn has used a tool.**
+On a card that has finished or gone quiet the last tool of the last turn is history, and
+rendering it beside `done` would read as a tool still running.
+
+**`callsThisTurn` counts the TURN, not the session.** It resets at the user prompt that
+opens a turn. A tool result arriving back (a `user` record with list content) is not a
+prompt and does not reset it.
+
+**`detail` comes off a per-tool allowlist, and the command text is never a candidate:**
+
+| tool | `detail` |
+|---|---|
+| `Bash`, `PowerShell`, `Agent`, `Task` | the `description` input |
+| `Edit`, `Write`, `Read` | the **leaf** of `file_path`, never the full path |
+| `Grep`, `Glob` | the `pattern` input |
+| anything else | `null` |
+
+A shell command, a file's contents and a prompt can each carry a secret, and this member
+is rendered on a screen on a desk. A tool whose detail is not on that list serves `null`;
+it never falls back to another key of the same input. A tool crabd has never heard of is
+served with its own name and a null detail, and **still counts** toward `callsThisTurn` -
+the number is how busy the turn is, not how many of its tools this build recognises.
+
+`detail` is capped at 80 characters, `tool` at 40. `at` is the tool_use record's own
+timestamp.
+
+### 2. `sessions[].mode`: the CLI's permission mode
+
+```jsonc
+"mode": "plan"
+```
+
+The newest `mode` record's value, **lower-cased and otherwise passed through**. The values
+seen so far are `normal`, `plan`, `acceptedits` and `bypasspermissions`; a mode a later
+CLI introduces reaches the panel unchanged, because a whitelist here would show nothing
+at all while a session was in it. Absent when the transcript carries no `mode` record.
+
+### 3. `sessions[].filesTouched`: what this session has changed
+
+```jsonc
+"filesTouched": { "count": 12, "recent": ["crabd.py", "test_crabd.py", "README.md"] }
+```
+
+Distinct `file_path` values from **`Edit` and `Write` only**. `Read` is deliberately
+excluded: the member answers "what has this session changed", and folding reads in would
+make every card claim a hundred files on a session that changed none.
+
+`count` is distinct **full paths**, so two files called `config.py` in different
+directories are two files. `recent` is the last five **leaves**, newest first, and a
+duplicate leaf is kept as two entries rather than collapsed - they are two files, and
+de-duplicating the display would under-count what is on the panel. Absent when nothing has
+been touched.
+
+### 4. `sessions[].promptQueue`: Claude Code's own typed-ahead depth
+
+```jsonc
+"promptQueue": 2
+```
+
+Counted from the CLI's `queue-operation` records: `enqueue` minus `dequeue` minus
+`remove`. **Floored at zero and then omitted when zero**, because crabd can start reading
+a transcript mid-session and meet a dequeue whose enqueue it never saw; a negative depth
+is arithmetic, not a queue. An operation this build does not recognise moves nothing.
+
+This is **not** `queuedContinue`, which is SideCrab's own tap-to-continue queue and keeps
+its existing shape and meaning.
+
+### 5. `sessions[].compaction`: context compactions, past and running
+
+```jsonc
+"compaction": { "count": 2, "lastAt": "2026-09-22T05:12:44Z", "inProgress": false }
+```
+
+`count` and `lastAt` come from the CLI's `system` records with
+`subtype: "compact_boundary"`. **`inProgress` cannot come from the transcript at all** - a
+compaction that has not finished has written nothing - so it comes from a new `PreCompact`
+hook and is true between that hook arriving and the next write to the transcript.
+
+Absent when the session has never compacted **and** nothing is in progress. A session
+compacting for the first time therefore serves `count: 0` with `inProgress: true`, which
+is the one place a zero appears here and it is a measured zero, not an absent one.
+
+#### The new hook route: `POST /v1/hook/precompact`
+
+`PreCompact` is registered in `hooks/settings-hooks-fragment.json` as a `command` entry
+alongside the other five fire-and-forget hooks, posting to `/v1/hook/precompact`. Same
+body, same two gates (Host then Origin), same 204-before-the-parse answer as `/v1/hook`:
+the session is about to compact a large context and nothing crabd does may sit in front
+of that.
+
+It has its **own path** rather than riding `/v1/hook` because it records a fact about the
+session, not a state transition. It moves no state, dates no `since`, writes no timeline
+event and does not count as activity - it only stamps when it arrived. It does count as a
+hook for `sources.hooks` and `/v1/health`.
+
+### 6. `sessions[].todos`: the session's own task list
+
+```jsonc
+"todos": { "done": 3, "total": 7, "current": "wire the PreCompact route" }
+```
+
+From the newest `TodoWrite` input. `current` is the `in_progress` item's `content`, or its
+`activeForm` when there is no content, capped at 80 characters; it is `null` when nothing
+is in progress. The list itself is never kept or served - it is the operator's own working
+notes.
+
+An **empty** `TodoWrite` is the list being cleared, and clears the member rather than
+serving `{"done": 0, "total": 0}`. Absent when the session has never written one. Installs
+that do not use `TodoWrite` never see this member at all.
+
+### Which file a member comes from, on a session whose cwd moved
+
+A session id can own a main transcript under two project directories (SCA-001). The four
+members that describe what the session is doing **now** - `activity`, `mode`,
+`promptQueue`, `todos` - come from the **identity file**, the one the deterministic
+latest rule picks, for the same reason `cwd`, `title` and `model` do. The two that are
+session **history** - `filesTouched` and `compaction` - are aggregated across every main
+file, the way `agent_labels` and the usage records already are.
+
+---
+
+### Correction to the v0.34.0 `sources` section (2026-09-22)
+
+Two sentences in the shipped v0.34.0 text describe behaviour that was wrong in practice.
+Both were measured on the live companion on 2026-09-22.
+
+**`limitsToken` is absent while the status line is serving `limits`.** The OAuth reader is
+only consulted when the status line has gone quiet, so while the status line is serving it
+is not a feed crabd can judge - it stops being polled, and the entry froze on its last
+verdict with an `ageSec` that grew forever. The v0.34.0 rule "a source crabd cannot judge
+is ABSENT from the object" now covers this case too, and `statusline` is the entry that
+judges what is actually filling the gauges.
+
+**`limitsToken.note` during a rate-limit lockout names the lockout, not the reading's
+age.** It previously passed through the served `limits` block's own caveat ("limits as of
+11:30 PM"), which describes a healthy reading and was being served as the explanation for
+a source marked not-ok. The two notes answer different questions and stay separate: the
+`limits` block's is a qualification beside lit gauges, the source's is a diagnosis.
+
 ## v0.34.0 (2026-09-21, ADDITIVE: source health, approval readiness, cancel, a wider config write; REMOVED: `fleet.glow`; schema stays 5)
 
 Two additive top-level members, two additive members inside `approvals`, one new action,

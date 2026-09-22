@@ -325,7 +325,14 @@
           "at": "2026-08-26T17:41:03Z",
           "text": "session started"
         }
-      ]
+      ],
+      "mode": "plan",
+      "promptQueue": 2,
+      "todos": {
+        "done": 2,
+        "total": 5,
+        "current": "Agree the ceiling with the reviewer before touching the gate"
+      }
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
@@ -397,7 +404,23 @@
           "at": "2026-08-26T17:36:20Z",
           "text": "session started"
         }
-      ]
+      ],
+      "activity": {
+        "tool": "Edit",
+        "detail": "companion/config_schema.py",
+        "at": "2026-08-26T18:04:52Z",
+        "callsThisTurn": 7
+      },
+      "promptQueue": 3,
+      "filesTouched": {
+        "count": 12,
+        "recent": [
+          "companion/config_schema.py",
+          "companion/routes/config.py",
+          "tests/test_config_schema.py",
+          "docs/config-reference.md"
+        ]
+      }
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50003",
@@ -441,7 +464,18 @@
           "at": "2026-08-26T17:12:44Z",
           "text": "session started"
         }
-      ]
+      ],
+      "activity": {
+        "tool": "Read",
+        "detail": "smartctl output for the second NVMe",
+        "at": "2026-08-26T18:01:15Z",
+        "callsThisTurn": 1
+      },
+      "compaction": {
+        "count": 2,
+        "lastAt": "2026-08-26T18:00:41Z",
+        "inProgress": true
+      }
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50004",
@@ -481,7 +515,19 @@
           "at": "2026-08-26T17:44:02Z",
           "text": "session started"
         }
-      ]
+      ],
+      "mode": "acceptEdits",
+      "activity": {
+        "tool": "Bash",
+        "detail": "run the importer against the staging tracker and diff the counts",
+        "at": "2026-08-26T18:04:59Z",
+        "callsThisTurn": 3
+      },
+      "todos": {
+        "done": 3,
+        "total": 7,
+        "current": "Import the last two scanner exports and reconcile the duplicate findings"
+      }
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
@@ -519,7 +565,19 @@
           "at": "2026-08-26T17:40:12Z",
           "text": "prompt submitted"
         }
-      ]
+      ],
+      "mode": "bypassPermissions",
+      "filesTouched": {
+        "count": 1,
+        "recent": [
+          "docs/publishing-guide.md"
+        ]
+      },
+      "compaction": {
+        "count": 1,
+        "lastAt": "2026-08-26T17:40:12Z",
+        "inProgress": false
+      }
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
@@ -539,7 +597,8 @@
       },
       "queuedContinue": null,
       "todayOutputTokens": 9200,
-      "events": []
+      "events": [],
+      "mode": "experimentalAutoRun"
     }
   ],
   "fleet": {

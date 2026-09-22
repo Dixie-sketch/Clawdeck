@@ -5,9 +5,9 @@
 Everything runs on one PC. The companion (`crabd`) listens on `127.0.0.1:2722` only, never on a
 LAN interface. It reads `~/.claude` (session transcripts, hook payloads, the usage endpoint's
 OAuth token) strictly read-only, never writes there, and never logs or transmits the token. The
-widget, the notifier and the glow are read-only consumers of the same localhost feed. Nothing in
-this repo makes a network request to anywhere but `127.0.0.1` and, for usage limits, Anthropic's
-own API with the user's own token. There is no telemetry, no crash reporting, no update check.
+panel page, the panel host and the notifier are read-only consumers of the same localhost feed.
+Nothing in this repo makes a network request to anywhere but `127.0.0.1` and, for usage limits,
+Anthropic's own API with the user's own token. There is no telemetry, no crash reporting, no update check.
 
 The two things an attacker on this machine, or a web page you visit, could want are:
 
@@ -85,5 +85,5 @@ The full audit trail, including the findings that are now fixed (SEC-1 to SEC-5)
 Open a private report through GitHub's "Report a vulnerability" on
 <https://github.com/Dixie-sketch/Clawdeck/security>, or open an issue if the finding is not
 exploitable. Say what you observed, how to reproduce it, and which component and version
-(`widget/manifest.json` version, `crabd --version`). There is no bug bounty; there is a
-maintainer who will read it.
+(all three versions, from `pwsh -File .\setup\Install-SideCrab.ps1 -Status`). There is no bug
+bounty; there is a maintainer who will read it.

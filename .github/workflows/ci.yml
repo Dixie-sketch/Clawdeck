@@ -36,8 +36,14 @@ jobs:
       - name: Hooks
         run: python -m unittest discover -s hooks/tests -t hooks/tests
 
-      - name: Widget ordering
-        run: node widget/tests/test_ordering.js
+      # All three, not just the first. test_chime.js and test_standalone.js were shipping
+      # untested by CI while the step name said "Widget ordering": 214 checks ran and 218 did
+      # not. Each file exits non-zero on a failure, so && is the whole gate.
+      - name: Widget suites
+        run: |
+          node widget/tests/test_ordering.js
+          node widget/tests/test_chime.js
+          node widget/tests/test_standalone.js
 
       # Replaces the strict-XML check, which existed only because the retired import
       # validator demanded XML-parseable HTML. The page is HTML, so it is parsed as HTML:

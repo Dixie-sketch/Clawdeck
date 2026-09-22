@@ -47,6 +47,7 @@ public static class PanelLogic
     public sealed record DisplayChoice(DisplayInfo? Display, string Reason);
 
     public const string DisplayReasonId = "device-id";
+    public const string DisplayReasonIdAmbiguous = "device-id-ambiguous";
     public const string DisplayReasonSize = "size";
     public const string DisplayReasonSizeAmbiguous = "size-ambiguous";
     public const string DisplayReasonSizePrimary = "size-would-be-primary";
@@ -62,16 +63,24 @@ public static class PanelLogic
     /// exactly that: an unrelated primary named AUDIT_NOT_EDGE at 2560x720 was selected
     /// and would have been covered. An id match is an explicit instruction and is honoured
     /// whatever the monitor is, primary included - that is the operator naming a target,
-    /// not the host guessing one.</summary>
+    /// not the host guessing one.
+    ///
+    /// LO-001 (host 0.5.0, provisional label). A fragment that matches TWO monitors is
+    /// refused on the same terms as a size tie. Two Xeneon Edges both carry CRXED00 - the
+    /// default fragment, and the one an operator recognises - and FirstOrDefault settled
+    /// that by enumeration order, which is picking by index, the one rule this selector
+    /// says it never follows. The tray picker is the remedy: UniqueDeviceIdFragment writes
+    /// a fragment that matches one monitor and no other.</summary>
     public static DisplayChoice ChooseDisplay(IReadOnlyList<DisplayInfo> displays,
                                               string? deviceIdFragment, int? width, int? height)
     {
         if (displays is null || displays.Count == 0) return new DisplayChoice(null, DisplayReasonNone);
         if (!string.IsNullOrWhiteSpace(deviceIdFragment))
         {
-            var byId = displays.FirstOrDefault(d =>
-                d.DeviceId.Contains(deviceIdFragment, StringComparison.OrdinalIgnoreCase));
-            if (byId is not null) return new DisplayChoice(byId, DisplayReasonId);
+            var byId = displays.Where(d =>
+                d.DeviceId.Contains(deviceIdFragment, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (byId.Count == 1) return new DisplayChoice(byId[0], DisplayReasonId);
+            if (byId.Count > 1) return new DisplayChoice(null, DisplayReasonIdAmbiguous);
         }
         if (width is > 0 && height is > 0)
         {
@@ -132,6 +141,32 @@ public static class PanelLogic
         return IsAllowedNavigation(uri, panelUrl);
     }
 
+    /// <summary>What a finished navigation means. Three outcomes and not two: a navigation
+    /// can fail, or succeed at the wrong document, and those take different recoveries.</summary>
+    public enum PageOutcome { Loaded, Failed, NotThePanel }
+
+    public sealed record NavigationVerdict(PageOutcome Outcome, string Reason);
+
+    /// <summary>The whole reading of NavigationCompleted, pure so the two cases that need a
+    /// real server can be run without one (lane O). crabd REFUSING the connection arrives as
+    /// IsSuccess false with a WebErrorStatus and no status code; crabd answering 404 arrives
+    /// as IsSuccess TRUE with the code, because the navigation itself worked. Both end at
+    /// the fallback page, and the reason string is what tells the operator which happened:
+    /// ConnectionRefused means nothing is listening, HTTP 404 means something is and it is
+    /// not serving the panel.</summary>
+    public static NavigationVerdict JudgeNavigation(bool isSuccess, int httpStatus,
+                                                    string? webErrorStatus, string? source, Uri panelUrl)
+    {
+        if (!isSuccess)
+            return new NavigationVerdict(PageOutcome.Failed,
+                                         string.IsNullOrWhiteSpace(webErrorStatus) ? "the navigation failed"
+                                                                                   : webErrorStatus);
+        if (httpStatus >= 400) return new NavigationVerdict(PageOutcome.Failed, "HTTP " + httpStatus);
+        if (!IsPanelDocument(source, panelUrl))
+            return new NavigationVerdict(PageOutcome.NotThePanel, EscapeForLog(source, 120));
+        return new NavigationVerdict(PageOutcome.Loaded, "loaded");
+    }
+
     /// <summary>SCA-022. Where a CHILD frame may navigate: the panel's own origin and
     /// path, and nothing else. Stricter than the top-level lock, which also admits
     /// about:blank and the data: fallback page - those two are the host's own doing and a
@@ -152,6 +187,24 @@ public static class PanelLogic
         if (cssWidth <= 0 || physicalWidth <= 0 || currentZoom <= 0) return currentZoom;
         if (cssWidth == physicalWidth) return currentZoom;
         return currentZoom * cssWidth / physicalWidth;
+    }
+
+    /// <summary>Within 2 css px is equal: 2560 / 1.5 rounds to 1707 logical px, which reads
+    /// back as 2561 at zoom 0.667, and chasing that last pixel would loop the correction.</summary>
+    public const int ViewportTolerancePx = 2;
+
+    /// <summary>The whole correction rule: the zoom to SET after a measurement, or null to
+    /// leave it alone. The tolerance and the "did it actually move" test used to live in
+    /// PanelForm beside the WebView, where the 125/150/175 % convergence could only be
+    /// argued rather than run (lane O). Modelled against
+    /// innerWidth = round(physical / (dpiScale * zoom)), all three converge in ONE
+    /// correction, well inside the three the caller allows.</summary>
+    public static double? ZoomAfterMeasure(double currentZoom, int cssWidth, int physicalWidth)
+    {
+        if (cssWidth <= 0 || physicalWidth <= 0 || currentZoom <= 0) return null;
+        if (Math.Abs(cssWidth - physicalWidth) <= ViewportTolerancePx) return null;
+        var corrected = CorrectedZoom(currentZoom, cssWidth, physicalWidth);
+        return Math.Abs(corrected - currentZoom) > 0.001 ? corrected : null;
     }
 
     // ---- lane B: the settings a page may write ----
@@ -552,6 +605,18 @@ public static class PanelLogic
         return windowed ? "windowed" : "kiosk";
     }
 
+    /// <summary>LO-004. The two names a profile may not take, because the unnamed hosts
+    /// already own the files they map to: <c>--profile kiosk</c> resolves to the INSTALLED
+    /// host's WebView2 folder (WebViewUserDataDir returns the bare "WebView2" for it),
+    /// which is the shared-folder collision SCA-024 exists to stop, and
+    /// <c>--profile windowed</c> resolves to panel-windowed.log, which is the two-writers
+    /// line loss SCA-031 exists to stop. Neither is visible in the name the operator typed,
+    /// so the refusal is at the command line and names the collision.</summary>
+    public static readonly string[] ReservedProfiles = { "kiosk", "windowed" };
+
+    public static bool IsReservedProfile(string? profile) =>
+        ReservedProfiles.Contains(SafeProfileName(profile), StringComparer.Ordinal);
+
     public static string WebViewUserDataDir(string localAppData, string profileName) =>
         System.IO.Path.Combine(localAppData, "SideCrab", "Panel",
                                profileName == "kiosk" ? "WebView2" : "WebView2-" + SafeProfileName(profileName));
@@ -615,17 +680,21 @@ public static class PanelLogic
     /// answer to the attempt the operator is waiting on.</summary>
     public sealed class BridgeGate
     {
+        /// <summary>LO-006. A request with no usable id is still an attempt, so it takes a
+        /// slot the page can never send: removing the entry instead (as this did) cleared
+        /// the channel, and the next late reply to the attempt BEFORE it was then read as
+        /// current. A control character is what makes it unforgeable - RequestId refuses
+        /// any id carrying one.</summary>
+        private const string Legacy = "\u0000legacy";
+
         private readonly Dictionary<string, string> _current = new(StringComparer.Ordinal);
 
-        public void Accepted(string channel, string? requestId)
-        {
-            if (requestId is null) _current.Remove(channel);
-            else _current[channel] = requestId;
-        }
+        public void Accepted(string channel, string? requestId) => _current[channel] = requestId ?? Legacy;
 
         public bool IsCurrent(string channel, string? requestId)
         {
             if (!_current.TryGetValue(channel, out var id)) return true;
+            if (id == Legacy) return requestId is null;
             return requestId is not null && string.Equals(id, requestId, StringComparison.Ordinal);
         }
     }
@@ -671,6 +740,22 @@ public static class PanelLogic
         $"viewport: {cssWidth}x{cssHeight} css px, dpr {dpr:0.###}, zoom {zoom:0.###}, " +
         $"window {windowWidth}x{windowHeight} physical, pid {pid}, started {startedAt}";
 
+    /// <summary>LO-013. Whether a viewport measurement means anything right now. HIDDEN is
+    /// the case that matters, and it is not a small one: the page LOADS while the target
+    /// monitor is absent (it must, or an attach would need a reload), and the window is
+    /// still the WinForms default 300x300 then, so this wrote
+    /// "viewport: 300x300 css px ... window 300x300 physical" carrying this run's pid and
+    /// start stamp - measured on a real hidden start 2026-09-22.
+    ///
+    /// That line is the setup lane's evidence. Get-SideCrabViewportVerdict takes the last
+    /// viewport-or-hidden line, binds it to the running process, and passes when the css
+    /// and physical sizes agree. 300 equals 300, so a host that has never been on the glass
+    /// certified itself OK for the up-to-a-minute gap before the next `hidden:` line - the
+    /// window an installer's smoke test runs in. It is the SCA-004 shape that verdict was
+    /// written to close, arriving through a different door.</summary>
+    public static bool ShouldMeasureViewport(bool visible, bool pageFailed, bool showingFallback) =>
+        visible && !pageFailed && !showingFallback;
+
     public static string HiddenLine(int pid, string startedAt) =>
         $"hidden: target display absent, pid {pid}, started {startedAt}";
 
@@ -680,7 +765,11 @@ public static class PanelLogic
     public static readonly TimeSpan HiddenLineInterval = TimeSpan.FromSeconds(60);
 
     public static bool ShouldLogHidden(DateTime? lastAt, DateTime now) =>
-        lastAt is null || now - lastAt.Value >= HiddenLineInterval;
+        ShouldLogAgain(lastAt, now, HiddenLineInterval);
+
+    /// <summary>The same throttle for any line a five-second poll can repeat forever.</summary>
+    public static bool ShouldLogAgain(DateTime? lastAt, DateTime now, TimeSpan interval) =>
+        lastAt is null || now - lastAt.Value >= interval;
 
     // ---- MF-004: the display picker ----
 
@@ -785,19 +874,26 @@ public static class PanelLogic
         return JsonSerializer.Serialize(output, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    /// <summary>How long a picked display stands before it is undone unless kept.</summary>
+    /// <summary>How long a picked display stands before it is undone unless kept.
+    ///
+    /// LO-008: there is no per-display mode here. A RevertMode(picked) once said a
+    /// non-primary pick should revert with no prompt at all, which TrayUi never called and
+    /// which would have left the operator unable to KEEP a pick of the Edge. The prompt is
+    /// always shown, always on the primary where the operator is, and a timeout is always
+    /// a revert.</summary>
     public const int DisplayRevertSeconds = 10;
 
-    public const string RevertAsk = "ask";
-    public const string RevertAuto = "auto";
+    /// <summary>LO-005. The floor between two foreground handovers the page may ask for.
+    /// One focus-session request enumerates every top-level window and every process on the
+    /// UI thread - measured 2026-09-22 on this PC at 22 ms cold and 5 to 7 ms warm for 19
+    /// candidate windows - and then MOVES the operator's foreground. A page in a loop was
+    /// bounded by nothing: at 60 a second that is a third of the UI thread and sixty
+    /// rearrangements of the desktop. 250 ms is below a double click, so the button an
+    /// operator actually presses is unaffected, and a loop is capped at four a second.</summary>
+    public static readonly TimeSpan FocusMinInterval = TimeSpan.FromMilliseconds(250);
 
-    /// <summary>What happens when the timer runs out. A monitor the operator can SEE and
-    /// reach gets a "keep this display?" prompt; anything else reverts on its own, because
-    /// a prompt on a monitor that is off, unplugged or facing away is a panel the operator
-    /// cannot get back without editing JSON. The prompt is shown on the PRIMARY display
-    /// whichever monitor was picked.</summary>
-    public static string RevertMode(DisplayInfo? picked) =>
-        picked is not null && picked.Primary ? RevertAsk : RevertAuto;
+    public static bool FocusAllowedNow(DateTime? lastAt, DateTime now) =>
+        lastAt is null || now - lastAt.Value >= FocusMinInterval;
 
     // ---- MF-003: what the status window says ----
 
@@ -836,6 +932,7 @@ public static class PanelLogic
 
     public static string HiddenReason(string reason) => reason switch
     {
+        DisplayReasonIdAmbiguous => "two displays match the configured device id; pick one from this menu",
         DisplayReasonSizeAmbiguous => "two displays match the configured size; pick one from this menu",
         DisplayReasonSizePrimary => "the only size match is your primary display; pick a display from this menu",
         DisplayReasonNone => "the target display is not attached",

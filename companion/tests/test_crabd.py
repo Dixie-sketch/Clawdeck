@@ -62,16 +62,22 @@ def setUpModule():
     _MODULE_TMP = tempfile.TemporaryDirectory()
     root = Path(_MODULE_TMP.name)
     setUpModule.originals = (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-                             crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE)
+                             crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE,
+                             crabd.CRABD_LOG_FILE)
     crabd.LIMITS_CACHE_FILE = root / "limits-cache.json"
     crabd.USER_CONFIG_FILE = root / "config.json"
     crabd.HISTORY_FILE = root / "history.jsonl"
     crabd.CREDENTIALS_FILE = root / "no-such-credentials.json"
+    # v0.35.0: crabd now keeps its own rotating log, and _log_once writes to it. Several
+    # tests here trip a once-line on purpose, so without this the suite would append to
+    # the operator's live ~/.sidecrab/logs/crabd.log.
+    crabd.CRABD_LOG_FILE = root / "crabd.log"
 
 
 def tearDownModule():
     (crabd.LIMITS_CACHE_FILE, crabd.USER_CONFIG_FILE,
-     crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE) = setUpModule.originals
+     crabd.HISTORY_FILE, crabd.CREDENTIALS_FILE,
+     crabd.CRABD_LOG_FILE) = setUpModule.originals
     # SELF-ISOLATING (2026-08-27): the fixtures leave a builder on the Handler CLASS, and
     # a builder outliving its module points at a TemporaryDirectory that is about to be
     # deleted. unittest happens to run these modules one after another; pytest gives no
@@ -3197,7 +3203,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.34.0")
+        self.assertEqual(crabd.VERSION, "0.35.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5968,7 +5974,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.34.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.35.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
