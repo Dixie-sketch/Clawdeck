@@ -345,7 +345,7 @@ if (-not $WhatIfPreference -and -not $SkipRestart -and $panelInScope) {
             # the run that failed is the one that stopped it.
             Start-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
             $after = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
-            Write-Host "           Rolled back to the previous host ($running) and restarted it: $($panelSpec.TaskName) is $($after.State)." -ForegroundColor Yellow
+            Write-Host "           Rolled back to the last-good host ($running) and restarted it: $($panelSpec.TaskName) is $($after.State)." -ForegroundColor Yellow
         } elseif ($staged.Swapped) {
             Write-Host "           The new host is live and did not come back, and there was no kept generation to restore. Put one back with: pwsh -File setup\Restore-SideCrab.ps1 -Host" -ForegroundColor Red
         } else {

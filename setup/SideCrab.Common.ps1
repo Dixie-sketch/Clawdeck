@@ -3151,9 +3151,9 @@ function Invoke-SideCrabHostSwap {
         # the panel with no directory at all.
         if ($kept -and -not (Test-Path -LiteralPath $DistPath)) { [IO.Directory]::Move($LastGoodPath, $DistPath) }
         return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
-                                  Reason = "the staged host could not be moved into place - $($_.Exception.Message); the previous host was put back" }
+                                  Reason = "the staged host could not be moved into place - $($_.Exception.Message); the last-good host was put back" }
     }
-    $why = if ($kept) { "swapped; the previous host is kept at $LastGoodPath" } else { 'swapped; there was no previous host to keep' }
+    $why = if ($kept) { "swapped; the last-good host is kept at $LastGoodPath" } else { 'swapped; there was no previous host to keep' }
     [pscustomobject]@{ Swapped = $true; KeptLastGood = $kept; Reason = $why }
 }
 
@@ -3184,12 +3184,12 @@ function Restore-SideCrabHostLastGood {
         [IO.Directory]::Move($LastGoodPath, $DistPath)
     } catch {
         return [pscustomobject]@{ Restored = $false; FailedPath = ''
-                                  Reason = ("the previous host COULD NOT be put back - $($_.Exception.Message). " +
+                                  Reason = ("the last-good host COULD NOT be put back - $($_.Exception.Message). " +
                                             "It is still at $LastGoodPath; stop SideCrab-panel and run " +
                                             'setup\Restore-SideCrab.ps1 -Host.') }
     }
     [pscustomobject]@{ Restored = $true; FailedPath = $failed
-                       Reason = "restored the previous host into $DistPath$(if ($failed) { "; the host that failed is at $failed" })" }
+                       Reason = "restored the last-good host into $DistPath$(if ($failed) { "; the host that failed is at $failed" })" }
 }
 
 function Invoke-SideCrabStagedHostUpdate {
@@ -3252,7 +3252,7 @@ function Invoke-SideCrabStagedHostUpdate {
     if ($live) {
         $result.Ok = $true
         $result.Phase = 'done'
-        $result.Reason = "host $($result.Version) is live$(if ($swap.KeptLastGood) { "; the previous host is kept at $LastGoodPath" })"
+        $result.Reason = "host $($result.Version) is live$(if ($swap.KeptLastGood) { "; the last-good host is kept at $LastGoodPath" })"
         return $result
     }
 
