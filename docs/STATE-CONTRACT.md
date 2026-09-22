@@ -20,6 +20,141 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.36.0 (2026-09-22 — ADDITIVE: a failed session, exact subagent counts, the hook routes; schema stays 5)
+
+Two additive members on `sessions[]`, one new value for `sessions[].state`, and the hook
+routes crabd now serves. Nothing is removed and no existing answer changes shape.
+
+**Read `state` as an open set.** `failed` is the first new value since the panel was
+written, and it will not be the last. A consumer that switches on the five it knows and
+falls through to a neutral card keeps working; one that assumes the set is closed does
+not.
+
+### 1. `sessions[].state` gains `"failed"`
+
+The CLI fires a `StopFailure` hook **instead of `Stop`** when an API error ends a turn.
+Before this release crabd saw nothing at all: the session stayed `working` until it aged
+to `idle` fifteen minutes later, so a rate-limited session and a thinking one looked the
+same on the glass.
+
+`failed` means **this turn ended on an API error and is not coming back on its own.**
+
+| | |
+|---|---|
+| **Ages** | exactly as `done` does. Retired at `DONE_DROP_SEC` (10 minutes), and reactivated to `working` by a transcript write past the done-reactivation grace, which is what a retry looks like before any hook reports it. |
+| **Cleared by** | the next `UserPromptSubmit` or `SessionStart` on that session, and by any other state-moving hook. A `Stop` after a failure is the ordinary `done`. |
+| **Counts** | not toward `recap.doneToday`. A turn that died on a 429 did not finish. |
+| **Sorts** | second, between `needs_input` and `working`. |
+
+### 2. `sessions[].failure`, present only on a failed session
+
+```jsonc
+"failure": { "errorType": "rate_limit",
+             "at": "2026-09-22T14:02:11Z",
+             "message": "retry after 60s" }
+```
+
+`errorType` is one of thirteen values, and **the set is wider than the published hooks
+reference lists**: `rate_limit`, `overloaded`, `authentication_failed`,
+`oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`,
+`invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`,
+`cloud_credential_error`, `unknown`. Measured in the shipped CLI on 2026-09-22. Anything
+outside the set is served as `unknown` rather than passed through, so a consumer may
+style the thirteen and needs no escape hatch for a fourteenth.
+
+`message` is optional and capped at 200 characters. It is the CLI's own `error_details`
+and is absent when there is none.
+
+**`failure` is absent on every state but `failed`**, and it can be absent on a `failed`
+row too. A session restored from `history.jsonl` after a crabd restart comes back
+`failed` with no `failure`: the history file holds a kind and a title, never the error.
+That row reads `lastEvent: "stopped on an API error"` and says nothing more, which is
+the honest picture of what crabd still knows. **Render `failure` only when it is there.**
+
+### 3. `sessions[].subagents.named`, present only when an id is known
+
+```jsonc
+"subagents": { "running": 2, "total": 5,
+               "named": [ { "id": "a7f3…", "type": "Explore",
+                            "startedAt": "2026-09-22T14:01:40Z" } ] }
+```
+
+Up to eight entries, newest first. `running` and `total` are unchanged keys with
+unchanged meanings; what changed is where `running` gets its number.
+
+**`running` has two sources and never blends them.** Once a session has seen a
+`SubagentStart`, `agent_id` pairs each start with its stop and the count is exact. Until
+then it is the pre-v0.36.0 heuristic: active subagent transcript files minus recorded
+stops. The latch is the **start**, deliberately not the arrival of an id-carrying stop -
+a crabd restarted mid-subagent holds the stop and never saw the start, and trusting ids
+there would serve `running: 0` for a subagent that is still working.
+
+`named` is therefore **absent on every session answered by the heuristic**, and absent
+again once the last subagent stops. Presence is the feature detection; an empty array
+would be a claim that crabd looked and found none. An orphan - a start whose stop never
+arrived - is dropped after an hour, so an interrupted turn cannot pin the badge above
+zero for the life of the daemon.
+
+`subagentDetail` is untouched and still comes from the transcript files.
+
+**`SubagentStart` writes no `events` entry**, deliberately; `SubagentStop` still writes
+its "subagent finished" as it always has. The ring holds eight entries and is persisted,
+and a turn launching four subagents would fill it with bookkeeping and evict the "prompt
+submitted" that says what the turn is. Read the start from `named` instead: it carries
+the id, the type and the time.
+
+### 4. The hook routes
+
+Every hook event now has its own ingest route. All of them land in the same handler and
+**the payload's `hook_event_name` still decides what crabd does** - the URL is what makes
+a hook legible in a capture and in a log, never a second source of truth.
+
+| Event | Route | Type | Timeout |
+|---|---|---|---|
+| `SessionStart` | `/v1/hook/session-start` | `command` (curl) | 3 s |
+| `UserPromptSubmit` | `/v1/hook/prompt` | `http` | 3 s |
+| `Notification` | `/v1/hook/notification` | `http` | 3 s |
+| `Stop` | `/v1/hook/stop` | `http` | 5 s |
+| `StopFailure` | `/v1/hook/stop-failure` | `http` | 3 s |
+| `SubagentStart` | `/v1/hook/subagent-start` | `http` | 3 s |
+| `SubagentStop` | `/v1/hook/subagent-stop` | `http` | 3 s |
+| `PermissionRequest` | `/v1/hook/permission` | `http` | 60 s |
+| `SessionEnd` | `/v1/hook/session-end` | `http` | 3 s |
+| `PreCompact` | `/v1/hook/precompact` | `http` | 3 s |
+
+**`SessionStart` keeps `curl.exe`, and that is not an oversight.** The shipped CLI skips
+`type: "http"` handlers on `SessionStart` and `Setup` and logs that it did. An http entry
+there never fires at all, so crabd would never learn that a session had opened.
+
+**The bare `/v1/hook` stays served.** No shipped entry points at it any more, and a
+fragment installed on another machine before this release posts every event there. It is
+the compatibility route, not a deprecated one.
+
+Every ingest route answers **204 before it parses**, as `/v1/hook` always has. A
+malformed body is still a 204, deliberately: an http hook treats any non-2xx as a failed
+hook and writes a warning into the operator's own session, so a 400 for a payload only
+crabd cares about would put crabd's problem in front of the person.
+
+**Nothing about crabd being down can wedge a session.** An unreachable or erroring http
+hook returns an empty answer for every event but `PreToolUse`, which SideCrab does not
+register. Measured in the shipped CLI, not inferred.
+
+### 5. `Notification`: the type, not the message string
+
+The `Notification` payload carries `notification_type`, so crabd no longer has only the
+human-readable message to go on. **The fragment declares no `matcher`** - a matcher
+filters, the live type list moves between CLI releases, and a fragment that enumerates
+types silently drops the next one added.
+
+**What changes on the wire is one thing: fewer false `needs_input` states.** Five types
+are an FYI about something that already happened and no longer raise the alert:
+`agent_completed`, `auth_success`, `quota_auto_resume_fired`, `computer_use_enter`,
+`computer_use_exit`. They still land in `events` with their own text. Every other type -
+including one a later CLI introduces, and an old fragment that sends no type at all -
+behaves exactly as it did before. No member is added or removed.
+
+---
+
 ## v0.35.0 (2026-09-22 — ADDITIVE: six session members from the transcript, one new hook route; schema stays 5)
 
 Six additive members on `sessions[]`, all derived from the transcript Claude Code already

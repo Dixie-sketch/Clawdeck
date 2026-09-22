@@ -1487,6 +1487,628 @@ function laneNDetail(ctx, s) {
 	ok(/resources\/icon\.svg/.test(src), 'and keeps the product icon');
 })();
 
+/* ================ lane S: a failed session, and the subagents crabd can name */
+
+/* Version label v0.34.0 in this section is PROVISIONAL; version.json still reads
+   0.33.0 and the orchestrator assigns the real number at the merge. */
+
+function laneSSession(extra) {
+	var s = { id: 'f1', state: 'failed', stateSince: '2026-09-21T11:00:00Z',
+		title: 'Failure fixture', repo: 'fixture', model: 'claude-opus-5' };
+	for (var k in extra) { if (Object.prototype.hasOwnProperty.call(extra, k)) s[k] = extra[k]; }
+	return s;
+}
+
+function laneSFail(type, message) {
+	var f = { errorType: type, at: '2026-09-21T11:00:00Z' };
+	if (message !== undefined) f.message = message;
+	return f;
+}
+
+/* The Detail page against one session, the same driver the lane N section uses. */
+function laneSDetail(ctx, s) {
+	var w = ctx.w;
+	w.viewIdx = 3;
+	w.detailSessionId = String(s.id);
+	w.lastGoodDoc = { sessions: [s] };
+	w.detailViewSig = null;
+	w.renderDetailView([s], false);
+	return w.ui.viewDetail;
+}
+
+/* THE MARKUP, as a string. The fixture's Element has no outerHTML, and the
+   0.33.0-parity check below needs to compare whole trees rather than the handful
+   of nodes a querySelector would reach — a regression that added an empty div is
+   exactly the kind this has to catch. Attributes are sorted so the comparison is
+   about content and not about the order two branches happened to set them in. */
+function laneSMarkup(el) {
+	if (!el) return '';
+	var tag = el.tagName.toLowerCase();
+	var keys = Object.keys(el.attrs).sort();
+	var attrs = '';
+	for (var i = 0; i < keys.length; i++) attrs += ' ' + keys[i] + '="' + el.attrs[keys[i]] + '"';
+	var cls = el.className ? ' class="' + el.className + '"' : '';
+	var inner = el.text;
+	for (var j = 0; j < el.children.length; j++) inner += laneSMarkup(el.children[j]);
+	return '<' + tag + cls + attrs + '>' + inner + '</' + tag + '>';
+}
+
+(function laneSFailureWords() {
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+
+	/* ALL THIRTEEN THE CONTRACT NAMES, in the words a wall panel can read. crabd
+	   clamps anything else to `unknown`, so this set is the whole wire vocabulary. */
+	var want = {
+		rate_limit: 'rate limited', overloaded: 'overloaded',
+		authentication_failed: 'sign-in failed', billing_error: 'billing',
+		server_error: 'server error', oauth_org_not_allowed: 'org not allowed',
+		account_on_hold: 'account on hold', verification_required: 'verification needed',
+		invalid_request: 'bad request', model_not_found: 'model not found',
+		max_output_tokens: 'output limit', cloud_credential_error: 'cloud credentials',
+		unknown: 'failed'
+	};
+	for (var type in want) {
+		if (!Object.prototype.hasOwnProperty.call(want, type)) continue;
+		eq(w.laneSFailureWords(laneSSession({ failure: laneSFail(type) })), want[type],
+			type + ' reads "' + want[type] + '"');
+	}
+
+	/* A type this build does not know renders the bare word, never the wire token:
+	   "gateway_timeout" on a wall panel is a field name, not a sentence. */
+	eq(w.laneSFailureWords(laneSSession({ failure: laneSFail('gateway_timeout') })), 'failed',
+		'an errorType the map does not name falls back to the state word');
+	eq(w.laneSFailureWords(laneSSession({ failure: laneSFail(42) })), 'failed',
+		'and so does one that is not a string');
+
+	eq(Object.keys(w.FAILURE_WORDS).length, 13, 'and the map names thirteen and no more');
+
+	/* NO BLOCK, NO WORDS. A failed row legitimately arrives without `failure` - a
+	   crabd restart keeps the kind and the title in history and never the error -
+	   and the STATE is the fact on its own. Repeating "failed" under a card already
+	   reading FAILED would spend the line to say nothing and push out the lastEvent
+	   that is the only thing left describing the session. */
+	eq(w.laneSFailureWords(laneSSession()), null, 'a failed session with no failure block gets no words');
+	eq(w.laneSFailureWords(laneSSession({ failure: 'not-an-object' })), null, 'a malformed block is an absent one');
+	eq(w.laneSFailureWords(laneSSession({ failure: [] })), null, 'an array is not a failure block');
+
+	/* AND ONLY ON A FAILED SESSION. A `failure` left behind on a row that has since
+	   recovered must not put a red word on a working card. */
+	eq(w.laneSFailureWords({ id: 'a', state: 'working', failure: laneSFail('rate_limit') }), null,
+		'a working session carrying a stale failure block reads nothing');
+	eq(w.laneSFailure({ id: 'a', state: 'done', failure: laneSFail('overloaded') }), null,
+		'and the block itself is not read off a done row');
+
+	/* The message is optional, and an empty one is ABSENT rather than a blank
+	   region under a heading. */
+	eq(w.laneSFailureMessage(laneSSession({ failure: laneSFail('rate_limit', 'retry after 60s') })),
+		'retry after 60s', 'a message is carried through');
+	eq(w.laneSFailureMessage(laneSSession({ failure: laneSFail('rate_limit') })), null, 'an absent message is null');
+	eq(w.laneSFailureMessage(laneSSession({ failure: laneSFail('rate_limit', '   ') })), null,
+		'and a whitespace-only message is absent, not blank');
+})();
+
+(function laneSFailedCard() {
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+	var s = laneSSession({
+		failure: laneSFail('rate_limit', 'would exceed 80,000 input tokens per minute'),
+		lastEvent: 'converting the schema gate',
+		subagents: { running: 2, total: 4 }
+	});
+	var card = w.buildCard(s, false);
+
+	eq(card.getAttribute('data-state'), 'failed', 'the card carries the failed state for the stylesheet');
+	eq(card.querySelector('.card-state').textContent, 'failed',
+		'and the state WORD is failed (the stylesheet upper-cases it to FAILED)');
+	var line = card.querySelector('.card-failure');
+	ok(!!line, 'the event line is the failure line');
+	eq(line.textContent, 'rate limited', 'and it carries the error type in words');
+	eq(card.textContent.indexOf('converting the schema gate'), -1,
+		'the failure REPLACES lastEvent rather than stacking a second line on it');
+
+	/* The card keeps its badge. subagents.running is untouched by this lane. */
+	var subBadge = card.querySelector('.badge-sub');
+	ok(!!subBadge && subBadge.textContent === '2 sub', 'the card keeps its "N sub" badge');
+
+	/* NOT the loud card. A failed row does not pulse, is not swipeable and is not
+	   acked away: it has no question to answer and nothing to dismiss. */
+	eq(card.classList.contains('pulse'), false, 'a failed card does not pulse');
+	eq(card.classList.contains('swipeable'), false, 'and it cannot be swiped away');
+
+	/* The message is NOT on the card. Two words fit there; a paragraph does not,
+	   and the Detail page is the surface that carries it. */
+	eq(card.textContent.indexOf('80,000'), -1, 'the message stays off the card');
+
+	/* A failed row with no block keeps its lastEvent, which is then the only thing
+	   on the card describing the session. The state word carries the failure. */
+	var bare = w.buildCard(laneSSession({ id: 'f2', lastEvent: 'running the suite' }), false);
+	eq(bare.querySelector('.card-failure'), null, 'a failed card with no failure block has no failure line');
+	eq(bare.querySelector('.card-state').textContent, 'failed', 'the state word still says so on its own');
+	eq(bare.querySelector('.card-event').textContent, 'running the suite',
+		'and lastEvent keeps the line rather than being pushed out by a word that adds nothing');
+})();
+
+(function laneSFailedDetail() {
+	var c = F.nativePage();
+	quiet(c, ['detectChime']);
+	var s = laneSSession({ failure: laneSFail('overloaded', 'the upstream is overloaded, retry shortly') });
+	var root = laneSDetail(c, s);
+
+	var chip = root.querySelector('.dv-chip-state');
+	eq(chip.getAttribute('data-state'), 'failed', 'the Detail state chip carries the failed state');
+	ok(chip.textContent.indexOf('FAILED') === 0, 'and reads FAILED');
+	var head = root.querySelector('.dv-failure-head');
+	ok(!!head, 'the Detail page heads the failure block');
+	eq(head.textContent, 'failed — overloaded', 'with the error type in words');
+	eq(root.querySelector('.dv-failure').textContent, 'the upstream is overloaded, retry shortly',
+		'and carries the message whole');
+
+	/* No message, no block: a heading over an empty region would be the page
+	   claiming a detail it does not have. */
+	var n = F.nativePage();
+	quiet(n, ['detectChime']);
+	var nroot = laneSDetail(n, laneSSession({ id: 'f3', failure: laneSFail('server_error') }));
+	ok(!!nroot.querySelector('.dv-failure-head'), 'a failure with no message still gets the heading');
+	eq(nroot.querySelector('.dv-failure'), null, 'and no empty message block under it');
+
+	/* The failure outranks the latest-event block: on a failed session the last
+	   thing that happened IS the failure. */
+	var e = F.nativePage();
+	quiet(e, ['detectChime']);
+	var eroot = laneSDetail(e, laneSSession({ id: 'f4', lastEvent: 'reading the config',
+		failure: laneSFail('billing_error') }));
+	eq(eroot.querySelector('.dv-failure-head').textContent, 'failed — billing',
+		'the failure block is rendered');
+	eq(eroot.textContent.indexOf('reading the config'), -1, 'and the latest-event block is not');
+})();
+
+(function laneSNamedSubagents() {
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+
+	/* NINE against a cap of EIGHT. crabd caps the array; this defends anyway, for
+	   the reason subList defends against subagentDetail's cap of five. */
+	var nine = [];
+	for (var i = 1; i <= 9; i++) {
+		nine.push({ id: 'sub-' + i, type: 'agent-' + i, startedAt: '2026-09-21T10:0' + (i - 1) + ':00Z' });
+	}
+	eq(w.laneSNamedSubs({ subagents: { running: 9, named: nine } }).length, 8,
+		'the named list is capped at 8 whatever the feed sends');
+	eq(w.laneSNamedSubs({ subagents: { running: 9, named: nine } })[0].type, 'agent-1',
+		'and the cap takes the feed order, it does not re-sort');
+
+	/* Absent, malformed and non-array all read as NO named agents, never as a
+	   reason to look somewhere else. */
+	eq(w.laneSNamedSubs({ subagents: { running: 3 } }), [], 'an absent member is an empty list');
+	eq(w.laneSNamedSubs({}), [], 'and so is an absent subagents block');
+	eq(w.laneSNamedSubs({ subagents: { named: 'nope' } }), [], 'and a non-array member');
+	eq(w.laneSNamedSubs({ subagents: { named: [null, 'x', 7] } }), [], 'and rows that are not objects');
+
+	/* A row crabd cannot name is still a row: an agent is running and saying so
+	   with no name is truer than pretending it is not there. */
+	var unnamed = w.laneSNamedSubs({ subagents: { named: [{ id: 'a', startedAt: '2026-09-21T10:00:00Z' }] } });
+	eq(unnamed.length, 1, 'a row with no type survives');
+	eq(unnamed[0].type, 'subagent', 'and is named generically');
+	eq(w.laneSNamedSubs({ subagents: { named: [{ id: 'a', type: 'x', startedAt: 'not-a-date' }] } })[0].at, null,
+		'an unparseable startedAt anchors nothing rather than anchoring zero');
+
+	/* THE DETAIL PAGE lists the types and how long each has run. */
+	var d = F.nativePage();
+	quiet(d, ['detectChime']);
+	var s = { id: 'a', state: 'working', stateSince: '2026-09-21T11:00:00Z', title: 'T', repo: 'r',
+		subagents: { running: 3, total: 3, named: [
+			{ id: 's1', type: 'general-purpose', startedAt: iso(d.now() - 125000) },
+			{ id: 's2', type: 'Explore', startedAt: iso(d.now() - 3600000) },
+			{ id: 's3', type: 'code-reviewer', startedAt: 'not-a-date' }
+		] } };
+	var root = laneSDetail(d, s);
+	var labels = root.querySelectorAll('.sub-label');
+	eq(labels.length, 3, 'the Detail page lists every named agent');
+	eq(labels[0].textContent, 'general-purpose', 'by its type');
+	eq(labels[1].textContent, 'Explore', 'in feed order');
+	var ages = root.querySelectorAll('.sub-age-live');
+	eq(ages.length, 3, 'each row carries a LIVE age anchor, not a snapshot');
+	eq(ages[0].textContent, '2m', 'and the tick has filled the first');
+	eq(ages[1].textContent, '1h', 'and the second, in the words fmtDur uses');
+	eq(ages[2].textContent, '—', 'while an unreadable start stays an em-dash');
+
+	/* THE CARD IS UNTOUCHED: the badge counts subagents.running and the card's own
+	   rows are still subagentDetail's. */
+	var card = w.buildCard(s, false);
+	eq(card.querySelector('.badge-sub').textContent, '3 sub', 'the card keeps the running count');
+	eq(card.querySelectorAll('.sub-age-live').length, 0, 'and grows no named rows');
+
+	/* THE FALL-BACK. With no `named`, the Detail page shows subagentDetail exactly
+	   as it did at 0.33.0 — one block, never two, because both describe the same
+	   agents and listing them together would name every agent twice. */
+	var f = F.nativePage();
+	quiet(f, ['detectChime']);
+	var froot = laneSDetail(f, { id: 'b', state: 'working', stateSince: '2026-09-21T11:00:00Z',
+		title: 'T', repo: 'r', subagents: { running: 2 },
+		subagentDetail: [{ label: 'contract-diff', ageSec: 61 }, { label: 'fixture-sweep', ageSec: 288 }] });
+	var flabels = froot.querySelectorAll('.sub-label');
+	eq(flabels.length, 2, 'without `named` the subagentDetail rows are what is shown');
+	eq(flabels[0].textContent, 'contract-diff', 'by their label');
+	eq(froot.querySelectorAll('.sub-age-live').length, 0, 'and they keep the snapshot age, not an anchor');
+	eq(froot.querySelectorAll('.sub-age')[0].textContent, '1m', 'which the poll relabels');
+
+	/* AND NEVER BOTH. A session carrying both members shows the named list alone. */
+	var g = F.nativePage();
+	quiet(g, ['detectChime']);
+	var groot = laneSDetail(g, { id: 'c', state: 'working', stateSince: '2026-09-21T11:00:00Z',
+		title: 'T', repo: 'r',
+		subagents: { running: 1, named: [{ id: 'x', type: 'doc-writer', startedAt: iso(g.now() - 60000) }] },
+		subagentDetail: [{ label: 'contract-diff', ageSec: 61 }] });
+	eq(groot.querySelectorAll('.sub-label').length, 1, 'a session with both members lists each agent once');
+	eq(groot.querySelector('.sub-label').textContent, 'doc-writer', 'and the named list is the one that wins');
+})();
+
+(function laneSOrdering() {
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+
+	/* WHERE `failed` SORTS, in the two places this file declares an order. */
+	function row(id, state) { return { id: id, state: state, stateSince: '2026-09-21T11:00:00Z' }; }
+
+	w.lastGoodDoc = { sessions: [row('w1', 'working'), row('f1', 'failed'), row('q1', 'needs_input')] };
+	w.detailSessionId = null;
+	eq(w.detailTarget().id, 'q1', 'the Detail page still opens on the waiting row first');
+	w.lastGoodDoc = { sessions: [row('i1', 'idle'), row('w1', 'working'), row('f1', 'failed')] };
+	w.detailSessionId = null;
+	eq(w.detailTarget().id, 'f1', 'with nothing waiting it opens on the failed row, ahead of working');
+
+	/* THE CLAMP. A failed row has no pulse, no glow, no chime and no swipe, so the
+	   clamp is the only thing between it and the "+N more" tile. */
+	var many = [];
+	for (var i = 0; i < 12; i++) many.push(row('d' + i, 'done'));
+	many.push(row('fail', 'failed'));
+	var res = w.clampGrid(many, 8);
+	var kept = res.visible.filter(function (s) { return s.id === 'fail'; }).length;
+	eq(kept, 1, 'a failed row at the end of a long done list keeps a cell');
+	eq(res.rest.some(function (s) { return s.state === 'failed'; }), false, 'and is never in the cut list');
+	/* The TAIL still reads "idle": the six rows the clamp cut are all done, and the
+	   failed row is not among them. The word describes what was CUT, not what was
+	   kept, so protecting the failed row is exactly what leaves this reading true. */
+	eq(res.chipText, '+6 idle', 'and the tail names what was cut, which is six done rows');
+
+	/* The waiting row still outranks it when there are not cells for both: the
+	   clamp is ONE pass in feed order, so crabd's own order decides between them. */
+	var both = [row('q1', 'needs_input'), row('f1', 'failed')];
+	for (var j = 0; j < 10; j++) both.push(row('d' + j, 'done'));
+	var r2 = w.clampGrid(both, 3);
+	eq(r2.visible.map(function (s) { return s.id; }), ['q1', 'f1'],
+		'waiting and failed take the cells, in the order the feed delivered them');
+
+	/* THE FILTER IS UNTOUCHED, and that is the right answer rather than an
+	   omission: FILTERS names four states and a fifth falls only into "all",
+	   never silently into a bucket whose label would then be a lie. */
+	eq(w.FILTERS[1].match.failed, undefined, '`failed` is not folded into the Waiting filter');
+	eq(w.FILTERS[3].match.failed, undefined, 'nor into Done/Idle');
+})();
+
+(function laneSNoChime() {
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+	var prev = { a: 'working' };
+	var now = c.now();
+
+	/* THE DECISION, pinned: a failure is not a question. It has no answer to give,
+	   and one rate limit fails every session on the account in the same poll. */
+	eq(w.chimeDecision(prev, [{ id: 'a', state: 'failed' }], false, true, now, 0), false,
+		'a session that has just failed does not chime');
+	eq(w.chimeDecision(prev, [{ id: 'b', state: 'failed' }], false, true, now, 0), false,
+		'nor does a failed session this panel has never seen before');
+	eq(w.chimeDecision(prev, [{ id: 'a', state: 'failed' }, { id: 'b', state: 'failed' },
+		{ id: 'c', state: 'failed' }], false, true, now, 0), false,
+		'and a whole account rate-limited at once is silent, which is the point');
+
+	/* THE GATE STILL FIRES for the thing it is for, so this is a decision and not a
+	   broken chime. */
+	eq(w.chimeDecision(prev, [{ id: 'a', state: 'needs_input' }], false, true, now, 0), true,
+		'a new question still chimes');
+})();
+
+(function laneS033Parity() {
+	/* A SESSION THAT CARRIES NEITHER MEMBER RENDERS EXACTLY THE 0.33.0 MARKUP.
+	   Proven by running the shipping builders twice over one session: once as they
+	   ship, and once with this lane's three entry points answering the way the file
+	   answered before they existed. Identical strings mean the additive code
+	   contributes nothing at all to a document that carries none of the members,
+	   which is the whole presence-detection contract. */
+	var plain = { id: 'p1', state: 'working', stateSince: '2026-09-21T11:00:00Z',
+		title: 'A working session', titleSource: 'cwd', repo: 'sidecrab', branch: 'main',
+		model: 'claude-opus-5', speed: 'fast', lastEvent: 'reading the contract',
+		contextTokens: 61000, contextWindowTokens: 200000,
+		subagents: { running: 2, total: 4 },
+		subagentDetail: [{ label: 'contract-diff', ageSec: 61 }, { label: 'fixture-sweep', ageSec: 288 }],
+		events: [{ at: '2026-09-21T10:59:00Z', text: 'started' }] };
+
+	var a = F.nativePage();
+	quiet(a, ['detectChime']);
+	var shipped = laneSMarkup(a.w.buildCard(plain, false)) + '#####' +
+		laneSMarkup(laneSDetail(a, plain));
+
+	var b = F.nativePage();
+	quiet(b, ['detectChime']);
+	/* The pre-lane answers: no failure words, no named agents, no signature
+	   fragment. Nothing else about the two pages differs. */
+	b.w.laneSFailureWords = function () { return null; };
+	b.w.laneSFailureMessage = function () { return null; };
+	b.w.laneSNamedSubs = function () { return []; };
+	b.w.laneSSig = function () { return ''; };
+	var before = laneSMarkup(b.w.buildCard(plain, false)) + '#####' +
+		laneSMarkup(laneSDetail(b, plain));
+
+	eq(shipped, before, 'a session carrying neither new member renders exactly the 0.33.0 markup');
+
+	/* MUTATION PROOF for the comparison itself. A test that cannot tell two trees
+	   apart reports parity forever, so the same serializer is shown FAILING on a
+	   session that does carry the members. */
+	var m = F.nativePage();
+	quiet(m, ['detectChime']);
+	var carrying = JSON.parse(JSON.stringify(plain));
+	carrying.state = 'failed';
+	carrying.failure = { errorType: 'rate_limit', at: '2026-09-21T11:00:00Z' };
+	carrying.subagents.named = [{ id: 'x', type: 'Explore', startedAt: '2026-09-21T10:58:00Z' }];
+	var moved = laneSMarkup(m.w.buildCard(carrying, false)) + '#####' +
+		laneSMarkup(laneSDetail(m, carrying));
+	ok(moved !== shipped, 'and the serializer does move when the members are there (mutation proof)');
+
+	/* THE SIGNATURE is structure, not an age: it moves with the members and is
+	   empty without them, so a card cannot go on printing a failure for a session
+	   that has recovered. */
+	eq(a.w.laneSSig(plain), '~', 'the signature fragment is empty on a session with neither member');
+	ok(a.w.laneSSig(carrying) !== '~', 'and carries both when they are there');
+	var recovered = JSON.parse(JSON.stringify(carrying));
+	recovered.state = 'working';
+	delete recovered.failure;
+	delete recovered.subagents.named;
+	eq(a.w.laneSSig(recovered), '~', 'and empties again the moment they go');
+})();
+
+(function laneSFixtures() {
+	/* Both new fixtures parse, are registered, and carry the shapes they exist for.
+	   A fixture nothing loads is a file, not a test. */
+	var dir = path.join(__dirname, '..', 'mock');
+	var failed = JSON.parse(fs.readFileSync(path.join(dir, 'mock-state-failed.json'), 'utf8'));
+	var agents = JSON.parse(fs.readFileSync(path.join(dir, 'mock-state-agents.json'), 'utf8'));
+	var c = F.nativePage();
+	var w = quiet(c, ['detectChime']);
+	ok(w.MOCKS.indexOf('failed') >= 0, '?mock=failed is registered');
+	ok(w.MOCKS.indexOf('agents') >= 0, 'and ?mock=agents');
+
+	var types = {};
+	var noBlock = 0, noMessage = 0;
+	for (var i = 0; i < failed.sessions.length; i++) {
+		var s = failed.sessions[i];
+		if (s.state !== 'failed') continue;
+		if (!s.failure) { noBlock++; continue; }
+		types[s.failure.errorType] = 1;
+		if (s.failure.message === undefined) noMessage++;
+	}
+	ok(Object.keys(types).length >= 4, 'the failed fixture carries at least four error types');
+	ok(!!types.gateway_timeout, 'including one the widget does not name');
+	eq(noBlock, 1, 'and exactly one failed row with no failure block at all (the restarted-crabd case)');
+	ok(noMessage >= 1, 'and at least one failure with no message');
+
+	var over = 0, untyped = 0, badStart = 0;
+	for (var j = 0; j < agents.sessions.length; j++) {
+		var n = agents.sessions[j].subagents && agents.sessions[j].subagents.named;
+		if (!Array.isArray(n)) continue;
+		if (n.length > 8) over++;
+		for (var k = 0; k < n.length; k++) {
+			if (n[k].type === undefined) untyped++;
+			if (isNaN(Date.parse(n[k].startedAt))) badStart++;
+		}
+	}
+	eq(over, 1, 'the agents fixture breaks the cap on exactly one row, so the clamp has work to do');
+	ok(untyped >= 1, 'and carries a row crabd could not name');
+	ok(badStart >= 1, 'and one whose startedAt will not parse');
+	eq(w.laneSNamedSubs(agents.sessions[1]).length, 8, 'and the widget clamps that row to 8');
+})();
+
+/* ===================================== lane S: the temperature unit setting */
+
+(function laneSTempConversion() {
+	function at(unit, props) {
+		var c = F.nativePage({ props: props || {} });
+		return quiet(c, ['detectChime']);
+	}
+
+	/* THE DEFAULT IS CELSIUS AND IS BYTE-FOR-BYTE WHAT SHIPPED: the bare degree,
+	   no letter, which is what the row's width budget is measured against. */
+	var d = at(null, {});
+	eq(d.laneSTempUnit(), 'c', 'the unit defaults to Celsius with nothing injected');
+	eq(d.laneSTempDisplay(61, 'C'), { value: 61, letter: '' }, 'and a Celsius reading is untouched and unlettered');
+	eq(d.laneSTempDisplay(61, ''), { value: 61, letter: '' }, 'a blank unit is Celsius, as it always was');
+	eq(d.laneSTempDisplay(61, '°C'), { value: 61, letter: '' }, 'and so is one written with the degree sign');
+
+	/* THE CONVERSION, at the three points anybody checks. */
+	var f = at(null, { tempUnit: 'f' });
+	eq(f.laneSTempUnit(), 'f', 'the injected prop is read');
+	eq(f.laneSTempDisplay(0, 'C').value, 32, 'freezing converts');
+	eq(f.laneSTempDisplay(100, 'C').value, 212, 'and boiling');
+	eq(f.laneSTempDisplay(61, 'C').value, 141.8, 'and a GPU at 61 C is 141.8 F');
+	eq(f.laneSTempDisplay(61, 'C').letter, 'F',
+		'and Fahrenheit ALWAYS carries its letter: 142 bare would read as a machine on fire');
+
+	/* A JUNK VALUE IS THE DEFAULT, through the same normaliser the sheet reads by,
+	   so the control and the renderer can never disagree about what is stored. */
+	eq(at(null, { tempUnit: 'kelvin' }).laneSTempUnit(), 'c', 'an unknown unit degrades to Celsius');
+	eq(at(null, { tempUnit: '' }).laneSTempUnit(), 'c', 'and so does an empty one');
+	eq(at(null, { tempUnit: 'F' }).laneSTempUnit(), 'f', 'a hand-edited upper-case F is still Fahrenheit');
+	eq(at(null, { tempUnit: '  f  ' }).laneSTempUnit(), 'f', 'and whitespace around it is not a different value');
+
+	/* A SOURCE THAT IS NOT CELSIUS IS LEFT ALONE, in both settings. Converting it
+	   would print a figure in the scale this panel colours by while still refusing
+	   to colour it, which is worse than printing what the sensor said. */
+	eq(f.laneSTempDisplay(140, 'F'), { value: 140, letter: 'F' }, 'a Fahrenheit source is printed as it arrives');
+	eq(d.laneSTempDisplay(140, 'F'), { value: 140, letter: 'F' }, 'and is not dragged into Celsius either');
+	eq(f.laneSTempDisplay(334, 'K'), { value: 334, letter: 'K' }, 'and a third unit keeps its own letter');
+
+	/* THE UNIT REACHES THE STYLESHEET as a body class, because it changes the
+	   hardware row's WIDTH and the stylesheet owns that row's shrink order. A
+	   two-cell Fahrenheit row is 285.33 px against Celsius's 236.39, which needs a
+	   panel of 1425 px, so at 1400x720 the GPU cell stood 6.11 px past the row's own
+	   edge until the second cell was dropped one breakpoint earlier. */
+	d.applyProperties();
+	f.applyProperties();
+	eq(d.document.body.classList.contains('temp-f'), false, 'Celsius sets no class, so nothing at the default moves');
+	eq(f.document.body.classList.contains('temp-f'), true, 'and Fahrenheit tells the stylesheet');
+	var back = F.nativePage({ props: { tempUnit: 'f' } });
+	var wb = quiet(back, ['detectChime']);
+	wb.applyProperties();
+	eq(wb.document.body.classList.contains('temp-f'), true, 'the class is on at boot');
+	back.w.__sidecrabHost.props.tempUnit = 'c';
+	wb.applyProperties();
+	eq(wb.document.body.classList.contains('temp-f'), false, 'and comes off again when the unit does');
+})();
+
+(function laneSTempOnTheRow() {
+	function row(props, host) {
+		var c = F.nativePage({ props: props });
+		var w = quiet(c);
+		w.renderHost(host);
+		w.renderHostExtras(host);
+		w.syncSensorRow();
+		return w;
+	}
+	var host = { cpuPct: 31, memPct: 58, gpu: { available: true, tempC: 61, utilPct: 22,
+		name: 'A GPU', sampledAt: iso(1789984800000) } };
+
+	eq(row({}, host).ui.sensorGpuVal.textContent, '61°', 'the row paints Celsius unlettered, as it shipped');
+	eq(row({ tempUnit: 'c' }, host).ui.sensorGpuVal.textContent, '61°',
+		'and an explicit Celsius reads identically');
+	eq(row({ tempUnit: 'f' }, host).ui.sensorGpuVal.textContent, '142°F',
+		'Fahrenheit converts and is lettered');
+
+	/* THE THRESHOLDS STAY IN CELSIUS and so does the colour, in both units: a card
+	   at 91 C is red whether the glass says 91 or 196. A second pair of thresholds
+	   in Fahrenheit is exactly the pair that could drift out of step. */
+	var hotC = { cpuPct: 31, memPct: 58, gpu: { available: true, tempC: 91, utilPct: 22,
+		sampledAt: iso(1789984800000) } };
+	var c1 = row({}, hotC), f1 = row({ tempUnit: 'f' }, hotC);
+	eq(f1.ui.sensorGpuVal.textContent, '196°F', 'a 91 C card reads 196 F');
+	eq(c1.laneATempColor(91, 'C'), 'var(--red)', 'and is red in Celsius');
+	eq(f1.laneATempColor(91, 'C'), 'var(--red)', 'and red in Fahrenheit, off the same Celsius value');
+	eq(f1.laneATempColor(85, 'C'), 'var(--amber)', 'the amber step is unmoved too');
+	eq(f1.laneATempColor(79, 'C'), 'var(--text-color)', 'and so is the step below it');
+})();
+
+(function laneSTempInTheHostSheet() {
+	function readings(props, sensors) {
+		var c = F.nativePage({ props: props });
+		var w = quiet(c);
+		w.hostSensors = sensors;
+		return w.laneAOtherReadings();
+	}
+	var sensors = [
+		{ kind: 'temp', name: 'CPU VDDCR_VDD VRM (SVI3 TFN)', value: 58, unit: 'C' },
+		{ kind: 'temp', name: 'Drive Temperature', value: 40, unit: 'C', device: 'nvme0' },
+		{ kind: 'power', name: 'CPU Package Power', value: 88, unit: 'W' }
+	];
+
+	var inC = readings({}, sensors);
+	/* Ends with the bare degree: the NAME carries an F of its own ("SVI3 TFN"), so
+	   the reading is checked where it is and not by scanning the whole line. */
+	eq(/58°$/.test(inC[0]), true, 'the sheet paints Celsius unlettered');
+	var inF = readings({ tempUnit: 'f' }, sensors);
+	ok(inF[0].indexOf('136°F') >= 0, 'and converts the VRM reading');
+	ok(inF[1].indexOf('104°F') >= 0, 'and the drive');
+
+	/* THE NAME DOES NOT CONVERT. "CPU VDDCR_VDD VRM (SVI3 TFN)" is what HWiNFO
+	   calls that probe in either unit. */
+	ok(inF[0].indexOf('CPU VDDCR_VDD VRM (SVI3 TFN)') === 0, 'the sensor name is untouched');
+	ok(inF[1].indexOf('Drive') === 0, 'and so is the drive label');
+
+	/* POWER IS WATTS and a unit setting about temperature has no business near it. */
+	ok(inC[2].indexOf('88 W') >= 0, 'package power reads in watts');
+	ok(inF[2].indexOf('88 W') >= 0, 'and is unchanged by the temperature unit');
+	eq(inF[2].indexOf('°'), -1, 'and grows no degree sign');
+
+	/* THE SOURCE LINE does not convert either: it says where the numbers came from
+	   and how old they are, which is the same sentence in both units. */
+	var c = F.nativePage({ props: { tempUnit: 'f' } });
+	var w = quiet(c);
+	w.hostSensors = sensors;
+	w.hostSensorsSource = { available: true, stale: false, ageSec: 4 };
+	w.sheetMode = 'host';
+	w.syncHostSheet();
+	var text = w.ui.sheetHost.textContent;
+    ok(text.indexOf('3 from HWiNFO') >= 0, 'the provenance line names the source and the count');
+	eq(/from HWiNFO[^,]*F\b/.test(text), false, 'and carries no unit of its own');
+})();
+
+(function laneSTempSettingRoundTrip() {
+	var c = F.nativePage();
+	var w = quiet(c);
+
+	/* THE CONTROL EXISTS ON THE PANEL HALF and shows what the panel is set to. */
+	w.openSettingsSheet();
+	var btns = w.ui.sheetSettings.querySelectorAll('.set-choice');
+	eq(btns.length, 2, 'the sheet offers one button per unit');
+	eq(btns[0].textContent, '°C', 'labelled with the scale, not with On and Off');
+	eq(btns[1].textContent, '°F', 'and the other with its own');
+	eq(btns[0].getAttribute('aria-checked'), 'true', 'Celsius is pressed by default');
+	eq(btns[1].getAttribute('aria-checked'), 'false', 'and Fahrenheit is not');
+	var group = w.ui.sheetSettings.querySelector('.set-choices');
+	eq(group.getAttribute('role'), 'radiogroup', 'the pair is announced as one group');
+	ok(!!group.getAttribute('aria-labelledby'), 'named by the row label');
+	eq(btns[0].getAttribute('role'), 'radio', 'and each button as a radio');
+
+	/* A TAP MOVES THE DRAFT AND SAYS SO. It does not move the glass: every control
+	   on this half lands when the host echoes the save back. */
+	btns[1].fire('click');
+	eq(w.settingsValues().tempUnit, 'f', 'the tap moves the draft');
+	eq(btns[1].getAttribute('aria-checked'), 'true', 'the pressed state follows the tap');
+	eq(btns[0].getAttribute('aria-checked'), 'false', 'and leaves the other one');
+	eq(w.ui.setStatus.textContent, 'not saved yet', 'and the foot says it is not saved');
+	eq(w.laneSTempUnit(), 'c', 'the PAGE is still on Celsius until the host answers');
+
+	/* THE ROUND TRIP through the bridge the panel actually uses. */
+	w.onSettingsSave();
+	var ask = c.sent[c.sent.length - 1];
+	eq(ask.type, 'settings', 'the save goes as a settings message');
+	eq(ask.props.tempUnit, 'f', 'carrying the unit the operator chose');
+	c.reply({ type: 'settings-result', requestId: ask.requestId, ok: true, props: ask.props });
+	eq(w.ui.setStatus.textContent, 'saved', 'the host accepts it');
+	eq(w.laneSTempUnit(), 'f', 'and the page is on Fahrenheit without a reload');
+	eq(w.laneSTempDisplay(61, 'C').value, 141.8, 'so the readings convert from the next paint');
+
+	/* WHAT THE HOST ECHOES IS WHAT MOVES, which is onSettingsResult's own rule and
+	   is the half that matters here: the shipping host's ValidateSettingsProps is a
+	   whitelist of booleans, colours and percents (panel-host/SideCrab.Panel/
+	   PanelLogic.cs:238), so until it learns this key it DROPS it and echoes back
+	   without it. The page must then stay on what is really stored rather than on
+	   what it hoped for. */
+	var h = F.nativePage();
+	var wh = quiet(h);
+	wh.openSettingsSheet();
+	wh.settingsValues().tempUnit = 'f';
+	wh.onSettingsSave();
+	var ask2 = h.sent[h.sent.length - 1];
+	h.reply({ type: 'settings-result', requestId: ask2.requestId, ok: true,
+		props: { clock24: false } });
+	eq(wh.laneSTempUnit(), 'c', 'a host that drops the key leaves the page on Celsius');
+	eq(wh.ui.setStatus.textContent, 'saved', 'and the save itself is still a save');
+
+	/* AN INJECTED VALUE SHOWS AS PRESSED, so a panel restarted on Fahrenheit opens
+	   its sheet on Fahrenheit. */
+	var p = F.nativePage({ props: { tempUnit: 'f' } });
+	var wp = quiet(p);
+	wp.openSettingsSheet();
+	var pbtns = wp.ui.sheetSettings.querySelectorAll('.set-choice');
+	eq(pbtns[1].getAttribute('aria-checked'), 'true', 'the stored unit is the pressed one');
+	eq(pbtns[0].getAttribute('aria-checked'), 'false', 'and the other is not');
+
+	/* NO COMPANION CHANGE. The unit never reaches /v1/config: it is a property of
+	   this glass, and crabd goes on measuring in Celsius. */
+	var sentTypes = {};
+	for (var i = 0; i < c.sent.length; i++) sentTypes[c.sent[i].type] = 1;
+	eq(sentTypes.config, undefined, 'nothing about the unit is sent to the companion');
+})();
+
 /* ================== lane N: SCA-006 reaches the settings sheet's companion half */
 
 (function laneNConfigReceipt() {

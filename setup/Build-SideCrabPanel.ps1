@@ -15,25 +15,35 @@
     after editing anything under panel-host\.
 
     Output: panel-host\dist\SideCrab.Panel.exe (dist\ is gitignored). Exit code 0 only when
-    the exe exists afterwards.
+    the exe exists afterwards. -OutDir publishes somewhere else instead, which is how
+    Update-SideCrab.ps1 stages a new host beside the running one before swapping it in.
+
+    It also writes build-record.json beside the executable: the SHA-256 of what this build
+    produced, its version and the time. That is what lets Repair-SideCrab.ps1 prove the binary
+    on disk IS this build rather than comparing timestamps, which answer a different question.
 
 .EXAMPLE
     pwsh -File .\setup\Build-SideCrabPanel.ps1
 .EXAMPLE
     pwsh -File .\setup\Build-SideCrabPanel.ps1 -Test    # also runs the host's unit tests
+.EXAMPLE
+    pwsh -File .\setup\Build-SideCrabPanel.ps1 -OutDir C:\Dev\sidecrab\panel-host\dist.staging
 #>
 [CmdletBinding()]
 param(
     [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string] $OutDir,
     [switch] $Test
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'SideCrab.Common.ps1')
+
 $project = Join-Path $RepoRoot 'panel-host\SideCrab.Panel\SideCrab.Panel.csproj'
 $tests   = Join-Path $RepoRoot 'panel-host\SideCrab.Panel.Tests\SideCrab.Panel.Tests.csproj'
-$out     = Join-Path $RepoRoot 'panel-host\dist'
+$out     = if ($OutDir) { $OutDir } else { Join-Path $RepoRoot 'panel-host\dist' }
 $exe     = Join-Path $out 'SideCrab.Panel.exe'
 
 Write-Host 'SideCrab panel host build'
@@ -73,4 +83,22 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 $item = Get-Item -LiteralPath $exe
 Write-Host ("  built:   {0} ({1:N0} bytes, {2:yyyy-MM-dd HH:mm:ss})" -f $exe, $item.Length, $item.LastWriteTime)
+
+# The identity of what was just produced, beside what was produced. The doctor reads it to
+# answer "is the executable on disk this build", which no timestamp can answer: a file copied
+# in by hand and a half-written publish both have a plausible mtime.
+$facts  = Get-SideCrabHostProjectFacts -RepoRoot $RepoRoot
+$sha    = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+$record = [ordered]@{
+    sha256               = $sha
+    version              = $facts.Version
+    targetFramework      = $facts.Tfm
+    targetFrameworkMajor = $facts.TfmMajor
+    deployment           = 'framework-dependent'
+    builtUtc             = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+}
+[IO.File]::WriteAllText((Join-Path $out 'build-record.json'),
+                        (($record | ConvertTo-Json -Depth 5) + "`n"),
+                        (New-Object Text.UTF8Encoding $false))
+Write-Host "  sha256:  $sha"
 exit 0

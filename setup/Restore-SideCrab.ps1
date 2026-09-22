@@ -43,6 +43,14 @@
     Timestamps come from the backup's NAME, never its mtime: Copy-Item preserves the source's
     timestamp, so a backup taken today of a settings.json last edited in June has a June mtime.
 
+    THE PANEL HOST (-Host)
+    A different kind of restore, handled first and separately: -Host puts panel-host\dist.last-good
+    back and restarts the panel task. That directory is the ONE generation a staged update keeps
+    (setup\Update-SideCrab.ps1), so this is the answer to "the update I just ran broke the panel"
+    when the update's own rollback did not run - because it succeeded, and the trouble showed up
+    afterwards. The host that is replaced is moved to panel-host\dist.failed rather than deleted:
+    it is the evidence for why.
+
 .EXAMPLE
     pwsh -File .\setup\Restore-SideCrab.ps1                       # list (the default)
 .EXAMPLE
@@ -57,6 +65,8 @@
     pwsh -File .\setup\Restore-SideCrab.ps1 -Config              # list config.json backups
 .EXAMPLE
     pwsh -File .\setup\Restore-SideCrab.ps1 -Config -Latest      # restore the newest config.json backup
+.EXAMPLE
+    pwsh -File .\setup\Restore-SideCrab.ps1 -Host                # put the previous panel host back
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -68,7 +78,12 @@ param(
     [switch] $Latest,
     [switch] $List,
     [int]    $PruneOlderThan,
-    [switch] $Force
+    [switch] $Force,
+    # The PANEL HOST's kept generation, not a settings backup: put panel-host\dist.last-good
+    # back and restart the task. Nothing else on this page applies to it - a host is a
+    # directory of binaries, with no keys to compare and no third party's data to protect.
+    [switch] $Host,
+    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 Set-StrictMode -Version Latest
@@ -167,6 +182,54 @@ function Show-BackupList {
 }
 
 # ------------------------------------------------------------------------------ run
+
+# ---- the panel host's kept generation (MF-006)
+# Handled first and on its own: this restores a DIRECTORY of binaries, so none of the
+# settings-file machinery below - the SideCrab-vs-foreign key split, the backup pile, the
+# prune - has anything to say about it. A staged update keeps exactly one generation, which is
+# what makes this a one-command answer to "the update I just ran broke the panel".
+if ($Host) {
+    $distPath     = Join-Path $RepoRoot 'panel-host\dist'
+    $lastGoodPath = Join-Path $RepoRoot 'panel-host\dist.last-good'
+    $taskName     = 'SideCrab-panel'
+
+    Write-Host 'SideCrab panel host restore'
+    Write-Step "from:    $lastGoodPath"
+    Write-Step "into:    $distPath"
+    if (-not (Test-Path -LiteralPath $lastGoodPath)) {
+        Write-Host "  REFUSED: there is no $lastGoodPath. A kept generation only exists after a staged update has swapped a host out (setup\Update-SideCrab.ps1)." -ForegroundColor Red
+        exit 1
+    }
+    $before = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe (Join-Path $distPath 'SideCrab.Panel.exe')).Host
+    $keptEx = Join-Path $lastGoodPath 'SideCrab.Panel.exe'
+    $kept   = if (Test-Path -LiteralPath $keptEx) { (Get-Item -LiteralPath $keptEx).VersionInfo.FileVersion } else { 'unknown' }
+    Write-Step "host:    $before now, $kept kept"
+
+    if ($PSCmdlet.ShouldProcess($distPath, "Restore the panel host from $lastGoodPath")) {
+        # Stopped first: a directory whose executable is running cannot be renamed.
+        $state = Get-SideCrabTaskState -TaskName $taskName
+        if ($state.Registered) {
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and
+                   @(Get-Process -Name 'SideCrab.Panel' -ErrorAction SilentlyContinue).Count -gt 0) {
+                Start-Sleep -Milliseconds 300
+            }
+        }
+        $res = Restore-SideCrabHostLastGood -DistPath $distPath -LastGoodPath $lastGoodPath
+        Write-Step "restore: $($res.Reason)"
+        if ($state.Registered -and $state.State -ne 'Disabled') {
+            Start-ScheduledTask -TaskName $taskName
+            $after = Get-SideCrabTaskState -TaskName $taskName
+            Write-Step "task:    $taskName is $($after.State)"
+        } else {
+            Write-Step "task:    $taskName is not registered or is disabled - nothing was started"
+        }
+        $now = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe (Join-Path $distPath 'SideCrab.Panel.exe')).Host
+        Write-Step "host:    $now is live"
+    }
+    exit 0
+}
 
 # The one target every step below reads. -Config flips it to config.json; the backup convention,
 # the listing, the restore and the prune are identical either way (SET-a2).

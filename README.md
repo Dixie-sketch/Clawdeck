@@ -16,7 +16,22 @@ the panel.
 
 ## Install
 
-Open **PowerShell 7** on the Windows PC where you run Claude Code:
+**From a release package.** This is the ordinary way in, and it needs no Git and no .NET SDK.
+Download `SideCrab-<version>-win-x64.zip` from [the latest
+release](https://github.com/Dixie-sketch/Clawdeck/releases/latest), extract it anywhere you can
+write to, and open **PowerShell 7** in the extracted folder on the PC where you run Claude Code:
+
+```powershell
+pwsh -File .\setup\Test-SideCrabPrerequisites.ps1   # what this PC still needs, with the links
+pwsh -File .\setup\Install-SideCrab.ps1
+```
+
+The package carries the panel host already compiled, so the installer runs no build. It checks
+every file against the manifest that shipped inside the zip, prints the version, the commit and
+the build time, and refuses to install a package whose contents do not match.
+
+**From a checkout**, to work on SideCrab or run a commit that has no release yet. This path needs
+Git and the .NET SDK, because the installer builds the panel host itself:
 
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
@@ -24,13 +39,14 @@ cd C:\Dev\sidecrab
 pwsh -File .\setup\Install-SideCrab.ps1
 ```
 
-That installs all three pieces and starts them. Start a Claude Code session and a card for it
-appears on the panel within a few seconds. Add `-WhatIf` to see every step without performing any
-of it.
+Either way, that installs all three pieces and starts them. Start a Claude Code session and a card
+for it appears on the panel within a few seconds. Add `-WhatIf` to see every step without
+performing any of it.
 
-You also need **Python 3.13**, the **.NET 10 SDK** and a **Xeneon Edge**; [what you
-need](#what-you-need) is the full list, and [Getting started](docs/GETTING-STARTED.md) is the same
-install as a 20-minute walkthrough, with what you should see at each step.
+You also need **Python 3.13**, the **.NET Desktop Runtime**, the **WebView2 runtime** and a
+**Xeneon Edge**; [what you need](#what-you-need) is the full list, and [Getting
+started](docs/GETTING-STARTED.md) is the same install as a 20-minute walkthrough, with what you
+should see at each step.
 
 Everything runs on one PC and talks only over `127.0.0.1`. Nothing is sent anywhere. Panel
 approvals ship **off**; read [Before you turn on panel
@@ -50,9 +66,18 @@ approvals](#before-you-turn-on-panel-approvals) first.
 | **Operating system** | **Windows 10 or 11** | Windows only. The companion is a Windows service and the notifier uses Windows toasts. There is no macOS or Linux build. |
 | **A Corsair Xeneon Edge** | 2560 × 720 | The panel is laid out full-screen for the Edge and pins itself to it by device id. It runs on another display, at a reduced layout. |
 | **Claude Code** | Installed and used on the **same PC** | The companion reads Claude Code's local session data. It cannot see sessions on other machines. |
-| **PowerShell 7** (`pwsh`) | For the companion installer | Not Windows PowerShell 5.1. |
-| **Python 3.13** | For the companion | A real install on `PATH`. The Microsoft Store "python" alias stub is rejected, because it cannot host a background service. |
-| **.NET 10 SDK** and the **WebView2 Runtime** | For the panel host | The installer builds the host once, which needs the SDK; the Desktop Runtime it installs is what runs it afterwards. WebView2 ships with Windows 11 and most Windows 10 installs. Pass `-SkipPanel` to install the companion and notifier without it. |
+| **PowerShell 7** (`pwsh`) | For the companion installer | Not Windows PowerShell 5.1. [Get it](https://aka.ms/powershell). |
+| **Python 3.13** | For the companion | A real install on `PATH`. The Microsoft Store "python" alias stub is rejected, because it cannot host a background service. [Get it](https://www.python.org/downloads/windows/). |
+| **.NET Desktop Runtime** | For the panel host | The runtime only, not the SDK, when you install from a release package. [Get it](https://dotnet.microsoft.com/download/dotnet/10.0). Pass `-SkipPanel` to install the companion and notifier without it. |
+| **WebView2 Evergreen runtime** | For the panel host | Ships with Windows 11 and most Windows 10 installs, so you usually have it already. [Get it](https://developer.microsoft.com/microsoft-edge/webview2/). |
+| **.NET SDK** | Only to build from a checkout | The installer compiles the panel host when the executable is not there. A release package carries it already built, so nobody installing one needs an SDK. |
+| **HWiNFO** | Optional | Temperatures and fan speeds. Everything else works without it. [Get it](https://www.hwinfo.com/download/). |
+
+Run `pwsh -File .\setup\Test-SideCrabPrerequisites.ps1` to see which of these this PC has. It
+writes nothing, prints one row per prerequisite with the fix and the download link, and exits
+non-zero when something required is missing. The installer runs the same check and declines to
+register the panel task when the .NET Desktop Runtime or WebView2 is missing, rather than
+registering a task that would fail at every logon.
 
 ---
 
@@ -113,6 +138,13 @@ em-dash, never as zero. A green-looking panel always means the data is fresh.
 
 ---
 
+**No `curl.exe` any more.** SideCrab's hooks used to shell out to `curl.exe` for every event: a process
+per prompt, per notification, per subagent, and a dependency on Windows' own curl being on your PATH.
+Nine of the ten events now post straight to the companion over HTTP. `SessionStart` is the exception,
+because Claude Code does not run HTTP hooks on that one event, so it keeps its curl entry. If the
+companion is not running, nothing happens to your session: an HTTP hook whose endpoint is refused or
+slow produces no decision, Claude stops normally, and permission prompts appear in the terminal as usual.
+
 ## Setting it up
 
 The three commands are at the top of this page. This section is what they do and what to do next.
@@ -121,9 +153,15 @@ The three commands are at the top of this page. This section is what they do and
 
 It:
 
-- builds the panel host (`panel-host\dist\SideCrab.Panel.exe`) when it is not there yet. This
-  needs the .NET 10 SDK. Without it the build fails, the installer says so and carries on with the
-  companion and the notifier; pass `-SkipPanel` to stop being offered it,
+- verifies the package it is running from, when there is one. Every file is hashed against
+  `package-manifest.json`, the version, commit and build time are printed, and a package whose
+  contents do not match refuses to install and names the first file that differs,
+- checks this PC's prerequisites, and skips the panel task rather than registering one that
+  cannot start when the .NET Desktop Runtime or the WebView2 runtime is missing,
+- builds the panel host (`panel-host\dist\SideCrab.Panel.exe`) **only when it is not there yet**,
+  which needs the .NET SDK. A release package carries the host already built, so this step never
+  runs from one. In a checkout without an SDK the build fails, the installer says so and carries
+  on with the companion and the notifier; pass `-SkipPanel` to stop being offered it,
 - registers a logon Scheduled Task per component and starts each one,
 - backs up `~/.claude/settings.json`, then merges in the SideCrab hook entries. Re-running never
   duplicates them and other hooks are left alone,
@@ -187,15 +225,36 @@ stored; `Test-SideCrab.ps1` shows which token is answering.
 
 ### Updating and uninstalling
 
+**To take a new release, download the new package, extract it and run the installer again.** That
+is the supported upgrade: tasks are re-registered from scratch, your hooks are replaced rather
+than duplicated, `settings.json` is backed up first, and your settings, history and credentials in
+`~/.sidecrab` are untouched. Extract over the old folder or beside it; either works.
+
 ```powershell
-pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # pulls, rebuilds the host, restarts the tasks, verifies
+pwsh -File .\setup\Install-SideCrab.ps1                   # the upgrade, from a new package
+pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1      # a checkout: pull, stage, validate, swap, verify
 pwsh -File C:\Dev\sidecrab\setup\Uninstall-SideCrab.ps1   # removes tasks, hooks and both registry keys
 ```
 
-`Update-SideCrab.ps1` fast-forwards the checkout, rebuilds the panel host from the pulled source,
-restarts the tasks and then verifies that the companion answers and that both tasks came back
-Running. It **exits non-zero** when any of that fails, and names the host version still on disk so
-you know what is actually running. There is nothing to import and nothing to update by hand.
+`Update-SideCrab.ps1` is the checkout path. It fast-forwards the checkout, restarts the companion
+and the notifier, verifies that the companion answers, and then **stages the panel host**: it
+publishes the new host into `panel-host\dist.staging` while the working one stays where it is,
+proves the new binary runs by calling its own `--check`, keeps the host it is replacing as
+`panel-host\dist.last-good`, swaps by rename, and waits for the panel task to come back Running.
+Anything that fails before the swap leaves the live host untouched; anything that fails after it
+puts `dist.last-good` back, restarts it, and says what was restored and what is running. It
+**exits non-zero** whenever any of that does not stand.
+
+Put the previous host back yourself at any time:
+
+```powershell
+pwsh -File .\setup\Restore-SideCrab.ps1 -Host   # restores panel-host\dist.last-good and restarts the task
+```
+
+One generation is kept. The host that is replaced moves to `panel-host\dist.failed` rather than
+being deleted, so there is something to look at afterwards. `Update-SideCrab.ps1 -Package <zip>`
+swaps the panel host out of a release package with the same staging and rollback, which is useful
+on a PC with no SDK; it updates the host only, so a full upgrade is still an installer re-run.
 
 An uninstall removes wiring and keeps your data. It prints what it left behind and the command
 that removes it. `-Purge` additionally deletes `~/.sidecrab`: your settings, your history, **and
@@ -416,6 +475,21 @@ something to show; a session the companion has just picked up shows none of them
   you have typed ahead of it (Claude Code's own queue, which is not the panel's continue queue),
   and whether it is compacting its context right now and how often it has.
 
+**A turn that died.** When Claude Code hits a rate limit, an authentication failure or an overloaded
+server, the turn ends on an error rather than finishing. SideCrab shows that card as **failed** and names
+the error. Before, there was nothing to see: the card stayed on "working" until it went quiet fifteen
+minutes later, which looks exactly like Claude thinking hard. A failed card clears itself the moment you
+send the next prompt, and it never counts toward the day's finished total.
+
+**Exact subagent counts.** SideCrab pairs each subagent's start with its stop by id, so the running count
+on a card is a count and not an estimate, and the Detail page lists them by type (`general-purpose`,
+`Explore`, a custom agent of your own) with how long each has been going, up to eight. A session on an
+older CLI that sends no ids keeps the previous estimate.
+
+**Quieter notifications.** Claude Code sends a notification for several things that are not questions:
+an agent finishing, a sign-in succeeding, a quota resuming on its own. Those land in the card's event
+list without lighting it up as waiting on you. Anything that is a question still does.
+
 ### The tray icon and the display picker
 
 The panel host puts an icon in the notification area of the display you work on. Its first line says
@@ -471,6 +545,14 @@ readings dim and the host sheet says *"HWiNFO stopped publishing (free build 12-
 relaunch HWiNFO"*. From an **elevated** PowerShell, `pwsh -File .\setup\Register-HwinfoRelaunch.ps1`
 registers one scheduled task, `SideCrab-hwinfo`, that starts HWiNFO at logon and relaunches it
 daily at 04:00 (`-WhatIf` to preview, `-Remove` to unregister). The Pro licence removes the need.
+
+**Celsius or Fahrenheit.** Panel settings has a **Temperature unit** row: °C or °F. Every temperature
+on the hardware row and in the hardware sheet follows it. The sensor names, the source line and the
+package-power figure do not change, and neither do the warning colours: a part the panel calls hot at
+91 °C is the same part it calls hot at 196 °F. Fahrenheit readings are wider, so on a narrower panel the
+row shows one sensor where Celsius showed two; the sheet behind the row still lists every reading. The
+setting lives on this machine like the colours and the clock; the companion carries on measuring in
+Celsius, so two panels watching the same machine can each show the scale their operator prefers.
 
 ### Sending a session its next step
 
@@ -669,6 +751,19 @@ node widget\tests\test_chime.js
 node widget\tests\test_standalone.js
 dotnet test panel-host\SideCrab.Panel.Tests
 ```
+
+Build the distributable the releases are made of:
+
+```powershell
+pwsh -File .\setup\Build-SideCrabPackage.ps1
+```
+
+It publishes the panel host, copies the product (and no test suite, developer notes or build
+intermediates), writes `package-manifest.json` with a SHA-256 for every file, and zips the result
+into `dist\SideCrab-<version>-win-x64.zip`, named after `widget/version.json`. The host stays
+framework-dependent: self-contained is 7.6 times the download and still needs the WebView2 runtime
+installed separately, so it buys one prerequisite for about 49 MB. CI builds the package on every
+push and attaches it to the release on a `v*` tag.
 
 ---
 

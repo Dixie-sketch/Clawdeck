@@ -241,7 +241,11 @@ class MutedPeriodicsStillConsume(MuteHarness):
     """Unchanged from the shipped rule, and deliberately so: this is the same
     "suppress AND mark, never defer" quiet hours has always followed. A digest
     that queued up while muted would arrive as yesterday's news at an arbitrary
-    hour, which is the failure the rule exists to prevent."""
+    hour, which is the failure the rule exists to prevent.
+
+    THE OUTAGE TOAST LEFT THIS SET at lane S; its own class is below. A digest is
+    periodic and its moment passes; an outage is a CONDITION that is either still
+    true when the switch comes back or is not."""
 
     def test_the_digest_day_is_spent_while_muted(self) -> None:
         self.switch(False)
@@ -261,32 +265,116 @@ class MutedPeriodicsStillConsume(MuteHarness):
         self.poll(UTC_NOW + timedelta(hours=1))
         self.assertNotIn(BUDGET_TITLE, self.titles())
 
-    def test_the_outage_is_spent_until_a_recovery(self) -> None:
+
+# ------------------------------------------ the outage RE-ARMS while muted (lane S, v0.21.0)
+
+
+class MutedOutageReArms(MuteHarness):
+    """An outage that matures while toasts are off is announced ONCE when they come
+    back on, if the stack is still down.
+
+    THE BUG THIS PINS. `_suppress` registered no owner for the outage toast, and
+    `StaleFeedDecider` clears `_fired` only on a recovery. So the one poll that
+    matured the outage set `_fired` while the switch was off, the toast was dropped
+    in silence, and nothing would say so again until crabd came back — which is the
+    exact moment the line stops being worth printing. The operator turned toasts on
+    BECAUSE something was wrong, and the panel said nothing.
+
+    WHY THIS TOAST AND NOT THE DIGEST. A digest is periodic: its moment passed while
+    the switch was off, and re-issuing it makes yesterday's news arrive at an
+    arbitrary hour. An outage is a CONDITION. When the switch comes back it is either
+    still true — in which case this is not old news, it is the current state of the
+    stack — or it is not, and the decider has already re-armed on the recovery and
+    says nothing. There is no stale case to protect against.
+
+    Version label v0.21.0 is PROVISIONAL; the orchestrator assigns the real number."""
+
+    def stale_lines(self) -> int:
+        """Outage lines only. The priming poll toasts the waiting SESSION, which is
+        this harness working correctly and is not what any of these tests is about."""
+        return self.titles().count(STALE_TITLE)
+
+    def mature_an_outage_while_muted(self) -> None:
+        """Healthy with somebody working, then the switch off, then the feed gone long
+        enough for the decider to mature it. At HEAD this ends with the toast consumed
+        in silence; with the fix it ends re-armed."""
         self.serve(feed(waiting_session()))
         self.poll()
         self.switch(False)
         self.serve(None)
-        self.poll(UTC_NOW + timedelta(minutes=10))
+        self.assertEqual(self.poll(UTC_NOW + timedelta(minutes=10)), [],
+                         "muted: nothing is shown while the switch is off")
+        self.assertNotIn(STALE_TITLE, self.titles(), "and no outage line reached the adapter")
 
+    def test_it_announces_once_when_toasts_come_back_on(self) -> None:
+        self.mature_an_outage_while_muted()
         self.switch(True)
-        self.assertEqual(self.poll(UTC_NOW + timedelta(minutes=11)), [],
-                         "one toast per outage, re-armed only by a recovery")
+        fired = self.poll(UTC_NOW + timedelta(minutes=11))
+        self.assertEqual([r.title for r in fired], [STALE_TITLE],
+                         "the outage the operator could not be told about is told now")
 
-    def test_a_recovery_re_arms_the_outage_after_a_mute(self) -> None:
-        """The other side of the same rule — otherwise "consumed" would mean
-        "silenced forever", which is a different and much worse behaviour."""
-        self.serve(feed(waiting_session()))
-        self.poll()
-        self.switch(False)
-        self.serve(None)
-        self.poll(UTC_NOW + timedelta(minutes=10))
-
+    def test_and_does_not_toast_a_second_time_until_a_recovery(self) -> None:
+        """The other half, and the half a naive re-arm gets wrong: re-arming on every
+        muted poll must not become an outage line every 10 s once the switch is on."""
+        self.mature_an_outage_while_muted()
         self.switch(True)
+        self.poll(UTC_NOW + timedelta(minutes=11))
+        for minutes in (12, 13, 20, 40):
+            self.assertEqual(self.poll(UTC_NOW + timedelta(minutes=minutes)), [],
+                             "still one toast per outage at +%dm" % minutes)
+        self.assertEqual(self.stale_lines(), 1, "exactly one line about this outage")
+
+    def test_a_recovery_then_a_new_outage_still_toasts_again(self) -> None:
+        """One per outage is not one ever: a recovery re-arms as it always did."""
+        self.mature_an_outage_while_muted()
+        self.switch(True)
+        self.poll(UTC_NOW + timedelta(minutes=11))
         self.serve(feed(waiting_session(), generated=iso(UTC_NOW + timedelta(minutes=20))))
-        self.poll(UTC_NOW + timedelta(minutes=20))  # healthy: re-arms
+        self.poll(UTC_NOW + timedelta(minutes=20))          # healthy: re-arms
         self.serve(None)
         self.poll(UTC_NOW + timedelta(minutes=30))
-        self.assertIn(STALE_TITLE, self.titles())
+        self.assertEqual(self.stale_lines(), 2, "the second outage gets its own line")
+
+    def test_an_outage_that_recovers_while_muted_says_nothing(self) -> None:
+        """The re-arm must not become a DELAYED announcement of something that is over.
+        The recovery clears `_fired`, and the switch coming back finds a healthy feed
+        with nothing to report."""
+        self.mature_an_outage_while_muted()
+        self.serve(feed(waiting_session(), generated=iso(UTC_NOW + timedelta(minutes=12))))
+        self.poll(UTC_NOW + timedelta(minutes=12))          # recovered, still muted
+        self.switch(True)
+        self.poll(UTC_NOW + timedelta(minutes=13))
+        self.assertEqual(self.stale_lines(), 0,
+                         "a finished outage is not news when the switch returns")
+
+    def test_a_failed_outage_RENDER_still_consumes_its_spell(self) -> None:
+        """THE DISTINCTION THE WHOLE FIX RESTS ON: "never shown" re-arms, "tried and
+        failed" does not. The outage toast is a MUTE owner and deliberately not a
+        render-failure owner, so a render that fails keeps the documented
+        consume-on-attempt behaviour (README failure matrix) and does not put an
+        outage line on screen every 10 s for as long as crabd is down."""
+        self.adapter.succeed = False
+        self.serve(feed(waiting_session()))
+        self.poll()
+        self.serve(None)
+        self.poll(UTC_NOW + timedelta(minutes=10))          # attempted, and failed
+        self.assertEqual(self.stale_lines(), 1, "it was attempted once")
+        self.adapter.succeed = True
+        for minutes in (11, 12, 20):
+            self.poll(UTC_NOW + timedelta(minutes=minutes))
+        self.assertEqual(self.stale_lines(), 1,
+                         "and a failed render consumed the spell, as it always has")
+
+    def test_the_digest_is_still_consumed_while_muted(self) -> None:
+        """The mute registry is the outage toast's ALONE. A change that re-armed
+        everything in `owed` would hand the operator yesterday's digest as well, so the
+        neighbouring rule is asserted here rather than assumed."""
+        self.switch(False)
+        self.serve(feed())
+        self.poll()
+        self.switch(True)
+        self.poll(LOCAL_NOW.astimezone(timezone.utc) + timedelta(hours=1))
+        self.assertNotIn(DIGEST_TITLE, self.titles())
 
 
 # ----------------------------------------- consumption: long-run spends its EDGE while muted

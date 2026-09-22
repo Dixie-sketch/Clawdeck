@@ -27,8 +27,17 @@ SideCrab needs no other desktop software. If you are coming from the old widget,
 
 ## 1. Check you have what it needs
 
-Open **PowerShell 7** (the app is called "PowerShell 7", not "Windows PowerShell") and run each
-line. The expected answer is beside it.
+SideCrab checks this PC for you. Download and extract the release package first (the first half of
+section 2), then open **PowerShell 7** (the app is called "PowerShell 7", not "Windows
+PowerShell") in the extracted folder and run:
+
+```powershell
+pwsh -File .\setup\Test-SideCrabPrerequisites.ps1
+```
+
+It installs nothing and writes nothing. You get one row per prerequisite saying what it found,
+what to do about it and where to download it, and it exits non-zero when something required is
+missing. The table below is the same list if you would rather check by hand.
 
 | Check | Run | You want |
 |---|---|---|
@@ -36,9 +45,9 @@ line. The expected answer is beside it.
 | Claude Code | `claude --version` | A version number. If it says "not recognized", install Claude Code first and sign in once |
 | PowerShell 7 | `$PSVersionTable.PSVersion` | 7.x |
 | Python | `python --version` | `Python 3.13.x`. If a Microsoft Store window opens instead, you have the Store alias, not Python: install from python.org and tick "Add python.exe to PATH" |
-| Git | `git --version` | Any version |
-| .NET 10 SDK | `dotnet --version` | `10.0.x`. Builds the panel host once; install from dotnet.microsoft.com. Without it, install with `-SkipPanel` and you get the companion and the notifier |
-| WebView2 Runtime | `(Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Name pv).pv` | A version. It ships with Windows 11 and most Windows 10 installs; otherwise install the Evergreen WebView2 Runtime from Microsoft. The panel host is a WebView2 window |
+| .NET Desktop Runtime | `dotnet --list-runtimes` | A `Microsoft.WindowsDesktop.App 10.x` line. That is what runs the panel host; install the Desktop Runtime from dotnet.microsoft.com. Without it, install with `-SkipPanel` and you get the companion and the notifier |
+| WebView2 Runtime | `(Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Name pv).pv` | A version, and not `0.0.0.0`, which means it was removed. It ships with Windows 11 and most Windows 10 installs; otherwise install the Evergreen WebView2 Runtime from Microsoft. The panel host is a WebView2 window |
+| Git and the .NET SDK | `git --version` and `dotnet --version` | Only if you install from a checkout rather than a release package. The package carries the panel host already compiled, so installing one needs neither |
 
 Not on Windows? SideCrab cannot run: the companion is a Windows service and the host is a Windows
 window; there is no other build.
@@ -47,7 +56,16 @@ window; there is no other build.
 
 ## 2. Install (15 minutes)
 
-In PowerShell 7:
+Go to [the latest release](https://github.com/Dixie-sketch/Clawdeck/releases/latest), download
+`SideCrab-<version>-win-x64.zip`, and extract it somewhere you can write to, such as
+`C:\Tools\SideCrab`. Then, in PowerShell 7, from inside the extracted folder:
+
+```powershell
+pwsh -File .\setup\Install-SideCrab.ps1
+```
+
+If you would rather run the newest code than the newest release, clone the repository instead.
+That path needs Git and the .NET SDK, because the installer compiles the panel host itself:
 
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
@@ -60,8 +78,14 @@ and `-WhatIf` to see every step without performing any of it.
 
 The installer prints one line per thing it does. It:
 
-- builds the panel host, `panel-host\dist\SideCrab.Panel.exe` (the .NET 10 SDK does the work,
-  once). If the build fails it says so and carries on with the other two,
+- checks the package it is running from, when there is one: every file is hashed against the
+  manifest inside the zip, and you get the version, the commit and the build time on one line. A
+  package that does not match refuses to install and names the first file that differs,
+- checks this PC's prerequisites, and skips the panel rather than registering a task that cannot
+  start when a runtime is missing,
+- builds the panel host, `panel-host\dist\SideCrab.Panel.exe`, **only when it is not already
+  there**. A release package carries it, so this step runs on the clone path and not the package
+  one. If the build fails it says so and carries on with the other two,
 - registers a Scheduled Task per component that starts it at logon, and starts it now,
 - backs up `~/.claude/settings.json`, then adds the SideCrab hooks to it. Your other hooks are
   untouched, and running the installer twice never duplicates anything,
@@ -225,6 +249,17 @@ to stay awake through tonight's window, tap again to go back to the schedule.
 
 ---
 
+**Changing the temperature unit.** Open the gear at the bottom-left of the panel, find **Temperature
+unit** under *This panel*, tap °F, and press **Save**. The hardware row converts straight away. If the
+row goes from two sensors to one, that is the panel making space for the wider numbers; tap the row to
+open the hardware sheet, which lists every reading.
+
+**Trying the new states without waiting for one.** With the panel open in a browser, add `?mock=` to
+the address: `?mock=failed` is a grid of failed sessions across four different errors, including one
+the panel has no words for and one where the companion knows it failed but not why; `?mock=agents` is a
+session with nine named subagents, so you can see the Detail view's list and its eight-row cap. Nothing
+you do in a mock reaches the companion.
+
 ## 6. Approving permission requests from the panel (optional, read first)
 
 When a Claude Code session stops to ask permission for a tool call, the card can show Approve
@@ -306,14 +341,33 @@ are sent. A queued next step has a Cancel beside it; it tells you if the session
 
 ## 8. Updating and removing
 
+**Download the new release package, extract it and run the installer again.** That is the
+supported upgrade. Your settings, history and credentials live in `~/.sidecrab` and are not
+touched; the tasks are re-registered, your hooks are replaced rather than duplicated, and
+`settings.json` is backed up first.
+
+```powershell
+pwsh -File .\setup\Install-SideCrab.ps1                 # from the new package
+```
+
+If you installed from a checkout, update it instead:
+
 ```powershell
 pwsh -File C:\Dev\sidecrab\setup\Update-SideCrab.ps1
 ```
 
-That pulls the new code, rebuilds the panel host from it, restarts every registered task and then
-verifies that the companion answers and that the tasks came back Running. **It exits non-zero if
-any of that fails**, and names the host version still on disk, so a partly-failed update cannot
-read as a success. There is nothing to import and nothing to update by hand.
+That pulls the new code, restarts the companion and the notifier, verifies that the companion
+answers, and then swaps the panel host in carefully: the new host is built beside the running one,
+asked to prove it starts, and only then put in place, with the host it replaces kept as
+`panel-host\dist.last-good`. If the new host does not come back, the kept one goes straight back
+and the script says so. **It exits non-zero if any of that fails**, and names the host version on
+disk, so a partly-failed update cannot read as a success.
+
+To put the previous host back at any time:
+
+```powershell
+pwsh -File .\setup\Restore-SideCrab.ps1 -Host
+```
 
 To remove everything the installer added, including the hooks in `~/.claude/settings.json`:
 
@@ -326,6 +380,14 @@ That removes wiring and keeps your data, then prints what it left behind. Add `-
 approval pairing code and the stored limits token. Backups of `settings.json` survive either way.
 
 ---
+
+**After an upgrade, re-run the installer and restart the companion.** The installer replaces SideCrab's
+own hook entries in `~/.claude/settings.json` with the current set and adds the events it now listens
+for; any hook you added yourself stays where it is. The new hooks post to routes an older companion does
+not serve, and a mismatch is silent (Claude Code logs it and carries on), so the panel would simply stop
+updating. Until you re-run the installer the old hooks keep working; you just will not see failed
+sessions or exact subagent counts. If you have set `allowedHttpHookUrls` in your Claude Code settings,
+it must include `http://127.0.0.1:2722/*`; if you have never heard of that setting, there is nothing to do.
 
 ## 9. When something is wrong
 

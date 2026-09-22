@@ -166,7 +166,7 @@ def xml_attr_escape(value: Any) -> str:
 #: printed by --version, and written into STATE_PATH, so "what is on disk" and "what the
 #: Scheduled Task is actually executing" stop being the same unanswerable question. Bump it in
 #: the same commit as any behaviour change; setup/Test-SideCrab.ps1 reads it off both sides.
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:2722/v1/state"
 DEFAULT_INTERVAL_SEC = 10.0
@@ -1596,6 +1596,31 @@ class StaleFeedDecider:
         log.warning("crabd feed outage: %s", health.detail)
         return build_stale_request(health.detail, since)
 
+    def unresolve(self, request: ToastRequest) -> None:
+        """Re-arm an outage that was never SHOWN because toasts were switched off.
+
+        Registered as a MUTE owner only, never as a render-failure owner, and the two
+        are deliberately different answers to the same word:
+
+        - A render that FAILED still consumed the spell, which is this toast's
+          documented behaviour (README's failure matrix) and is the right one: the
+          outage line is after-the-fact, and retrying it would put one on screen every
+          10 s for as long as crabd is down.
+        - A toast the switch suppressed was never attempted at all, and the CONDITION
+          is still true. `_fired` is set inside evaluate() and cleared only by a
+          recovery, so without this an outage that matured while the switch was off
+          was spent in silence: turning toasts back on while the stack was still down
+          announced nothing, and nothing would until crabd came back — which is the
+          one moment the line is no longer worth printing.
+
+        QUIET HOURS ARE NOT THIS CASE and keep the rule they have. evaluate() marks
+        `_fired` and returns None under quiet, so there is no request to own and
+        nothing here re-arms: "suppress AND mark, never defer" is still what quiet
+        means, and the morning's first healthy poll is what re-arms it.
+        """
+        self._fired = False
+        log.info("toasts were off when the outage matured — re-armed for the switch coming back")
+
 
 # --------------------------------------------------------------------------------------
 # Toast kinds
@@ -1627,9 +1652,11 @@ _KIND_BY_PREFIX = (
 MUTED_SWITCH_LINE = (
     "toast.enabled=false — ALL toast kinds are suppressed. waiting/approval stand down "
     "before their spell is marked and re-surface when it is switched back on; "
-    "longrun/digest/budget/outage consume their spell while muted and do NOT re-surface "
-    "(longrun's working->done observation swap is unconditional, so a completion that "
-    "finished while muted is stale), as digest/budget/outage do under quiet hours"
+    "the outage toast re-arms too, so an outage that matured while muted is announced "
+    "once when toasts come back on and the stack is still down; longrun/digest/budget "
+    "consume their spell while muted and do NOT re-surface (longrun's working->done "
+    "observation swap is unconditional, so a completion that finished while muted is "
+    "stale), as digest/budget do under quiet hours"
 )
 
 
@@ -2096,6 +2123,7 @@ class Notifier:
         owners: dict[int, Any] | None = None,
         config: ToastConfig | None = None,
         now: datetime | None = None,
+        mute_owners: dict[int, Any] | None = None,
     ) -> list[ToastRequest]:
         """Show what is owed. THE global mute lives here, and only here.
 
@@ -2117,7 +2145,8 @@ class Notifier:
         """
         owners = owners or {}
         if config is not None and not config.enabled:
-            return self._suppress(owed, owners, now or datetime.now(timezone.utc))
+            return self._suppress(owed, owners, mute_owners or {},
+                                  now or datetime.now(timezone.utc))
         fired: list[ToastRequest] = []
         for request in owed:
             log.info("toasting session=%s since=%s title=%r", request.session_id, request.state_since, request.title)
@@ -2157,7 +2186,8 @@ class Notifier:
         return fired
 
     def _suppress(
-        self, owed: list[ToastRequest], owners: dict[int, Any], now: datetime
+        self, owed: list[ToastRequest], owners: dict[int, Any],
+        mute_owners: dict[int, Any], now: datetime,
     ) -> list[ToastRequest]:
         """The muted path. Nothing is shown; consumption is left exactly as it was.
 
@@ -2169,6 +2199,14 @@ class Notifier:
         practice the live-signal deciders never reach here (they gate themselves
         earlier and never mark at all); the re-arm is what keeps that true for any
         future decider that registers an owner.
+
+        TWO REGISTRIES, because "never shown" and "tried and failed" are not the same
+        event and one decider answers them differently. `owners` is the render-failure
+        registry and is what _emit's failure path uses; `mute_owners` is this path's
+        own, and the outage toast is in it alone - a failed outage render still
+        consumes its spell (README's failure matrix), while an outage the SWITCH
+        silenced was never attempted and its condition is still true. A decider in
+        both is re-armed once, not twice.
         """
         # .astimezone() with no argument is the system local zone — the same local day
         # the digest and budget ledgers key on, so "once per day" means one day.
@@ -2185,7 +2223,7 @@ class Notifier:
                     f"toast.enabled=false — {kind} toast suppressed (once per kind per day, "
                     "not per toast)",
                 )
-                owner = owners.get(id(request))
+                owner = mute_owners.get(id(request), owners.get(id(request)))
                 if owner is not None:
                     owner.unresolve(request)
             except Exception:  # noqa: BLE001 - one bad request must not cost the poll
@@ -2226,22 +2264,26 @@ class Notifier:
         # id(request) -> the decider to re-arm if its render fails. Only the two deciders whose
         # toast carries a live actionable signal (waiting question, permission) register here.
         owners: dict[int, Any] = {}
+        # id(request) -> the decider to re-arm if the toast is never SHOWN because the
+        # switch is off. Separate from `owners` above on purpose: see _suppress.
+        mute_owners: dict[int, Any] = {}
         outage = self.stale_decider.evaluate(state, now)
         if outage is not None:
             owed.append(outage)
+            mute_owners[id(outage)] = self.stale_decider
 
         if state is None:
             # crabd unreachable. The digest and the budget toast deliberately do NOT run (and
             # so do not consume their day) — a restarting crabd costs a poll, not the day's
             # notifications.
-            return self._emit(owed, owners, config, now)
+            return self._emit(owed, owners, config, now, mute_owners)
 
         schema = state.get("schema") if isinstance(state, dict) else None
         if schema not in SUPPORTED_SCHEMAS:
             if schema not in self._schema_warned:
                 self._schema_warned.add(schema)
                 log.warning("unsupported feed schema %r — standing down until it changes", schema)
-            return self._emit(owed, owners, config, now)
+            return self._emit(owed, owners, config, now, mute_owners)
 
         waiting = self.decider.evaluate(state, now, config, self.snooze_ledger.read())
         for request in waiting:
@@ -2254,7 +2296,7 @@ class Notifier:
         owed.extend(self.long_run_decider.evaluate(state, now, config))
         owed.extend(self._digest_due(state, now))
         owed.extend(self._budget_due(state, now))
-        return self._emit(owed, owners, config, now)
+        return self._emit(owed, owners, config, now, mute_owners)
 
     def _digest_due(self, state: Any, now: datetime) -> list[ToastRequest]:
         """The scheduler, riding this poll. Marks the day BEFORE showing: a toast that fails

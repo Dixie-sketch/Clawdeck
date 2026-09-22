@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # A tag push is not a branch push: without this list the package job's release step
+    # could never run, because the workflow would not start on the tag at all.
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -67,3 +70,65 @@ jobs:
         run: |
           Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser -SkipPublisherCheck
           pwsh -NoProfile -File ./setup/tests/RunTests.ps1
+  # The distributable (MF-005). Built on every push so the package build itself is covered by
+  # CI rather than discovered to be broken on release day, and uploaded as a workflow artifact
+  # so any commit can be installed on a PC with no SDK and no checkout.
+  package:
+    name: Package (win-x64)
+    runs-on: windows-latest
+    needs: test
+    # Scoped to THIS job. The workflow's default stays contents: read, so nothing else in it
+    # can write to the repository, and the write is only ever used by the tag step below.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build the package
+        shell: pwsh
+        run: pwsh -NoProfile -File ./setup/Build-SideCrabPackage.ps1
+
+      # The zip's own name carries the product version, so the artifact is read off the disk
+      # rather than assembled from a second copy of the version number here.
+      - name: Read the package identity
+        id: pkg
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'the package build produced no zip' }
+          $m = Get-Content "dist/$($zip.BaseName)/package-manifest.json" -Raw | ConvertFrom-Json
+          "name=$($zip.BaseName)"   >> $env:GITHUB_OUTPUT
+          "path=$($zip.FullName)"  >> $env:GITHUB_OUTPUT
+          "version=$($m.version)"  >> $env:GITHUB_OUTPUT
+          Write-Host "$($zip.Name) - $('{0:N0}' -f $zip.Length) bytes, $($m.fileCount) files, $($m.deployment)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+      # Only on a v* tag, which the private repository never gets: there the job stops after the
+      # artifact upload. The public repository's release is created by hand from the tag, so this
+      # ADDS the asset to a release that already exists rather than failing because it does -
+      # and still creates one if the tag was pushed without a release.
+      - name: Attach the package to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          zip=$(ls dist/*.zip | head -n 1)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists - uploading $zip to it"
+            gh release upload "$tag" "$zip" --clobber
+          else
+            echo "no release for $tag yet - creating one"
+            gh release create "$tag" "$zip" --title "$tag" --generate-notes
+          fi

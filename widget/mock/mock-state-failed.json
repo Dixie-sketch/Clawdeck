@@ -1,0 +1,851 @@
+{
+  "schema": 5,
+  "generatedAt": "2026-08-26T18:05:00Z",
+  "crabd": {
+    "version": "0.6.1",
+    "startedAt": "2026-08-26T06:41:09Z",
+    "hooksSeen": 7431
+  },
+  "quiet": {
+    "active": false,
+    "start": "22:00",
+    "end": "07:00",
+    "override": null
+  },
+  "recap": {
+    "sessionsToday": 11,
+    "doneToday": 4,
+    "commits": [
+      {
+        "repo": "sidecrab",
+        "count": 19
+      },
+      {
+        "repo": "acme-api",
+        "count": 8
+      },
+      {
+        "repo": "orbit-desktop",
+        "count": 3
+      },
+      {
+        "repo": "acme-web",
+        "count": 1
+      }
+    ],
+    "week": [
+      {
+        "day": "2026-08-20",
+        "done": null,
+        "commits": 14
+      },
+      {
+        "day": "2026-08-21",
+        "done": 5,
+        "commits": 22
+      },
+      {
+        "day": "2026-08-22",
+        "done": 0,
+        "commits": 2
+      },
+      {
+        "day": "2026-08-23",
+        "done": 1,
+        "commits": 0
+      },
+      {
+        "day": "2026-08-24",
+        "done": 6,
+        "commits": 27
+      },
+      {
+        "day": "2026-08-25",
+        "done": 4,
+        "commits": 18
+      },
+      {
+        "day": "2026-08-26",
+        "done": 4,
+        "commits": 31
+      }
+    ],
+    "computedAt": "2026-08-26T18:01:30Z"
+  },
+  "limits": {
+    "available": true,
+    "source": "statusline",
+    "note": "limits as of 2:41 PM",
+    "fiveHour": {
+      "utilization": 0.44,
+      "resetsAt": "2026-08-26T18:38:00Z",
+      "exhaustAt": "2026-08-26T18:33:00Z"
+    },
+    "weekly": {
+      "utilization": 0.79,
+      "resetsAt": "2026-08-31T07:00:00Z",
+      "exhaustAt": null
+    },
+    "extra": [
+      {
+        "label": "opus weekly",
+        "utilization": 0.63,
+        "resetsAt": "2026-08-26T20:15:00Z",
+        "exhaustAt": "2026-08-26T20:30:00Z"
+      }
+    ],
+    "subscriptionType": "max",
+    "rateLimitTier": "max_20x"
+  },
+  "burn": {
+    "today": {
+      "inputTokens": 448300,
+      "outputTokens": 641900,
+      "cacheReadTokens": 19640000,
+      "cacheCreationTokens": 1208000,
+      "messages": 1612
+    },
+    "costUSD": 12.47,
+    "costSource": "otlp",
+    "budget": {
+      "dailyOutputTokens": 2000000,
+      "todayPct": 0.321
+    },
+    "byModel": [
+      {
+        "model": "claude-opus-5",
+        "outputTokens": 402100
+      },
+      {
+        "model": "claude-sonnet-4-6",
+        "outputTokens": 171300
+      },
+      {
+        "model": "claude-fable-5",
+        "outputTokens": 56900
+      },
+      {
+        "model": "claude-haiku-4-5",
+        "outputTokens": 11600
+      }
+    ],
+    "hourly": [
+      {
+        "hourStart": "2026-08-25T13:00:00",
+        "outputTokens": 44100
+      },
+      {
+        "hourStart": "2026-08-25T14:00:00",
+        "outputTokens": 57800
+      },
+      {
+        "hourStart": "2026-08-25T15:00:00",
+        "outputTokens": 49200
+      },
+      {
+        "hourStart": "2026-08-25T16:00:00",
+        "outputTokens": 31500
+      },
+      {
+        "hourStart": "2026-08-25T17:00:00",
+        "outputTokens": 15100
+      },
+      {
+        "hourStart": "2026-08-25T18:00:00",
+        "outputTokens": 6300
+      },
+      {
+        "hourStart": "2026-08-25T19:00:00",
+        "outputTokens": 1200
+      },
+      {
+        "hourStart": "2026-08-25T20:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T21:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T22:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-25T23:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T00:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T01:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T02:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T03:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T04:00:00",
+        "outputTokens": 0
+      },
+      {
+        "hourStart": "2026-08-26T05:00:00",
+        "outputTokens": 4200
+      },
+      {
+        "hourStart": "2026-08-26T06:00:00",
+        "outputTokens": 28700
+      },
+      {
+        "hourStart": "2026-08-26T07:00:00",
+        "outputTokens": 61400
+      },
+      {
+        "hourStart": "2026-08-26T08:00:00",
+        "outputTokens": 94800
+      },
+      {
+        "hourStart": "2026-08-26T09:00:00",
+        "outputTokens": 118200
+      },
+      {
+        "hourStart": "2026-08-26T10:00:00",
+        "outputTokens": 90600
+      },
+      {
+        "hourStart": "2026-08-26T11:00:00",
+        "outputTokens": 141300
+      },
+      {
+        "hourStart": "2026-08-26T12:00:00",
+        "outputTokens": 83700
+      }
+    ],
+    "daily": [
+      {
+        "dayStart": "2026-08-20",
+        "outputTokens": 512900
+      },
+      {
+        "dayStart": "2026-08-21",
+        "outputTokens": 688400
+      },
+      {
+        "dayStart": "2026-08-22",
+        "outputTokens": 96100
+      },
+      {
+        "dayStart": "2026-08-23",
+        "outputTokens": 41700
+      },
+      {
+        "dayStart": "2026-08-24",
+        "outputTokens": 824600
+      },
+      {
+        "dayStart": "2026-08-25",
+        "outputTokens": 1187300
+      },
+      {
+        "dayStart": "2026-08-26",
+        "outputTokens": 641900
+      }
+    ]
+  },
+  "sessions": [
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+      "continuePrompts": [
+        "Run the ordering tests",
+        "Rebuild the panel bundle",
+        "Check the state contract",
+        "Take the screenshots",
+        "Update the changelog",
+        "Draft the release notes"
+      ],
+      "title": "crabd 0.6.1 — schema rework rollout",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "needs_input",
+      "stateSince": "2026-08-26T18:01:05Z",
+      "lastActivityAt": "2026-08-26T18:01:05Z",
+      "lastEvent": "asked a question: pin the ceiling at 5 or hold at 6?",
+      "question": "crabd now serves \"schema\": 5 as the last BREAKING shape, with fleet and contextTokens riding on it as additive fields.\n\nPin the widget ceiling at 5 and let every future additive field land without an the vendor host import, or hold the ceiling at 6 so the two stay lockstep?",
+      "turnStartedAt": "2026-08-26T17:54:40Z",
+      "acked": false,
+      "pendingPermission": {
+        "tool": "Bash",
+        "summary": "Run a shell command that removes the build output directory (rm -rf ./dist) before the next release build",
+        "requestedAt": "2026-08-26T18:04:50Z"
+      },
+      "model": "claude-opus-5",
+      "contextTokens": 487200,
+      "speed": "standard",
+      "subagents": {
+        "running": 2,
+        "total": 4
+      },
+      "subagentDetail": [
+        {
+          "label": "contract-diff",
+          "ageSec": 61
+        },
+        {
+          "label": "fixture-sweep",
+          "ageSec": 288
+        }
+      ],
+      "queuedContinue": null,
+      "todayOutputTokens": 141900,
+      "events": [
+        {
+          "at": "2026-08-26T18:01:05Z",
+          "text": "asked a question"
+        },
+        {
+          "at": "2026-08-26T17:57:12Z",
+          "text": "subagent started: contract-diff"
+        },
+        {
+          "at": "2026-08-26T17:54:40Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:49:58Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:41:03Z",
+          "text": "session started"
+        }
+      ],
+      "mode": "plan",
+      "promptQueue": 2,
+      "todos": {
+        "done": 2,
+        "total": 5,
+        "current": "Agree the ceiling with the reviewer before touching the gate"
+      }
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+      "continuePrompts": [
+        "Run the ordering tests",
+        "Rebuild the panel bundle",
+        "Check the state contract",
+        "Take the screenshots",
+        "Update the changelog",
+        "Draft the release notes"
+      ],
+      "title": "SideCrab widget — presence gating audit",
+      "cwd": "C:\\Dev\\sidecrab",
+      "repo": "sidecrab",
+      "branch": "main",
+      "state": "failed",
+      "stateSince": "2026-08-26T17:58:40Z",
+      "lastActivityAt": "2026-08-26T18:04:52Z",
+      "lastEvent": "converting the /v1/config schema gate",
+      "turnStartedAt": "2026-08-26T17:52:11Z",
+      "model": "claude-opus-5",
+      "contextTokens": 196400,
+      "speed": "fast",
+      "subagents": {
+        "running": 3,
+        "total": 5
+      },
+      "subagentDetail": [
+        {
+          "label": "grep-schema-compares",
+          "ageSec": 42
+        },
+        {
+          "label": "render-presence-check",
+          "ageSec": 205
+        },
+        {
+          "label": "capability-probe-review",
+          "ageSec": 417
+        }
+      ],
+      "queuedContinue": {
+        "prompt": "Run the tests and report the results.",
+        "queuedAt": "2026-08-26T18:04:20Z"
+      },
+      "todayOutputTokens": 152800,
+      "events": [
+        {
+          "at": "2026-08-26T18:04:52Z",
+          "text": "converting the /v1/config schema gate"
+        },
+        {
+          "at": "2026-08-26T18:00:10Z",
+          "text": "subagent started: capability-probe-review"
+        },
+        {
+          "at": "2026-08-26T17:56:44Z",
+          "text": "subagent finished: ceiling-constant"
+        },
+        {
+          "at": "2026-08-26T17:52:11Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:47:30Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:36:20Z",
+          "text": "session started"
+        }
+      ],
+      "activity": {
+        "tool": "Edit",
+        "detail": "companion/config_schema.py",
+        "at": "2026-08-26T18:04:52Z",
+        "callsThisTurn": 7
+      },
+      "promptQueue": 3,
+      "filesTouched": {
+        "count": 12,
+        "recent": [
+          "companion/config_schema.py",
+          "companion/routes/config.py",
+          "tests/test_config_schema.py",
+          "docs/config-reference.md"
+        ]
+      },
+      "failure": {
+        "errorType": "rate_limit",
+        "at": "2026-08-26T17:58:40Z",
+        "message": "This request would exceed your organization’s rate limit of 80,000 input tokens per minute. Retry after 17:59:40Z."
+      }
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50003",
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
+      "title": "build agent 3 — disk health walk",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "failed",
+      "stateSince": "2026-08-26T17:55:10Z",
+      "lastActivityAt": "2026-08-26T18:01:15Z",
+      "lastEvent": "reading SMART off the disk",
+      "turnStartedAt": "2026-08-26T17:56:40Z",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 1954200,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 2
+      },
+      "subagentDetail": [],
+      "queuedContinue": null,
+      "todayOutputTokens": 109400,
+      "events": [
+        {
+          "at": "2026-08-26T18:04:58Z",
+          "text": "reading SMART off the disk"
+        },
+        {
+          "at": "2026-08-26T18:02:05Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:58:41Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:12:44Z",
+          "text": "session started"
+        }
+      ],
+      "activity": {
+        "tool": "Read",
+        "detail": "smartctl output for the second NVMe",
+        "at": "2026-08-26T18:01:15Z",
+        "callsThisTurn": 1
+      },
+      "compaction": {
+        "count": 2,
+        "lastAt": "2026-08-26T18:00:41Z",
+        "inProgress": true
+      },
+      "failure": {
+        "errorType": "overloaded",
+        "at": "2026-08-26T17:55:10Z"
+      }
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50004",
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
+      "title": "dependency audit — npm advisories",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "failed",
+      "stateSince": "2026-08-26T17:51:00Z",
+      "lastActivityAt": "2026-08-26T18:04:59Z",
+      "lastEvent": "importing findings into the tracker",
+      "turnStartedAt": "2026-08-26T18:03:50Z",
+      "model": "claude-fable-5",
+      "contextTokens": 74800,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "subagentDetail": [],
+      "queuedContinue": null,
+      "todayOutputTokens": 92600,
+      "events": [
+        {
+          "at": "2026-08-26T18:04:59Z",
+          "text": "importing findings into the tracker"
+        },
+        {
+          "at": "2026-08-26T18:03:50Z",
+          "text": "prompt submitted"
+        },
+        {
+          "at": "2026-08-26T17:44:02Z",
+          "text": "session started"
+        }
+      ],
+      "mode": "acceptEdits",
+      "activity": {
+        "tool": "Bash",
+        "detail": "run the importer against the staging tracker and diff the counts",
+        "at": "2026-08-26T18:04:59Z",
+        "callsThisTurn": 3
+      },
+      "todos": {
+        "done": 3,
+        "total": 7,
+        "current": "Import the last two scanner exports and reconcile the duplicate findings"
+      },
+      "failure": {
+        "errorType": "gateway_timeout",
+        "at": "2026-08-26T17:51:00Z",
+        "message": "upstream did not answer in 60 s"
+      }
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+      "continuePrompts": [
+        "Rebuild the report",
+        "Run the migrations"
+      ],
+      "title": "acme-api",
+      "titleSource": "cwd",
+      "cwd": "C:\\Dev\\acme-api",
+      "repo": "acme-api",
+      "branch": "main",
+      "state": "failed",
+      "stateSince": "2026-08-26T17:57:31Z",
+      "lastActivityAt": "2026-08-26T17:57:31Z",
+      "lastEvent": "running the acceptance suite",
+      "model": "claude-sonnet-4-6",
+      "contextTokens": 68300,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 1
+      },
+      "queuedContinue": {
+        "prompt": "Open a pull request for this work.",
+        "queuedAt": "2026-08-26T18:04:20Z"
+      },
+      "todayOutputTokens": 34100,
+      "events": [
+        {
+          "at": "2026-08-26T17:57:31Z",
+          "text": "finished a turn"
+        },
+        {
+          "at": "2026-08-26T17:40:12Z",
+          "text": "prompt submitted"
+        }
+      ],
+      "mode": "bypassPermissions",
+      "filesTouched": {
+        "count": 1,
+        "recent": [
+          "docs/publishing-guide.md"
+        ]
+      },
+      "compaction": {
+        "count": 1,
+        "lastAt": "2026-08-26T17:40:12Z",
+        "inProgress": false
+      }
+    },
+    {
+      "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50006",
+      "cwd": "C:\\Dev\\scratch-notes",
+      "repo": null,
+      "branch": null,
+      "state": "failed",
+      "stateSince": "2026-08-26T17:21:00Z",
+      "lastActivityAt": "2026-08-26T17:21:00Z",
+      "lastEvent": "no activity for 44 minutes",
+      "model": "claude-haiku-4-5",
+      "contextTokens": null,
+      "speed": "standard",
+      "subagents": {
+        "running": 0,
+        "total": 0
+      },
+      "queuedContinue": null,
+      "todayOutputTokens": 9200,
+      "events": [],
+      "mode": "experimentalAutoRun",
+      "failure": {
+        "errorType": "billing_error",
+        "at": "2026-08-26T17:21:00Z",
+        "message": "Your credit balance is too low to run this request."
+      }
+    }
+  ],
+  "fleet": {
+    "toast": "stopped"
+  },
+  "host": {
+    "cpuPct": 34.2,
+    "memPct": 58.4,
+    "memUsedGB": 18.7,
+    "memTotalGB": 32.0,
+    "sensors": [
+      {
+        "name": "CPU (Tctl/Tdie)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 60.4
+      },
+      {
+        "name": "CPU Die (average)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 56.6
+      },
+      {
+        "name": "CPU CCD1 (Tdie)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 51.1
+      },
+      {
+        "name": "CPU CCD2 (Tdie)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 43.1
+      },
+      {
+        "name": "GPU Temperature",
+        "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 48.1
+      },
+      {
+        "name": "GPU Hot Spot Temperature",
+        "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 53.1
+      },
+      {
+        "name": "GPU Memory Junction Temperature",
+        "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 52.0
+      },
+      {
+        "name": "GPU Temperature",
+        "device": "iGPU [#1]: AMD Radeon",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 48.3
+      },
+      {
+        "name": "CPU VDDCR_VDD VRM (SVI3 TFN)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 47.3
+      },
+      {
+        "name": "CPU VDDCR_SOC VRM (SVI3 TFN)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 42.0
+      },
+      {
+        "name": "CPU VDD_MISC VRM (SVI3 TFN)",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 51.1
+      },
+      {
+        "name": "VRM",
+        "device": "ASUS EC",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 47.0
+      },
+      {
+        "name": "Drive Temperature",
+        "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 51.0
+      },
+      {
+        "name": "Drive Temperature 2",
+        "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 51.0
+      },
+      {
+        "name": "Drive Temperature 3",
+        "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 57.0
+      },
+      {
+        "name": "Motherboard",
+        "device": "ASUS ROG CROSSHAIR X870E HERO BTF (Nuvoton NCT6701D)",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 41.0
+      },
+      {
+        "name": "Chipset 1 (xHCI)",
+        "device": "ASUS ROG CROSSHAIR X870E HERO BTF (AMD Chipset)",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 64.6
+      },
+      {
+        "name": "Chipset 2 (xHCI)",
+        "device": "ASUS ROG CROSSHAIR X870E HERO BTF (AMD Chipset)",
+        "kind": "temp",
+        "unit": "°C",
+        "value": 66.4
+      },
+      {
+        "name": "CPU Package Power",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "power",
+        "unit": "W",
+        "value": 93.7
+      },
+      {
+        "name": "CPU PPT",
+        "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+        "kind": "power",
+        "unit": "W",
+        "value": 93.5
+      },
+      {
+        "name": "AIO Pump",
+        "device": "ASUS ROG CROSSHAIR X870E HERO BTF (Nuvoton NCT6701D)",
+        "kind": "fan",
+        "unit": "RPM",
+        "value": 3435
+      },
+      {
+        "name": "CPU_OPT",
+        "device": "ASUS EC",
+        "kind": "fan",
+        "unit": "RPM",
+        "value": 1133
+      },
+      {
+        "name": "GPU Fan1",
+        "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070",
+        "kind": "fan",
+        "unit": "RPM",
+        "value": 0
+      },
+      {
+        "name": "GPU Fan2",
+        "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070",
+        "kind": "fan",
+        "unit": "RPM",
+        "value": 0
+      }
+    ],
+    "sensorsSource": {
+      "provider": "hwinfo",
+      "pollTime": "2026-08-26T18:04:59Z",
+      "ageSec": 1.2,
+      "stale": false,
+      "available": true,
+      "note": null
+    },
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 5070",
+      "driver": "610.74",
+      "tempC": 48.0,
+      "utilPct": 4.0,
+      "memUsedMB": 4000.0,
+      "memTotalMB": 12227.0,
+      "powerW": 12.3,
+      "powerLimitW": 250.0,
+      "clockMHz": 382.0,
+      "available": true,
+      "note": null,
+      "sampledAt": "2026-08-26T18:04:58Z"
+    },
+    "load": {
+      "diskReadBps": 1267326,
+      "diskWriteBps": 410492,
+      "netRxBps": 36919,
+      "netTxBps": 125770,
+      "commitPct": 45.5,
+      "topProcess": {
+        "name": "pwsh.exe",
+        "pid": 8124,
+        "cpuPct": 3.1
+      },
+      "sampledAt": "2026-08-26T18:04:58Z"
+    }
+  },
+  "toast": {
+    "thresholdSec": 120,
+    "enabled": true,
+    "approvalThresholdSec": 45
+  },
+  "continuePrompts": [
+    "Open a pull request for this work."
+  ],
+  "_mock": {
+    "config400": [
+      "toast",
+      "budget"
+    ]
+  }
+}

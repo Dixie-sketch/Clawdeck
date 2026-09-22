@@ -146,7 +146,19 @@ def apply_snooze(doc: Any, session_id: str, until: datetime, now: datetime) -> d
     # Oldest-expiring first, so the cap sheds the marks closest to running out anyway. The new
     # mark is appended last and is therefore never the one dropped — the operator's most recent
     # press must be the one that takes effect.
-    ordered = sorted(kept.items(), key=lambda kv: kv[1])[-(SNOOZE_MAP_CAP - 1) :]
+    #
+    # SORTED ON THE PARSED INSTANT, NOT THE STRING. The key used to be `kv[1]`, the raw ISO
+    # text, which is a correct chronological order for exactly one mark shape: the `+00:00`
+    # this handler writes itself. It is NOT the file's only writer — this map is a JSON
+    # object on disk, and a mark with a `Z` or a real UTC offset sorts by its WALL CLOCK
+    # text rather than by when it expires. Measured: `2026-09-22T23:30:00Z` (23:30 UTC) sorts
+    # BEFORE `2026-09-23T07:00:00+09:00` (22:00 UTC) because "22" < "23" at the day digit, so
+    # at the cap the mark expiring LAST is evicted and the one expiring FIRST is kept — the
+    # operator's live snooze dropped in favour of one about to run out.
+    # `_parse_iso` is the same reader the `expiry > now` filter above already trusts, and it
+    # returns aware UTC, so this is one comparison of instants in one zone. Every entry in
+    # `kept` parsed there, so the `or now` arm is unreachable and is a floor, not a guess.
+    ordered = sorted(kept.items(), key=lambda kv: _parse_iso(kv[1]) or now)[-(SNOOZE_MAP_CAP - 1) :]
     out[SNOOZE_SECTION] = dict(ordered) | {session_id: until.isoformat()}
     return out
 

@@ -44,10 +44,28 @@
 
     THE PANEL HOST is the standalone window that shows the panel full-screen on the Xeneon
     Edge (crabd serves the page at /panel/). It is a compiled exe, so the installer runs
-    setup\Build-SideCrabPanel.ps1 when it is missing - which needs the .NET 10 SDK; the
-    Desktop Runtime is enough to run it afterwards. A build failure on the DEFAULT path warns,
-    skips the panel and installs the rest; on an explicit -Panel it throws. The pairing code
-    is read from ~/.sidecrab/panel-token by the host itself - nothing to paste anywhere.
+    setup\Build-SideCrabPanel.ps1 WHEN IT IS MISSING - which needs a .NET SDK; the Desktop
+    Runtime is enough to run it afterwards. A release package carries the exe already published,
+    so an install from one never reaches for dotnet at all. A build failure on the DEFAULT path
+    warns, skips the panel and installs the rest; on an explicit -Panel it throws. The pairing
+    code is read from ~/.sidecrab/panel-token by the host itself - nothing to paste anywhere.
+
+    INSTALLING FROM A RELEASE PACKAGE. Extract the zip and run this script from inside it. Two
+    extra things then happen: every file is verified against the package-manifest.json that
+    shipped with it and a mismatch refuses the install by name, and the package identity
+    (version, commit, build time) is printed here and by -Status.
+
+    RE-RUNNING THIS SCRIPT IS THE SUPPORTED UPGRADE. Extract the new package over the old
+    folder, or beside it, and run the installer again: tasks are re-registered from scratch,
+    hooks are matched and replaced rather than duplicated, and settings.json is backed up first.
+    setup\Update-SideCrab.ps1 is the other path, for a git checkout or for swapping only the
+    panel host out of a package.
+
+    PREREQUISITES ARE CHECKED BEFORE THE PANEL TASK IS REGISTERED
+    (setup\Test-SideCrabPrerequisites.ps1 is the same check on its own). When the .NET Desktop
+    Runtime or the WebView2 runtime is missing, the panel task is NOT registered and the rest is
+    installed, because a logon task pointing at a host that cannot start fails silently at every
+    logon. An explicit -Panel turns that into an error instead.
 
     -WhatIf DESCRIBES THE BUILD AND DOES NOT RUN IT. dotnet publish writes bin/, obj/ and
     dist/ into the checkout, so a dry run that performed it was changing the tree it claimed
@@ -167,10 +185,21 @@ function Get-ComponentPlan {
 function Show-Status {
     <# Read-only by design: probes tasks, /v1/health and settings.json, writes nothing. #>
     param([object[]] $Plan, [string] $RepoRoot, [string] $SettingsPath,
-          [string] $ConfigPath, [string] $ChainPath)
+          [string] $ConfigPath, [string] $ChainPath, $Package)
 
     Write-Host 'SideCrab status'
     Write-Step "repo:    $RepoRoot"
+
+    # WHICH BUILD IS THIS? An install from a release package can say exactly - version, commit
+    # and build time - and a status paste that carries it turns "it broke after I updated" into
+    # a question with an answer. A source checkout has no manifest and says so.
+    if ($Package -and $Package.Checked) {
+        Write-Step "package: $($Package.Identity)"
+        if ($Package.Ok) { Write-Step "package: verified - $($Package.Reason)" }
+        else { Write-Host "    package: DOES NOT VERIFY - $($Package.Reason)" -ForegroundColor Red }
+    } else {
+        Write-Step 'package: source checkout (no package-manifest.json)'
+    }
 
     Write-Step 'tasks:'
     foreach ($c in $Plan) {
@@ -352,39 +381,89 @@ $plan = Get-ComponentPlan -RepoRoot $RepoRoot -WithToast $WithToast.IsPresent `
                           -WithPanel $Panel.IsPresent `
                           -SkipToast $SkipToast.IsPresent -SkipPanel $SkipPanel.IsPresent
 
-# The panel host is a COMPILED exe, so "install the panel" starts with a build. Built here,
-# before the task loop, because the exe's presence is what the loop registers.
+# ---- is this a package, and is it the package it says it is? (MF-005)
+# Nothing is installed from a tree whose files do not match the manifest that shipped with it.
+# A source checkout has no manifest and this is silent there, which is the ordinary case - the
+# check exists for the zip a stranger downloaded, where a truncated transfer and an edited
+# script look identical until something hashes them.
+$package = [pscustomobject]@{ Checked = $false; Ok = $true; Identity = ''; Reason = 'not probed'; FirstMismatch = $null }
+if (-not $PairingCode -and -not $LimitsToken) {
+    $package = Test-SideCrabPackageIntegrity -RepoRoot $RepoRoot
+    if ($package.Checked -and -not $Status) {
+        Write-Host "  package: $($package.Identity)"
+        if ($package.Ok) {
+            Write-Step "package: verified - $($package.Reason)"
+        } else {
+            throw ("this package does not match the manifest that shipped with it - $($package.Reason). " +
+                   'Nothing was installed. Download the release zip again and extract it fresh; if it still ' +
+                   'fails, the file you have is not the file that was published.')
+        }
+    }
+}
+
+# The panel host is a COMPILED exe, so "install the panel" starts with a build - unless the exe
+# is already here, which is what a package carries and why installing from one needs no SDK.
+# Decided by Get-SideCrabHostBuildDecision so "would this reach for dotnet?" is a question a
+# test can ask without running an installer.
 #
 # BEHIND ShouldProcess (SCA-015). dotnet publish restores packages and writes bin\, obj\ and
 # panel-host\dist\ into the checkout - a dry run that performed it was modifying the tree it
-# had just promised not to touch. -WhatIf now prints the line and returns.
+# had just promised not to touch. -WhatIf prints the line and does not build.
 #
 # A FAILED BUILD IS FATAL ONLY WHEN THE PANEL WAS ASKED FOR BY NAME. On the default path a
-# PC without the .NET 10 SDK should still get its companion and notifier, so the failure
+# PC without the .NET SDK should still get its companion and notifier, so the failure
 # warns, drops the panel from the plan and the install carries on; -Panel is an instruction,
 # and an instruction that cannot be carried out stops the run.
 if (-not $Status -and -not $PairingCode -and -not $LimitsToken -and -not $SkipTask) {
     $panelRow = @($plan | Where-Object { $_.Key -eq 'panel' })[0]
-    if ($panelRow.Selected -and -not $panelRow.Present) {
+
+    # THE TWO RUNTIMES THE PANEL NEEDS, asked before its task is registered. A logon task
+    # pointing at a host that cannot start is worse than no task: it fails silently at every
+    # logon, restarts three times, and the only account of it is a task-scheduler result code.
+    # Only a DEFINITE miss stops it - a probe that could not answer warns and lets the install
+    # proceed, because refusing over our own failure to read a registry key helps nobody.
+    if ($panelRow.Selected) {
+        $prereq = Test-SideCrabPrerequisite -RepoRoot $RepoRoot
+        foreach ($row in @($prereq.Rows | Where-Object { $_.Status -in @('missing', 'unknown', 'warn') })) {
+            Write-Host ('    prereq:  {0} {1} - {2}' -f $row.Status.ToUpperInvariant(), $row.Title, $row.Detail) -ForegroundColor Yellow
+            if ($row.Fix)  { Write-Host "             fix: $($row.Fix)" -ForegroundColor DarkGray }
+            if ($row.Link) { Write-Host "             get: $($row.Link)" -ForegroundColor DarkGray }
+        }
+        if ($prereq.PanelBlocked) {
+            if ($panelRow.Requested) {
+                throw ("the panel host cannot run on this PC: $($prereq.PanelReason). Install what the lines above name, " +
+                       'or re-run with -SkipPanel to install the companion and the notifier without it.')
+            }
+            Write-Host "    panel    NOT installed - $($prereq.PanelReason). The companion and the notifier are installed; install the runtime(s) above and re-run." -ForegroundColor Yellow
+            $panelRow.Selected = $false
+            $panelRow.Reason   = 'prerequisite-missing'
+        }
+    }
+
+    $build = Get-SideCrabHostBuildDecision -Selected $panelRow.Selected -ExePresent $panelRow.Present `
+                                           -Requested $panelRow.Requested -WhatIf $WhatIfPreference
+    if ($build.Build) {
         if ($PSCmdlet.ShouldProcess($panelRow.Script, 'Build the panel host (dotnet publish)')) {
             & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
             if ($LASTEXITCODE -ne 0) {
                 if ($panelRow.Requested) {
-                    throw 'the panel host did not build - see the lines above (the .NET 10 SDK is required). Re-run with -SkipPanel to install without it.'
+                    throw 'the panel host did not build - see the lines above (a .NET SDK is required to build one). Re-run with -SkipPanel to install without it, or install from a release package, which carries the host already built.'
                 }
-                Write-Host '    panel    did NOT build - installing without it. Install the .NET 10 SDK and re-run, or pass -SkipPanel to stop being told.' -ForegroundColor Yellow
+                Write-Host '    panel    did NOT build - installing without it. Install the .NET SDK and re-run, install from a release package instead, or pass -SkipPanel to stop being told.' -ForegroundColor Yellow
                 $panelRow.Selected = $false
                 $panelRow.Reason   = 'build-failed'
             } else {
                 $panelRow.Present = $true
             }
-        } else {
-            # -WhatIf: the build did not run, so the exe is still absent and the task loop
-            # must not claim it will register one.
-            Write-Step "panel:   would build $($panelRow.Script) (dotnet publish) - nothing was built"
-            $panelRow.Selected = $false
-            $panelRow.Reason   = 'whatif-not-built'
         }
+    } elseif ($build.Verdict -eq 'whatif') {
+        # -WhatIf: the build did not run, so the exe is still absent and the task loop
+        # must not claim it will register one.
+        Write-Step "panel:   would build $($panelRow.Script) (dotnet publish) - nothing was built"
+        $panelRow.Selected = $false
+        $panelRow.Reason   = 'whatif-not-built'
+    } elseif ($build.Verdict -eq 'already-built') {
+        Write-Step "panel:   $($build.Reason) ($($panelRow.Script))"
     }
 }
 
@@ -412,7 +491,7 @@ if ($PairingCode) {
 
 if ($Status) {
     Show-Status -Plan $plan -RepoRoot $RepoRoot -SettingsPath $SettingsPath `
-                -ConfigPath $ConfigPath -ChainPath $ChainPath
+                -ConfigPath $ConfigPath -ChainPath $ChainPath -Package $package
     return
 }
 

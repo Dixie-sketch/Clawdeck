@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook/session-start || exit 0",
             "timeout": 3
           }
         ]
@@ -15,8 +15,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/prompt",
             "timeout": 3
           }
         ]
@@ -26,8 +26,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/notification",
             "timeout": 3
           }
         ]
@@ -44,12 +44,34 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/stop-failure",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/subagent-start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/subagent-stop",
             "timeout": 3
           }
         ]
@@ -70,8 +92,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0",
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/session-end",
             "timeout": 3
           }
         ]
@@ -81,8 +103,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook/precompact || exit 0",
+            "type": "http",
+            "url": "http://127.0.0.1:2722/v1/hook/precompact",
             "timeout": 3
           }
         ]

@@ -491,7 +491,14 @@ var MOCKS = ['normal', 'attention', 'empty', 'stale', 'question', 'quiet', 'reca
 	   v0.26.0. It is a separate file rather than a second window bolted onto
 	   rework so every other capture in the probe matrix stays byte-identical —
 	   rework is the fixture the whole matrix is baselined on. */
-	'rework', 'dense', 'future', 'extras'];
+	/* lane S: failed = rework with five of its six rows in the new `failed` state,
+	   covering four error types, a message and no message, an errorType the widget's
+	   map does not name, and a failed row with no `failure` block at all. agents =
+	   rework carrying `subagents.named`, with NINE entries on one row against a cap
+	   of 8, a row whose type is absent and a row whose startedAt will not parse.
+	   Both are separate files rather than members bolted onto rework, for the reason
+	   extras is: rework is the fixture the whole probe matrix is baselined on. */
+	'rework', 'dense', 'future', 'extras', 'failed', 'agents'];
 var WEEKDAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 var EMDASH = '—';
 
@@ -891,6 +898,12 @@ function applyProperties() {
 
 	var t = Math.max(0, Math.min(100, numProp('transparency', 0)));
 	setVar(root, '--bg-alpha', String(1 - t / 100));
+
+	/* lane S: the unit on the BODY, because it changes the hardware row's width
+	   budget and the stylesheet owns that row's shrink order (see .sensors). The
+	   class is the only thing JS tells the stylesheet about the unit; the readings
+	   themselves are painted by laneSTempDisplay. */
+	document.body.classList.toggle('temp-f', laneSTempUnit() === 'f');
 
 	/* The touch-diagnostics switch can move under a running panel on a save, and
 	   this is the only place that hears about it. syncDiag returns immediately
@@ -2736,6 +2749,7 @@ function renderSessions(sessions, status, quiet, recap) {
 			   prompt: two prompts that render the same chip are the same card. */
 			queuedLabel(s) || '',
 			laneNSig(s),   // lane N
+			laneSSig(s),   // lane S
 			subList(s).map(function (d) { return String(d && d.label); }).join(',')].join('');
 	}).join('') + '||' + (chipText || '') + '||' + (quiet ? 'q' : '');
 
@@ -2830,8 +2844,14 @@ function clampGrid(list, capacity) {
 	var keep = capacity - 1;   /* the last cell belongs to the "+N more" tile */
 	var take = {};
 	var n = 0, i;
+	/* lane S: `failed` joins `needs_input` here, and the pass is still ONE pass in
+	   feed order, so the two keep crabd's relative order rather than this list's.
+	   A failed row has no pulse, no glow, no chime and no swipe, so the clamp is
+	   the only thing between it and the "+N more" tile. */
 	for (i = 0; i < list.length && n < keep; i++) {
-		if (list[i] && list[i].state === 'needs_input') { take[i] = 1; n++; }
+		if (list[i] && (list[i].state === 'needs_input' || list[i].state === 'failed')) {
+			take[i] = 1; n++;
+		}
 	}
 	for (i = 0; i < list.length && n < keep; i++) {
 		if (!take[i]) { take[i] = 1; n++; }
@@ -3231,6 +3251,13 @@ function buildCard(s, quiet) {
 	} else if (question) {
 		event.className = 'card-question';
 		event.textContent = question;
+	} else if (laneSFailureWords(s)) {
+		/* lane S: the failure REPLACES lastEvent, the same trade the question and
+		   the activity row make - the last thing that happened to this session IS
+		   the failure, and printing crabd's summary of it above these two words
+		   would cost the card a line to say one thing twice. */
+		event.className = 'card-event card-failure';
+		event.textContent = laneSFailureWords(s);
 	} else {
 		/* lane N: the activity REPLACES the event line on a working session, the
 		   same trade the question makes two branches up - two renderings of what the
@@ -8194,6 +8221,16 @@ var SETTINGS_SLIDERS = [
 	['transparency', 'Background transparency', 0, '%'],
 	['chimeVolume', 'Chime volume', CHIME_VOLUME_DEFAULT, '']
 ];
+/* lane S: a fixed set of values, which is neither a toggle nor a slider. A toggle
+   would have had to be labelled "Fahrenheit" with On and Off beside it, and a
+   switch whose off position is another unit is a control that only reads correctly
+   to whoever wrote it. Each option says what it is.
+   Spelled `c`/`f` on the wire and shown as the degree symbols: the stored value is
+   what the host validates and what a config file is read by eye, and "°C" is a
+   glyph to type into JSON. */
+var SETTINGS_CHOICES = [
+	['tempUnit', 'Temperature unit', 'c', [['c', '°C'], ['f', '°F']]]
+];
 /* A small fixed palette per colour, plus whatever the panel is actually set to —
    a swatch row that could not show the current value would be a control that
    cannot represent its own state. */
@@ -8225,7 +8262,22 @@ function settingsCurrent() {
 		var c = SETTINGS_COLORS[i];
 		d[c[0]] = normHex(strProp(c[0], c[2]), c[2]);
 	}
+	/* lane S: through the same normaliser the renderer reads by, so the sheet cannot
+	   show a value the page would not act on. A stored junk value degrades to the
+	   default here exactly as it does there, which is normHex's rule one type along. */
+	for (i = 0; i < SETTINGS_CHOICES.length; i++) {
+		var ch = SETTINGS_CHOICES[i];
+		d[ch[0]] = normChoice(strProp(ch[0], ch[2]), ch[3], ch[2]);
+	}
 	return d;
+}
+
+/* One of the offered values, or the default. Trimmed and lower-cased because the
+   host stores what it is given and a hand-edited "F" must not read as unset. */
+function normChoice(value, options, dflt) {
+	var v = String(value === null || value === undefined ? '' : value).trim().toLowerCase();
+	for (var i = 0; i < options.length; i++) { if (options[i][0] === v) return v; }
+	return dflt;
 }
 
 function normHex(value, dflt) {
@@ -8310,6 +8362,12 @@ function buildSettingsRows() {
 	}
 	for (i = 0; i < SETTINGS_SLIDERS.length; i++) {
 		root.appendChild(settingsSliderRow(SETTINGS_SLIDERS[i], values));
+	}
+	/* lane S: after the sliders and before the actions, so the half still reads
+	   switches, then colours, then scales, then the one control that picks a value
+	   from a list. */
+	for (i = 0; i < SETTINGS_CHOICES.length; i++) {
+		root.appendChild(settingsChoiceRow(SETTINGS_CHOICES[i], values));
 	}
 	root.appendChild(settingsActions());
 
@@ -8535,6 +8593,55 @@ function paintSettingsToggle(btn, on) {
 	btn.textContent = on ? 'On' : 'Off';
 	btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 	btn.setAttribute('data-on', on ? '1' : '0');
+}
+
+/* lane S: one button per value, pressed-state on the chosen one. The SWATCH row's
+   accessibility wiring, not the toggle's: like a swatch each button carries its own
+   meaning on its face, so the row label plus that face is already the whole name
+   and aria-labelledby would read "Temperature unit °C" twice over. The group is a
+   radiogroup so a reader announces "1 of 2" rather than two unrelated buttons.
+   Nothing is written to the host here - the draft moves and the foot says "not
+   saved yet", which is what every control on this half does. */
+function settingsChoiceRow(spec, values) {
+	var key = spec[0], options = spec[3];
+	var row = settingsRow(spec[1]);
+	var wrap = document.createElement('div');
+	wrap.className = 'set-choices';
+	wrap.setAttribute('role', 'radiogroup');
+	wrap.setAttribute('aria-labelledby', row.labelId);
+	for (var i = 0; i < options.length; i++) {
+		wrap.appendChild(settingsChoiceBtn(key, options[i], values[key], wrap));
+	}
+	row.appendChild(wrap);
+	return row;
+}
+
+function settingsChoiceBtn(key, option, current, wrap) {
+	var b = document.createElement('button');
+	b.type = 'button';
+	b.className = 'set-btn set-choice';
+	b.setAttribute('role', 'radio');
+	b.setAttribute('data-set-key', key);
+	b.setAttribute('data-set-value', option[0]);
+	b.textContent = option[1];
+	b.setAttribute('aria-checked', option[0] === current ? 'true' : 'false');
+	b.setAttribute('data-on', option[0] === current ? '1' : '0');
+	b.addEventListener('click', function () {
+		settingsValues()[key] = option[0];
+		var sibs = wrap.querySelectorAll('.set-choice');
+		for (var i = 0; i < sibs.length; i++) {
+			var on = sibs[i].getAttribute('data-set-value') === option[0];
+			sibs[i].setAttribute('aria-checked', on ? 'true' : 'false');
+			sibs[i].setAttribute('data-on', on ? '1' : '0');
+		}
+		/* NOT a live preview, deliberately. Every other control on this half moves
+		   the DRAFT and nothing else: the colours, the switches and the sliders all
+		   land when the host echoes the save back, and a unit that changed the glass
+		   before the save would be the one control on the sheet whose state is not
+		   what the panel is running on. */
+		setSettingsStatus('not saved yet', 'pending');
+	});
+	return b;
 }
 
 function settingsColorRow(spec, values) {
@@ -9381,9 +9488,11 @@ function laneATempColor(value, unit) {
    four cells is most of a cell. A reading in any other unit KEEPS its letter, because
    there the letter is the whole difference between 140°F and a machine on fire. */
 function laneAPaintTemp(el, value, unit) {
-	var u = String(unit || '').replace(/^\s*°?/, '').toUpperCase();
-	var bare = u === '' || u.charAt(0) === 'C';
-	setText(el, Math.round(value) + (bare ? '°' : '°' + u.charAt(0)));
+	/* lane S: the operator's unit decides the NUMBER and the letter. The colour is
+	   still computed from the source value in the source unit, so the 80/90 steps
+	   stay in one scale and cannot drift from what is printed. */
+	var d = laneSTempDisplay(value, unit);
+	setText(el, Math.round(d.value) + '°' + d.letter);
 	setVar(el, '--sensor-color', laneATempColor(value, unit));
 }
 
@@ -9697,10 +9806,14 @@ function laneAOtherReadings() {
 		var unit = String(row.s.unit || '').replace(/^\s*°?/, '');
 		var device = counts[row.name.toLowerCase()] > 1
 			? laneADeviceLabel(row.s.device) : '';
+		/* lane S: the sheet's readings take the operator's unit the same way the row
+		   does, through the one converter. POWER is untouched and that is the whole
+		   reason the branch is here: the package power is watts, and a unit setting
+		   about temperature has no business near it. */
+		var shown = row.cls === 'power' ? null : laneSTempDisplay(row.s.value, unit);
 		out.push(row.name + (device ? ' (' + device + ')' : '') + ' ' +
-			(row.cls === 'power' ? Math.round(row.s.value) + ' ' + unit
-				: Math.round(row.s.value) + '°' +
-					(unit.toUpperCase().charAt(0) === 'C' ? '' : unit)));
+			(shown === null ? Math.round(row.s.value) + ' ' + unit
+				: Math.round(shown.value) + '°' + shown.letter));
 	}
 	return out;
 }
@@ -10714,7 +10827,9 @@ function detailTarget() {
 	var s = detailSessionId ? findSession(detailSessionId) : null;
 	if (s) return s;
 	var sessions = lastGoodDoc && Array.isArray(lastGoodDoc.sessions) ? lastGoodDoc.sessions : [];
-	var order = ['needs_input', 'working', 'done', 'idle'];
+	/* lane S: `failed` sits immediately after `needs_input`. It needs a human, but a
+	   needs_input row is BLOCKING on the person in front of the panel. */
+	var order = ['needs_input', 'failed', 'working', 'done', 'idle'];
 	for (var b = 0; b < order.length; b++) {
 		for (var i = 0; i < sessions.length; i++) {
 			if (sessions[i] && sessions[i].state === order[b]) {
@@ -10776,6 +10891,7 @@ function renderDetailView(sessions, quiet) {
 		subs.map(function (d) { return String(d && d.label); }).join(','),
 		events.map(function (e) { return String(e && e.at) + String(e && e.text); }).join('|'),
 		laneNSig(s),   // lane N
+		laneSSig(s),   // lane S
 		quiet ? 'q' : ''].join('#');
 	/* lane N: the anchors are refreshed on the short-circuit too - they are ages,
 	   so they are out of the signature, and the signature is exactly the path that
@@ -10959,6 +11075,25 @@ function detailMain(s, pend, qLabel) {
 		btns.appendChild(allow);
 		box.appendChild(btns);
 		col.appendChild(box);
+	} else if (laneSFailureWords(s)) {
+		/* lane S: ABOVE the question and the latest-event branches, because on a
+		   failed session neither of those is the thing that happened. The heading
+		   carries the type in words and the block below it carries crabd's message
+		   WHOLE - this is the one surface wide enough for it, the same argument the
+		   question block two branches down is built on, and the card has room for
+		   the two words alone. No message and there is no block: a heading over an
+		   empty region would be this page claiming a detail it does not have. */
+		var fh = document.createElement('div');
+		fh.className = 'bv-panel-head dv-failure-head';
+		fh.textContent = 'failed ' + EMDASH + ' ' + laneSFailureWords(s);
+		col.appendChild(fh);
+		var fmsg = laneSFailureMessage(s);
+		if (fmsg) {
+			var fm = document.createElement('div');
+			fm.className = 'dv-question dv-failure';
+			fm.textContent = fmsg;
+			col.appendChild(fm);
+		}
 	} else if (s.question) {
 		var qh = document.createElement('div');
 		qh.className = 'bv-panel-head';
@@ -11045,7 +11180,17 @@ function detailSide(s, subs, events) {
 	sh.className = 'bv-panel-head';
 	sh.textContent = 'subagents';
 	col.appendChild(sh);
-	var rows = buildSubRows(subs, SHEET_SUB_MAX);
+	/* lane S: the NAMED list wins where crabd serves one, and it is a replacement
+	   rather than a second block. Both describe the same running agents, so showing
+	   them together would list every agent twice under one heading, once by
+	   crabd's transcript label and once by its type. `named` is the better of the
+	   two here: it carries the agent's TYPE, which says what the work is, it is
+	   capped at 8 against subagentDetail's 5, and its startedAt is an instant, so
+	   the durations tick live instead of relabelling once a poll. The card is
+	   untouched and keeps both its "N sub" badge and its subagentDetail rows - the
+	   badge counts subagents.running, which this does not touch. */
+	var named = laneSNamedSubs(s);
+	var rows = named.length ? laneSNamedRows(named) : buildSubRows(subs, SHEET_SUB_MAX);
 	if (rows) col.appendChild(rows);
 	else col.appendChild(viewNote('No subagents running.'));
 
@@ -11099,12 +11244,18 @@ function laneCTickDetail(nowMs) {
 		setText(rows[i].querySelector('.event-age'),
 			isFinite(eat) && eat > 0 ? fmtDur((nowMs - eat) / 1000) + ' ago' : EMDASH);
 	}
-	var subAges = ui.viewDetail.querySelectorAll('.sub-age');
 	var s = detailSessionId ? findSession(detailSessionId) : null;
+	/* lane S: the named rows carry their own anchor and are relabelled from it, so
+	   they are walked FIRST and excluded from the ageSec walk below - feeding a
+	   live-anchored row a snapshot would print one agent's age on another's row. */
+	laneSTickNamedSubs(ui.viewDetail, nowMs);
+	var subAges = ui.viewDetail.querySelectorAll('.sub-age');
 	var list = subList(s);
-	for (var k = 0; k < subAges.length && k < list.length; k++) {
-		var secs = list[k] ? Number(list[k].ageSec) : NaN;
+	for (var k = 0, j = 0; k < subAges.length && j < list.length; k++) {
+		if (subAges[k].classList.contains('sub-age-live')) continue;
+		var secs = list[j] ? Number(list[j].ageSec) : NaN;
 		setText(subAges[k], isFinite(secs) ? fmtDur(secs) : EMDASH);
+		j++;
 	}
 }
 
@@ -12217,6 +12368,237 @@ function laneNSig(s) {
 		String(laneNPromptQueue(s))
 	].join('~');
 }
+
+/* ==== lane S: a failed session, and the subagents crabd can name ==============
+
+   Two additive members from contract v0.36.0, both feature-detected by presence,
+   exactly like every member before them:
+
+     sessions[].state === "failed"   a turn that ENDED in an error rather than in
+                                     an answer, with sessions[].failure carrying
+                                     { errorType, at, message? }
+     subagents.named[]               { id, type, startedAt }, capped at 8 by crabd,
+                                     present only once one is known. subagents.running
+                                     is unchanged and is still what the card's badge
+                                     counts.
+
+   A session carrying neither renders byte-for-byte as it did at 0.33.0, which is
+   the whole presence-detection contract and is pinned by its own test.
+
+   WHERE `failed` SORTS, and the honest answer is that this file mostly does not
+   decide. sortPinned reads its bands out of the order crabd already delivered
+   (first appearance of each state) precisely so that a second copy of the band
+   list cannot disagree with the feed, so the GRID order is crabd's. The two places
+   the widget does declare an order both put `failed` immediately after
+   `needs_input`: detailTarget's fallback walk, and clampGrid's "never cut this
+   row" list. The argument for beside rather than above: a failed session needs a
+   human, but a needs_input session is BLOCKING on the person standing in front of
+   the panel, and that row is the one thing this panel exists to protect. The
+   argument for beside rather than below: a failed session has no other route to
+   attention here. It does not pulse, it does not glow, it does not chime, and it
+   cannot be swiped away, so if the clamp could cut it the failure would be
+   reachable only through the "+N more" tile.
+
+   IT DOES NOT CHIME, and that is a decision, not an omission. The chime is the
+   panel's one audible signal and its contract is one QUESTION, one sound: it fires
+   on a new needs_input stateSince because a person can walk over and answer it.
+   A failure has no answer to give. It is also the only state here that arrives in
+   BURSTS - one rate limit fails every session on the account in the same poll - so
+   a chime would be four tones at 02:00 for a condition that resolves itself when
+   the window rolls. The state word in the alert colour, and the words on the event
+   line, are what this panel gives it. detectChime is untouched; the decision is
+   pinned by a test that a failed session produces no chime. */
+
+/* The error type in words. The contract's THIRTEEN values (crabd clamps anything
+   else to `unknown`, so the wire value is always one of these), and the default arm
+   below is kept anyway: this widget is imported by hand and a crabd that adds a
+   fourteenth must render as the bare "failed" the state word already says, never as
+   the raw wire token - "oauth_org_not_allowed" on a wall panel is a field name, not
+   a sentence. The words are short because they share the event line with nothing
+   and the card is one line wide. */
+var FAILURE_WORDS = {
+	rate_limit: 'rate limited',
+	overloaded: 'overloaded',
+	authentication_failed: 'sign-in failed',
+	billing_error: 'billing',
+	server_error: 'server error',
+	oauth_org_not_allowed: 'org not allowed',
+	account_on_hold: 'account on hold',
+	verification_required: 'verification needed',
+	invalid_request: 'bad request',
+	model_not_found: 'model not found',
+	max_output_tokens: 'output limit',
+	cloud_credential_error: 'cloud credentials',
+	unknown: 'failed'
+};
+/* crabd's own cap. Defended against here as well, for the reason subList defends
+   against subagentDetail's cap of 5: the "+N more" row has to stay truthful even
+   if a future crabd ignores its own limit. */
+var NAMED_SUBS_MAX = 8;
+
+/* The failure block, and ONLY on a failed session. Both halves are load-bearing:
+   a `failure` left behind on a session that has since recovered would put a red
+   word on a working card, and the state is what the rest of the panel colours by. */
+function laneSFailure(s) {
+	if (!s || s.state !== 'failed') return null;
+	var f = s.failure;
+	if (!f || typeof f !== 'object' || Array.isArray(f)) return null;
+	return f;
+}
+
+/* What the event line says, and NOTHING when there is no failure block to say it
+   from. A failed row legitimately arrives without one - crabd restarts, and its
+   history holds the kind and the title but never the error - so the STATE carries
+   the fact on its own and these words are the detail. Printing "failed" under a
+   card already reading FAILED would spend the line saying nothing and, worse, would
+   push out the lastEvent that is the only thing left describing the session.
+   A block whose errorType this build does not name is different, and does read
+   "failed": there the panel HAS the detail and is telling you it cannot word it. */
+function laneSFailureWords(s) {
+	var f = laneSFailure(s);
+	if (!f) return null;
+	var type = typeof f.errorType === 'string' ? f.errorType : '';
+	return Object.prototype.hasOwnProperty.call(FAILURE_WORDS, type)
+		? FAILURE_WORDS[type] : FAILURE_WORDS.unknown;
+}
+
+/* The message, which is optional and which this panel prints only where there is
+   room to print it whole: the Detail page. Trimmed and presence-tested, so an
+   empty string is an ABSENT message rather than a blank region under a heading. */
+function laneSFailureMessage(s) {
+	var f = laneSFailure(s);
+	var m = f && typeof f.message === 'string' ? f.message.trim() : '';
+	return m || null;
+}
+
+/* The named agents, defended at both ends: a missing member is an empty list, and
+   a longer one is cut to the cap the contract states. Rows with no readable type
+   are kept and named generically - crabd knows a subagent is running and this page
+   saying so with no name is truer than this page pretending it is not there. */
+function laneSNamedSubs(s) {
+	var n = s && s.subagents && s.subagents.named;
+	if (!Array.isArray(n)) return [];
+	var out = [];
+	for (var i = 0; i < n.length && out.length < NAMED_SUBS_MAX; i++) {
+		var a = n[i];
+		if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+		var type = typeof a.type === 'string' && a.type.trim() ? a.type.trim() : 'subagent';
+		var at = typeof a.startedAt === 'string' ? Date.parse(a.startedAt) : NaN;
+		out.push({ id: String(a.id === undefined || a.id === null ? '' : a.id),
+			type: type, at: isFinite(at) ? at : null });
+	}
+	return out;
+}
+
+/* The named rows, for the Detail page. Same two-span shape as buildSubRows, so one
+   stylesheet dresses both and laneCTickDetail's `.sub-age` walk reaches these too.
+   The age is an ANCHOR (data-started), not a rendered figure: startedAt is an
+   instant, so the duration is live and ticks at 1 Hz, where subagentDetail's ageSec
+   is a snapshot taken at generatedAt and can only relabel on a poll. */
+function laneSNamedRows(list) {
+	if (!list.length) return null;
+	var wrap = document.createElement('div');
+	wrap.className = 'card-subs';
+	for (var i = 0; i < list.length; i++) {
+		var row = document.createElement('div');
+		row.className = 'sub-row';
+		var label = document.createElement('span');
+		label.className = 'sub-label';
+		label.textContent = list[i].type;
+		var age = document.createElement('span');
+		age.className = 'sub-age sub-age-live';
+		age.setAttribute('data-started', list[i].at === null ? '' : String(list[i].at));
+		age.textContent = EMDASH;
+		row.appendChild(label);
+		row.appendChild(age);
+		wrap.appendChild(row);
+	}
+	return wrap;
+}
+
+/* The 1 Hz relabel for the rows above, called from laneCTickDetail beside the
+   event ages it already walks. A row with no readable startedAt keeps the em-dash:
+   unknown is not zero, which is approvalRemaining's rule and the ctx bar's. */
+function laneSTickNamedSubs(root, nowMs) {
+	if (!root) return;
+	var rows = root.querySelectorAll('.sub-age-live');
+	for (var i = 0; i < rows.length; i++) {
+		var at = Number(rows[i].getAttribute('data-started'));
+		setText(rows[i], isFinite(at) && at > 0 ? fmtDur((nowMs - at) / 1000) : EMDASH);
+	}
+}
+
+/* The signature fragment, on both surfaces. Every part is STRUCTURE and appears
+   and DISAPPEARS with its member: without it a card would go on printing "rate
+   limited" for a session that has recovered, and the Detail page would keep a
+   retired agent's row, until something else happened to rebuild them. The
+   startedAt instants are deliberately absent - they are ages, relabelled in place. */
+function laneSSig(s) {
+	var f = laneSFailure(s);
+	var named = laneSNamedSubs(s);
+	return [
+		f ? String(f.errorType) + '|' + String(f.at) + '|' + String(laneSFailureMessage(s)) : '',
+		named.map(function (a) { return a.id + ':' + a.type; }).join(',')
+	].join('~');
+}
+
+/* ---- the temperature unit ---------------------------------------------------
+
+   A PANEL-HALF setting, not a companion one: the companion measures in Celsius and
+   goes on doing so, and which scale this glass prints is a property of the person
+   standing in front of it. Nothing crosses the wire and no crabd change is needed.
+
+   THE READING CONVERTS; THE SENSOR NAME AND THE SOURCE DO NOT. "CPU (Tctl/Tdie)" is
+   what HWiNFO calls that probe and "12 from HWiNFO, 4s old" is where the numbers
+   came from, in both units.
+
+   THE THRESHOLDS STAY IN CELSIUS and so does the colour. laneATempColor is still
+   handed the SOURCE value and the SOURCE unit, so a card at 91 C is red whether the
+   glass says 91 or 196 - a panel that coloured against the displayed number would
+   need a second pair of thresholds and the two could disagree. */
+
+function laneSTempUnit() {
+	return normChoice(strProp('tempUnit', 'c'), choiceSpec('tempUnit')[3], 'c');
+}
+
+/* The spec BY KEY, not by index: the renderer and the settings sheet must read one
+   list, and an index would silently point at the wrong control the day a second
+   choice is added above this one. */
+function choiceSpec(key) {
+	for (var i = 0; i < SETTINGS_CHOICES.length; i++) {
+		if (SETTINGS_CHOICES[i][0] === key) return SETTINGS_CHOICES[i];
+	}
+	return [key, key, '', []];
+}
+
+/* One reading, as this panel should print it: the number and the letter to put
+   after the degree sign.
+
+   A SOURCE THAT IS NOT CELSIUS IS LEFT EXACTLY AS IT IS, which is a non-action with
+   a reason rather than an omission. Celsius is the only scale this row interprets:
+   it is what the thresholds are in, what laneATempColor colours against, and what
+   every source the panel actually has (HWiNFO, nvidia-smi) reports. Converting a
+   Fahrenheit probe INTO Celsius would print a number in the scale the panel colours
+   by while still refusing to colour it, which is a worse answer than printing what
+   the sensor said. So the setting reaches every temperature this panel can reason
+   about, and the ones it cannot are untouched.
+
+   The empty letter for Celsius is v0.30.0's rule and is kept BYTE FOR BYTE at the
+   default: the letter is spent only when it changes the meaning, "60" degrees says
+   everything "60 C" does when C is the scale, and the letter costs 11.0 px per cell
+   which at four cells is most of a cell. Fahrenheit is exactly the case where the
+   letter DOES change the meaning - 140 with no letter reads as a machine on fire to
+   anyone walking past who did not set the switch - so the operator who opts in pays
+   for the letter, and nobody else does. */
+function laneSTempDisplay(value, unit) {
+	var u = String(unit || '').replace(/^\s*°?/, '').toUpperCase();
+	var isC = u === '' || u.charAt(0) === 'C';
+	if (!isC) return { value: value, letter: u.charAt(0) };
+	if (laneSTempUnit() === 'f') return { value: value * 9 / 5 + 32, letter: 'F' };
+	return { value: value, letter: '' };
+}
+
+/* ==== end lane S ==== */
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
 else init();

@@ -78,7 +78,7 @@ from pathlib import Path, PureWindowsPath
 # redeploy together, so shipping schema N+1 dead-feeds the on-glass panel until the page
 # crabd serves has been updated too.
 SCHEMA_BREAKING = 5
-VERSION = "0.35.0"
+VERSION = "0.36.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -343,6 +343,49 @@ QUESTION_TURN_GRACE_SEC = 5
 # this is wide enough to cover a slow one and far under SUBAGENT_ACTIVE_SEC, so it can
 # never claim a file that is still being written.
 SUBAGENT_STOP_MATCH_SEC = 10
+# ---- v0.36.0 (provisional label): StopFailure, exact subagent counts, hook types ----
+# MEASURED in the shipped claude.exe 2.1.278 on 2026-09-22, not taken from the published
+# reference: StopFailure's payload key is `error`, and the binary's own matcherMetadata
+# says `fieldToMatch: "error"`. The reference at code.claude.com/docs/en/hooks calls it
+# `error_type`. Both keys are read (the binary wins a conflict - it is what POSTs), and a
+# value outside this set is served as `unknown` rather than passed through: the member is
+# rendered on a screen and an unbounded string off a payload crabd does not write is a
+# payload. The set is the binary's, which is WIDER than the reference's.
+STOP_FAILURE_ERRORS = frozenset({
+    "rate_limit", "overloaded", "authentication_failed", "oauth_org_not_allowed",
+    "account_on_hold", "verification_required", "billing_error", "invalid_request",
+    "model_not_found", "server_error", "max_output_tokens", "cloud_credential_error",
+    "unknown",
+})
+FAILURE_MESSAGE_MAX = 200
+# Notification types that are an FYI about something that ALREADY happened or resolved
+# itself, so they no longer raise `needs_input` (v0.36.0). Deliberately a small DEMOTION
+# list and not a whitelist of the waiting ones: every other type - including one a later
+# CLI introduces, and an old fragment that sends no type at all - keeps the pre-v0.36.0
+# behaviour of raising the alert. Dropping an alert the operator is genuinely waiting on
+# is the expensive direction; a false `needs_input` is merely noisy.
+# The full live set (15 values) is in the binary's own `notificationType` enum, measured
+# 2026-09-22; the published reference's list differs from it in both directions.
+NOTIFICATION_FYI = frozenset({
+    "agent_completed", "auth_success", "quota_auto_resume_fired",
+    "computer_use_enter", "computer_use_exit",
+})
+# Ring text for an FYI notification. "asked a question" would be a lie on every one.
+NOTIFICATION_EVENT_TEXT = {
+    "agent_completed": "agent finished",
+    "auth_success": "signed in",
+    "quota_auto_resume_fired": "quota resumed",
+    "computer_use_enter": "computer use started",
+    "computer_use_exit": "computer use ended",
+}
+NOTIFICATION_TYPE_MAX = 60
+# CD-29's replacement (v0.36.0). A SubagentStart whose SubagentStop never arrived is an
+# orphan: the CLI exited, the turn was interrupted, or crabd started between the two. An
+# hour is far past any subagent the panel is watching and well short of a count that
+# never returns to zero - which is the failure mode that makes the badge worthless.
+SUBAGENT_ORPHAN_SEC = 3600
+SUBAGENTS_NAMED_CAP = 8     # contract: sessions[].subagents.named, newest first
+SUBAGENT_TYPE_MAX = 40
 CONFIG_RECHECK_SEC = 60
 EVENTS_CAP = 8              # contract: sessions[].events, newest first
 # POST /v1/config `toast.thresholdSec` bounds. Under 30 s the notifier would toast a
@@ -3065,6 +3108,11 @@ class HookTracker:
         "UserPromptSubmit": ("working", "working on your prompt"),
         "Notification": ("needs_input", None),
         "Stop": ("done", "finished"),
+        # v0.36.0. The CLI fires StopFailure INSTEAD of Stop when an API error ended the
+        # turn (measured in the binary's own hook catalog, 2026-09-22), so a rate-limited
+        # session used to read `working` until it aged out - indistinguishable from one
+        # still thinking. The label is refined per error in record().
+        "StopFailure": ("failed", "stopped on an API error"),
         "SessionEnd": ("gone", "session ended"),
     }
     # The contract's `events` text. Deliberately NOT the `lastEvent` label above: that one
@@ -3075,6 +3123,14 @@ class HookTracker:
         "UserPromptSubmit": "prompt submitted",
         "Notification": "asked a question",
         "Stop": "turn finished",
+        "StopFailure": "turn failed",
+        # SubagentStart is deliberately ABSENT (v0.36.0, found in this wave's own
+        # recheck). The ring is EVENTS_CAP = 8 entries and is persisted to history.jsonl,
+        # and a fan-out turn launching four subagents would write four starts beside its
+        # four stops - filling the ring with subagent bookkeeping and evicting the
+        # "prompt submitted" that says what the turn IS. The start is not lost: it is in
+        # `subagents.named` with its id, type and start time, which is where a consumer
+        # should read it from anyway.
         "SubagentStop": "subagent finished",
         "SessionEnd": "session ended",
     }
@@ -3082,7 +3138,14 @@ class HookTracker:
     # Replayed ring kinds that say the turn is OVER, and the state each restores
     # (CD-07). Keyed on EVENT_TEXT's values because that is what the history file
     # holds - a kind, never a state name. See replay() for why only these two.
-    REPLAY_TERMINAL = {EVENT_TEXT["Stop"]: "done", EVENT_TEXT["SessionEnd"]: "gone"}
+    # v0.36.0: `turn failed` joins them. A restored `failed` row carries NO `failure`
+    # member - history.jsonl holds a kind and a title, never the error - so the card
+    # reads "it failed" without a reason. That is the honest restore, and it is the
+    # lesser of the two evils the CD-07 docstring weighs: leaving the kind unmapped
+    # would hand _resolve a None it resolves to `working`, resurrecting the failed turn
+    # as a live one.
+    REPLAY_TERMINAL = {EVENT_TEXT["Stop"]: "done", EVENT_TEXT["SessionEnd"]: "gone",
+                       EVENT_TEXT["StopFailure"]: "failed"}
 
     def __init__(self, history: "HistoryLog | None" = None) -> None:
         self._lock = threading.Lock()
@@ -3115,7 +3178,42 @@ class HookTracker:
                 # arrived for this session; `compaction.inProgress` is derived from it
                 # against the transcript's own clock. See note_precompact.
                 "precompact_at": None,
+                # v0.36.0, INTERNAL until `state` is `failed`: {errorType, at, message}
+                # from the StopFailure hook. Cleared by the next prompt or session start.
+                "failure": None,
+                # v0.36.0. agent_id -> (agent_type, started_at) for every SubagentStart
+                # this row has seen and not yet paired with a stop. `subagent_started`
+                # latches on the FIRST SubagentStart and is what makes ids authoritative
+                # for this session's count - not the arrival of an id-carrying STOP. A
+                # crabd that started mid-subagent has the stop and not the start, and
+                # trusting ids there would serve 0 for a subagent that is still running.
+                # Latched, so it survives the ids dict emptying between subagents.
+                "subagent_ids": {}, "subagent_started": False,
                 "events": []}
+
+    @staticmethod
+    def _failure(payload: dict, now: float) -> dict:
+        """`sessions[].failure` out of a StopFailure payload (v0.36.0).
+
+        BOTH key spellings are read. The shipped binary builds the payload with `error`
+        (measured 2026-09-22, and its own matcher metadata agrees); the published
+        reference documents `error_type`. Reading one and not the other would leave the
+        member reading `unknown` on every failure if either side is what actually ships.
+
+        An unrecognised value becomes `unknown` rather than passing through: the widget
+        renders this string, and the enum is what bounds it. `message` is optional and
+        capped - it is the CLI's own `error_details`, which crabd does not write.
+        """
+        raw = payload.get("error")
+        if not isinstance(raw, str) or not raw:
+            raw = payload.get("error_type")
+        error_type = raw if isinstance(raw, str) and raw in STOP_FAILURE_ERRORS \
+            else "unknown"
+        out = {"errorType": error_type, "at": _utc_iso(now)}
+        message = _trim(payload.get("error_details"), FAILURE_MESSAGE_MAX)
+        if message:
+            out["message"] = message
+        return out
 
     def note_precompact(self, session_id: str, now: float) -> bool:
         """The PreCompact hook (v0.35.0). -> True when it was recorded.
@@ -3180,15 +3278,47 @@ class HookTracker:
             if isinstance(cwd, str) and cwd:
                 row["cwd"] = cwd
 
+            # v0.36.0. The type the CLI puts on its OWN Notification payload
+            # (`notification_type`, measured in the binary 2026-09-22 - the hook input is
+            # built with it, so no `matcher` is needed to learn it). None for an old
+            # fragment, an old CLI, or a type this build has no opinion about, and every
+            # one of those keeps the pre-v0.36.0 behaviour.
+            ntype = _trim(payload.get("notification_type"), NOTIFICATION_TYPE_MAX)
+            fyi = event == "Notification" and ntype in NOTIFICATION_FYI
+
             # Recorded before the SubagentStop early-return: the ring is every hook seen,
             # not only the ones that move the state machine.
             timeline = self.EVENT_TEXT.get(event)
+            if fyi:
+                timeline = NOTIFICATION_EVENT_TEXT.get(ntype, "notified")
             if timeline:
                 self._note_event(row, timeline, now, session_id)
 
+            if event == "SubagentStart":
+                agent_id = _trim(payload.get("agent_id"), SUBAGENT_LABEL_MAX)
+                if agent_id:
+                    row["subagent_started"] = True
+                    row["subagent_ids"][agent_id] = (
+                        _trim(payload.get("agent_type"), SUBAGENT_TYPE_MAX), now)
+                return
+
             if event == "SubagentStop":
+                # `stops` is fed on BOTH paths, id or no id. It is what _subagent_detail
+                # claims FILES with, and dropping the paired ones there would re-open
+                # CD-29 from the other side: the stopped subagent has the newest mtime,
+                # so it is the one the panel would name as running.
                 row["stops"].append(now)
                 row["subagent_stops"] += 1
+                agent_id = _trim(payload.get("agent_id"), SUBAGENT_LABEL_MAX)
+                if agent_id:
+                    row["subagent_ids"].pop(agent_id, None)
+                return
+
+            if fyi:
+                # v0.36.0. "Claude finished" and "signed in" are the CLI telling the
+                # operator something HAPPENED, and every one of them used to paint the
+                # card red and pin a question on it that nobody was waiting to answer.
+                # The ring entry above is the whole of what they are worth.
                 return
 
             mapped = self.STATE_EVENTS.get(event)
@@ -3196,6 +3326,16 @@ class HookTracker:
                 return
             state, label = mapped
             previous_question = row["question"]
+            if event == "StopFailure":
+                row["failure"] = self._failure(payload, now)
+                label = f"stopped: {row['failure']['errorType'].replace('_', ' ')}"
+            else:
+                # Any OTHER state-moving hook clears it, which covers the three cases the
+                # contract names - the next UserPromptSubmit, a SessionStart, and a Stop
+                # that finishes normally after a failure - without enumerating them. The
+                # failure describes ONE turn, and that turn is over the moment the state
+                # machine moves off `failed`.
+                row["failure"] = None
             if state == "needs_input":
                 # lastEvent is the short line; `question` keeps the hook's full text.
                 label = _trim(payload.get("message"), EVENT_MAX) or "waiting on you"
@@ -3219,7 +3359,7 @@ class HookTracker:
                 row["permission_alert"] = False
             if event == "UserPromptSubmit":
                 row["turn_started"] = now
-            elif event in ("Stop", "SessionEnd"):
+            elif event in ("Stop", "StopFailure", "SessionEnd"):
                 row["turn_started"] = None
             # v0.20.0. A re-fired Notification on a card that is ALREADY `needs_input`
             # used to move nothing: `row["state"] != state` was false, so `since` stayed
@@ -3263,7 +3403,7 @@ class HookTracker:
             moved = (entered
                      or (state == "needs_input"
                          and row["question"] != previous_question)
-                     or event == "Stop")
+                     or event in ("Stop", "StopFailure"))
             if moved:
                 # Contract: an ack survives only until the session moves again.
                 row["acked"] = False
@@ -3561,6 +3701,10 @@ class HookTracker:
                 copy = dict(row)
                 copy["stops"] = list(row["stops"])
                 copy["events"] = list(row["events"])
+                # v0.36.0. Copied for the reason `stops` and `events` are: the snapshot
+                # is read by a build running on another thread while a hook POST mutates
+                # the live row, and a shared dict would be mutated mid-iteration.
+                copy["subagent_ids"] = dict(row["subagent_ids"])
                 out[sid] = copy
             return out
 
@@ -3568,6 +3712,14 @@ class HookTracker:
         with self._lock:
             for row in self.sessions.values():
                 row["stops"] = [t for t in row["stops"] if now - t < SUBAGENT_ACTIVE_SEC]
+                # v0.36.0: a SubagentStart whose stop never arrived. Without this the
+                # badge would read "3 running" for the life of the daemon after one
+                # interrupted turn, and `subagents.named` would name three agents that
+                # are not there.
+                orphans = [aid for aid, (_t, at) in row["subagent_ids"].items()
+                           if now - at > SUBAGENT_ORPHAN_SEC]
+                for aid in orphans:
+                    del row["subagent_ids"][aid]
             # The done ring only ever answers "today", so anything past the margin is
             # dead weight in a process that runs for weeks.
             if self.dones:
@@ -7823,7 +7975,10 @@ class StateBuilder:
                 per_session_out)
 
     def _sessions(self, per_session, hook_rows, session_output, now):
-        order = {"needs_input": 0, "working": 1, "done": 2, "idle": 3}
+        # v0.36.0: `failed` is INSERTED after needs_input and leaves every existing pair
+        # in the order it already had. A turn that died on a rate limit is the second
+        # loudest thing on the glass - it is not going to finish on its own.
+        order = {"needs_input": 0, "failed": 1, "working": 2, "done": 3, "idle": 4}
         rows = []
         for sid, info in per_session.items():
             hook = hook_rows.get(sid)
@@ -7837,9 +7992,7 @@ class StateBuilder:
                 continue
             cwd = info["cwd"] or (hook.get("cwd") if hook else None)
             repo, branch = self.git.get(cwd)
-            running = info["sub_active"]
-            if hook:
-                running = max(0, running - len(hook["stops"]))
+            running, named = self._subagents(info, hook, now)
             turn_started = (hook or {}).get("turn_started")
             # The cwd tier runs on the RESOLVED cwd (transcript, else the hook payload),
             # not on facts.last_cwd: a session whose transcript has not been parsed yet
@@ -7864,7 +8017,8 @@ class StateBuilder:
                 "lastEvent": (hook or {}).get("last_event") or self._implied_event(state),
                 "model": info["model"],
                 "speed": info["speed"],
-                "subagents": {"running": running, "total": info["sub_total"]},
+                "subagents": {"running": running, "total": info["sub_total"],
+                              **({"named": named} if named else {})},
                 "todayOutputTokens": session_output.get(sid, 0),
                 "question": self._question(state, hook, info, since),
                 # A turn that aged out without a Stop hook is not still running; showing
@@ -7900,6 +8054,11 @@ class StateBuilder:
                 # v0.35.0: the six additive members, each present only when it has
                 # something to say.
                 **self._lane_m_session_extras(info, hook, state),
+                # v0.36.0: `failure`, and only on a session that is `failed`. A restored
+                # row (REPLAY_TERMINAL) is `failed` with no failure to serve, so the
+                # member is absent there - never a null and never an invented reason.
+                **({"failure": (hook or {})["failure"]}
+                   if state == "failed" and (hook or {}).get("failure") else {}),
             })
         rows.sort(key=lambda r: (order.get(r["state"], 9), -_parse_ts(r["lastActivityAt"])))
         return rows
@@ -8078,6 +8237,39 @@ class StateBuilder:
         return question
 
     @staticmethod
+    def _subagents(info, hook, now: float) -> tuple[int, list]:
+        """`subagents.running` and `subagents.named` (v0.36.0, CD-29's replacement).
+
+        TWO sources, and which one answers is decided per session, never blended.
+
+          - IDS, once this session has seen a SubagentStart. `agent_id` pairs a start
+            with its stop exactly, so the count is a fact rather than an inference, and
+            the panel can name what is running.
+          - THE TRANSCRIPT HEURISTIC otherwise, byte-for-byte what it was: active
+            subagent files minus recorded stops. That is what an older CLI, and a crabd
+            that started in the middle of a subagent, still get.
+
+        The latch is the START and deliberately not the arrival of an id-carrying STOP.
+        A crabd restarted mid-subagent holds the stop and never saw the start, so trusting
+        ids there would serve `running: 0` for a subagent that is still working - the one
+        direction of wrong the badge must not have. CD-29's backlog row asked for the
+        heuristic to be REPLACED where ids exist and never tuned; this replaces it there
+        and leaves it untouched everywhere else.
+
+        `named` is newest first and capped. Absent (an empty list here) when no id is
+        known, including on every session answered by the heuristic.
+        """
+        if not hook:
+            return info["sub_active"], []
+        if not hook.get("subagent_started"):
+            return max(0, info["sub_active"] - len(hook["stops"])), []
+        live = hook.get("subagent_ids") or {}
+        named = [{"id": aid, "type": agent_type or "agent", "startedAt": _utc_iso(at)}
+                 for aid, (agent_type, at) in
+                 sorted(live.items(), key=lambda kv: -kv[1][1])[:SUBAGENTS_NAMED_CAP]]
+        return len(live), named
+
+    @staticmethod
     def _subagent_detail(info, running: int, now: float, stops=()) -> list:
         """Running subagents only, newest first, capped. Trimmed to `running` so the
         badge count and the list can never disagree on the panel.
@@ -8120,7 +8312,10 @@ class StateBuilder:
 
     @staticmethod
     def _implied_event(state: str) -> str:
-        return {"working": "working", "idle": "quiet", "done": "finished"}.get(state, state)
+        return {"working": "working", "idle": "quiet", "done": "finished",
+                # A replayed `failed` row has no hook label and no `failure` to name the
+                # error, so this is all the card gets to say (v0.36.0).
+                "failed": "stopped on an API error"}.get(state, state)
 
     @staticmethod
     def _resolve(hook, transcript_mtime, last_activity, now) -> tuple[str, float]:
@@ -8133,7 +8328,12 @@ class StateBuilder:
             return "gone", since
         if state == "needs_input":
             return "needs_input", since
-        if state == "done":
+        # v0.36.0: `failed` ages through the DONE branch and returns ITSELF, because the
+        # two say the same thing about the future - this turn is over - while saying
+        # different things about what happened. The reactivation arm earns more here
+        # than on `done`: a rate-limited turn is the one most likely to be retried, and a
+        # transcript write past the grace is crabd seeing that retry before a hook does.
+        if state in ("done", "failed"):
             # "unless reactivated": a transcript write past the grace means work resumed
             # without the hooks saying so. v0.28.2: the reactivated row FALLS THROUGH to
             # the aging block instead of returning unaged `working` - the early return
@@ -8146,7 +8346,7 @@ class StateBuilder:
             elif now - since > DONE_DROP_SEC:
                 return "gone", since
             else:
-                return "done", since
+                return state, since
 
         age = now - last_activity
         if age > GONE_AFTER_SEC:
@@ -8818,15 +9018,30 @@ class Handler(BaseHTTPRequestHandler):
     # same gate on every read (SEC-4) and do_POST runs it on every path including the
     # unknown ones. The set is kept because it is the readable inventory of what actually
     # CHANGES STATE, which is the fact the security docs and the audit reason about.
-    MUTATING_PATHS = frozenset((
-        "/v1/hook", "/v1/hook/stop", "/v1/hook/permission",
+    # v0.36.0. The per-event ingest routes B1 moved the fragment onto. Every one lands in
+    # the SAME handler as /v1/hook and the payload's `hook_event_name` still decides what
+    # happens - the URL is what makes a hook legible in a packet capture and in crabd's
+    # own log, not a second source of truth that could disagree with the body.
+    #
+    # `/v1/hook` STAYS, and not for tidiness: a fragment installed on another machine
+    # before this release still posts every event there, and a 404 would silently stop
+    # that panel's state machine. It is the compatibility route, not a deprecated one.
+    HOOK_INGEST_PATHS = frozenset((
+        "/v1/hook",
+        "/v1/hook/session-start", "/v1/hook/prompt", "/v1/hook/notification",
+        "/v1/hook/subagent-start", "/v1/hook/subagent-stop",
+        "/v1/hook/stop-failure", "/v1/hook/session-end",
+    ))
+
+    MUTATING_PATHS = frozenset(HOOK_INGEST_PATHS | {
+        "/v1/hook/stop", "/v1/hook/permission", "/v1/hook/precompact",
         "/v1/statusline", "/v1/metrics", "/v1/logs",
         "/v1/action", "/v1/config",
         "/v1/panel-log",
         # C4: it changes `approvals.readiness`, so it belongs on the inventory of what
         # CHANGES STATE even though it can neither allow nor deny.
         "/v1/approvals/verify",
-    ))
+    })
 
     # _is_web_origin was retired with the vendor page (CLEAN-04, v0.34.0).
     # It existed to let `null` and non-web schemes through the gate, and the reasoning
@@ -8856,7 +9071,7 @@ class Handler(BaseHTTPRequestHandler):
         # reply. Never the wildcard (SEC-1/SEC-4). An absent Origin is a non-browser
         # client that needs no ACAO at all.
         self._acao = origin if origin else None
-        if path == "/v1/hook":
+        if path in self.HOOK_INGEST_PATHS:
             # Answer first, parse after: a hook must never hold Claude Code open.
             raw = self._read_body()
             self._send(204, None)

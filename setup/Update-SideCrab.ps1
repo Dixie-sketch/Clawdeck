@@ -5,7 +5,7 @@
     registered SideCrab-* tasks, then wait for /v1/health to come back ok.
 
 .DESCRIPTION
-    Three steps, each of them reversible or read-only:
+    Four steps, each of them reversible or read-only:
       1. git -C <repo> pull --ff-only   - a fast-forward or nothing, and only into a tree with
          no tracked modifications. The clean check is our own (git status --porcelain, read
          BEFORE the pull): --ff-only refuses a merge and refuses to clobber a file the incoming
@@ -21,16 +21,24 @@
          FAIL naming the PID that holds the port, not a pass: health-by-HTTP cannot
          tell who answered. Exits non-zero when that check does not stand.
 
-    THE PANEL HOST IS PART OF THE VERDICT (SCA-003). It is a compiled exe, so a pull alone
-    does not change it: when SideCrab-panel is registered and enabled its exe is rebuilt from
-    the pulled source (setup\Build-SideCrabPanel.ps1) before the restart. A rebuild that
-    FAILS, or a panel task that does not come back Running, now makes this script exit
-    non-zero and names the version still on disk. It used to warn and exit 0 as long as crabd
-    was healthy - so an update that left last week's host running, or no host at all, read as
-    a success and said "rebuilt".
+    THE PANEL HOST IS STAGED, VALIDATED AND SWAPPED (MF-006), and it is part of the verdict
+    (SCA-003). It is a compiled exe, so a pull alone does not change it. When SideCrab-panel is
+    registered and enabled, step 4:
+      1. publishes the pulled source into panel-host\dist.staging - or, with -Package <zip>,
+         unpacks that package's host into it - while the live host stays exactly where it is,
+      2. validates the staged binary by running its own `--check`, which shows no window and
+         writes no log. Exit 0 and exit 2 both prove it runs; anything else, a crash, or a
+         report with no version line is a failed validation,
+      3. keeps the host it is replacing as panel-host\dist.last-good (ONE generation) and swaps
+         the staged one in by rename,
+      4. starts the task and waits for it to be Running.
+    Anything that fails AFTER the swap puts dist.last-good back, restarts it, and exits
+    non-zero saying what was restored and what is running. Anything that fails BEFORE the swap
+    leaves the live host untouched. Restore-SideCrab.ps1 -Host does the same rollback by hand.
 
-    THE PRIOR WORKING HOST IS LEFT IN PLACE on a failed build. Stale but working beats dark,
-    and the message says which version is actually running so the operator is not guessing.
+    A PACKAGE UPGRADE IS AN INSTALLER RE-RUN. -Package here swaps the panel HOST out of a
+    release zip and can roll it back; it does not replace the companion, the panel assets or
+    the scripts. To take a whole new package: extract it and run setup\Install-SideCrab.ps1.
 
     The panel assets crabd serves at /panel/ come from the pulled tree and need no rebuild.
 
@@ -39,12 +47,17 @@
 .EXAMPLE
     pwsh -File .\setup\Update-SideCrab.ps1 -SkipPull      # restart + verify only
 .EXAMPLE
+    pwsh -File .\setup\Update-SideCrab.ps1 -Package C:\Downloads\SideCrab-0.33.0-win-x64.zip
+.EXAMPLE
     pwsh -File .\setup\Update-SideCrab.ps1 -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string] $RepoRoot   = (Split-Path -Parent $PSScriptRoot),
     [int]    $TimeoutSec = 30,
+    # Stage the panel host out of a release package instead of publishing it from source. The
+    # PC then needs no .NET SDK for the update.
+    [string] $Package,
     [switch] $SkipPull,
     [switch] $SkipRestart
 )
@@ -92,16 +105,20 @@ function Wait-SideCrabHealth {
 
 # ------------------------------------------------------------------------------ run
 
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot '.git'))) {
-    throw "$RepoRoot is not a git working tree - nothing to pull."
+# A PACKAGE INSTALL IS NOT A CHECKOUT. An extracted release has no .git, so demanding one
+# before anything else made this script unusable on exactly the install -Package exists for.
+# The working tree is required only when this run is going to pull.
+$willPull = (-not $SkipPull) -and (-not $Package)
+if ($willPull -and -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.git'))) {
+    throw "$RepoRoot is not a git working tree - nothing to pull. Pass -SkipPull to restart and verify what is there, or -Package <zip> to swap the panel host out of a release package."
 }
 
 Write-Host 'SideCrab update'
 Write-Step "repo:    $RepoRoot"
 
 # ---- 1. fast-forward only
-if ($SkipPull) {
-    Write-Step 'pull:    skipped (-SkipPull)'
+if (-not $willPull) {
+    Write-Step "pull:    skipped ($(if ($Package) { "-Package $Package" } else { '-SkipPull' }))"
 } elseif ($PSCmdlet.ShouldProcess($RepoRoot, 'git pull --ff-only')) {
     # THE CLEAN-TREE PREFLIGHT --ff-only does not give you. --ff-only refuses a MERGE and
     # refuses to clobber a modified file the incoming commits touch - it fast-forwards happily
@@ -140,7 +157,7 @@ if ($SkipPull) {
     }
 }
 
-# ---- 2. restart what is registered, and only that
+# ---- what is registered on this PC (read once; every step below reads these)
 $spec  = @(Get-SideCrabComponentSpec -RepoRoot $RepoRoot)
 $names = @(Get-SideCrabTaskName -Component $spec -All)
 $states = @(foreach ($n in $names) { Get-SideCrabTaskState -TaskName $n })
@@ -150,25 +167,28 @@ $registered = @($states | Where-Object Registered)
 $portByTask = @{}
 foreach ($c in $spec) { $portByTask[$c.TaskName] = [int] $c.Port }
 
-# ---- 1b. rebuild the panel host on the code that was just pulled
+# ---- 1b. take the panel host down before anything touches its directory
 # The python tasks re-read their scripts on restart; the panel task runs a COMPILED exe, so a
-# restart alone would run last week's host. Stopped first because dotnet publish cannot
-# overwrite a running exe. A failed build is loud and leaves the old exe, which the restart
-# below then starts: stale but working beats dark.
+# restart alone would run last week's host. It is stopped here and started again in step 4,
+# after the staged host has been validated and swapped in: nothing can publish over, rename or
+# replace a directory whose executable is running.
 $panelSpec  = @($spec | Where-Object { $_.Key -eq 'panel' })[0]
 $panelState = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
 # The panel is IN SCOPE for this update when its task is registered and not parked. Said once
-# here so the rebuild, the restart and the final verdict cannot disagree about it.
+# here so the staging, the restart and the final verdict cannot disagree about it.
 $panelInScope = [bool] ($panelState.Registered -and $panelState.State -ne 'Disabled')
-# Read BEFORE the build: on a failure this is the version still on disk, and the operator is
-# owed the number rather than "the previous exe".
+# Read BEFORE anything is staged: on a failure this is the version still on disk, and the
+# operator is owed the number rather than "the previous exe".
 $hostBefore   = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
 $hostFailed   = $false
+$distPath     = Join-Path $RepoRoot 'panel-host\dist'
+$stagingPath  = Join-Path $RepoRoot 'panel-host\dist.staging'
+$lastGoodPath = Join-Path $RepoRoot 'panel-host\dist.last-good'
 
 if ($SkipRestart) {
-    Write-Step 'panel:   rebuild skipped (-SkipRestart)'
+    Write-Step 'panel:   host update skipped (-SkipRestart)'
 } elseif ($panelInScope) {
-    if ($PSCmdlet.ShouldProcess($panelSpec.TaskName, 'Rebuild the panel host')) {
+    if ($PSCmdlet.ShouldProcess($panelSpec.TaskName, 'Stop the panel host for a staged update')) {
         Stop-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(15)
         while ((Get-Date) -lt $deadline -and
@@ -176,29 +196,26 @@ if ($SkipRestart) {
                  Where-Object { $_.Path -eq $panelSpec.Script }).Count -gt 0) {
             Start-Sleep -Milliseconds 300
         }
-        & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot
-        if ($LASTEXITCODE -ne 0) {
-            # A FAILURE, NOT A WARNING (SCA-003). The old exe is still there and the restart
-            # below starts it, so the panel is not dark - but it is running code this update
-            # did not ship, and calling that a successful update is the defect.
-            $hostFailed = $true
-            $still = if (Test-Path -LiteralPath $panelSpec.Script) { $hostBefore } else { 'NONE - the exe is gone' }
-            Write-Host "  FAIL:    the panel host did not rebuild (exit $LASTEXITCODE). Retained host version: $still. The pulled source is NOT running on the glass." -ForegroundColor Red
-        } else {
-            $after = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
-            Write-Step "panel:   host rebuilt - $($panelSpec.Script) ($hostBefore -> $after)"
-        }
+        Write-Step "panel:   $($panelSpec.TaskName) stopped for the staged update (host $hostBefore)"
     }
 } else {
-    Write-Step "panel:   $($panelSpec.TaskName) not registered or disabled - not rebuilt"
+    Write-Step "panel:   $($panelSpec.TaskName) not registered or disabled - not updated"
 }
 
+# ---- 2. restart what is registered, and only that
+# The panel is NOT in this loop: it is started in step 4, after its new host has proved it runs.
+# Starting it here would start the OLD exe and then take it down again a moment later.
+$others = @($registered | Where-Object { $_.TaskName -ne $panelSpec.TaskName })
 if ($SkipRestart) {
     Write-Step 'tasks:   restart skipped (-SkipRestart)'
 } elseif ($registered.Count -eq 0) {
     Write-Step 'tasks:   none registered - run Install-SideCrab.ps1 first'
+} elseif ($others.Count -eq 0) {
+    # The panel is registered and nothing else is. Saying "none registered" here would send
+    # someone to re-run the installer over a task that is sitting right there.
+    Write-Step 'tasks:   only the panel is registered - it is updated in step 4, not restarted here'
 } else {
-    foreach ($s in $registered) {
+    foreach ($s in $others) {
         if ($s.State -eq 'Disabled') {
             # Same rule the installer follows: a disabled task is a decision the operator made
             # with Disable-ScheduledTask. Restarting it would start it.
@@ -227,8 +244,6 @@ foreach ($s in @($states | Where-Object { -not $_.Registered })) {
 # and answered while SideCrab-crabd was dead in Ready (2026-08-27); the task state alone passes a
 # Running process that never bound the port.
 $verifyFailed = $false
-# The host build failure above is part of THIS verdict, not a separate warning stream.
-if ($hostFailed) { $verifyFailed = $true }
 if ($WhatIfPreference) {
     Write-Step 'health:  not polled (-WhatIf)'
 } else {
@@ -267,21 +282,84 @@ if ($WhatIfPreference) {
     }
 }
 
-# ---- 3b. did the panel host actually come back? (SCA-003)
-# A rebuilt exe that will not start is the same outcome as a build that failed: the glass is
-# showing something other than what this update shipped. Only asked when the panel was in
-# scope - a machine with no panel task is not failing anything.
+# ---- 4. the staged panel host update, with a one-generation rollback (MF-006)
+# STAGE, VALIDATE, SWAP, START - in that order, because that order is the fix. The old path
+# published straight over panel-host\dist and then started whatever came out: a publish that
+# died half-way, or a binary that could not run on this PC, became the live host and the only
+# way back was another successful build. Now a new host proves it runs (its own --check) while
+# the live one is still on disk, the swap is a rename, and the host it replaced is kept for one
+# generation at panel-host\dist.last-good. Anything that fails after the swap puts that back.
 if (-not $WhatIfPreference -and -not $SkipRestart -and $panelInScope) {
-    $panelAfter = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
-    $panelRun   = Get-SideCrabRunStateDecision -Registered ([bool] $panelAfter.Registered) -State "$($panelAfter.State)"
-    if ($panelRun.Fault) {
-        $verifyFailed = $true
-        $retained = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
-        Write-Host "  FAIL:    $($panelSpec.TaskName) $($panelRun.Reason). Host version on disk: $retained. Diagnose with: pwsh -File setup\Repair-SideCrab.ps1" -ForegroundColor Red
+    $stage = if ($Package) {
+        {
+            param([string] $StagingPath)
+            # A package update replaces the HOST only. The rest of a package (crabd, the panel
+            # assets, the scripts) is installed by extracting it and re-running the installer,
+            # which is the documented upgrade; this path exists to swap a host and roll it back.
+            if (-not (Test-Path -LiteralPath $Package)) { throw "$Package is not there" }
+            $tmp = Join-Path ([IO.Path]::GetTempPath()) ('sidecrab-pkg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            try {
+                Expand-Archive -LiteralPath $Package -DestinationPath $tmp -Force
+                $found = @(Get-ChildItem -LiteralPath $tmp -Recurse -Directory -Filter 'dist' |
+                           Where-Object { (Split-Path -Leaf (Split-Path -Parent $_.FullName)) -eq 'panel-host' -and
+                                          (Test-Path -LiteralPath (Join-Path $_.FullName 'SideCrab.Panel.exe')) })
+                if ($found.Count -eq 0) { throw "$Package carries no panel-host\dist\SideCrab.Panel.exe" }
+                Copy-Item -LiteralPath $found[0].FullName -Destination $StagingPath -Recurse -Force
+            } finally {
+                if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+        }
     } else {
-        Write-Step "panel:   $($panelSpec.TaskName) $($panelRun.Verdict) after restart"
+        {
+            param([string] $StagingPath)
+            & (Join-Path $PSScriptRoot 'Build-SideCrabPanel.ps1') -RepoRoot $RepoRoot -OutDir $StagingPath
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited $LASTEXITCODE" }
+        }
     }
+
+    $staged = Invoke-SideCrabStagedHostUpdate `
+                  -DistPath $distPath -StagingPath $stagingPath -LastGoodPath $lastGoodPath `
+                  -Stage $stage `
+                  -Validate { param([string] $ExePath) Invoke-SideCrabHostCheck -ExePath $ExePath } `
+                  -Activate {
+                      Start-ScheduledTask -TaskName $panelSpec.TaskName
+                      $deadline = (Get-Date).AddSeconds($TimeoutSec)
+                      while ((Get-Date) -lt $deadline) {
+                          $st = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+                          $run = Get-SideCrabRunStateDecision -Registered ([bool] $st.Registered) -State "$($st.State)"
+                          if ($run.Verdict -eq 'running') { return $true }
+                          Start-Sleep -Milliseconds 300
+                      }
+                      $false
+                  }
+
+    if ($staged.Ok) {
+        Write-Step "panel:   host $hostBefore -> $($staged.Version) staged, validated and live ($($panelSpec.TaskName) Running)"
+    } else {
+        $hostFailed = $true
+        $running = (Get-SideCrabComponentVersion -RepoRoot $RepoRoot -PanelExe $panelSpec.Script).Host
+        Write-Host "  FAIL:    the panel host update failed in the $($staged.Phase) step. $($staged.Reason)" -ForegroundColor Red
+        Write-Host "           Host version on disk now: $running. Diagnose with: pwsh -File setup\Repair-SideCrab.ps1" -ForegroundColor Red
+        if ($staged.RestoredLastGood) {
+            # The rollback already put the kept host back; it still has to be STARTED, because
+            # the run that failed is the one that stopped it.
+            Start-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
+            $after = Get-SideCrabTaskState -TaskName $panelSpec.TaskName
+            Write-Host "           Rolled back to the previous host ($running) and restarted it: $($panelSpec.TaskName) is $($after.State)." -ForegroundColor Yellow
+        } elseif ($staged.Swapped) {
+            Write-Host "           The new host is live and did not come back, and there was no kept generation to restore. Put one back with: pwsh -File setup\Restore-SideCrab.ps1 -Host" -ForegroundColor Red
+        } else {
+            Start-ScheduledTask -TaskName $panelSpec.TaskName -ErrorAction SilentlyContinue
+            Write-Host "           Nothing was swapped: the host that was running before this update is still in place and has been restarted." -ForegroundColor Yellow
+        }
+    }
+} elseif (-not $WhatIfPreference -and -not $SkipRestart -and -not $panelInScope) {
+    Write-Step "panel:   $($panelSpec.TaskName) not registered or disabled - no host update"
 }
+
+# The panel host's own outcome is part of THIS verdict, not a separate warning stream: an
+# update that left the glass showing something it did not ship has not succeeded (SCA-003).
+if ($hostFailed) { $verifyFailed = $true }
 
 # ---- retire the tasks of components this product no longer ships (CLEAN-06)
 foreach ($r in @(Invoke-SideCrabRetirement -RepoRoot $RepoRoot -RetiredPath $RetiredPath -WhatIf:$WhatIfPreference)) {

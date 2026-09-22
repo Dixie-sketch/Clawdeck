@@ -367,6 +367,66 @@ class HandlerWriteTests(unittest.TestCase):
         self.assertLessEqual(len(marks), SNOOZE_MAP_CAP)
         self.assertIn(VALID_ID, marks)
 
+    def test_the_cap_evicts_by_INSTANT_and_not_by_the_text_of_the_mark(self) -> None:
+        """The eviction used to sort on the raw ISO string, which is a correct
+        chronological order for exactly one mark shape: the `+00:00` this handler
+        writes itself. This map is a JSON object on disk and this handler is not its
+        only writer.
+
+        THE CASE, with real instants. `zulu` expires at 23:30 UTC on the 22nd and is
+        the LATEST of the three, so it must survive the cap. `offset` expires at
+        22:00 UTC on the same day, an hour and a half earlier, and must be the one
+        dropped. As text, though, `offset` reads "2026-09-23T07:00:00+09:00" and
+        `zulu` reads "2026-09-22T23:30:00Z": the day digit alone settles the string
+        compare, which puts the Z mark FIRST and evicts it. The operator's live
+        snooze is thrown away in favour of one about to run out.
+        """
+        cap = SNOOZE_MAP_CAP - 1                      # what survives beside the new press
+        block = {f"s{i}": iso(T0 + timedelta(days=60, minutes=i)) for i in range(cap - 1)}
+        block["zulu"] = "2026-09-22T23:30:00Z"        # 23:30 UTC, the latest of the two
+        block["offset"] = "2026-09-23T07:00:00+09:00"  # 22:00 UTC, ninety minutes earlier
+        self.state.write_text(json.dumps({SNOOZE_SECTION: block}), encoding="utf-8")
+
+        marks = self.snooze(now=T0)[SNOOZE_SECTION]
+        self.assertLessEqual(len(marks), SNOOZE_MAP_CAP, "the cap still holds")
+        self.assertIn(VALID_ID, marks, "and the press that caused the write always survives")
+        self.assertIn("zulu", marks, "the Z mark expires LAST and is kept")
+        self.assertNotIn("offset", marks, "and the mark expiring first is the one dropped")
+
+    def test_the_old_string_compare_gets_that_case_wrong(self) -> None:
+        """MUTATION PROOF. The same document through the pre-fix key, to show the check
+        above can fail. A test that cannot fail reports success forever."""
+        cap = SNOOZE_MAP_CAP - 1
+        kept = {f"s{i}": iso(T0 + timedelta(days=60, minutes=i)) for i in range(cap - 1)}
+        kept["zulu"] = "2026-09-22T23:30:00Z"
+        kept["offset"] = "2026-09-23T07:00:00+09:00"
+
+        by_text = dict(sorted(kept.items(), key=lambda kv: kv[1])[-cap:])
+        self.assertNotIn("zulu", by_text, "the string compare evicts the LATEST mark")
+        self.assertIn("offset", by_text, "and keeps the one that expires first")
+
+        by_instant = dict(sorted(kept.items(), key=lambda kv: handler._parse_iso(kv[1]))[-cap:])
+        self.assertIn("zulu", by_instant, "parsing to datetimes keeps the right one")
+        self.assertNotIn("offset", by_instant, "and drops the right one")
+
+    def test_a_mark_the_handler_wrote_itself_is_unaffected(self) -> None:
+        """The `+00:00` marks this handler writes sorted correctly before and still do:
+        the fix is about mixed shapes, and must not move the ordinary case."""
+        block = {f"s{i}": iso(T0 + timedelta(hours=1, minutes=i)) for i in range(SNOOZE_MAP_CAP + 20)}
+        marks_before = sorted(block.items(), key=lambda kv: kv[1])
+        marks_after = sorted(block.items(), key=lambda kv: handler._parse_iso(kv[1]))
+        self.assertEqual(marks_before, marks_after, "one writer, one shape, one order")
+
+    def test_an_unparseable_mark_cannot_reach_the_sort(self) -> None:
+        """The `or now` arm of the new key is a floor and not a guess: every entry in
+        `kept` has already been through `_parse_iso` by the `expiry > now` filter, so
+        a junk mark is dropped before the sort ever sees it."""
+        self.state.write_text(json.dumps({SNOOZE_SECTION: {
+            "good": iso(T0 + timedelta(hours=2)), "junk": "whenever"}}), encoding="utf-8")
+        marks = self.snooze()[SNOOZE_SECTION]
+        self.assertIn("good", marks)
+        self.assertNotIn("junk", marks)
+
     def test_main_exits_ok_and_logs_one_line(self) -> None:
         log = Path(self.tmp.name) / "snooze.log"
         real_log, real_state = handler.LOG_PATH, handler.STATE_PATH

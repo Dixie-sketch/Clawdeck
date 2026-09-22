@@ -1566,6 +1566,12 @@ body.empty .grid-empty { display: flex; }
 .card[data-state="needs_input"] { --state-color: var(--amber); }
 .card[data-state="done"]        { --state-color: var(--green); opacity: 0.55; }
 .card[data-state="idle"]        { --state-color: var(--faint); opacity: 0.75; }
+/* lane S: the alert colour, and the RED one rather than the waiting amber. Amber is
+   "somebody is waiting on you" and this is not that: the turn is over and it ended
+   badly. Red is already the panel's loudest step (the 97% gauge, the approval glow),
+   and nothing else on a card can claim it. No opacity rule, deliberately - a failed
+   session is not spent the way a done or idle one is. */
+.card[data-state="failed"]      { --state-color: var(--red); }
 
 /* The waiting card pulses. Same rule as the glow: it only exists while someone
    is actually waiting, so idle CPU stays at zero. */
@@ -1953,8 +1959,17 @@ body.quiet .card.writing.w2 .dot { transform: none; }
 }
 /* v0.28.2: at most TWO subagent rows on a comfortable card. The third row is what
    the larger type could not afford (rework's working card ran 19 px past the cell);
-   the `N sub` badge still carries the count and the sheet lists them whole. */
-.card-subs .sub-row:nth-child(n+3) { display: none; }
+   the `N sub` badge still carries the count and the sheet lists them whole.
+   SCOPED TO THE CARD (lane S), which is what the sentence above always said it was
+   and what the selector did not. buildSubRows names its wrapper `card-subs` on
+   three surfaces, and the Detail page is the one that KEEPS that wrapper - the
+   sheet moves the rows out of it, which is the only reason the sheet escaped. So
+   the page that exists to show the list whole was hiding everything past the
+   second row: measured on the glass at 2560x720, ?mock=rework, the third
+   subagentDetail row computed to height 0 while the DOM said three. The card's own
+   cap is unchanged, the badge still carries the count, and the cell it was written
+   to protect is still protected. */
+.card .card-subs .sub-row:nth-child(n+3) { display: none; }
 .sub-row {
 	display: flex;
 	align-items: baseline;
@@ -2639,6 +2654,7 @@ body.pinflash-frozen .card-pin.pin-confirm-off {
 .ov-row[data-state="working"] .ov-state { color: var(--accent); }
 .ov-row[data-state="done"] .ov-state { color: var(--green); }
 .ov-row[data-state="idle"] .ov-state { color: var(--faint); }
+.ov-row[data-state="failed"] .ov-state { color: var(--red); }
 /* The leading middot belongs between the timeline's three text columns; here the
    state word is a column of its own with a gap, and the separator reads as a
    stray glyph in front of every title. */
@@ -3206,6 +3222,48 @@ body.quiet .core-sessions { color: var(--muted); }
 	.zone-identity { flex: 0 0 36%; }
 	.zone-grid { flex: 1 1 64%; }
 	.cards { grid-template-columns: repeat(2, 1fr); }
+}
+/* THE CLOCK IS SIZED IN vmin AND ITS BOX IN vw, AND BELOW 3.55:1 THOSE DIVERGE.
+   The zone is 20.3% of the WIDTH; --fs-clock is 15 vmin, which on a landscape panel
+   is 15% of the HEIGHT. At the authored 2560x720 slot the zone is 519.67 px against
+   a 348.25 px clock row, so nothing shows. Narrow the panel and the zone shrinks
+   while the clock does not: the row is centred and its children are nowrap, so the
+   overflow spills SYMMETRICALLY and eats the zone's 28.8 px of padding from both
+   sides before crossing the border box. Measured at HEAD, headless Edge, DPR 1,
+   ?mock=rework: the identity zone overflows 1.47 px at 1400x720 and 1.38 px at
+   1401x720 at clockHm/clockSs, and on a 24-hour panel — the five-character worst
+   case, which a 12-hour panel also reaches from 10:00 to 12:59 — 32.03 px at
+   1400x720, out to 52.22 px at 1201x720.
+
+   THE TYPE GIVES WAY, NOT THE ZONE. Widening the zone instead was measured and
+   rejected: it can only come out of .zone-grid (.zone-limits is flex 0 0 24.2% and
+   cannot shrink), and the three-column card already overflows 31.59 px at 1400x720
+   at HEAD, so paying for the clock in card width makes a worse defect to fix a
+   smaller one. Capping the type costs the grid, the limits zone and the cards
+   nothing at all.
+
+   THE CAP IS THE ZONE'S OWN WIDTH, less the clock row's gap, over the measured
+   width-to-type ratio of a five-character clock: hm 2.8297 + ss 0.3282 = 3.1579
+   (305.61 px and 35.44 px at 108 px type, off the DOM at 2560x720). 3.2 holds 1.3%
+   in hand, which stays positive down to the 3/2 aspect this query stops at.
+   min() means the rule DISABLES ITSELF wherever it is not needed rather than
+   trading one number for another: 160.2 px at 2560x720 and 158.7 at 2536x696
+   against a 15 vmin term of 108 and 104.4, so both authored slots keep the type
+   they had, measured, not argued.
+   min-aspect-ratio is the guard: below 3/2 the zone is no longer 20.3% of the width
+   (the family queries below give it the whole line), and a cap computed from 20.3vw
+   would be answering about a box that does not exist. The connecting state is
+   restated because it is the one other basis reachable here — and at 36% the cap is
+   inert at every width this query covers, which is the point of restating it rather
+   than letting the 20.3% figure shrink a clock that has the room. */
+@media (min-aspect-ratio: 3/2) and (min-width: 1201px) {
+	.zone-identity {
+		--fs-clock: min(calc(var(--layout-unit) * 15), calc((20.3vw - var(--layout-unit)) / 3.2));
+		--fs-clock-sec: calc(var(--fs-clock) * 0.28);
+	}
+	body.connecting:not(.has-sensors) .zone-identity {
+		--fs-clock: min(calc(var(--layout-unit) * 15), calc((36vw - var(--layout-unit)) / 3.2));
+	}
 }
 /* Rule 6: hide secondary content, never shrink it. The subagent rows and the
    question preview go before the card does — the sheet still carries the full
@@ -3796,6 +3854,28 @@ body.quiet .core-sessions { color: var(--muted); }
 .set-toggle[data-on="1"] { color: var(--text-color); border-color: var(--accent); }
 .set-toggle[data-on="0"] { color: var(--faint); }
 .set-btn-save { border-color: var(--accent); color: var(--accent); }
+/* lane S: the value picker. One button per value, laid out like the swatch row
+   because it IS that control with words instead of colours.
+   THE FINGERTIP FLOOR IS THIS ROW'S, not the toggles'. .set-btn floors at 44 px,
+   which is what shipped; a control added now takes the 48 px the rest of this
+   panel is built to, and 6 vmin is the term the toggle beside it already uses, so
+   at the authored slot this stands 4 px proud of it and nowhere near the 60.5 px
+   --touch-min would have made it. */
+.set-choices {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: calc(var(--layout-unit) * 0.8);
+}
+.set-choice {
+	min-height: max(48px, calc(var(--layout-unit) * 6));
+	min-width: max(48px, calc(var(--layout-unit) * 7));
+	font-family: var(--font-mono);
+}
+/* Pressed reads like the toggle's on-state, so one idiom covers both: the chosen
+   value is the accent-bordered one and the rest recede. */
+.set-choice[data-on="1"] { color: var(--text-color); border-color: var(--accent); }
+.set-choice[data-on="0"] { color: var(--faint); }
 
 .set-swatches {
 	flex: 0 0 auto;
@@ -4273,6 +4353,7 @@ body[data-grid-view="detail"] .grid-view[data-view="detail"] { display: flex; }
 .dv-chip-state[data-state="needs_input"] { color: var(--amber); }
 .dv-chip-state[data-state="working"] { color: var(--accent); }
 .dv-chip-state[data-state="done"] { color: var(--green); }
+.dv-chip-state[data-state="failed"] { color: var(--red); }
 .dv-elapsed { font-variant-numeric: tabular-nums; color: var(--faint); }
 .dv-chip-fast { color: var(--green); }
 .dv-chip-ack { color: var(--faint); }
@@ -4298,6 +4379,14 @@ body[data-grid-view="detail"] .grid-view[data-view="detail"] { display: flex; }
 	color: var(--text-color);
 	white-space: pre-wrap;
 }
+/* lane S: the failure heading takes the alert colour the state chip above it has
+   already taken, so the two agree; the MESSAGE does not. It is crabd's own text
+   and can be a paragraph, and a red paragraph on a wall panel is a shout with no
+   more information in it than the heading already carried. Same block as
+   .dv-question for the same reason: this is the one surface wide enough to show
+   it whole, so it scrolls rather than clamping. */
+.dv-failure-head { color: var(--red); }
+.dv-failure { font-size: var(--fs-card-meta); color: var(--muted); }
 /* MF-002: the line now carries a control, so it is a row rather than one string.
    The text keeps the ellipsis it had; the button does not shrink, because a target
    that narrows with its neighbour's text is a target that can stop being tappable. */
@@ -4561,6 +4650,22 @@ body.crab-canvas-on #crab .ball { animation: none; }
 @media (max-width: 1300px) {
 	.sensors .sensor.shown ~ .sensor.shown { display: none; }
 }
+/* lane S: FAHRENHEIT DROPS THE SECOND CELL EARLIER, because it is wider. The row
+   is 0.242W - 59.6 px (read off the DOM at 1400 / 1700 / 2000), and a two-cell
+   Fahrenheit row is 285.33 px against the 236.39 of the same row in Celsius: three
+   digits instead of two, plus the letter at 11.0 px. 285.33 px needs a panel of
+   1425 px, so at 1400x720 the GPU cell stood 6.11 px past the row's own right edge
+   and into the Limits zone's padding - measured, and the exact width failure the
+   v0.30.0 budget exists to stop. 1460 is that threshold with 8.4 px of cushion for
+   another engine's font metrics, and it is the SAME answer the two rules above
+   give: Rule 6, hide secondary content, never shrink it. The chevron already
+   promises a sheet, and the sheet lists every reading in the chosen unit.
+   Gated on the body class, so a panel at the Celsius default keeps every cell it
+   has today at every width: the verified matrix is untouched in both units
+   (107.16 px of slack at 2560x720 in Fahrenheit, 118.42 at 2536x696). */
+@media (max-width: 1460px) {
+	body.temp-f .sensors .sensor.shown ~ .sensor.shown { display: none; }
+}
 
 /* ---------- the card: activity, mode, todos, typed-ahead ---------- */
 
@@ -4568,6 +4673,11 @@ body.crab-canvas-on #crab .ball { animation: none; }
    the one-line floor and the colour that line already had - this is the same slot
    on the card, not a new region, and the shrink discipline is unchanged. What it
    adds is a row: the tool name does not shrink, the detail does. */
+/* lane S: --state-color is already red on a failed card, so these two words cost
+   no new token and cannot drift away from the state word above them. Everything
+   else about the line (the two-line clamp, the one-line floor, the size) is
+   .card-event's and is deliberately not restated. */
+.card-failure { color: var(--state-color, var(--muted)); }
 .card-activity {
 	display: flex;
 	align-items: baseline;

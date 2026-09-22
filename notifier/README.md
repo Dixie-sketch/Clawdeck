@@ -124,11 +124,13 @@ be. What each decider then does is unchanged and deliberate:
 | **Long run** | informational — the turn already finished | consumed | consumed | **the edge is spent** — the `working → done` observation swap is unconditional (a reading, not a decision), so a turn that finished while muted is not toasted afterwards | Nobody is blocked. A completion notice re-firing every 10 s is the worse failure — and a duration measured against a turn start from whenever the switch was last on would be confidently wrong. |
 | **Daily digest** | periodic | consumed for the day | consumed for the day | **consumed for the day** — the ledger is marked before `_emit` sees it | The day is marked before the show, on purpose: a digest that failed at 07:00 must not retry 3,000 times before midnight. Same rule as quiet hours: suppress AND mark, never defer. |
 | **Budget crossed** | periodic | consumed for the day | consumed for the day | **consumed for the day** — same mechanism | Same rule as the digest. |
-| **Companion outage** | one-shot per outage | consumed until recovery | consumed until recovery | **consumed until recovery** — a recovery still re-arms it, so "consumed" never means "silenced forever" | Retrying would put an outage line on screen every 10 s for as long as crabd is down. |
+| **Companion outage** | one-shot per outage | consumed until recovery | consumed until recovery | **not consumed** — an outage that matured while muted is announced once when toasts come back on, if the stack is still down; a recovery in the meantime re-arms it and it says nothing | The two failure columns and this one differ on purpose. A render that was ATTEMPTED and failed consumes its spell, because retrying would put an outage line on screen every 10 s for as long as crabd is down. A toast the switch silenced was never attempted, and an outage is a CONDITION rather than a moment: when the switch returns it is either still true, and is the current state of the stack, or it is over and nothing is said. |
 
 The muted column is the same split the other two are: **a live signal re-arms, a periodic
-consumes.** It is what decides what the operator sees when the switch comes back on — the
-question that is still open, and not yesterday's digest arriving at an arbitrary hour.
+consumes** — and the outage toast is on the re-arm side of it, because the condition it reports
+is either still true when the switch comes back or is not. It is what decides what the
+operator sees when the switch comes back on: the question that is still open and the outage
+that is still on, and not yesterday's digest arriving at an arbitrary hour.
 Pinned by `notifier/tests/test_mute.py`.
 
 The retry column is implemented by registration, not by a branch: `poll_once` records an
@@ -289,8 +291,13 @@ The gates, and what each one is for:
   count; re-arming from frozen content is how a dead feed keeps itself alive forever. This gate
   is what keeps a laptop that slept overnight, and a first run against a crabd that was never
   installed, completely silent.
-- **One per outage, re-armed only by a recovery.** A silent outage (nobody working) does *not*
-  spend the toast — if the operator turns out to have been at the machine, it is still available.
+- **One per outage, re-armed by a recovery — or by the toast switch coming back on.** A silent
+  outage (nobody working) does *not* spend the toast: if the operator turns out to have been at
+  the machine, it is still available. Neither does one that matured while `toast.enabled` was
+  false: the emitter registers this decider as the outage's **mute owner**, so the switch
+  returning to a stack that is still down produces exactly one line. Quiet hours are NOT this
+  case and keep the older rule (suppress AND mark) — the decider returns no request at all
+  there, so there is nothing to own.
 - **Quiet hours are remembered, not read** — the `quiet` block lives in the very feed this
   decider cannot reach, so the last healthy poll's value is used. Suppressed and marked, like
   everything else here.

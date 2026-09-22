@@ -1044,12 +1044,33 @@ Describe 'SideCrab setup' {
             $script:FragHooks = $script:Frag['hooks']
         }
 
-        It 'keeps the five curl ingest hooks as command hooks on /v1/hook' {
-            foreach ($e in 'SessionStart', 'UserPromptSubmit', 'Notification', 'SubagentStop', 'SessionEnd') {
+        It 'SessionStart is the ONE curl hook left, on its own route (B1, v0.36.0)' {
+            # The CLI skips http handlers on SessionStart, so that entry cannot move and
+            # keeps curl.exe. Every other ingest hook is now type-http - see the next case.
+            $h = $script:FragHooks['SessionStart'][0]['hooks'][0]
+            $h['type']    | Should -Be 'command'
+            $h['command'] | Should -Match 'curl\.exe'
+            $h['command'] | Should -Match '127\.0\.0\.1:2722/v1/hook/session-start'
+            $h['command'] | Should -Match 'exit 0'
+        }
+
+        It 'every other event is a type-http hook on its own per-event route' {
+            $routes = @{
+                UserPromptSubmit  = '/v1/hook/prompt'
+                Notification      = '/v1/hook/notification'
+                Stop              = '/v1/hook/stop'
+                StopFailure       = '/v1/hook/stop-failure'
+                SubagentStart     = '/v1/hook/subagent-start'
+                SubagentStop      = '/v1/hook/subagent-stop'
+                PermissionRequest = '/v1/hook/permission'
+                SessionEnd        = '/v1/hook/session-end'
+                PreCompact        = '/v1/hook/precompact'
+            }
+            foreach ($e in $routes.Keys) {
                 $h = $script:FragHooks[$e][0]['hooks'][0]
-                $h['type']    | Should -Be 'command'
-                $h['command'] | Should -Match 'curl\.exe'
-                $h['command'] | Should -Match '127\.0\.0\.1:2722/v1/hook'
+                $h['type'] | Should -Be 'http'
+                $h['url']  | Should -Be ("http://127.0.0.1:2722{0}" -f $routes[$e])
+                $h.Contains('command') | Should -BeFalse
             }
         }
 
@@ -1952,10 +1973,25 @@ Describe 'SideCrab setup' {
         }
 
         It 'Restore touches no task, no registry and no config' {
-            $invoked = script:Get-InvokedCommand $script:RestoreAst
+            # SCOPED TO THE SETTINGS/CONFIG PATH (lane Q). -Host restores the panel host, which
+            # is a directory of binaries whose executable has to be stopped before it can be
+            # renamed, so that branch DOES stop and start one task - deliberately, and only its
+            # own. The ban this test exists for is on the settings and config restore, which
+            # must remain a file copy and nothing else, so it is measured on the text after the
+            # -Host branch returns.
+            $marker = $script:RestoreText.IndexOf('# The one target every step below reads')
+            ($marker -gt 0) | Should -BeTrue
+            $settingsPath = $script:RestoreText.Substring($marker)
             foreach ($bad in 'Start-ScheduledTask', 'Stop-ScheduledTask', 'Register-ScheduledTask',
                              'Unregister-ScheduledTask', 'Enable-ScheduledTask', 'New-ItemProperty',
                              'Set-ItemProperty', 'Set-SideCrabPanelApprovals') {
+                ($settingsPath -match [regex]::Escape($bad)) | Should -BeFalse
+            }
+            # Nothing anywhere in the script registers, unregisters or enables a task, or writes
+            # the registry: those never become a restore's business, -Host or not.
+            $invoked = script:Get-InvokedCommand $script:RestoreAst
+            foreach ($bad in 'Register-ScheduledTask', 'Unregister-ScheduledTask', 'Enable-ScheduledTask',
+                             'New-ItemProperty', 'Set-ItemProperty', 'Set-SideCrabPanelApprovals') {
                 $invoked | Should -Not -Contain $bad
             }
         }
@@ -2441,11 +2477,10 @@ Describe 'SideCrab setup' {
 
         It 'the shipped fragment registers PreCompact against its own route' {
             $entry = $script:FragmentM['PreCompact'][0]['hooks'][0]
-            $entry['type']    | Should -Be 'command'
-            $entry['command'] | Should -Match '/v1/hook/precompact'
-            # Fire-and-forget, like the five other command hooks: the session is about to
-            # compact a large context and nothing crabd does may sit in front of that.
-            $entry['command'] | Should -Match 'exit 0'
+            # type-http since v0.36.0 (B1). Still fire-and-forget: crabd answers 204 before
+            # it parses, and a session about to compact a large context waits on nothing.
+            $entry['type'] | Should -Be 'http'
+            $entry['url']  | Should -Match '/v1/hook/precompact'
         }
 
         It 'carries PreCompact onto an install that predates it' {
@@ -2459,7 +2494,7 @@ Describe 'SideCrab setup' {
             $settings['hooks'].ContainsKey('PreCompact') | Should -BeFalse
             Merge-HookFragment -Settings $settings -Fragment $script:FragmentM | Out-Null
             @($settings['hooks']['PreCompact']).Count | Should -Be 1
-            $settings['hooks']['PreCompact'][0]['hooks'][0]['command'] | Should -Match '/v1/hook/precompact'
+            $settings['hooks']['PreCompact'][0]['hooks'][0]['url'] | Should -Match '/v1/hook/precompact'
         }
 
         It 'a re-run duplicates nothing, PreCompact included' {
@@ -2475,7 +2510,7 @@ Describe 'SideCrab setup' {
             # An entry the marker misses is one no uninstall can find again: it stays in
             # settings.json forever, POSTing to a crabd that is no longer there.
             $entry = $script:FragmentM['PreCompact'][0]['hooks'][0]
-            $entry['command'] | Should -BeLike "*$global:HookUrlMarker*"
+            $entry['url'] | Should -BeLike "*$global:HookUrlMarker*"
             # ...and the splitter therefore claims it as ours on the next merge.
             $part = Split-SideCrabHookMatcher -Matcher @{ hooks = @($entry) } -Marker $global:HookUrlMarker
             $part.Foreign | Should -BeNullOrEmpty
@@ -2489,6 +2524,99 @@ Describe 'SideCrab setup' {
             $kept = @($settings['hooks']['PreCompact'])
             $kept.Count | Should -Be 2
             $kept[0]['hooks'][0]['command'] | Should -Match 'hand-merged'
+        }
+    }
+
+    Context 'B1: the curl entries are REPLACED by the http ones on a re-run (v0.36.0)' {
+
+        # THE UPGRADE THIS RELEASE ACTUALLY IS. Every existing install holds six curl
+        # entries pointed at /v1/hook. Re-running the installer has to REPLACE them with
+        # the http entries, not sit the new ones beside the old - two entries per event
+        # would double every hook, and the curl ones would keep feeding the compatibility
+        # route forever with nobody the wiser.
+        #
+        # Split-SideCrabHookMatcher was MEASURED before any of this was written
+        # (SideCrab.Common.ps1): it already concatenates `command` and `url` when testing
+        # for the marker, so it claims an http entry as SideCrab's. That is why the two
+        # functions this lane owns needed no change - these cases are the proof of it.
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @('Split-SideCrabHookMatcher')
+            script:Import-AstFunction -Path (Join-Path $script:SetupDir 'Install-SideCrab.ps1') `
+                                      -Name @('Merge-HookFragment')
+            $global:HookUrlMarker = '127.0.0.1:2722/v1/hook'
+            $script:FragmentR = (Get-Content -LiteralPath (Join-Path $script:SetupDir '..\hooks\settings-hooks-fragment.json') `
+                                             -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -Depth 40)['hooks']
+            # A pre-v0.36.0 install: the old curl entry on the old generic route.
+            function script:OldCurlR { @{ type = 'command'; command = 'curl.exe -s -m 2 -X POST --data-binary @- http://127.0.0.1:2722/v1/hook || exit 0'; timeout = 3 } }
+            function script:TheirsR  { @{ type = 'command'; command = 'echo mine, hand-merged' } }
+        }
+        AfterAll {
+            Remove-Variable -Name HookUrlMarker -Scope Global -ErrorAction SilentlyContinue
+        }
+
+        It 'a re-run replaces the curl entry with the http one, leaving nothing behind' {
+            $settings = @{ hooks = @{} }
+            foreach ($e in 'UserPromptSubmit', 'Notification', 'SubagentStop', 'SessionEnd') {
+                $settings['hooks'][$e] = @(@{ hooks = @(script:OldCurlR) })
+            }
+            Merge-HookFragment -Settings $settings -Fragment $script:FragmentR | Out-Null
+            foreach ($e in 'UserPromptSubmit', 'Notification', 'SubagentStop', 'SessionEnd') {
+                $entries = @(@($settings['hooks'][$e]) | ForEach-Object { $_['hooks'] })
+                $entries.Count      | Should -Be 1
+                $entries[0]['type'] | Should -Be 'http'
+                # The curl line is GONE, not merely outnumbered.
+                @($entries | Where-Object { $_.Contains('command') }).Count | Should -Be 0
+            }
+        }
+
+        It 'the splitter claims an http entry as ours, which is what makes that work' {
+            $part = Split-SideCrabHookMatcher -Matcher @{ hooks = @(
+                        $script:FragmentR['Stop'][0]['hooks'][0]) } -Marker $global:HookUrlMarker
+            $part.Foreign  | Should -BeNullOrEmpty
+            $part.OurCount | Should -Be 1
+        }
+
+        It 'a curl entry and an http entry in one matcher are BOTH claimed' {
+            # The half-upgraded state: the operator hand-merged, or a previous run was
+            # interrupted. Both are ours and both must go, or the re-run leaves a duplicate.
+            $part = Split-SideCrabHookMatcher -Matcher @{ hooks = @(
+                        (script:OldCurlR), $script:FragmentR['Stop'][0]['hooks'][0]) } `
+                        -Marker $global:HookUrlMarker
+            $part.OurCount | Should -Be 2
+            $part.Foreign  | Should -BeNullOrEmpty
+        }
+
+        It 'the operators own hand-merged hook still survives the replacement' {
+            $settings = @{ hooks = @{ Notification = @(@{ matcher = '*'; hooks = @(
+                            (script:OldCurlR), (script:TheirsR)) }) } }
+            Merge-HookFragment -Settings $settings -Fragment $script:FragmentR | Out-Null
+            $kept = @($settings['hooks']['Notification'])
+            $kept.Count | Should -Be 2
+            $kept[0]['hooks'][0]['command'] | Should -Match 'hand-merged'
+            $kept[1]['hooks'][0]['url']     | Should -Match '/v1/hook/notification'
+        }
+
+        It 'the two new events land on an install that predates them' {
+            $settings = @{ hooks = @{} }
+            foreach ($e in 'SessionStart', 'UserPromptSubmit', 'Notification', 'Stop',
+                           'SubagentStop', 'PermissionRequest', 'SessionEnd', 'PreCompact') {
+                $settings['hooks'][$e] = @(@{ hooks = @(script:OldCurlR) })
+            }
+            Merge-HookFragment -Settings $settings -Fragment $script:FragmentR | Out-Null
+            foreach ($e in 'StopFailure', 'SubagentStart') {
+                @($settings['hooks'][$e]).Count | Should -Be 1
+                $settings['hooks'][$e][0]['hooks'][0]['type'] | Should -Be 'http'
+            }
+        }
+
+        It 'three re-runs duplicate nothing' {
+            $settings = @{ hooks = @{} }
+            1..3 | ForEach-Object { Merge-HookFragment -Settings $settings -Fragment $script:FragmentR | Out-Null }
+            foreach ($event in $script:FragmentR.Keys) {
+                @($settings['hooks'][$event]).Count | Should -Be 1
+                @($settings['hooks'][$event] | ForEach-Object { $_['hooks'] }).Count | Should -Be 1
+            }
         }
     }
 
@@ -3781,41 +3909,44 @@ Describe 'SideCrab setup' {
 
         # ---- SCA-003: the update verdict includes the host ---------------------------------
 
-        It 'SCA-003: a failed host build sets the verdict and names the retained version' {
+        It 'SCA-003: a failed host update sets the verdict and names the version on disk' {
             ($script:UpdateTextI -match '\$hostFailed\s*=\s*\$true')          | Should -BeTrue
             ($script:UpdateTextI -match 'if \(\$hostFailed\) \{ \$verifyFailed = \$true \}') | Should -BeTrue
-            ($script:UpdateTextI -match 'Retained host version')              | Should -BeTrue
+            ($script:UpdateTextI -match 'Host version on disk now')           | Should -BeTrue
             ($script:UpdateTextI -match 'exit \(\[int\] \$verifyFailed\)')    | Should -BeTrue
         }
 
-        It 'SCA-003: the retained version is read BEFORE the build, or there is nothing to name' {
-            $read  = $script:UpdateTextI.IndexOf('$hostBefore   = (Get-SideCrabComponentVersion')
-            $build = $script:UpdateTextI.IndexOf("& (Join-Path `$PSScriptRoot 'Build-SideCrabPanel.ps1')")
-            ($read -ge 0)     | Should -BeTrue
-            ($read -lt $build) | Should -BeTrue
+        It 'SCA-003: the version on disk is read BEFORE anything is staged, or there is nothing to name' {
+            $read    = $script:UpdateTextI.IndexOf('$hostBefore   = (Get-SideCrabComponentVersion')
+            $staging = $script:UpdateTextI.IndexOf('Invoke-SideCrabStagedHostUpdate `')
+            ($read -ge 0)        | Should -BeTrue
+            ($read -lt $staging) | Should -BeTrue
         }
 
-        It 'SCA-003: a failed build no longer downgrades to a warning' {
+        It 'SCA-003: a failed host update no longer downgrades to a warning' {
             # Write-Warning on the build path is exactly what let the run exit 0.
             ($script:UpdateTextI -match 'the panel host did not rebuild \(exit \$LASTEXITCODE\); ') | Should -BeFalse
-            ($script:UpdateTextI -match 'FAIL:    the panel host did not rebuild') | Should -BeTrue
+            ($script:UpdateTextI -match 'FAIL:    the panel host update failed') | Should -BeTrue
         }
 
         It 'SCA-003: a panel task that does not come back Running is also a failure' {
+            # Now the ACTIVATE step of the staged update (MF-006): it waits for the task to read
+            # Running and returns false otherwise, and a false activate is what triggers the
+            # rollback and the non-zero exit.
             ($script:UpdateTextI -match 'Get-SideCrabRunStateDecision') | Should -BeTrue
-            ($script:UpdateTextI -match '\$panelRun\.Fault')            | Should -BeTrue
+            ($script:UpdateTextI -match "-Activate \{")                 | Should -BeTrue
+            ($script:UpdateTextI -match 'if \(\$staged\.Ok\)')          | Should -BeTrue
         }
 
-        It 'SCA-003: the prior exe is left in place - nothing deletes it on a failed build' {
-            # "Stale but working beats dark" only holds if the failure path removes nothing.
-            $from = $script:UpdateTextI.IndexOf('$hostFailed   = $false')
-            $to   = $script:UpdateTextI.IndexOf('# ---- 3. verify')
-            ($from -ge 0) | Should -BeTrue
-            ($to -gt $from) | Should -BeTrue
-            $seg = $script:UpdateTextI.Substring($from, $to - $from)
-            ($seg -match 'Remove-Item') | Should -BeFalse
-            # And the whole script never removes the exe, at any point.
-            ($script:UpdateTextI -match 'Remove-Item') | Should -BeFalse
+        It 'SCA-003 / MF-006: nothing on the failure path deletes the host it is replacing' {
+            # "Stale but working beats dark" now holds through the rollback: the kept generation
+            # is MOVED back and the host that failed is moved aside, never removed. The only
+            # Remove-Item calls in the updater are on the staging directory and on the temp
+            # directory a package is unpacked into - never on dist or dist.last-good.
+            foreach ($m in [regex]::Matches($script:UpdateTextI, '(?m)^.*Remove-Item.*$')) {
+                ($m.Value -match '\$distPath|\$lastGoodPath') | Should -BeFalse
+            }
+            ($script:UpdateTextI -match 'Restore-SideCrabHostLastGood|Invoke-SideCrabStagedHostUpdate') | Should -BeTrue
         }
 
         It 'SCA-003: the run-state decision the verdict leans on calls Ready a fault' {
@@ -4009,4 +4140,936 @@ Describe 'SideCrab setup' {
         }
     }
 
+
+    Context 'packaging, prerequisites and the staged host update (MF-005 / MF-006)' {
+
+        BeforeAll {
+            script:Import-AstFunction -Path $script:Common -Name @(
+                'Get-SideCrabTfmMajor', 'Get-SideCrabCsprojValue', 'Get-SideCrabHostProjectFacts',
+                'Test-SideCrabPackagePathExcluded', 'Get-SideCrabPackageContentSpec',
+                'Get-SideCrabPackageManifestName', 'Get-SideCrabPackageVerifyVerdict',
+                'Read-SideCrabPackageManifest', 'Get-SideCrabPackageIdentity',
+                'Measure-SideCrabPackageHash', 'Test-SideCrabPackageIntegrity',
+                'Test-SideCrabFragmentNeedsCurl',
+                'Get-SideCrabWebView2Verdict', 'Get-SideCrabWebView2State',
+                'Get-SideCrabDotnetRuntimeVerdict', 'Get-SideCrabDotnetRuntimeState',
+                'Get-SideCrabPrerequisiteVerdict', 'Get-SideCrabHostBuildDecision',
+                'Get-SideCrabHostCheckVerdict', 'Invoke-SideCrabHostCheck',
+                'Invoke-SideCrabHostSwap', 'Restore-SideCrabHostLastGood',
+                'Invoke-SideCrabStagedHostUpdate', 'Get-SideCrabHostIdentityVerdict',
+                'Get-SideCrabHostBuildRecord', 'Get-SideCrabExpectedHostHash'
+            )
+
+            $script:TempQ = Join-Path ([IO.Path]::GetTempPath()) ('sidecrab-laneq-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-Item -ItemType Directory -Force -Path $script:TempQ | Out-Null
+
+            $script:PkgText     = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Build-SideCrabPackage.ps1') -Raw -Encoding utf8
+            $script:PreqText    = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrabPrerequisites.ps1') -Raw -Encoding utf8
+            $script:InstallTextQ = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw -Encoding utf8
+            $script:UpdateTextQ  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Update-SideCrab.ps1') -Raw -Encoding utf8
+            $script:RestoreTextQ = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Restore-SideCrab.ps1') -Raw -Encoding utf8
+            $script:RepairTextQ  = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Repair-SideCrab.ps1') -Raw -Encoding utf8
+            $script:BuildTextQ   = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Build-SideCrabPanel.ps1') -Raw -Encoding utf8
+
+            # A probe that passes everything: each case below differs from it in exactly one way,
+            # so a failure names the one fact that caused it.
+            function script:HealthyProbe {
+                @{
+                    PowerShellMajor = 7
+                    Python          = [pscustomobject]@{ Found = $true; Path = 'C:\Py\pythonw.exe'; Windowless = $true; Reason = '' }
+                    DotnetMajor     = 10
+                    DotnetRuntime   = [pscustomobject]@{ Found = $true; Unknown = $false; Versions = @('10.0.1'); Reason = 'Microsoft.WindowsDesktop.App 10.0.1' }
+                    WebView2        = [pscustomobject]@{ Found = $true; Unknown = $false; Version = '140.0.1'; Source = 'HKLM'; Reason = 'WebView2 runtime 140.0.1' }
+                    Curl            = [pscustomobject]@{ Needed = $true; Found = $true; Path = 'C:\Windows\System32\curl.exe' }
+                    Hwinfo          = [pscustomobject]@{ Found = $true; Path = 'C:\Program Files\HWiNFO64\HWiNFO64.EXE' }
+                }
+            }
+            function script:Row { param($Verdict, [string] $Key) $Verdict.Rows | Where-Object { $_.Key -eq $Key } | Select-Object -First 1 }
+
+            # A directory holding one marked file, so a swap or a restore can be proved by
+            # reading the marker rather than by trusting that a rename happened.
+            function script:MakeHostDir {
+                param([string] $Path, [string] $Marker)
+                New-Item -ItemType Directory -Force -Path $Path | Out-Null
+                Set-Content -LiteralPath (Join-Path $Path 'SideCrab.Panel.exe') -Value "exe-$Marker" -Encoding utf8NoBOM
+                Set-Content -LiteralPath (Join-Path $Path 'marker.txt') -Value $Marker -Encoding utf8NoBOM
+            }
+            function script:MarkerOf {
+                param([string] $Path)
+                $f = Join-Path $Path 'marker.txt'
+                if (Test-Path -LiteralPath $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { '' }
+            }
+            # One staged-update run against three fresh directories under a named case.
+            function script:NewCase {
+                param([string] $Name)
+                $root = Join-Path $script:TempQ $Name
+                New-Item -ItemType Directory -Force -Path $root | Out-Null
+                [pscustomobject]@{
+                    Root     = $root
+                    Dist     = (Join-Path $root 'dist')
+                    Staging  = (Join-Path $root 'dist.staging')
+                    LastGood = (Join-Path $root 'dist.last-good')
+                    Failed   = (Join-Path $root 'dist.failed')
+                }
+            }
+            $script:OkVerdict = { param([string] $ExePath) [pscustomobject]@{ Valid = $true; Version = '0.9.9'; ExitCode = 0; Reason = 'fake ok' } }
+        }
+
+        AfterAll {
+            if ($script:TempQ -and (Test-Path -LiteralPath $script:TempQ)) {
+                Remove-Item -LiteralPath $script:TempQ -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # ---- the runtime major is READ, never typed twice ---------------------------------
+
+        It 'reads the .NET major out of a target-framework moniker' {
+            Get-SideCrabTfmMajor -Tfm 'net10.0-windows10.0.19041.0' | Should -Be 10
+            Get-SideCrabTfmMajor -Tfm 'net8.0'                      | Should -Be 8
+            Get-SideCrabTfmMajor -Tfm 'net9.0-windows'              | Should -Be 9
+            # The Windows part carries version numbers of its own; the match must not read them.
+            Get-SideCrabTfmMajor -Tfm 'netstandard2.0'              | Should -Be 0
+            Get-SideCrabTfmMajor -Tfm ''                            | Should -Be 0
+        }
+
+        It 'the runtime the prerequisite check demands comes from THIS csproj' {
+            $f = Get-SideCrabHostProjectFacts -RepoRoot $script:RepoRoot
+            $f.Present | Should -BeTrue
+            ($f.Tfm -match '^net\d+\.\d+')  | Should -BeTrue
+            ($f.TfmMajor -gt 0)             | Should -BeTrue
+            # the number and the moniker agree, which is the whole point of reading it
+            ("net$($f.TfmMajor).") | Should -Be ($f.Tfm.Substring(0, "net$($f.TfmMajor).".Length))
+            ($f.Version -match '^\d+\.\d+\.\d+$') | Should -BeTrue
+        }
+
+        It 'pulls a single MSBuild property out of project text' {
+            $xml = "<Project><PropertyGroup><Version>1.2.3</Version><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+            Get-SideCrabCsprojValue -Text $xml -Name 'Version'         | Should -Be '1.2.3'
+            Get-SideCrabCsprojValue -Text $xml -Name 'TargetFramework' | Should -Be 'net10.0'
+            Get-SideCrabCsprojValue -Text $xml -Name 'Nope'            | Should -Be ''
+        }
+
+        # ---- what a package carries, and what it must never carry -------------------------
+
+        It 'the package excludes tests, developer notes, audit history and private tooling' {
+            foreach ($p in 'setup/tests/SideCrab.Setup.Tests.ps1', 'widget/tests/test_ordering.js',
+                           'companion/tests/test_state.py', 'hooks/tests/test_hook.py',
+                           'docs/notes/lane-q-dev.md', 'docs/history/retired.md',
+                           'docs/findings/audit.md', 'docs/spikes/idea.md',
+                           'tools/Export-PublicRepo.ps1', '.git/config',
+                           'panel-host/bin/Release/x.dll', 'panel-host/obj/project.assets.json',
+                           'companion/__pycache__/crabd.pyc', 'companion/crabd.pyc',
+                           'setup/node_modules/x/y.js', 'panel-host/dist/panel.log') {
+                (Test-SideCrabPackagePathExcluded -RelativePath $p) | Should -BeTrue
+            }
+        }
+
+        It 'the package carries the product itself' {
+            foreach ($p in 'companion/crabd.py', 'notifier/sidecrab_toast.py',
+                           'hooks/settings-hooks-fragment.json', 'hooks/sidecrab_statusline.py',
+                           'widget/index.html', 'widget/version.json',
+                           'setup/Install-SideCrab.ps1', 'setup/SideCrab.Common.ps1',
+                           'panel-host/dist/SideCrab.Panel.exe',
+                           'panel-host/dist/runtimes/win-x64/native/WebView2Loader.dll',
+                           'README.md', 'LICENSE', 'CHANGELOG.md',
+                           'docs/GETTING-STARTED.md', 'docs/images/panel.png') {
+                (Test-SideCrabPackagePathExcluded -RelativePath $p) | Should -BeFalse
+            }
+        }
+
+        It 'the exclusion is on whole segments, so a file merely NAMED like one survives' {
+            # 'tests.py' is a module, not a test directory, and docs/notestand.md is not
+            # docs/notes. A prefix match would have eaten both.
+            (Test-SideCrabPackagePathExcluded -RelativePath 'companion/tests.py')   | Should -BeFalse
+            (Test-SideCrabPackagePathExcluded -RelativePath 'docs/notestand.md')    | Should -BeFalse
+            (Test-SideCrabPackagePathExcluded -RelativePath 'widget/binder.js')     | Should -BeFalse
+            (Test-SideCrabPackagePathExcluded -RelativePath 'setup/objection.ps1')  | Should -BeFalse
+            # backslashes read the same as forward slashes
+            (Test-SideCrabPackagePathExcluded -RelativePath 'setup\tests\x.ps1')    | Should -BeTrue
+            (Test-SideCrabPackagePathExcluded -RelativePath '')                     | Should -BeTrue
+        }
+
+        It 'the content spec names every runnable piece and roots it under the checkout' {
+            $spec = @(Get-SideCrabPackageContentSpec -RepoRoot 'C:\Fake\sidecrab')
+            $targets = @($spec | ForEach-Object { $_.Target })
+            foreach ($t in 'companion', 'notifier', 'hooks', 'widget', 'setup', 'panel-host\dist',
+                           'README.md', 'LICENSE', 'CHANGELOG.md',
+                           'docs\GETTING-STARTED.md', 'docs\UPGRADING-TO-STANDALONE.md') {
+                ($targets -contains $t) | Should -BeTrue
+            }
+            # never the private half of docs/, and never the private tooling
+            foreach ($t in 'docs\BACKLOG.md', 'docs\notes', 'docs\findings', 'tools', 'docs\STATE-CONTRACT.md') {
+                ($targets -contains $t) | Should -BeFalse
+            }
+            (@($spec | Where-Object { $_.Target -eq 'companion' })[0].Source) | Should -Be 'C:\Fake\sidecrab\companion'
+            # the published host is REQUIRED: a package without it needs an SDK on the PC that
+            # installs it, which is the whole thing a package exists to remove
+            (@($spec | Where-Object { $_.Target -eq 'panel-host\dist' })[0].Required) | Should -BeTrue
+            (@($spec | Where-Object { $_.Target -eq 'docs\images' })[0].Required)     | Should -BeFalse
+        }
+
+        # ---- the manifest: does what is on disk match what shipped? -----------------------
+
+        It 'a package whose files all match its manifest verifies' {
+            $v = Get-SideCrabPackageVerifyVerdict -Expected @{ 'a.txt' = 'AABB'; 'b/c.txt' = 'ccdd' } `
+                                                  -Actual   @{ 'a.txt' = 'aabb'; 'b/c.txt' = 'CCDD' }
+            $v.Ok            | Should -BeTrue           # hex case is not a mismatch
+            $v.FirstMismatch | Should -BeNullOrEmpty
+            $v.Checked       | Should -Be 2
+        }
+
+        It 'a changed file is named, not just counted' {
+            $v = Get-SideCrabPackageVerifyVerdict -Expected @{ 'companion/crabd.py' = 'aa'; 'z.txt' = 'bb' } `
+                                                  -Actual   @{ 'companion/crabd.py' = 'ff'; 'z.txt' = 'bb' }
+            $v.Ok            | Should -BeFalse
+            $v.FirstMismatch | Should -Be 'companion/crabd.py'
+            $v.Reason        | Should -Match 'does not match the SHA-256'
+        }
+
+        It 'a missing file reads differently from a changed one' {
+            $v = Get-SideCrabPackageVerifyVerdict -Expected @{ 'hooks/x.py' = 'aa' } -Actual @{}
+            $v.Ok            | Should -BeFalse
+            $v.FirstMismatch | Should -Be 'hooks/x.py'
+            $v.Reason        | Should -Match 'is not in the package'
+        }
+
+        It 'an EXTRA file beside the package is not a failure' {
+            # An install writes logs and backups into the tree it runs from, and a person may put
+            # a note beside the scripts. Refusing those would make the check fire on a healthy
+            # install the first time anyone used it.
+            $v = Get-SideCrabPackageVerifyVerdict -Expected @{ 'a.txt' = 'aa' } `
+                                                  -Actual   @{ 'a.txt' = 'aa'; 'my-notes.md' = 'zz' }
+            $v.Ok | Should -BeTrue
+        }
+
+        It 'the first mismatch is stable, so two runs name the same file' {
+            $v = Get-SideCrabPackageVerifyVerdict -Expected @{ 'z.txt' = 'aa'; 'a.txt' = 'aa' } `
+                                                  -Actual   @{ 'z.txt' = 'ff'; 'a.txt' = 'ff' }
+            $v.FirstMismatch | Should -Be 'a.txt'
+        }
+
+        It 'verifies a real package directory, and names the file that was edited' {
+            $pkg = Join-Path $script:TempQ 'pkg'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pkg 'companion') | Out-Null
+            Set-Content -LiteralPath (Join-Path $pkg 'companion\crabd.py') -Value 'VERSION = "9.9.9"' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $pkg 'README.md') -Value 'hello' -Encoding utf8NoBOM
+            $hashes = Measure-SideCrabPackageHash -Root $pkg
+            @($hashes.Keys).Count | Should -Be 2
+            ($hashes.Keys -contains 'companion/crabd.py') | Should -BeTrue
+
+            $files = @{}
+            foreach ($k in @($hashes.Keys)) { $files[$k] = $hashes[$k] }
+            $manifest = @{ product = 'SideCrab'; version = '9.9.9'; platform = 'win-x64'
+                           deployment = 'framework-dependent'; targetFrameworkMajor = 10
+                           gitSha = 'abc1234'; builtUtc = '2026-09-22T10:00:00Z'
+                           components = @{ crabd = '0.35.0'; widget = '0.33.0'; host = '0.5.0' }
+                           files = $files }
+            Set-Content -LiteralPath (Join-Path $pkg 'package-manifest.json') `
+                        -Value ($manifest | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM
+
+            $ok = Test-SideCrabPackageIntegrity -RepoRoot $pkg
+            $ok.Checked  | Should -BeTrue
+            $ok.Ok       | Should -BeTrue
+            $ok.Identity | Should -Match 'SideCrab 9\.9\.9'
+
+            Add-Content -LiteralPath (Join-Path $pkg 'README.md') -Value 'tampered'
+            $bad = Test-SideCrabPackageIntegrity -RepoRoot $pkg
+            $bad.Ok            | Should -BeFalse
+            $bad.FirstMismatch | Should -Be 'README.md'
+        }
+
+        It 'a source checkout has no manifest, and that is not a failure' {
+            $plain = Join-Path $script:TempQ 'plain'
+            New-Item -ItemType Directory -Force -Path $plain | Out-Null
+            $v = Test-SideCrabPackageIntegrity -RepoRoot $plain
+            $v.Checked | Should -BeFalse
+            $v.Ok      | Should -BeTrue          # nothing to verify is not a verification failure
+            $v.Reason  | Should -Match 'source checkout'
+        }
+
+        It 'the identity line says which build this is, in the manifest''s own words' {
+            $m = @{ version = '0.33.0'; deployment = 'framework-dependent'; platform = 'win-x64'
+                    gitSha = 'deadbeef'; builtUtc = [datetime]::Parse('2026-09-22T14:10:51Z').ToUniversalTime()
+                    components = @{ crabd = '0.35.0'; widget = '0.33.0'; host = '0.5.0' } }
+            $line = Get-SideCrabPackageIdentity -Manifest $m
+            $line | Should -Match 'SideCrab 0\.33\.0'
+            $line | Should -Match 'deadbeef'
+            $line | Should -Match 'crabd 0\.35\.0'
+            # ConvertFrom-Json hands back a [datetime]; printing it raw used this PC's culture,
+            # so the build time stopped being the string the manifest holds.
+            $line | Should -Match '2026-09-22T14:10:51Z'
+            (Get-SideCrabPackageIdentity -Manifest $null) | Should -Be 'unknown package'
+        }
+
+        # ---- curl is a prerequisite only while a hook shells out to it --------------------
+
+        It 'a fragment with a command hook needs curl and one without does not' {
+            $command = @{ hooks = @{ Stop = @(@{ hooks = @(@{ type = 'command'; command = 'curl.exe -s ...' }) }) } }
+            $http    = @{ hooks = @{ Stop = @(@{ hooks = @(@{ type = 'http'; url = 'http://127.0.0.1:2722/v1/hook' }) }) } }
+            (Test-SideCrabFragmentNeedsCurl -Fragment $command) | Should -BeTrue
+            (Test-SideCrabFragmentNeedsCurl -Fragment $http)    | Should -BeFalse
+            (Test-SideCrabFragmentNeedsCurl -Fragment $null)    | Should -BeFalse
+            (Test-SideCrabFragmentNeedsCurl -Fragment @{})      | Should -BeFalse
+            # mixed: one command hook anywhere is enough
+            $mixed = @{ hooks = @{ Stop = @(@{ hooks = @(@{ type = 'http' }) })
+                                   SessionStart = @(@{ hooks = @(@{ type = 'command'; command = 'curl.exe' }) }) } }
+            (Test-SideCrabFragmentNeedsCurl -Fragment $mixed) | Should -BeTrue
+        }
+
+        It 'the curl row FOLLOWS the shipped fragment rather than asserting a number' {
+            # Written so that moving the last command hook to type http makes this test agree
+            # with the change instead of failing it.
+            $path = Join-Path $script:RepoRoot 'hooks\settings-hooks-fragment.json'
+            $doc  = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -Depth 40
+            $byText = ((Get-Content -LiteralPath $path -Raw -Encoding utf8) -match '"type"\s*:\s*"command"')
+            (Test-SideCrabFragmentNeedsCurl -Fragment $doc) | Should -Be $byText
+        }
+
+        # ---- WebView2 --------------------------------------------------------------------
+
+        It 'no EdgeUpdate client key anywhere means the runtime is not installed' {
+            $v = Get-SideCrabWebView2Verdict -Reading @(
+                [pscustomobject]@{ Source = 'HKLM:\a'; Version = ''; Error = $null }
+                [pscustomobject]@{ Source = 'HKCU:\b'; Version = ''; Error = $null })
+            $v.Found   | Should -BeFalse
+            $v.Unknown | Should -BeFalse
+            $v.Reason  | Should -Match 'no EdgeUpdate client key'
+        }
+
+        It 'pv 0.0.0.0 is NOT installed - the key outlives the runtime' {
+            # Microsoft's own detection note: the client key is left behind with a zero version
+            # when the runtime is removed. A check that only asked "does the value exist" reports
+            # a runtime that is not there, and the panel task is then registered to launch a
+            # window that can render nothing.
+            $v = Get-SideCrabWebView2Verdict -Reading @([pscustomobject]@{ Source = 'HKLM:\a'; Version = '0.0.0.0'; Error = $null })
+            $v.Found  | Should -BeFalse
+            $v.Reason | Should -Match '0\.0\.0\.0'
+        }
+
+        It 'a per-user install counts, and the row says where it was found' {
+            $v = Get-SideCrabWebView2Verdict -Reading @(
+                [pscustomobject]@{ Source = 'HKLM:\a'; Version = ''; Error = $null }
+                [pscustomobject]@{ Source = 'HKCU:\b'; Version = '140.0.2'; Error = $null })
+            $v.Found   | Should -BeTrue
+            $v.Version | Should -Be '140.0.2'
+            $v.Source  | Should -Be 'HKCU:\b'
+        }
+
+        It 'a registry that would not answer at all is UNKNOWN, not "missing"' {
+            $v = Get-SideCrabWebView2Verdict -Reading @(
+                [pscustomobject]@{ Source = 'HKLM:\a'; Version = ''; Error = 'SecurityException' }
+                [pscustomobject]@{ Source = 'HKCU:\b'; Version = ''; Error = 'SecurityException' })
+            $v.Found   | Should -BeFalse
+            $v.Unknown | Should -BeTrue
+            $v.Reason  | Should -Match 'refused to be read'
+            $v.Reason  | Should -Match 'unknown'
+        }
+
+        It 'all four documented detection locations are read, HKLM first' {
+            $seen = [System.Collections.Generic.List[string]]::new()
+            $null = Get-SideCrabWebView2State -Reader {
+                param([string] $Path)
+                $seen.Add($Path)
+                [pscustomobject]@{ Source = $Path; Version = ''; Error = $null }
+            }
+            $seen.Count | Should -Be 4
+            ($seen[0] -like 'HKLM:*') | Should -BeTrue
+            (@($seen | Where-Object { $_ -like 'HKCU:*' }).Count) | Should -Be 2
+            (@($seen | Where-Object { $_ -like '*WOW6432Node*' }).Count) | Should -Be 2
+            foreach ($p in $seen) { $p | Should -Match 'F3017226-FE2A-4295-8BDF-00C3A9A7E4C5' }
+        }
+
+        # ---- the .NET Desktop runtime -----------------------------------------------------
+
+        It 'finds the Desktop runtime of the major the host targets' {
+            $lines = @('Microsoft.NETCore.App 10.0.1 [C:\dotnet\shared\Microsoft.NETCore.App]',
+                       'Microsoft.WindowsDesktop.App 10.0.1 [C:\dotnet\shared\Microsoft.WindowsDesktop.App]')
+            $v = Get-SideCrabDotnetRuntimeVerdict -Lines $lines -Major 10
+            $v.Found  | Should -BeTrue
+            $v.Reason | Should -Match 'Microsoft\.WindowsDesktop\.App 10\.0\.1'
+        }
+
+        It 'a DIFFERENT major does not satisfy it, and the row says why' {
+            # .NET majors are side-by-side, not upgrades: a PC with 8 and 9 runs nothing built
+            # for 10, and "you have .NET, it is fine" is the wrong answer.
+            $v = Get-SideCrabDotnetRuntimeVerdict -Lines @('Microsoft.WindowsDesktop.App 8.0.11 [C:\x]') -Major 10
+            $v.Found  | Should -BeFalse
+            $v.Reason | Should -Match '8\.0\.11'
+            $v.Reason | Should -Match 'do not substitute'
+        }
+
+        It 'the console runtime alone is not enough for a WinForms window' {
+            $v = Get-SideCrabDotnetRuntimeVerdict -Lines @('Microsoft.NETCore.App 10.0.1 [C:\x]') -Major 10
+            $v.Found | Should -BeFalse
+        }
+
+        It 'no dotnet on PATH is its own reason, not an empty list' {
+            $v = Get-SideCrabDotnetRuntimeVerdict -Lines @() -Major 10 -DotnetFound $false
+            $v.Found  | Should -BeFalse
+            $v.Reason | Should -Match 'not on PATH'
+        }
+
+        It 'the runtime probe runs dotnet through an injectable runner' {
+            $v = Get-SideCrabDotnetRuntimeState -Major 9 -Runner {
+                [pscustomobject]@{ Found = $true; Lines = @('Microsoft.WindowsDesktop.App 9.0.3 [C:\x]') }
+            }
+            $v.Found | Should -BeTrue
+            @($v.Versions)[0] | Should -Be '9.0.3'
+        }
+
+        # ---- the prerequisite verdict ------------------------------------------------------
+
+        It 'THE HEALTHY NIGHT: a PC with everything passes, and exits 0' {
+            # A check that cannot pass is worse than no check, because it reports success forever
+            # once everyone learns to ignore it.
+            $v = Get-SideCrabPrerequisiteVerdict -Probe (script:HealthyProbe)
+            $v.HardMiss     | Should -BeFalse
+            $v.PanelBlocked | Should -BeFalse
+            $v.ExitCode     | Should -Be 0
+            foreach ($k in 'pwsh', 'python', 'dotnet-runtime', 'webview2', 'curl', 'hwinfo') {
+                (script:Row $v $k).Status | Should -Be 'ok'
+            }
+        }
+
+        It 'a missing WebView2 runtime is hard AND blocks the panel task' {
+            $p = script:HealthyProbe
+            $p['WebView2'] = [pscustomobject]@{ Found = $false; Unknown = $false; Version = ''; Source = ''; Reason = 'no EdgeUpdate client key' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            $v.HardMiss     | Should -BeTrue
+            $v.PanelBlocked | Should -BeTrue
+            $v.ExitCode     | Should -Be 1
+            (script:Row $v 'webview2').Status | Should -Be 'missing'
+            (script:Row $v 'webview2').Link   | Should -Match 'webview2'
+        }
+
+        It 'a missing Desktop runtime blocks the panel task and links the right major' {
+            $p = script:HealthyProbe
+            $p['DotnetMajor']   = 12
+            $p['DotnetRuntime'] = [pscustomobject]@{ Found = $false; Unknown = $false; Versions = @(); Reason = 'no Microsoft.WindowsDesktop.App 12.x runtime' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            $v.PanelBlocked | Should -BeTrue
+            # the link carries the major that was measured, not a number typed in twice
+            (script:Row $v 'dotnet-runtime').Link  | Should -Be 'https://dotnet.microsoft.com/download/dotnet/12.0'
+            (script:Row $v 'dotnet-runtime').Title | Should -Be '.NET 12 Desktop Runtime'
+        }
+
+        It 'a probe that could not answer WARNS and does not block the panel' {
+            # Refusing to install because a registry read threw is refusing over our own failure
+            # to look. The row still appears, and it still says what could not be read.
+            $p = script:HealthyProbe
+            $p['WebView2'] = [pscustomobject]@{ Found = $false; Unknown = $true; Version = ''; Source = ''; Reason = 'none of the WebView2 registry locations could be read' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            (script:Row $v 'webview2').Status | Should -Be 'unknown'
+            $v.PanelBlocked | Should -BeFalse
+            $v.HardMiss     | Should -BeFalse
+        }
+
+        It 'no usable Python is hard, but it is not the panel''s fault' {
+            $p = script:HealthyProbe
+            $p['Python'] = [pscustomobject]@{ Found = $false; Path = ''; Windowless = $false; Reason = 'No usable python.exe found on PATH' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            $v.HardMiss     | Should -BeTrue
+            $v.PanelBlocked | Should -BeFalse     # the panel host is a native exe; python is the other two
+            (script:Row $v 'python').Fix | Should -Match 'Store'
+        }
+
+        It 'python.exe with no pythonw beside it warns rather than failing' {
+            $p = script:HealthyProbe
+            $p['Python'] = [pscustomobject]@{ Found = $true; Path = 'C:\Py\python.exe'; Windowless = $false; Reason = '' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            (script:Row $v 'python').Status | Should -Be 'warn'
+            $v.HardMiss | Should -BeFalse
+        }
+
+        It 'curl is required only while the fragment needs it' {
+            $needed = script:HealthyProbe
+            $needed['Curl'] = [pscustomobject]@{ Needed = $true; Found = $false; Path = '' }
+            (Get-SideCrabPrerequisiteVerdict -Probe $needed).HardMiss | Should -BeTrue
+
+            # lane R is moving the last command hooks to type http. When that lands, an absent
+            # curl.exe must stop being a prerequisite rather than keep failing this report.
+            $notNeeded = script:HealthyProbe
+            $notNeeded['Curl'] = [pscustomobject]@{ Needed = $false; Found = $false; Path = '' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $notNeeded
+            $v.HardMiss | Should -BeFalse
+            (script:Row $v 'curl').Status | Should -Be 'skipped'
+        }
+
+        It 'HWiNFO is informational at every state' {
+            $p = script:HealthyProbe
+            $p['Hwinfo'] = [pscustomobject]@{ Found = $false; Path = '' }
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            (script:Row $v 'hwinfo').Status | Should -Be 'optional'
+            (script:Row $v 'hwinfo').Hard   | Should -BeFalse
+            $v.HardMiss | Should -BeFalse
+        }
+
+        It 'Windows PowerShell 5.1 is named as the thing that cannot run these scripts' {
+            $p = script:HealthyProbe
+            $p['PowerShellMajor'] = 5
+            $v = Get-SideCrabPrerequisiteVerdict -Probe $p
+            $v.HardMiss | Should -BeTrue
+            (script:Row $v 'pwsh').Fix | Should -Match '5\.1'
+        }
+
+        # ---- installing from a package never reaches for an SDK ---------------------------
+
+        It 'MF-005: an install whose host executable is already there does NOT build' {
+            # THE POINT OF A PACKAGE. A person who downloaded a zip has no reason to own a .NET
+            # SDK, and a package carries the host already published.
+            $d = Get-SideCrabHostBuildDecision -Selected $true -ExePresent $true -Requested $false -WhatIf $false
+            $d.Build   | Should -BeFalse
+            $d.Verdict | Should -Be 'already-built'
+            $d.Reason  | Should -Match 'no SDK is needed'
+            # and it stays false even when the panel was asked for by name
+            (Get-SideCrabHostBuildDecision -Selected $true -ExePresent $true -Requested $true -WhatIf $false).Build | Should -BeFalse
+        }
+
+        It 'a source checkout with no host executable does build' {
+            (Get-SideCrabHostBuildDecision -Selected $true -ExePresent $false -Requested $false -WhatIf $false).Build | Should -BeTrue
+        }
+
+        It 'a dry run does not publish, and an unselected panel is not built' {
+            (Get-SideCrabHostBuildDecision -Selected $true  -ExePresent $false -Requested $false -WhatIf $true).Verdict  | Should -Be 'whatif'
+            (Get-SideCrabHostBuildDecision -Selected $false -ExePresent $false -Requested $false -WhatIf $false).Verdict | Should -Be 'not-selected'
+        }
+
+        It 'MF-005: the installer''s ONLY build call is gated by that decision, and it runs no dotnet itself' {
+            # The structural half of "dotnet is never invoked from a package install": one door,
+            # and the door is the decision above. Install-SideCrab.ps1 is never executed by this
+            # suite, so the guard is proved where it is written.
+            $invokeLines = @($script:InstallTextQ -split "`n" |
+                             Where-Object { $_ -match '&\s*\(Join-Path' -and $_ -match 'Build-SideCrabPanel' })
+            $invokeLines.Count | Should -Be 1
+            ($script:InstallTextQ -match '\$build = Get-SideCrabHostBuildDecision') | Should -BeTrue
+            $gate  = $script:InstallTextQ.IndexOf('if ($build.Build) {')
+            $call  = $script:InstallTextQ.IndexOf("& (Join-Path `$PSScriptRoot 'Build-SideCrabPanel.ps1')")
+            ($gate -ge 0)      | Should -BeTrue
+            ($gate -lt $call)  | Should -BeTrue
+            # nothing else in the installer shells out to dotnet
+            ($script:InstallTextQ -match '(?m)^\s*&?\s*dotnet\s') | Should -BeFalse
+        }
+
+        # ---- the installer verifies a package before it installs it -----------------------
+
+        It 'MF-005: a package that does not match its manifest refuses BEFORE anything is registered' {
+            ($script:InstallTextQ -match 'Test-SideCrabPackageIntegrity') | Should -BeTrue
+            ($script:InstallTextQ -match 'this package does not match the manifest that shipped with it') | Should -BeTrue
+            $verify   = $script:InstallTextQ.IndexOf('$package = Test-SideCrabPackageIntegrity')
+            $register = $script:InstallTextQ.IndexOf('Register-SideCrabTask -TaskName')
+            ($verify -ge 0)          | Should -BeTrue
+            ($verify -lt $register)  | Should -BeTrue
+        }
+
+        It 'MF-005: -Status prints the package identity, and says so when there is none' {
+            ($script:InstallTextQ -match 'Get-SideCrabPackageIdentity|\$Package\.Identity') | Should -BeTrue
+            ($script:InstallTextQ -match 'package: source checkout') | Should -BeTrue
+        }
+
+        It 'MF-005: the installer declines the panel task when a runtime is missing, and installs the rest' {
+            ($script:InstallTextQ -match 'Test-SideCrabPrerequisite')  | Should -BeTrue
+            ($script:InstallTextQ -match '\$prereq\.PanelBlocked')     | Should -BeTrue
+            ($script:InstallTextQ -match "Reason   = 'prerequisite-missing'") | Should -BeTrue
+        }
+
+        # ---- --check is what proves a staged binary runs -----------------------------------
+
+        It 'MF-006: --check exiting 0 or 2 both prove the binary runs' {
+            $ok = Get-SideCrabHostCheckVerdict -ExitCode 0 -Output "sidecrab-panel-check: 0.5.0`nresult: ok"
+            $ok.Valid   | Should -BeTrue
+            $ok.Version | Should -Be '0.5.0'
+            # Exit 2 is "it started, read its settings and found a problem to report". On a build
+            # PC with no Xeneon Edge that problem is "no display matched", which is a fact about
+            # the PC and not about the binary - and treating it as a failed validation would make
+            # every update on such a PC roll itself back.
+            $problem = Get-SideCrabHostCheckVerdict -ExitCode 2 -Output "sidecrab-panel-check: 0.5.0`nproblem: no display matched`nresult: problem"
+            $problem.Valid   | Should -BeTrue
+            $problem.Version | Should -Be '0.5.0'
+        }
+
+        It 'MF-006: any other exit code is a failed validation' {
+            $three = Get-SideCrabHostCheckVerdict -ExitCode 3 -Output 'sidecrab-panel-check: 0.5.0'
+            $three.Valid  | Should -BeFalse
+            $three.Reason | Should -Match 'exited 3'
+            (Get-SideCrabHostCheckVerdict -ExitCode 1   -Output 'sidecrab-panel-check: 0.5.0').Valid | Should -BeFalse
+            (Get-SideCrabHostCheckVerdict -ExitCode 134 -Output 'sidecrab-panel-check: 0.5.0').Valid | Should -BeFalse
+        }
+
+        It 'MF-006: exit 0 with no version line is not a panel host' {
+            # A process that exits 0 having printed nothing passes any exit-code-only check.
+            $v = Get-SideCrabHostCheckVerdict -ExitCode 0 -Output ''
+            $v.Valid  | Should -BeFalse
+            $v.Reason | Should -Match 'no .sidecrab-panel-check'
+        }
+
+        It 'MF-006: the version line is found wherever it sits in the report' {
+            (Get-SideCrabHostCheckVerdict -ExitCode 0 -Output "mode: kiosk`n  sidecrab-panel-check: 1.2.3`nresult: ok").Version | Should -Be '1.2.3'
+        }
+
+        It 'MF-006: a binary that is not there, or will not run, fails validation plainly' {
+            $missing = Invoke-SideCrabHostCheck -ExePath (Join-Path $script:TempQ 'nope\SideCrab.Panel.exe')
+            $missing.Valid  | Should -BeFalse
+            $missing.Reason | Should -Match 'produced no executable'
+
+            $exe = Join-Path $script:TempQ 'fakehost.exe'
+            Set-Content -LiteralPath $exe -Value 'not really an exe' -Encoding utf8NoBOM
+            $threw = Invoke-SideCrabHostCheck -ExePath $exe -Runner { param($p) throw 'is not a valid Win32 application' }
+            $threw.Valid  | Should -BeFalse
+            $threw.Reason | Should -Match 'could not be run'
+        }
+
+        # ---- the swap and the one kept generation ------------------------------------------
+
+        It 'MF-006: a swap with no previous host keeps nothing' {
+            $c = script:NewCase 'swap-first'
+            script:MakeHostDir -Path $c.Staging -Marker 'new'
+            $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+            $r.Swapped      | Should -BeTrue
+            $r.KeptLastGood | Should -BeFalse
+            (script:MarkerOf $c.Dist)             | Should -Be 'new'
+            (Test-Path -LiteralPath $c.Staging)   | Should -BeFalse
+            (Test-Path -LiteralPath $c.LastGood)  | Should -BeFalse
+        }
+
+        It 'MF-006: a swap keeps the host it replaced, and exactly one of them' {
+            $c = script:NewCase 'swap-keep'
+            script:MakeHostDir -Path $c.LastGood -Marker 'ancient'     # a generation from an older update
+            script:MakeHostDir -Path $c.Dist     -Marker 'old'
+            script:MakeHostDir -Path $c.Staging  -Marker 'new'
+            $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+            $r.Swapped      | Should -BeTrue
+            $r.KeptLastGood | Should -BeTrue
+            (script:MarkerOf $c.Dist)     | Should -Be 'new'
+            # ONE generation: the host from two updates ago is gone, not stacked up
+            (script:MarkerOf $c.LastGood) | Should -Be 'old'
+        }
+
+        It 'MF-006: nothing to swap in is refused rather than deleting what is live' {
+            $c = script:NewCase 'swap-empty'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+            $r.Swapped | Should -BeFalse
+            (script:MarkerOf $c.Dist) | Should -Be 'old'
+        }
+
+        It 'MF-006: a restore puts the kept host back and keeps the failed one as evidence' {
+            $c = script:NewCase 'restore'
+            script:MakeHostDir -Path $c.Dist     -Marker 'broken'
+            script:MakeHostDir -Path $c.LastGood -Marker 'good'
+            $r = Restore-SideCrabHostLastGood -DistPath $c.Dist -LastGoodPath $c.LastGood
+            $r.Restored | Should -BeTrue
+            (script:MarkerOf $c.Dist)   | Should -Be 'good'
+            (script:MarkerOf $c.Failed) | Should -Be 'broken'      # moved aside, not deleted
+            (Test-Path -LiteralPath $c.LastGood) | Should -BeFalse
+        }
+
+        It 'MF-006: a restore with no kept generation says so instead of emptying dist' {
+            $c = script:NewCase 'restore-none'
+            script:MakeHostDir -Path $c.Dist -Marker 'only'
+            $r = Restore-SideCrabHostLastGood -DistPath $c.Dist -LastGoodPath $c.LastGood
+            $r.Restored | Should -BeFalse
+            $r.Reason   | Should -Match 'no .* to restore'
+            (script:MarkerOf $c.Dist) | Should -Be 'only'
+        }
+
+        # ---- the staged update, end to end and in every failure it has ---------------------
+
+        It 'MF-006 HAPPY PATH: stage, validate, swap, activate' {
+            $c = script:NewCase 'staged-ok'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) script:MakeHostDir -Path $s -Marker 'new' } `
+                     -Validate $script:OkVerdict `
+                     -Activate { $true }
+            $r.Ok      | Should -BeTrue
+            $r.Phase   | Should -Be 'done'
+            $r.Version | Should -Be '0.9.9'
+            (script:MarkerOf $c.Dist)     | Should -Be 'new'
+            (script:MarkerOf $c.LastGood) | Should -Be 'old'
+            $r.RestoredLastGood | Should -BeFalse
+        }
+
+        It 'MF-006 INJECTED BUILD FAILURE: nothing is swapped and the live host is untouched' {
+            $c = script:NewCase 'staged-build-fail'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) throw 'dotnet publish exited 1' } `
+                     -Validate $script:OkVerdict `
+                     -Activate { throw 'must never be reached' }
+            $r.Ok     | Should -BeFalse
+            $r.Phase  | Should -Be 'stage'
+            $r.Reason | Should -Match 'dotnet publish exited 1'
+            $r.Reason | Should -Match 'untouched'
+            (script:MarkerOf $c.Dist) | Should -Be 'old'          # stale but working beats dark
+            (Test-Path -LiteralPath $c.LastGood) | Should -BeFalse   # no generation was consumed
+            (Test-Path -LiteralPath $c.Staging)  | Should -BeFalse
+        }
+
+        It 'MF-006 INTERRUPTED PUBLISH: a half-written staging directory is cleared, not shipped' {
+            # The run that died did not get to clean up, and the run that finds the wreckage has
+            # no way to tell how far it got - so it never builds ON it.
+            $c = script:NewCase 'staged-interrupted'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            New-Item -ItemType Directory -Force -Path $c.Staging | Out-Null
+            Set-Content -LiteralPath (Join-Path $c.Staging 'half-written.tmp') -Value 'wreckage' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $c.Staging 'marker.txt') -Value 'wreckage' -Encoding utf8NoBOM
+
+            $script:SawWreckage = $true
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage {
+                         param($s)
+                         $script:SawWreckage = Test-Path -LiteralPath (Join-Path $s 'half-written.tmp')
+                         script:MakeHostDir -Path $s -Marker 'new'
+                     } `
+                     -Validate $script:OkVerdict `
+                     -Activate { $true }
+            $r.Ok | Should -BeTrue
+            # the staging directory the dead run left behind was cleared BEFORE staging, not
+            # built on top of
+            $script:SawWreckage | Should -BeFalse
+            (script:MarkerOf $c.Dist) | Should -Be 'new'
+            (Test-Path -LiteralPath (Join-Path $c.Dist 'half-written.tmp')) | Should -BeFalse
+        }
+
+        It 'MF-006 A BINARY THAT EXITS 3: validation fails and the live host is untouched' {
+            $c = script:NewCase 'staged-exit3'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) script:MakeHostDir -Path $s -Marker 'new' } `
+                     -Validate { param($e) Get-SideCrabHostCheckVerdict -ExitCode 3 -Output 'sidecrab-panel-check: 0.9.9' } `
+                     -Activate { throw 'must never be reached' }
+            $r.Ok     | Should -BeFalse
+            $r.Phase  | Should -Be 'validate'
+            $r.Reason | Should -Match 'exited 3'
+            (script:MarkerOf $c.Dist) | Should -Be 'old'
+            (Test-Path -LiteralPath $c.Staging)  | Should -BeFalse
+            (Test-Path -LiteralPath $c.LastGood) | Should -BeFalse
+        }
+
+        It 'MF-006 A HEALTH WAIT THAT TIMES OUT: the kept host goes back and the failure is kept' {
+            # The only failure that needs a rollback at all, because it is the only one that
+            # happens after the swap.
+            $c = script:NewCase 'staged-timeout'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) script:MakeHostDir -Path $s -Marker 'new' } `
+                     -Validate $script:OkVerdict `
+                     -Activate { $false }
+            $r.Ok               | Should -BeFalse
+            $r.Phase            | Should -Be 'activate'
+            $r.Swapped          | Should -BeTrue
+            $r.RestoredLastGood | Should -BeTrue
+            $r.Reason           | Should -Match 'did not come back'
+            (script:MarkerOf $c.Dist)   | Should -Be 'old'      # the host that was working is live again
+            (script:MarkerOf $c.Failed) | Should -Be 'new'      # and the one that failed is kept
+        }
+
+        It 'MF-006: an Activate that THROWS rolls back too, and carries its message' {
+            $c = script:NewCase 'staged-throw'
+            script:MakeHostDir -Path $c.Dist -Marker 'old'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) script:MakeHostDir -Path $s -Marker 'new' } `
+                     -Validate $script:OkVerdict `
+                     -Activate { throw 'the task would not start' }
+            $r.Ok               | Should -BeFalse
+            $r.RestoredLastGood | Should -BeTrue
+            $r.Reason           | Should -Match 'the task would not start'
+            (script:MarkerOf $c.Dist) | Should -Be 'old'
+        }
+
+        It 'MF-006: a first-ever install that fails to activate has no generation, and says so' {
+            # No dist to keep means no rollback is possible. The result has to report that
+            # rather than claim a restore that did not happen.
+            $c = script:NewCase 'staged-first-fail'
+            $r = Invoke-SideCrabStagedHostUpdate -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood `
+                     -Stage { param($s) script:MakeHostDir -Path $s -Marker 'new' } `
+                     -Validate $script:OkVerdict `
+                     -Activate { $false }
+            $r.Ok               | Should -BeFalse
+            $r.Swapped          | Should -BeTrue
+            $r.RestoredLastGood | Should -BeFalse
+            $r.Reason           | Should -Match 'no .* to restore'
+        }
+
+        # ---- the doctor proves identity with a hash ----------------------------------------
+
+        It 'MF-006: matching bytes are the only thing that proves identity' {
+            $ok = Get-SideCrabHostIdentityVerdict -Expected 'AABBCC112233' -Actual 'aabbcc112233' -Source 'build record'
+            $ok.Status | Should -Be 'ok'
+            $ok.Match  | Should -BeTrue
+
+            $bad = Get-SideCrabHostIdentityVerdict -Expected 'aabbcc112233' -Actual 'ffeedd445566' -Source 'package manifest'
+            $bad.Status | Should -Be 'fail'
+            $bad.Reason | Should -Match 'package manifest'
+            $bad.Reason | Should -Match 'aabbcc112233'
+            $bad.Reason | Should -Match 'ffeedd445566'
+        }
+
+        It 'MF-006: an install that recorded nothing is INFO, not a fault' {
+            # A host built before build-record.json existed is a perfectly good host. Failing it
+            # would page every existing install for a fact nobody ever wrote down.
+            $u = Get-SideCrabHostIdentityVerdict -Expected '' -Actual 'aabbccddeeff00' -Source 'nothing'
+            $u.Status | Should -Be 'unknown'
+            $u.Match  | Should -BeFalse
+            (Get-SideCrabHostIdentityVerdict -Expected 'aabb' -Actual '' -Source 'build record').Status | Should -Be 'unknown'
+        }
+
+        It 'MF-006: the build record is read, and a malformed one is a reason rather than a crash' {
+            $dist = Join-Path $script:TempQ 'record-dist'
+            New-Item -ItemType Directory -Force -Path $dist | Out-Null
+            (Get-SideCrabHostBuildRecord -DistPath $dist).Present | Should -BeFalse
+
+            Set-Content -LiteralPath (Join-Path $dist 'build-record.json') -Value '{ not json' -Encoding utf8NoBOM
+            $broken = Get-SideCrabHostBuildRecord -DistPath $dist
+            $broken.Present | Should -BeFalse
+            $broken.Reason  | Should -Match 'does not parse'
+
+            Set-Content -LiteralPath (Join-Path $dist 'build-record.json') `
+                        -Value (@{ sha256 = 'abc123'; version = '0.5.0'; builtUtc = '2026-09-22T10:00:00Z' } | ConvertTo-Json) -Encoding utf8NoBOM
+            $good = Get-SideCrabHostBuildRecord -DistPath $dist
+            $good.Present | Should -BeTrue
+            $good.Sha256  | Should -Be 'abc123'
+        }
+
+        It 'MF-006: the build record outranks the package manifest for what the host IS' {
+            # THE HEALTHY NIGHT THIS PROTECTS. A package's manifest records the host it shipped,
+            # and a staged update then swaps a different one in - correctly. Asking the manifest
+            # first made the doctor report a wrong-binary FAIL on every package install that had
+            # ever been updated. The record travels with the directory, so it is the statement
+            # about what is there now; the manifest's integrity job is at install time.
+            $root = Join-Path $script:TempQ 'expected'
+            $dist = Join-Path $root 'panel-host\dist'
+            New-Item -ItemType Directory -Force -Path $dist | Out-Null
+            Set-Content -LiteralPath (Join-Path $root 'package-manifest.json') `
+                        -Value (@{ files = @{ 'panel-host/dist/SideCrab.Panel.exe' = 'from-the-manifest' } } | ConvertTo-Json -Depth 5) -Encoding utf8NoBOM
+            # no record yet: the manifest is the only statement there is
+            $m = Get-SideCrabExpectedHostHash -RepoRoot $root -DistPath $dist
+            $m.Source | Should -Be 'package manifest'
+            $m.Sha256 | Should -Be 'from-the-manifest'
+
+            Set-Content -LiteralPath (Join-Path $dist 'build-record.json') `
+                        -Value (@{ sha256 = 'from-the-build-record' } | ConvertTo-Json) -Encoding utf8NoBOM
+            $e = Get-SideCrabExpectedHostHash -RepoRoot $root -DistPath $dist
+            $e.Source | Should -Be 'build record'
+            $e.Sha256 | Should -Be 'from-the-build-record'
+        }
+
+        It 'MF-006: a host that cannot be moved aside is a verdict, not an exception' {
+            # A panel task that did not stop in time is the likeliest failure in the whole path,
+            # and Windows refuses to rename a directory whose executable is running. Thrown, it
+            # would take the update script down with a stack trace instead of leaving a FAIL
+            # line and a live host. Simulated with a locked file, which fails the rename the
+            # same way.
+            $c = script:NewCase 'swap-locked'
+            script:MakeHostDir -Path $c.Dist    -Marker 'old'
+            script:MakeHostDir -Path $c.Staging -Marker 'new'
+            $lock = [IO.File]::Open((Join-Path $c.Dist 'SideCrab.Panel.exe'), 'Open', 'Read', 'None')
+            try {
+                $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+                $r.Swapped | Should -BeFalse
+                $r.Reason  | Should -Match 'could not be moved aside'
+                (script:MarkerOf $c.Dist) | Should -Be 'old'      # still live, nothing lost
+            } finally { $lock.Dispose() }
+        }
+
+        It 'MF-006: a rollback that cannot complete says where the kept host still is' {
+            $c = script:NewCase 'restore-locked'
+            script:MakeHostDir -Path $c.Dist     -Marker 'broken'
+            script:MakeHostDir -Path $c.LastGood -Marker 'good'
+            $lock = [IO.File]::Open((Join-Path $c.Dist 'SideCrab.Panel.exe'), 'Open', 'Read', 'None')
+            try {
+                $r = Restore-SideCrabHostLastGood -DistPath $c.Dist -LastGoodPath $c.LastGood
+                $r.Restored | Should -BeFalse
+                $r.Reason   | Should -Match 'COULD NOT be put back'
+                $r.Reason   | Should -Match 'Restore-SideCrab'
+                (script:MarkerOf $c.LastGood) | Should -Be 'good'   # not lost, and the row says so
+            } finally { $lock.Dispose() }
+        }
+
+        It 'MF-006: the doctor''s host row hashes the binary instead of reading a clock' {
+            ($script:RepairTextQ -match "Id 'host-identity'")            | Should -BeTrue
+            ($script:RepairTextQ -match 'Get-SideCrabHostIdentityVerdict') | Should -BeTrue
+            ($script:RepairTextQ -match 'Get-FileHash -LiteralPath \$panelComponent\.Script -Algorithm SHA256') | Should -BeTrue
+            # the row that reads timestamps is still there and still separate: they answer
+            # different questions and merging them would lose one
+            ($script:RepairTextQ -match 'Get-SideCrabStaleCodeDecision') | Should -BeTrue
+        }
+
+        # ---- script contracts ---------------------------------------------------------------
+
+        It 'MF-005: the package builder exists, and its header carries the measurement it chose from' {
+            (Test-Path -LiteralPath (Join-Path $script:SetupDir 'Build-SideCrabPackage.ps1')) | Should -BeTrue
+            ($script:PkgText -match 'Compress-Archive')                     | Should -BeTrue
+            ($script:PkgText -match 'package-manifest\.json|Get-SideCrabPackageManifestName') | Should -BeTrue
+            ($script:PkgText -match 'Measure-SideCrabPackageHash')          | Should -BeTrue
+            ($script:PkgText -match 'Test-SideCrabPackagePathExcluded')     | Should -BeTrue
+            ($script:PkgText -match 'rev-parse HEAD')                       | Should -BeTrue
+            # framework-dependent, and the numbers that decided it are written down where the
+            # next person will re-open the question
+            ($script:PkgText -match 'framework-dependent') | Should -BeTrue
+            ($script:PkgText -match '141,538,110')         | Should -BeTrue
+            ($script:PkgText -match '\[switch\] \$SkipBuild') | Should -BeTrue
+        }
+
+        It 'MF-005: the package is named after the PRODUCT version, read from widget\version.json' {
+            ($script:PkgText -match 'Get-SideCrabWidgetVersion')            | Should -BeTrue
+            ($script:PkgText -match 'SideCrab-\$version-win-x64')           | Should -BeTrue
+            # and the three component versions are recorded separately, because there is no one
+            # SideCrab version to print
+            ($script:PkgText -match 'Get-SideCrabComponentVersion')         | Should -BeTrue
+            ($script:PkgText -match 'components\s+= \[ordered\]@\{ crabd')  | Should -BeTrue
+        }
+
+        It 'MF-005: the prerequisite script is read-only and exits with the verdict' {
+            (Test-Path -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrabPrerequisites.ps1')) | Should -BeTrue
+            ($script:PreqText -match 'Test-SideCrabPrerequisite')     | Should -BeTrue
+            ($script:PreqText -match 'exit \$verdict\.ExitCode')      | Should -BeTrue
+            foreach ($bad in 'Set-Content', 'Out-File', 'New-Item', 'Register-ScheduledTask',
+                             'Start-ScheduledTask', 'Set-ItemProperty', 'Remove-Item') {
+                ($script:PreqText -match "(?m)^\s*$bad\b") | Should -BeFalse
+            }
+        }
+
+        It 'MF-006: the updater stages, validates and swaps rather than publishing over the live host' {
+            ($script:UpdateTextQ -match 'dist\.staging')                     | Should -BeTrue
+            ($script:UpdateTextQ -match 'dist\.last-good')                   | Should -BeTrue
+            ($script:UpdateTextQ -match 'Invoke-SideCrabStagedHostUpdate')   | Should -BeTrue
+            ($script:UpdateTextQ -match 'Invoke-SideCrabHostCheck')          | Should -BeTrue
+            ($script:UpdateTextQ -match '-OutDir \$StagingPath')             | Should -BeTrue
+            ($script:UpdateTextQ -match '\[string\] \$Package')              | Should -BeTrue
+            # and a package install, which has no .git, is no longer refused before it starts
+            ($script:UpdateTextQ -match '\$willPull') | Should -BeTrue
+        }
+
+        It 'MF-006: Restore-SideCrab.ps1 -Host puts the kept generation back' {
+            ($script:RestoreTextQ -match '\[switch\] \$Host')                 | Should -BeTrue
+            ($script:RestoreTextQ -match 'Restore-SideCrabHostLastGood')      | Should -BeTrue
+            ($script:RestoreTextQ -match 'dist\.last-good')                   | Should -BeTrue
+            # it stops the task first: a directory whose exe is running cannot be renamed
+            $stop    = $script:RestoreTextQ.IndexOf('Stop-ScheduledTask')
+            $restore = $script:RestoreTextQ.IndexOf('Restore-SideCrabHostLastGood -DistPath')
+            ($stop -ge 0)        | Should -BeTrue
+            ($stop -lt $restore) | Should -BeTrue
+        }
+
+        It 'MF-006: the panel build script can publish somewhere else, and records what it built' {
+            ($script:BuildTextQ -match '\[string\] \$OutDir')      | Should -BeTrue
+            ($script:BuildTextQ -match 'build-record\.json')       | Should -BeTrue
+            ($script:BuildTextQ -match 'Get-FileHash')             | Should -BeTrue
+        }
+
+        It 'MF-005: CI builds the package on every push and attaches it only to a tag' {
+            $ci = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\ci.yml') -Raw -Encoding utf8
+            ($ci -match '(?m)^\s{2}package:')                        | Should -BeTrue
+            ($ci -match 'needs: test')                               | Should -BeTrue
+            ($ci -match 'Build-SideCrabPackage\.ps1')                | Should -BeTrue
+            ($ci -match 'actions/upload-artifact')                   | Should -BeTrue
+            # the release step is conditional on a v* tag, so the private repo - which never gets
+            # tags - never runs it, and contents: write is scoped to this job alone
+            ($ci -match "startsWith\(github\.ref, 'refs/tags/v'\)")  | Should -BeTrue
+            ($ci -match 'gh release upload')                         | Should -BeTrue
+            ($ci -match '(?m)^\s{4}permissions:\s*$')                | Should -BeTrue
+            ($ci -match '(?m)^permissions:\s*\n\s+contents: read')   | Should -BeTrue
+        }
+    }
 }

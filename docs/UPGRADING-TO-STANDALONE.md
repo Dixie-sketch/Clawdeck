@@ -17,8 +17,12 @@ is recorded in the maintainers' history.
 | Windows 10 or 11 | |
 | Claude Code, used on this PC | The companion reads its local session data |
 | PowerShell 7 and Python 3.13 | For the companion, unchanged |
-| **.NET 10 SDK** | Builds the panel host once; the installer runs the build. The Desktop Runtime it installs runs the host. https://dotnet.microsoft.com/download. Without it, install with `-SkipPanel` |
+| **.NET Desktop Runtime** | Runs the panel host. https://dotnet.microsoft.com/download/dotnet/10.0. Without it, install with `-SkipPanel` |
+| **The .NET SDK** | Only when you install from a checkout: the installer compiles the panel host. A release package carries it already built |
 | **WebView2 Runtime** | Ships with Windows 11 and most Windows 10 installs |
+
+Run `pwsh -File .\setup\Test-SideCrabPrerequisites.ps1` and it tells you which of these this PC
+has, with a download link for each one it does not.
 | The Xeneon Edge | Found by its device id. Any 2560x720 display works, and `panel-settings.json` can name another one |
 
 If anything else is drawing its own dashboard on the Edge, turn that dashboard off for that
@@ -28,6 +32,17 @@ screen, or the two full-screen windows fight for the top.
 
 ## Fresh install (standalone)
 
+Download `SideCrab-<version>-win-x64.zip` from [the latest
+release](https://github.com/Dixie-sketch/Clawdeck/releases/latest), extract it, and run the
+installer from inside the extracted folder:
+
+```powershell
+pwsh -File .\setup\Install-SideCrab.ps1
+```
+
+Or install from a checkout, which needs Git and the .NET SDK because the panel host is compiled
+during the install:
+
 ```powershell
 git clone https://github.com/Dixie-sketch/Clawdeck.git C:\Dev\sidecrab
 cd C:\Dev\sidecrab
@@ -35,9 +50,10 @@ pwsh -File .\setup\Install-SideCrab.ps1
 ```
 
 That one command installs all three components - the companion (`SideCrab-crabd`), the notifier
-(`SideCrab-toast`) and the panel host (`SideCrab-panel`, built first) - as logon tasks, and starts
-them. `-SkipPanel` and `-SkipToast` leave one out; `-WhatIf` describes every step and performs
-none of them, including the build.
+(`SideCrab-toast`) and the panel host (`SideCrab-panel`) - as logon tasks, and starts them.
+`-SkipPanel` and `-SkipToast` leave one out; `-WhatIf` describes every step and performs none of
+them, including the build. From a package, the installer also verifies every file against the
+manifest in the zip and prints the version, the commit and the build time it was made from.
 
 **What you should see:** within a few seconds the panel fills the Edge: the crab, the clock, the
 limit gauges, and a card for each Claude Code session as you start them. Then check it:
@@ -104,9 +120,14 @@ pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
 
 ## What is different day to day
 
-- **Updating.** `Update-SideCrab.ps1`. It pulls, rebuilds the host from the pulled source,
-  restarts the tasks and verifies the result, exiting non-zero if the host did not rebuild or did
-  not come back. There is nothing to import at the desk any more.
+- **Updating.** Take a new release by downloading the package, extracting it and running
+  `Install-SideCrab.ps1` again; that is the supported upgrade and it leaves `~/.sidecrab` alone.
+  In a checkout, `Update-SideCrab.ps1` pulls, restarts the tasks and verifies the result. It
+  stages the new panel host beside the running one, makes it prove it starts before it goes live,
+  keeps the host it replaced as `panel-host\dist.last-good`, and puts that back if the new one
+  does not come up. It exits non-zero whenever any of that fails.
+  `Restore-SideCrab.ps1 -Host` puts the kept host back on demand. There is nothing to import at
+  the desk any more.
 - **The window.** Borderless, always on top on the Edge, hidden from the taskbar and Alt+Tab, and
   it never takes keyboard focus, so a tap on the Edge does not interrupt what you are typing. It
   comes back on its own after the display sleeps or the resolution changes.
@@ -168,7 +189,10 @@ removes the need for it.
 | `panel viewport` says `hidden` | The host is running and deliberately showing nothing because the target display is absent. Check `display.deviceId` and that the Edge is connected |
 | `panel viewport` says `stale` | The newest line in `panel.log` belongs to an earlier run, so the host running now has not drawn anything. Restart `SideCrab-panel` and look at the log |
 | Two dashboards flicker on the Edge | Something else still draws its own dashboard there. Turn it off for that screen |
-| The build fails with "dotnet not found" or an SDK version error | Install the .NET 10 SDK and re-run, or install with `-SkipPanel` |
+| The build fails with "dotnet not found" or an SDK version error | Install from a release package, which carries the host already built, or install the .NET SDK and re-run, or install with `-SkipPanel` |
+| The installer says the panel task was not registered | A runtime is missing. `Test-SideCrabPrerequisites.ps1` names which one and links it; install it and re-run the installer |
+| The installer refuses the package and names a file | The zip you extracted does not match the manifest inside it. Download it again and extract it fresh |
+| An update left the panel broken | `Restore-SideCrab.ps1 -Host` puts the previous host back. The one that failed is kept at `panel-host\dist.failed` |
 | Approve or Deny says "not paired" | The host reads `~/.sidecrab/panel-token`; make sure the companion has started at least once (it mints the code) and restart `SideCrab-panel` |
 | No temperatures; the host sheet names HWiNFO | Install HWiNFO, turn on Shared Memory Support, open its Sensors window; `Test-SideCrab.ps1` has a `sensors` row that says which source is missing |
 | Temperatures dimmed with the 12-hour note | Relaunch HWiNFO, or register the `SideCrab-hwinfo` task |

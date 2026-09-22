@@ -2499,3 +2499,840 @@ function Get-SideCrabPathOwnership {
     if ($norm -match '(?i)sidecrab|crabd') { return 'foreign-checkout' }
     'unrelated'
 }
+
+# ============================================================================ MF-005/MF-006
+# The distributable package, the prerequisite check, and the staged host update with a
+# one-generation rollback. Pure decisions here, impure probes injected, so every branch below
+# is reachable from setup\tests without a scheduled task, a registry write or a publish.
+
+function Get-SideCrabTfmMajor {
+    <# The .NET major a target-framework moniker names: 'net10.0-windows10.0.19041.0' -> 10.
+       Pure; 0 when it is not a TFM.
+
+       READ, NEVER WRITTEN TWICE. The runtime the prerequisite check demands and the runtime
+       the host is compiled against have to be the same number, so the number is taken from
+       the csproj (or from a package manifest that recorded it) and never typed a second time.
+       The Windows part of the moniker carries version numbers of its own, which is why the
+       match is anchored at 'net' and stops at the first dash. #>
+    param([string] $Tfm)
+
+    if (-not $Tfm) { return 0 }
+    $m = [regex]::Match("$Tfm", '^net(\d+)\.\d+')
+    if ($m.Success) { return [int] $m.Groups[1].Value }
+    0
+}
+
+function Get-SideCrabCsprojValue {
+    <# One MSBuild property out of a project file's TEXT, or ''. Pure.
+
+       A regex rather than an XML load on purpose: this is also used on a csproj copied into a
+       package, where an unexpected BOM or a stray condition attribute must not turn a version
+       read into an exception. #>
+    param([string] $Text, [Parameter(Mandatory)][string] $Name)
+
+    if (-not $Text) { return '' }
+    $m = [regex]::Match("$Text", "<$Name>([^<]+)</$Name>")
+    if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    ''
+}
+
+function Get-SideCrabHostProjectFacts {
+    <# {Present, Path, Version, Tfm, TfmMajor} for the panel host's project. Reads one file. #>
+    param([Parameter(Mandatory)][string] $RepoRoot)
+
+    $path = Join-Path $RepoRoot 'panel-host\SideCrab.Panel\SideCrab.Panel.csproj'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{ Present = $false; Path = $path; Version = ''; Tfm = ''; TfmMajor = 0 }
+    }
+    $text = [IO.File]::ReadAllText($path)
+    $tfm  = Get-SideCrabCsprojValue -Text $text -Name 'TargetFramework'
+    [pscustomobject]@{
+        Present  = $true
+        Path     = $path
+        Version  = (Get-SideCrabCsprojValue -Text $text -Name 'Version')
+        Tfm      = $tfm
+        TfmMajor = (Get-SideCrabTfmMajor -Tfm $tfm)
+    }
+}
+
+function Test-SideCrabPackagePathExcluded {
+    <# Does this package-relative path stay OUT of the distributable? Pure.
+
+       The package is what a stranger downloads, so it carries the product and nothing about
+       how the product is made: no test suite, no developer notes, no audit history, no private
+       tooling, no build intermediates. Matched on whole path SEGMENTS - a file called
+       'tests.py' is not a test directory, and 'docs/notestand.md' is not docs/notes. #>
+    param([string] $RelativePath)
+
+    if (-not $RelativePath) { return $true }
+    $norm = ($RelativePath -replace '\\', '/').Trim('/')
+    if (-not $norm) { return $true }
+    $segments = @($norm -split '/')
+
+    foreach ($seg in $segments) {
+        if ($seg -in @('tests', '.git', 'bin', 'obj', '__pycache__', 'node_modules', '.venv', 'venv', '.pytest_cache')) {
+            return $true
+        }
+    }
+    # The private half of docs/. These are evidence and working material; the public export
+    # tool drops the same set, and a package that carried them would leak more than the export.
+    foreach ($prefix in @('docs/notes/', 'docs/history/', 'docs/findings/', 'docs/spikes/', 'tools/')) {
+        if ($norm.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    $leaf = $segments[-1]
+    if ($leaf -like '*.pyc' -or $leaf -like '*.log') { return $true }
+    $false
+}
+
+function Get-SideCrabPackageContentSpec {
+    <# What the distributable is made of: source path in the checkout -> path inside the
+       package. Pure (Join-Path does no I/O).
+
+       Only what an installed SideCrab RUNS, plus the documents the person who installs it
+       reads. panel-host\dist is the published host itself, which is the whole point of a
+       package: it is what makes the .NET SDK a developer's prerequisite rather than a user's. #>
+    param([Parameter(Mandatory)][string] $RepoRoot)
+
+    $rows = @(
+        @{ Target = 'companion';       Required = $true;  Kind = 'dir' }
+        @{ Target = 'notifier';        Required = $true;  Kind = 'dir' }
+        @{ Target = 'hooks';           Required = $true;  Kind = 'dir' }
+        @{ Target = 'widget';          Required = $true;  Kind = 'dir' }
+        @{ Target = 'setup';           Required = $true;  Kind = 'dir' }
+        @{ Target = 'panel-host\dist'; Required = $true;  Kind = 'dir' }
+        @{ Target = 'docs\images';     Required = $false; Kind = 'dir' }
+        @{ Target = 'README.md';       Required = $true;  Kind = 'file' }
+        @{ Target = 'LICENSE';         Required = $true;  Kind = 'file' }
+        @{ Target = 'CHANGELOG.md';    Required = $true;  Kind = 'file' }
+        @{ Target = 'docs\GETTING-STARTED.md';        Required = $true; Kind = 'file' }
+        @{ Target = 'docs\UPGRADING-TO-STANDALONE.md'; Required = $true; Kind = 'file' }
+    )
+    foreach ($r in $rows) {
+        [pscustomobject]@{
+            Target   = $r.Target
+            Source   = (Join-Path $RepoRoot $r.Target)
+            Required = $r.Required
+            Kind     = $r.Kind
+        }
+    }
+}
+
+function Get-SideCrabPackageManifestName { 'package-manifest.json' }
+
+function Get-SideCrabPackageVerifyVerdict {
+    <# Does what is on disk match what the package said it shipped? Pure: both sides are
+       already-measured maps of package-relative path -> SHA-256.
+
+       NAMES THE FIRST MISMATCH, in a stable order. "The package is corrupt" sends a person
+       back to the download page with nothing to check; "companion/crabd.py does not match"
+       tells them what to look at, and tells us whether we are looking at a truncated download,
+       an edited file or a missing one. #>
+    param([hashtable] $Expected, [hashtable] $Actual)
+
+    $missing  = @()
+    $mismatch = @()
+    foreach ($path in @($Expected.Keys | Sort-Object)) {
+        if (-not $Actual.ContainsKey($path)) { $missing += $path; continue }
+        if ("$($Actual[$path])".ToLowerInvariant() -ne "$($Expected[$path])".ToLowerInvariant()) {
+            $mismatch += $path
+        }
+    }
+    # An EXTRA file is not a failure. A person may have put a note beside the scripts, and the
+    # installer has to keep working after it has written a log or a backup into the tree.
+    $first = if ($missing.Count -gt 0) { $missing[0] } elseif ($mismatch.Count -gt 0) { $mismatch[0] } else { $null }
+    $reason =
+        if ($null -eq $first) { "$($Expected.Count) file(s) match the manifest" }
+        elseif ($missing.Count -gt 0 -and $missing[0] -eq $first) { "$first is listed in the manifest and is not in the package" }
+        else { "$first does not match the SHA-256 the manifest recorded for it" }
+
+    [pscustomobject]@{
+        Ok            = ($null -eq $first)
+        FirstMismatch = $first
+        Missing       = $missing
+        Mismatched    = $mismatch
+        Checked       = $Expected.Count
+        Reason        = $reason
+    }
+}
+
+function Read-SideCrabPackageManifest {
+    <# The package manifest beside an extracted package, or Present=$false. Never throws: a
+       git checkout has no manifest and that is the ordinary case, not a fault. #>
+    param([Parameter(Mandatory)][string] $RepoRoot)
+
+    $path = Join-Path $RepoRoot (Get-SideCrabPackageManifestName)
+    $out  = [pscustomobject]@{ Present = $false; Path = $path; Manifest = $null; Reason = 'no package manifest - this is a source checkout' }
+    if (-not (Test-Path -LiteralPath $path)) { return $out }
+    try {
+        $doc = [IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable -Depth 20
+    } catch {
+        $out.Reason = "$path does not parse as JSON - $($_.Exception.Message)"
+        return $out
+    }
+    if ($doc -isnot [System.Collections.IDictionary] -or -not $doc.ContainsKey('files')) {
+        $out.Reason = "$path is not a SideCrab package manifest (no files map)"
+        return $out
+    }
+    $out.Present  = $true
+    $out.Manifest = $doc
+    $out.Reason   = 'package manifest read'
+    $out
+}
+
+function Get-SideCrabPackageIdentity {
+    <# The one line that says WHICH package this is: version, git sha, build time. Pure.
+
+       Untyped on purpose: the manifest arrives as a plain hashtable from ConvertFrom-Json in
+       one caller and as an ordered dictionary straight out of the build in the other, and
+       PowerShell will not cast the second to the first. #>
+    param($Manifest)
+
+    if ($null -eq $Manifest -or $Manifest -isnot [System.Collections.IDictionary]) { return 'unknown package' }
+    # -contains on .Keys, not ContainsKey: an ordered dictionary has Contains and no ContainsKey,
+    # and this is handed one of each.
+    $keys = @($Manifest.Keys)
+    # ConvertFrom-Json turns an ISO-8601 string into a [datetime], and interpolating that prints
+    # it in whatever format this PC's culture uses - so the build time on the identity line
+    # stopped being the string the manifest holds. Formatted back, explicitly.
+    $get = {
+        param($k)
+        if ($keys -notcontains $k) { return 'unknown' }
+        $v = $Manifest[$k]
+        if ($v -is [datetime]) { return ([datetime] $v).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        if ("$v".Trim()) { return "$v" }
+        'unknown'
+    }
+    $components = ''
+    if ($keys -contains 'components' -and $Manifest['components'] -is [System.Collections.IDictionary]) {
+        $c = $Manifest['components']
+        $ck = @($c.Keys)
+        $components = '  |  ' + (@('crabd', 'widget', 'host' |
+            Where-Object { $ck -contains $_ } |
+            ForEach-Object { "$_ $($c[$_])" }) -join '  |  ')
+    }
+    "SideCrab $(& $get 'version')  ($(& $get 'deployment'), $(& $get 'platform'))  built $(& $get 'builtUtc') from $(& $get 'gitSha')$components"
+}
+
+function Measure-SideCrabPackageHash {
+    <# path -> SHA-256 for every file under $Root that belongs in a package. Reads the disk.
+       The manifest itself is excluded: it cannot carry its own hash. #>
+    param([Parameter(Mandatory)][string] $Root)
+
+    $map  = @{}
+    $full = (Resolve-Path -LiteralPath $Root).ProviderPath.TrimEnd('\')
+    $skip = Get-SideCrabPackageManifestName
+    foreach ($f in Get-ChildItem -LiteralPath $full -Recurse -File -Force) {
+        $rel = $f.FullName.Substring($full.Length).TrimStart('\') -replace '\\', '/'
+        if ($rel -eq $skip) { continue }
+        if (Test-SideCrabPackagePathExcluded -RelativePath $rel) { continue }
+        $map[$rel] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $map
+}
+
+function Test-SideCrabPackageIntegrity {
+    <# Verify an extracted package against its own manifest. {Checked, Ok, Reason, ...}.
+       Present=$false when there is no manifest, which is how a source checkout reads. #>
+    param([Parameter(Mandatory)][string] $RepoRoot)
+
+    $read = Read-SideCrabPackageManifest -RepoRoot $RepoRoot
+    if (-not $read.Present) {
+        return [pscustomobject]@{ Checked = $false; Ok = $true; Present = $false
+                                  Identity = ''; Reason = $read.Reason; FirstMismatch = $null }
+    }
+    $expected = @{}
+    foreach ($k in @($read.Manifest['files'].Keys)) { $expected[$k] = "$($read.Manifest['files'][$k])" }
+    $actual  = Measure-SideCrabPackageHash -Root $RepoRoot
+    $verdict = Get-SideCrabPackageVerifyVerdict -Expected $expected -Actual $actual
+    [pscustomobject]@{
+        Checked       = $true
+        Present       = $true
+        Ok            = $verdict.Ok
+        Identity      = (Get-SideCrabPackageIdentity -Manifest $read.Manifest)
+        Reason        = $verdict.Reason
+        FirstMismatch = $verdict.FirstMismatch
+        Manifest      = $read.Manifest
+    }
+}
+
+function Test-SideCrabFragmentNeedsCurl {
+    <# Does the shipped hook fragment still contain a COMMAND hook? Pure.
+
+       curl.exe is a prerequisite only for as long as a hook shells out to it. The http hook
+       type is served by the CLI itself, so a fragment that has moved entirely to "type": "http"
+       needs no curl at all - and a prerequisite row that demands one anyway teaches people to
+       ignore the report. Asked of the fragment rather than written down here. #>
+    param($Fragment)
+
+    if ($null -eq $Fragment) { return $false }
+    $hooks = if ($Fragment -is [System.Collections.IDictionary] -and $Fragment.Contains('hooks')) { $Fragment['hooks'] } else { $Fragment }
+    if ($hooks -isnot [System.Collections.IDictionary]) { return $false }
+    foreach ($eventName in @($hooks.Keys)) {
+        foreach ($matcher in @($hooks[$eventName])) {
+            if ($matcher -isnot [System.Collections.IDictionary] -or -not $matcher.Contains('hooks')) { continue }
+            foreach ($entry in @($matcher['hooks'])) {
+                if ($entry -is [System.Collections.IDictionary] -and "$($entry['type'])" -eq 'command') { return $true }
+            }
+        }
+    }
+    $false
+}
+
+function Get-SideCrabWebView2Verdict {
+    <# Is the WebView2 Evergreen runtime installed? Pure: it is handed what the four registry
+       locations answered.
+
+       pv = '0.0.0.0' IS NOT INSTALLED. Microsoft's own detection note says so: the key is left
+       behind with a zero version when the runtime is removed, so a check that only asked
+       "does the value exist" reports a runtime that is not there, and the panel task is then
+       registered to launch a window that can render nothing. #>
+    param([object[]] $Reading)
+
+    $found = @($Reading | Where-Object { $_ -and "$($_.Version)".Trim() -and "$($_.Version)".Trim() -ne '0.0.0.0' })
+    if ($found.Count -gt 0) {
+        return [pscustomobject]@{ Found = $true; Unknown = $false; Version = "$($found[0].Version)"
+                                  Source = "$($found[0].Source)"; Reason = "WebView2 runtime $($found[0].Version)" }
+    }
+    $errors = @($Reading | Where-Object { $_ -and $_.Error })
+    if ($errors.Count -eq @($Reading).Count -and $errors.Count -gt 0) {
+        # Every location refused to answer. That is not the same finding as "not installed",
+        # and blocking an install on it would be blocking on our own inability to look.
+        return [pscustomobject]@{ Found = $false; Unknown = $true; Version = ''; Source = ''
+                                  Reason = "every WebView2 registry location refused to be read ($($errors[0].Error)), so whether the runtime is installed is unknown" }
+    }
+    $zero = @($Reading | Where-Object { "$($_.Version)".Trim() -eq '0.0.0.0' })
+    $why  = if ($zero.Count -gt 0) { 'the EdgeUpdate client key reports version 0.0.0.0, which means the runtime was removed' }
+            else { 'no EdgeUpdate client key for the WebView2 runtime in HKLM or HKCU' }
+    [pscustomobject]@{ Found = $false; Unknown = $false; Version = ''; Source = ''; Reason = $why }
+}
+
+function Get-SideCrabWebView2State {
+    <# The four documented detection locations, read through an injectable reader so the tests
+       never touch this machine's registry. HKLM first: a machine-wide install is the one the
+       scheduled task will find whichever account runs it. #>
+    param([scriptblock] $Reader)
+
+    $clientId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    $paths = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$clientId"
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId"
+        "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId"
+        "HKCU:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$clientId"
+    )
+    if (-not $Reader) {
+        $Reader = {
+            param([string] $Path)
+            try {
+                $v = Get-ItemProperty -Path $Path -Name 'pv' -ErrorAction Stop
+                [pscustomobject]@{ Source = $Path; Version = "$($v.pv)"; Error = $null }
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                [pscustomobject]@{ Source = $Path; Version = ''; Error = $null }     # absent, not unreadable
+            } catch [System.Management.Automation.PSArgumentException] {
+                [pscustomobject]@{ Source = $Path; Version = ''; Error = $null }     # key without pv
+            } catch {
+                [pscustomobject]@{ Source = $Path; Version = ''; Error = $_.Exception.GetType().Name }
+            }
+        }
+    }
+    Get-SideCrabWebView2Verdict -Reading @(foreach ($p in $paths) { & $Reader $p })
+}
+
+function Get-SideCrabDotnetRuntimeVerdict {
+    <# Is the Windows Desktop runtime of major $Major installed? Pure: it is handed the lines
+       `dotnet --list-runtimes` printed.
+
+       Microsoft.WindowsDesktop.App is the one that matters: the host is a WinForms window, so
+       Microsoft.NETCore.App alone runs nothing. A NEWER major does not satisfy an older one -
+       .NET majors are side-by-side, not upgrades. #>
+    param([string[]] $Lines, [int] $Major, [bool] $DotnetFound = $true)
+
+    if (-not $DotnetFound) {
+        return [pscustomobject]@{ Found = $false; Unknown = $false; Versions = @()
+                                  Reason = 'dotnet is not on PATH, so no .NET runtime is installed for this account' }
+    }
+    $versions = @()
+    foreach ($line in @($Lines)) {
+        $m = [regex]::Match("$line", '^Microsoft\.WindowsDesktop\.App\s+(\d+)\.(\S+)')
+        if ($m.Success -and [int] $m.Groups[1].Value -eq $Major) { $versions += "$($m.Groups[1].Value).$($m.Groups[2].Value)" }
+    }
+    if ($versions.Count -gt 0) {
+        return [pscustomobject]@{ Found = $true; Unknown = $false; Versions = $versions
+                                  Reason = "Microsoft.WindowsDesktop.App $($versions -join ', ')" }
+    }
+    $others = @(foreach ($line in @($Lines)) {
+        $m = [regex]::Match("$line", '^Microsoft\.WindowsDesktop\.App\s+(\S+)')
+        if ($m.Success) { $m.Groups[1].Value }
+    })
+    $have = if ($others.Count -gt 0) { " (this PC has $($others -join ', '), and .NET majors do not substitute for one another)" } else { '' }
+    [pscustomobject]@{ Found = $false; Unknown = $false; Versions = @()
+                       Reason = "no Microsoft.WindowsDesktop.App $Major.x runtime$have" }
+}
+
+function Get-SideCrabDotnetRuntimeState {
+    <# `dotnet --list-runtimes`, through an injectable runner. #>
+    param([int] $Major, [scriptblock] $Runner)
+
+    if (-not $Runner) {
+        $Runner = {
+            $cmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cmd) { return [pscustomobject]@{ Found = $false; Lines = @() } }
+            $lines = @(& $cmd.Source --list-runtimes 2>$null)
+            [pscustomobject]@{ Found = $true; Lines = @($lines | ForEach-Object { "$_" }) }
+        }
+    }
+    $res = & $Runner
+    Get-SideCrabDotnetRuntimeVerdict -Lines @($res.Lines) -Major $Major -DotnetFound ([bool] $res.Found)
+}
+
+function Get-SideCrabPrerequisiteVerdict {
+    <# One row per prerequisite, from already-measured facts. Pure.
+
+       WHAT COUNTS AS HARD. A hard row is one where an install would produce a component that
+       cannot run: no PowerShell 7, no usable Python, no Desktop Runtime, no WebView2, and
+       curl.exe only while a hook still shells out to it. HWiNFO is informational - temperatures
+       are a feature, not the product - and an UNKNOWN probe warns instead of blocking, because
+       refusing to install over our own failure to read a registry key is worse than trying.
+
+       PanelBlocked is narrower than HardMiss on purpose: the two runtimes the panel host needs
+       are the ones that make registering its logon task a mistake, and the installer stops
+       just that task rather than the whole install. #>
+    param([hashtable] $Probe)
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $add  = {
+        param([string] $Key, [string] $Title, [string] $Status, [string] $Detail, [string] $Fix, [string] $Link, [bool] $Hard)
+        $rows.Add([pscustomobject]@{ Key = $Key; Title = $Title; Status = $Status; Detail = $Detail
+                                     Fix = $Fix; Link = $Link; Hard = $Hard })
+    }
+
+    $psMajor = if ($Probe.ContainsKey('PowerShellMajor')) { [int] $Probe['PowerShellMajor'] } else { 0 }
+    if ($psMajor -ge 7) {
+        & $add 'pwsh' 'PowerShell 7' 'ok' "PowerShell $psMajor" '' '' $false
+    } else {
+        & $add 'pwsh' 'PowerShell 7' 'missing' "PowerShell $psMajor - the setup scripts require 7.0" `
+               'Install PowerShell 7 and re-run this from pwsh, not from Windows PowerShell 5.1.' `
+               'https://aka.ms/powershell' $true
+    }
+
+    $py = if ($Probe.ContainsKey('Python')) { $Probe['Python'] } else { $null }
+    if ($py -and $py.Found) {
+        $note = if ($py.Windowless) { "$($py.Path)" } else { "$($py.Path) - no pythonw.exe beside it, so the tasks show a console window" }
+        & $add 'python' 'Python 3 (pythonw.exe)' $(if ($py.Windowless) { 'ok' } else { 'warn' }) $note `
+               $(if ($py.Windowless) { '' } else { 'Install the full python.org build; the Store package ships no pythonw.exe.' }) `
+               'https://www.python.org/downloads/windows/' $false
+    } else {
+        $why = if ($py) { "$($py.Reason)" } else { 'not probed' }
+        & $add 'python' 'Python 3 (pythonw.exe)' 'missing' $why `
+               'Install Python 3.13 from python.org with "Add python.exe to PATH" ticked. The Microsoft Store alias cannot host a background service.' `
+               'https://www.python.org/downloads/windows/' $true
+    }
+
+    $major = if ($Probe.ContainsKey('DotnetMajor')) { [int] $Probe['DotnetMajor'] } else { 0 }
+    $dn    = if ($Probe.ContainsKey('DotnetRuntime')) { $Probe['DotnetRuntime'] } else { $null }
+    $dnLink = "https://dotnet.microsoft.com/download/dotnet/$major.0"
+    if ($dn -and $dn.Found) {
+        & $add 'dotnet-runtime' ".NET $major Desktop Runtime" 'ok' "$($dn.Reason)" '' $dnLink $false
+    } elseif ($dn -and $dn.Unknown) {
+        & $add 'dotnet-runtime' ".NET $major Desktop Runtime" 'unknown' "$($dn.Reason)" `
+               "Check by hand with: dotnet --list-runtimes" $dnLink $false
+    } else {
+        $why = if ($dn) { "$($dn.Reason)" } else { 'not probed' }
+        & $add 'dotnet-runtime' ".NET $major Desktop Runtime" 'missing' $why `
+               "Install the .NET $major Desktop Runtime (x64). The SDK is not needed to RUN a packaged SideCrab." `
+               $dnLink $true
+    }
+
+    $wv = if ($Probe.ContainsKey('WebView2')) { $Probe['WebView2'] } else { $null }
+    if ($wv -and $wv.Found) {
+        & $add 'webview2' 'WebView2 Evergreen runtime' 'ok' "$($wv.Reason) ($($wv.Source))" '' '' $false
+    } elseif ($wv -and $wv.Unknown) {
+        & $add 'webview2' 'WebView2 Evergreen runtime' 'unknown' "$($wv.Reason)" `
+               'Check by hand in HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients.' `
+               'https://developer.microsoft.com/microsoft-edge/webview2/' $false
+    } else {
+        $why = if ($wv) { "$($wv.Reason)" } else { 'not probed' }
+        & $add 'webview2' 'WebView2 Evergreen runtime' 'missing' $why `
+               'Install the Evergreen Standalone Installer (x64). It ships with Windows 11 and most Windows 10 installs, so a missing one usually means it was removed.' `
+               'https://developer.microsoft.com/microsoft-edge/webview2/' $true
+    }
+
+    $curl = if ($Probe.ContainsKey('Curl')) { $Probe['Curl'] } else { $null }
+    if ($null -ne $curl -and $curl.Needed) {
+        if ($curl.Found) {
+            & $add 'curl' 'curl.exe (hook transport)' 'ok' "$($curl.Path)" '' '' $false
+        } else {
+            & $add 'curl' 'curl.exe (hook transport)' 'missing' 'curl.exe is not on PATH and the hook fragment still has a command hook' `
+                   'curl.exe ships with Windows 10 1803 and later. Put one on PATH, or update to a SideCrab whose hooks are all type http.' `
+                   'https://curl.se/windows/' $true
+        }
+    } else {
+        & $add 'curl' 'curl.exe (hook transport)' 'skipped' 'no command hook in the fragment - every hook is served by the CLI itself' '' '' $false
+    }
+
+    $hw = if ($Probe.ContainsKey('Hwinfo')) { $Probe['Hwinfo'] } else { $null }
+    if ($hw -and $hw.Found) {
+        & $add 'hwinfo' 'HWiNFO (optional)' 'ok' "$($hw.Path)" '' 'https://www.hwinfo.com/download/' $false
+    } else {
+        & $add 'hwinfo' 'HWiNFO (optional)' 'optional' 'not installed - CPU and fan readings stay unavailable, everything else works' `
+               'Install HWiNFO and turn on Shared Memory Support if you want temperatures.' `
+               'https://www.hwinfo.com/download/' $false
+    }
+
+    $hard = @($rows | Where-Object { $_.Hard -and $_.Status -eq 'missing' })
+    $panel = @($rows | Where-Object { $_.Key -in @('dotnet-runtime', 'webview2') -and $_.Status -eq 'missing' })
+    [pscustomobject]@{
+        Rows         = @($rows)
+        HardMiss     = ($hard.Count -gt 0)
+        Missing      = @($hard | ForEach-Object { $_.Key })
+        PanelBlocked = ($panel.Count -gt 0)
+        PanelReason  = (@($panel | ForEach-Object { "$($_.Title): $($_.Detail)" }) -join '; ')
+        ExitCode     = [int] ($hard.Count -gt 0)
+    }
+}
+
+function Test-SideCrabPrerequisite {
+    <# Probe this PC, then judge it with the pure verdict above. The TFM major comes from the
+       package manifest when there is one and from the csproj otherwise, so the runtime this
+       demands is always the runtime the host in front of it was built against. #>
+    param(
+        [Parameter(Mandatory)][string] $RepoRoot,
+        [hashtable] $Override = @{}
+    )
+
+    $manifest = Read-SideCrabPackageManifest -RepoRoot $RepoRoot
+    $major = 0
+    if ($manifest.Present -and $manifest.Manifest.ContainsKey('targetFrameworkMajor')) {
+        $major = [int] $manifest.Manifest['targetFrameworkMajor']
+    }
+    if ($major -le 0) { $major = (Get-SideCrabHostProjectFacts -RepoRoot $RepoRoot).TfmMajor }
+
+    $python = try {
+        $p = Resolve-SideCrabPython
+        [pscustomobject]@{ Found = $true; Path = $p; Windowless = ($p -like '*pythonw.exe'); Reason = '' }
+    } catch {
+        [pscustomobject]@{ Found = $false; Path = ''; Windowless = $false; Reason = $_.Exception.Message }
+    }
+
+    $fragmentPath = Join-Path $RepoRoot 'hooks\settings-hooks-fragment.json'
+    $needsCurl = $false
+    if (Test-Path -LiteralPath $fragmentPath) {
+        try { $needsCurl = Test-SideCrabFragmentNeedsCurl -Fragment ([IO.File]::ReadAllText($fragmentPath) | ConvertFrom-Json -AsHashtable -Depth 40) }
+        catch { $needsCurl = $true }     # unreadable: assume the stricter prerequisite
+    }
+    $curlCmd = Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $hwinfo  = @("$env:ProgramFiles\HWiNFO64\HWiNFO64.EXE", "${env:ProgramFiles(x86)}\HWiNFO32\HWiNFO32.EXE") |
+               Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+
+    $probe = @{
+        PowerShellMajor = $PSVersionTable.PSVersion.Major
+        Python          = $python
+        DotnetMajor     = $major
+        DotnetRuntime   = (Get-SideCrabDotnetRuntimeState -Major $major)
+        WebView2        = (Get-SideCrabWebView2State)
+        Curl            = [pscustomobject]@{ Needed = $needsCurl; Found = [bool] $curlCmd; Path = $(if ($curlCmd) { $curlCmd.Source } else { '' }) }
+        Hwinfo          = [pscustomobject]@{ Found = [bool] $hwinfo; Path = "$hwinfo" }
+    }
+    foreach ($k in @($Override.Keys)) { $probe[$k] = $Override[$k] }
+    Get-SideCrabPrerequisiteVerdict -Probe $probe
+}
+
+function Get-SideCrabHostBuildDecision {
+    <# Does this install have to run dotnet publish? Pure.
+
+       THE POINT OF A PACKAGE IS THAT THIS SAYS NO. A package carries the published host, so an
+       install from one must never reach for an SDK that a person who downloaded a zip has no
+       reason to own. The exe being there is the whole test; nothing here looks at whether a
+       dotnet exists, because when the exe is present the answer does not depend on it. #>
+    param([bool] $Selected, [bool] $ExePresent, [bool] $Requested, [bool] $WhatIf)
+
+    if (-not $Selected) { return [pscustomobject]@{ Build = $false; Verdict = 'not-selected'; Reason = 'the panel was not selected' } }
+    if ($ExePresent)    { return [pscustomobject]@{ Build = $false; Verdict = 'already-built'
+                                                    Reason = 'the host executable is already here - no SDK is needed' } }
+    if ($WhatIf)        { return [pscustomobject]@{ Build = $false; Verdict = 'whatif'
+                                                    Reason = 'a dry run does not publish into the tree it promised not to touch' } }
+    $note = if ($Requested) { ' and -Panel asked for it by name, so a failed build stops the install' } else { '' }
+    [pscustomobject]@{ Build = $true; Verdict = 'build'
+                       Reason = "the host executable is missing and this is a source checkout$note" }
+}
+
+function Get-SideCrabHostCheckVerdict {
+    <# Does `SideCrab.Panel.exe --check` prove the staged binary RUNS? Pure.
+
+       Exit 0 and exit 2 both prove it: 0 is "the panel would show" and 2 is "it started, read
+       its settings and found a problem to report" - a missing display on a build PC is a
+       problem with the PC, not with the binary. Anything else (3 = another instance, a crash,
+       a missing runtime) is a failed validation. The version line is the second half: a process
+       that exits 0 having printed nothing is not a panel host. #>
+    param([int] $ExitCode, [string] $Output)
+
+    $m = [regex]::Match("$Output", '(?m)^\s*sidecrab-panel-check:\s*(\S+)')
+    if (-not $m.Success) {
+        return [pscustomobject]@{ Valid = $false; Version = ''; ExitCode = $ExitCode
+                                  Reason = "--check printed no 'sidecrab-panel-check: <version>' line (exit $ExitCode), so what ran is not a panel host" }
+    }
+    if ($ExitCode -notin @(0, 2)) {
+        return [pscustomobject]@{ Valid = $false; Version = $m.Groups[1].Value; ExitCode = $ExitCode
+                                  Reason = "--check exited $ExitCode; only 0 (ok) and 2 (started, reported a problem) prove the binary runs" }
+    }
+    [pscustomobject]@{ Valid = $true; Version = $m.Groups[1].Value; ExitCode = $ExitCode
+                       Reason = "--check exited $ExitCode and reported version $($m.Groups[1].Value)" }
+}
+
+function Invoke-SideCrabHostCheck {
+    <# Run the staged host's own --check and judge it. The runner is injectable so the tests
+       can hand this an exit code without a binary.
+
+       --check is the only validation that touches nothing: no window, no WebView2 environment,
+       no mutex and no log file, so running it against a staged copy cannot disturb the host
+       that is still live. #>
+    param([Parameter(Mandatory)][string] $ExePath, [scriptblock] $Runner)
+
+    if (-not $Runner) {
+        $Runner = {
+            param([string] $Path)
+            $out = & $Path --check 2>&1 | Out-String
+            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        return [pscustomobject]@{ Valid = $false; Version = ''; ExitCode = -1
+                                  Reason = "$ExePath is not there - the staged publish produced no executable" }
+    }
+    try { $res = & $Runner $ExePath }
+    catch { return [pscustomobject]@{ Valid = $false; Version = ''; ExitCode = -1
+                                      Reason = "$ExePath could not be run - $($_.Exception.Message)" } }
+    Get-SideCrabHostCheckVerdict -ExitCode ([int] $res.ExitCode) -Output "$($res.Output)"
+}
+
+function Invoke-SideCrabHostSwap {
+    <# Put a validated staging directory live and keep ONE generation of the old one.
+
+       Renames, never copies: a rename is atomic within a volume, so there is no window in
+       which dist is half of each build. One generation is deliberate - the recovery this
+       exists for is "the update I just ran broke the panel", and a pile of old hosts is a
+       different feature with a different cost.
+
+       [IO.Directory]::Move AND NOT Move-Item, measured 2026-09-22 by locking a file inside
+       dist and calling both. Move-Item walks a directory and moves it item by item, so a
+       failure part way through leaves half the host in one place and half in the other - the
+       exact state this function exists to make impossible. Directory.Move is one rename: it
+       either happens or it does not. The three directories are always siblings, so the
+       same-volume restriction never bites. #>
+    param(
+        [Parameter(Mandatory)][string] $DistPath,
+        [Parameter(Mandatory)][string] $StagingPath,
+        [Parameter(Mandatory)][string] $LastGoodPath
+    )
+
+    if (-not (Test-Path -LiteralPath $StagingPath)) {
+        return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false; Reason = "$StagingPath is not there - nothing to swap in" }
+    }
+    $kept = $false
+    if (Test-Path -LiteralPath $DistPath) {
+        # THE LIKELIEST FAILURE IN THIS WHOLE PATH, and it has to be a returned verdict rather
+        # than an exception: Windows refuses to rename a directory whose executable is running,
+        # so a panel task that did not stop in time lands exactly here. Thrown, it would take
+        # the update script down with a stack trace instead of a FAIL line and a live host.
+        try {
+            if (Test-Path -LiteralPath $LastGoodPath) { Remove-Item -LiteralPath $LastGoodPath -Recurse -Force }
+            [IO.Directory]::Move($DistPath, $LastGoodPath)
+        } catch {
+            return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
+                                      Reason = ("the host that is live could not be moved aside - $($_.Exception.Message). " +
+                                                'Nothing was swapped; it is still running. A panel host that is still ' +
+                                                'executing is the usual cause: stop SideCrab-panel and try again.') }
+        }
+        $kept = $true
+    }
+    try {
+        [IO.Directory]::Move($StagingPath, $DistPath)
+    } catch {
+        # The one moment with no live host. Put the old one straight back rather than leaving
+        # the panel with no directory at all.
+        if ($kept -and -not (Test-Path -LiteralPath $DistPath)) { [IO.Directory]::Move($LastGoodPath, $DistPath) }
+        return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
+                                  Reason = "the staged host could not be moved into place - $($_.Exception.Message); the previous host was put back" }
+    }
+    $why = if ($kept) { "swapped; the previous host is kept at $LastGoodPath" } else { 'swapped; there was no previous host to keep' }
+    [pscustomobject]@{ Swapped = $true; KeptLastGood = $kept; Reason = $why }
+}
+
+function Restore-SideCrabHostLastGood {
+    <# Put the kept generation back. The host that failed is moved aside rather than deleted:
+       it is the evidence for why the update failed, and deleting it is how a post-mortem
+       becomes impossible. #>
+    param(
+        [Parameter(Mandatory)][string] $DistPath,
+        [Parameter(Mandatory)][string] $LastGoodPath,
+        [string] $FailedSuffix = '.failed'
+    )
+
+    if (-not (Test-Path -LiteralPath $LastGoodPath)) {
+        return [pscustomobject]@{ Restored = $false; FailedPath = ''
+                                  Reason = "no $LastGoodPath to restore - this install has no kept generation" }
+    }
+    # Never an exception on this path. This runs when an update has already gone wrong, and a
+    # throw here would replace the one message that says what is now live with a stack trace.
+    $failed = "$DistPath$FailedSuffix"
+    try {
+        if (Test-Path -LiteralPath $DistPath) {
+            if (Test-Path -LiteralPath $failed) { Remove-Item -LiteralPath $failed -Recurse -Force }
+            # One rename, for the reason spelled out in Invoke-SideCrabHostSwap: a Move-Item
+            # that fails half way leaves the host split across two directories.
+            [IO.Directory]::Move($DistPath, $failed)
+        } else { $failed = '' }
+        [IO.Directory]::Move($LastGoodPath, $DistPath)
+    } catch {
+        return [pscustomobject]@{ Restored = $false; FailedPath = ''
+                                  Reason = ("the previous host COULD NOT be put back - $($_.Exception.Message). " +
+                                            "It is still at $LastGoodPath; stop SideCrab-panel and run " +
+                                            'setup\Restore-SideCrab.ps1 -Host.') }
+    }
+    [pscustomobject]@{ Restored = $true; FailedPath = $failed
+                       Reason = "restored the previous host into $DistPath$(if ($failed) { "; the host that failed is at $failed" })" }
+}
+
+function Invoke-SideCrabStagedHostUpdate {
+    <# MF-006. Stage, validate, swap, activate - and put the last good host back if anything
+       after the swap does not stand up. Every impure step is a scriptblock the caller supplies,
+       which is what makes all four failure paths reachable from a test with temp directories.
+
+         Stage    {param($StagingPath)} -> anything; THROWING is the failure signal
+         Validate {param($ExePath)}     -> an object with .Valid and .Reason
+         Activate {}                    -> $true when the restarted host is serving
+
+       Order matters and is the fix: validate BEFORE the swap, so a binary that cannot run
+       never becomes the live one, and a failure after the swap is the only case that needs a
+       rollback at all. #>
+    param(
+        [Parameter(Mandatory)][string] $DistPath,
+        [Parameter(Mandatory)][string] $StagingPath,
+        [Parameter(Mandatory)][string] $LastGoodPath,
+        [Parameter(Mandatory)][scriptblock] $Stage,
+        [Parameter(Mandatory)][scriptblock] $Validate,
+        [Parameter(Mandatory)][scriptblock] $Activate,
+        [string] $ExeName = 'SideCrab.Panel.exe'
+    )
+
+    $result = [pscustomobject]@{
+        Ok = $false; Phase = 'stage'; Reason = ''; Version = ''
+        Swapped = $false; RestoredLastGood = $false; FailedPath = ''
+    }
+
+    # An INTERRUPTED PUBLISH leaves a directory that looks like a build and is half of one.
+    # Cleared before staging rather than after a failure, because the run that died did not get
+    # to clean up and the run that finds it has no way to tell how far it got.
+    if (Test-Path -LiteralPath $StagingPath) { Remove-Item -LiteralPath $StagingPath -Recurse -Force }
+
+    try { & $Stage $StagingPath }
+    catch {
+        $result.Reason = "the new host was not produced - $($_.Exception.Message). Nothing was swapped; the host in $DistPath is untouched."
+        if (Test-Path -LiteralPath $StagingPath) { Remove-Item -LiteralPath $StagingPath -Recurse -Force }
+        return $result
+    }
+
+    $result.Phase = 'validate'
+    $verdict = & $Validate (Join-Path $StagingPath $ExeName)
+    if (-not $verdict.Valid) {
+        $result.Reason = "the staged host failed validation - $($verdict.Reason). Nothing was swapped; the host in $DistPath is untouched."
+        if (Test-Path -LiteralPath $StagingPath) { Remove-Item -LiteralPath $StagingPath -Recurse -Force }
+        return $result
+    }
+    $result.Version = "$($verdict.Version)"
+
+    $result.Phase = 'swap'
+    $swap = Invoke-SideCrabHostSwap -DistPath $DistPath -StagingPath $StagingPath -LastGoodPath $LastGoodPath
+    if (-not $swap.Swapped) { $result.Reason = $swap.Reason; return $result }
+    $result.Swapped = $true
+
+    $result.Phase = 'activate'
+    $live = $false
+    try { $live = [bool] (& $Activate) }
+    catch { $live = $false; $result.Reason = "$($_.Exception.Message) " }
+    if ($live) {
+        $result.Ok = $true
+        $result.Phase = 'done'
+        $result.Reason = "host $($result.Version) is live$(if ($swap.KeptLastGood) { "; the previous host is kept at $LastGoodPath" })"
+        return $result
+    }
+
+    $restore = Restore-SideCrabHostLastGood -DistPath $DistPath -LastGoodPath $LastGoodPath
+    $result.RestoredLastGood = $restore.Restored
+    $result.FailedPath = "$($restore.FailedPath)"
+    $result.Reason = "$($result.Reason)the new host $($result.Version) did not come back after the restart. $($restore.Reason)"
+    $result
+}
+
+function Get-SideCrabHostIdentityVerdict {
+    <# Is the executable on disk the one this install says it shipped? Pure.
+
+       A SHA-256, NOT A TIMESTAMP. The doctor used to compare the running process's start time
+       with the published file's write time, which answers "was it restarted after the build"
+       and says nothing about WHICH build: a rebuild that produced a different binary with the
+       same mtime, a file copied in by hand, and a half-written publish all read as current.
+       A hash of the bytes is the only reading that is about identity. #>
+    param([string] $Expected, [string] $Actual, [string] $Source)
+
+    if (-not $Actual) {
+        return [pscustomobject]@{ Status = 'unknown'; Match = $false
+                                  Reason = 'the host executable is not there to hash' }
+    }
+    if (-not $Expected) {
+        return [pscustomobject]@{ Status = 'unknown'; Match = $false
+                                  Reason = "nothing records what this host should be (no package manifest and no build record), so its SHA-256 $($Actual.Substring(0, [Math]::Min(12, $Actual.Length))) cannot be checked" }
+    }
+    if ("$Expected".ToLowerInvariant() -eq "$Actual".ToLowerInvariant()) {
+        return [pscustomobject]@{ Status = 'ok'; Match = $true
+                                  Reason = "SHA-256 matches the $Source ($($Actual.Substring(0, [Math]::Min(12, $Actual.Length))))" }
+    }
+    [pscustomobject]@{ Status = 'fail'; Match = $false
+                       Reason = "the executable on disk is NOT the one the $Source records: expected $($Expected.Substring(0, [Math]::Min(12, $Expected.Length))), found $($Actual.Substring(0, [Math]::Min(12, $Actual.Length)))" }
+}
+
+function Get-SideCrabHostBuildRecord {
+    <# build-record.json, written into the publish directory by Build-SideCrabPanel.ps1: what
+       that build produced, so a source checkout can answer the identity question a package
+       answers with its manifest. Never throws. #>
+    param([Parameter(Mandatory)][string] $DistPath)
+
+    $path = Join-Path $DistPath 'build-record.json'
+    $out  = [pscustomobject]@{ Present = $false; Path = $path; Sha256 = ''; Version = ''; BuiltUtc = ''; Reason = 'no build record beside the host' }
+    if (-not (Test-Path -LiteralPath $path)) { return $out }
+    try { $doc = [IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable -Depth 10 }
+    catch { $out.Reason = "$path does not parse - $($_.Exception.Message)"; return $out }
+    if ($doc -isnot [System.Collections.IDictionary] -or -not $doc.ContainsKey('sha256')) {
+        $out.Reason = "$path carries no sha256"
+        return $out
+    }
+    $out.Present  = $true
+    $out.Sha256   = "$($doc['sha256'])"
+    $out.Version  = if ($doc.ContainsKey('version')) { "$($doc['version'])" } else { '' }
+    $out.BuiltUtc = if ($doc.ContainsKey('builtUtc')) { "$($doc['builtUtc'])" } else { '' }
+    $out.Reason   = 'build record read'
+    $out
+}
+
+function Get-SideCrabExpectedHostHash {
+    <# What SHOULD the host executable hash to, and who says so? {Sha256, Source}.
+
+       THE BUILD RECORD OUTRANKS THE PACKAGE MANIFEST, and the order matters. The record sits
+       inside the publish directory and is written by the build that produced it, so it travels
+       with a staged swap and always describes the host that is there NOW. The manifest
+       describes the package as it shipped and goes out of date about dist the moment an update
+       swaps a host in - so asking it first made the doctor report a FAIL on every package
+       install that had ever been updated, which is a healthy night. The manifest's integrity
+       job is at install time (Test-SideCrabPackageIntegrity), where nothing has moved yet. #>
+    param([Parameter(Mandatory)][string] $RepoRoot, [Parameter(Mandatory)][string] $DistPath)
+
+    $record = Get-SideCrabHostBuildRecord -DistPath $DistPath
+    if ($record.Present) { return [pscustomobject]@{ Sha256 = $record.Sha256; Source = 'build record' } }
+
+    $manifest = Read-SideCrabPackageManifest -RepoRoot $RepoRoot
+    if ($manifest.Present) {
+        $key = 'panel-host/dist/SideCrab.Panel.exe'
+        if ($manifest.Manifest['files'].ContainsKey($key)) {
+            return [pscustomobject]@{ Sha256 = "$($manifest.Manifest['files'][$key])"; Source = 'package manifest' }
+        }
+    }
+    [pscustomobject]@{ Sha256 = ''; Source = 'nothing' }
+}

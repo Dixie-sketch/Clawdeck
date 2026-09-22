@@ -292,6 +292,23 @@ public sealed class SettingsBridgeTests
     }
 
     [TestMethod]
+    public void A_choice_prop_keeps_an_exact_value_and_drops_every_guess()
+    {
+        // tempUnit (widget 0.34.0): the two letters the page draws with, nothing else. A
+        // stored "celsius" or "C" would be a scale the row cannot convert.
+        var clean = PanelLogic.ValidateSettingsProps(Props("""{ "tempUnit": "f" }"""));
+        Assert.AreEqual(1, clean.Count);
+        Assert.AreEqual("f", clean["tempUnit"]);
+        Assert.AreEqual("c", PanelLogic.ValidateSettingsProps(Props("""{ "tempUnit": "c" }"""))["tempUnit"]);
+
+        foreach (var bad in new[] { "\"C\"", "\" f\"", "\"celsius\"", "\"\"", "1", "null", "true", "[\"f\"]" })
+        {
+            var dropped = PanelLogic.ValidateSettingsProps(Props("{ \"tempUnit\": " + bad + " }"));
+            Assert.AreEqual(0, dropped.Count, "tempUnit " + bad + " must be dropped, never coerced");
+        }
+    }
+
+    [TestMethod]
     public void The_three_keys_a_page_may_never_write_are_not_on_the_list()
     {
         // panelToken is the pairing code; crabdPort and display are how this host finds

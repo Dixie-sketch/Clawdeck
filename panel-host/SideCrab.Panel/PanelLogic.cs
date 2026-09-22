@@ -226,6 +226,14 @@ public static class PanelLogic
     /// move silently unsaved.</summary>
     public static readonly string[] SettingsPercents = { "transparency", "chimeVolume" };
 
+    /// <summary>String props with a closed set of values. <c>tempUnit</c> (widget 0.34.0) is
+    /// the temperature scale the page draws; anything but the two letters is dropped, so a
+    /// page cannot store a scale the row would then fail to convert.</summary>
+    public static readonly Dictionary<string, string[]> SettingsChoices = new(StringComparer.Ordinal)
+    {
+        ["tempUnit"] = new[] { "c", "f" },
+    };
+
     /// <summary>What the page sent, reduced to what may be stored. A whitelist and not a
     /// filter: an unknown key, a wrong type, a colour that is not #RRGGBB and a
     /// non-finite number are all DROPPED, never coerced, because a coerced setting is a
@@ -253,6 +261,14 @@ public static class PanelLogic
             if (!props.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.String) continue;
             var hex = NormalizeHex(v.GetString());
             if (hex is not null) clean[key] = hex;
+        }
+
+        foreach (var (key, allowed) in SettingsChoices)
+        {
+            if (!props.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.String) continue;
+            var choice = v.GetString();
+            // Exact match only: "C", " f" and "celsius" are a caller guessing at the shape.
+            if (choice is not null && Array.IndexOf(allowed, choice) >= 0) clean[key] = choice;
         }
 
         foreach (var key in SettingsPercents)

@@ -857,7 +857,7 @@ class Sec3ContinueGateLiveFireTests(LiveFireServed):
         self.builder.config = crabd.UserConfig(self.config_path)
         self.config_path.write_text(json.dumps({"continuePromptsByPath": {
             self.row()["cwd"]: ["Rebuild the report"],
-            "C:\Work\some-other-tree": ["Sign the installer"]}}), encoding="utf-8")
+            r"C:\Work\some-other-tree": ["Sign the installer"]}}), encoding="utf-8")
         self.builder.config = crabd.UserConfig(self.config_path)
         self.rebuild()
 
@@ -1075,7 +1075,7 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.35.0")
+        self.assertEqual(crabd.VERSION, "0.36.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),

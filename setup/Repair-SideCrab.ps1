@@ -427,6 +427,42 @@ foreach ($c in @($spec | Where-Object { $_.Key -ne 'crabd' })) {
               -FixVerify ([scriptblock]::Create("(Get-SideCrabTaskState -TaskName '$taskName').State -eq 'Running'"))
 }
 
+# -- 2c. is the panel host the binary this install shipped? (MF-006) -------------------
+# A SHA-256, NOT A TIMESTAMP. The freshness row above compares the process start with the
+# file's mtime, which answers "was it restarted after the build" and says nothing about WHICH
+# build: a host copied in by hand, a half-written publish and a rebuild that produced different
+# bytes with a plausible mtime all read as current. What the binary IS can only be answered by
+# hashing it, against the package manifest a release carries or the build record
+# setup\Build-SideCrabPanel.ps1 writes.
+#
+# AN INSTALL WITH NEITHER RECORD IS INFO, NOT A FAULT. A host built before build-record.json
+# existed is a perfectly good host; failing it would page every existing install for a fact
+# that has never been recorded.
+$panelComponent = @($spec | Where-Object { $_.Key -eq 'panel' })[0]
+$panelDist      = Split-Path -Parent $panelComponent.Script
+$expectedHost   = Get-SideCrabExpectedHostHash -RepoRoot $RepoRoot -DistPath $panelDist
+$actualHost     = if (Test-Path -LiteralPath $panelComponent.Script) {
+                      (Get-FileHash -LiteralPath $panelComponent.Script -Algorithm SHA256).Hash.ToLowerInvariant()
+                  } else { '' }
+$hostId = Get-SideCrabHostIdentityVerdict -Expected $expectedHost.Sha256 -Actual $actualHost -Source $expectedHost.Source
+$lastGood = Join-Path (Split-Path -Parent $panelDist) 'dist.last-good'
+$keptNote = if (Test-Path -LiteralPath $lastGood) { ' A kept generation is at dist.last-good.' } else { '' }
+if ($hostId.Status -eq 'fail') {
+    Add-Check -Id 'host-identity' -Title 'panel host identity' -Status 'fail' `
+              -Detail "$($hostId.Reason).$keptNote" `
+              -Why ('the executable on the glass is not the one this install recorded. That is either a build that ' +
+                    'never finished, a file replaced by hand, or a package whose contents changed after it was ' +
+                    'published - and no other row in this report can tell the difference, because they all read ' +
+                    'timestamps and version strings, which a wrong binary can carry perfectly well.') `
+              -Command "pwsh -File setup\Update-SideCrab.ps1 -SkipPull   # stages, validates and swaps a fresh host$(if ($keptNote) { "`n  or: pwsh -File setup\Restore-SideCrab.ps1 -Host   # put the kept host back" })"
+} elseif ($hostId.Status -eq 'ok') {
+    Add-Check -Id 'host-identity' -Title 'panel host identity' -Status 'ok' -Detail "$($hostId.Reason).$keptNote"
+} else {
+    Add-Check -Id 'host-identity' -Title 'panel host identity' -Status 'info' `
+              -Detail "$($hostId.Reason).$keptNote" `
+              -Why 'nothing recorded what this host should be, so there is nothing to compare it with. The next build or package writes one.'
+}
+
 # -- 3. wiring that names another checkout ---------------------------------------------
 $wiring = @()
 foreach ($c in $spec) {
