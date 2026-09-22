@@ -935,8 +935,8 @@ function applyProperties() {
 	setVar(root, '--text-color', strProp('textColor', '#EDE7DF'));
 	/* Third statement of the accent default (the others: :root in sidecrab.css and
 	   the accentColor property meta in index.html). This one WINS at runtime, so it
-	   is the one that must not drift. AUD-F1 moved it #CC785C -> #BE7E6E. */
-	setVar(root, '--accent', strProp('accentColor', '#BE7E6E'));
+	   is the one that must not drift. AUD-F1 moved it #CC785C -> #BE7E6E; v0.30.1 moved it to #6F94CC. */
+	setVar(root, '--accent', strProp('accentColor', '#6F94CC'));
 	setVar(root, '--bg-rgb', hexToRgbTriple(strProp('backgroundColor', '#0F0E0D'), '15, 14, 13'));
 
 	var t = Number(getIcueProperty('transparency'));
@@ -1083,6 +1083,10 @@ function poll() {
 	   whether the operator's taps should reach the companion (v0.23.0). It is a
 	   no-op unless diagnostics are on and there is something to ship. */
 	diagFlush();
+	/* lane B: the poll is the FALLBACK while the /v1/events stream is open. Below
+	   diagFlush deliberately — whether state is arriving by push says nothing about
+	   whether the operator's captured taps should reach the companion. */
+	if (sseDelivering()) return;
 	if (inFlight) return;
 	inFlight = true;
 	var url = mockName ? './mock/mock-state-' + mockName + '.json' : endpointUrl();
@@ -1160,6 +1164,10 @@ function acceptDoc(doc) {
 	   last working session ending) only exist between two documents, and the hat
 	   they set has to be in the render that follows, not a frame later. */
 	detectTricks(doc);
+	/* lane B: the chime rides the same edge, and for the same reason — a session
+	   starting to wait exists only BETWEEN two documents, so it is detected here
+	   and not in render(), which runs on the 1 Hz tick and on every tap. */
+	detectChime(doc);
 	render();
 	/* The iCUE properties resolve long before the first poll, so the boot-time
 	   reconcile waits for a good document — not for a schema number. Whether the
@@ -1593,6 +1601,12 @@ function render() {
 	   overrides the ANSWER and never the derivation. */
 	if (moodForced) mood = moodForced;
 	if (ui.crab.getAttribute('data-mood') !== mood) ui.crab.setAttribute('data-mood', mood);
+
+	/* lane C: the other three views of the grid zone, and the Sessions chip's alert
+	   badge. Last, because the badge counts off the grid this render has just
+	   built and the Detail page reads the same `sessions` array everything above
+	   it did. */
+	laneCRenderViews(doc, sessions, status, quiet);
 }
 
 /* WHY THE PANEL IS QUIET, which stopped being one answer at v0.22.0.
@@ -1759,6 +1773,12 @@ function loadPrefs() {
 		densityIdx = di < 0 ? 0 : di;
 		densityStoredUnknown = di < 0 ? props[DENSITY_PROP] : null;
 	}
+	/* lane C: the grid-zone view, read exactly the way the two chips above it are. */
+	if (typeof props[VIEW_PROP] === 'string') {
+		var vi = prefIndexOrNone(VIEWS, props[VIEW_PROP]);
+		viewIdx = vi < 0 ? 0 : vi;
+		viewStoredUnknown = vi < 0 ? props[VIEW_PROP] : null;
+	}
 
 	/* The approval-threshold touch record (v0.16.0). Read as defensively as the pin
 	   map: a shape that has drifted degrades to "never touched", which is the
@@ -1801,6 +1821,8 @@ function savePrefs() {
 	   a pin tap in an older build is not a statement about the filter. */
 	props[FILTER_PROP] = filterStoredUnknown !== null ? filterStoredUnknown : FILTERS[filterIdx].key;
 	props[DENSITY_PROP] = densityStoredUnknown !== null ? densityStoredUnknown : DENSITIES[densityIdx].key;
+	/* lane C: same key, same object, same round-trip of a value this build does not know. */
+	props[VIEW_PROP] = viewStoredUnknown !== null ? viewStoredUnknown : VIEWS[viewIdx].key;
 	/* Written only once there is something to record, so a panel whose operator
 	   never opens the property sheet does not accumulate a key either. */
 	if (approvalSeenSec !== null) props[APPROVAL_PROP] = { seen: approvalSeenSec, touched: approvalTouched };
@@ -3755,17 +3777,10 @@ function syncSheet() {
 function syncContinue(s) {
 	if (!ui.sheetContinueBtns) return;
 	if (continueStatusFor !== s.id) { continueStatusFor = s.id; setContinueStatus('', ''); }
-	var extras = lastGoodDoc && Array.isArray(lastGoodDoc.continuePrompts) ? lastGoodDoc.continuePrompts : [];
-	var list = CONTINUE_DEFAULTS.slice();
-	for (var e = 0; e < extras.length; e++) {
-		var p = extras[e];
-		if (typeof p !== 'string') continue;
-		var txt = p.trim();
-		if (!txt) continue;
-		/* A config-fed extra is one string: it is both the wire prompt and the
-		   label, clamped on the button face by CSS. */
-		list.push({ label: txt, prompt: txt });
-	}
+	/* lane D: the button set is built in one place for this sheet and the Detail
+	   view, and it is now per SESSION - the signature below therefore changes when
+	   the sheet moves to a session in another repo, which is what rebuilds the row. */
+	var list = continueButtons(s);
 	var sig = list.map(function (b) { return b.label + '' + b.prompt; }).join('');
 	if (sig === continueBtnSig) return;
 	continueBtnSig = sig;
@@ -3799,6 +3814,9 @@ function tickSheetApproval(nowMs) {
 }
 
 function setContinueStatus(text, kind) {
+	/* lane C: the Detail page carries the same status line, so one write reports
+	   itself once, in whichever of the two surfaces is on the glass. */
+	laneCMirrorContinueStatus(text, kind);
 	if (!ui.sheetContinueStatus) return;
 	setText(ui.sheetContinueStatus, text);
 	ui.sheetContinueStatus.className = 'sheet-continue-status' + (text && kind ? ' ' + kind : '');
@@ -4893,8 +4911,10 @@ function onSheetAction(action, text) {
    latch — the next tap tries again, because crabd redeploys under a live widget.
    The wire prompt is the FULL instruction; the label is the short button face. */
 function onSheetContinue(prompt, label) {
-	if (!sheetSessionId || !prompt) return;
-	var id = sheetSessionId;
+	/* lane C: the Detail page's continue buttons are THESE buttons and reach this
+	   one implementation; when no sheet is open the target is the page's session. */
+	var id = laneCActionSessionId();
+	if (!id || !prompt) return;
 	setContinueStatus('queued: ' + label, 'ok');
 	postAction(id, 'queue-continue', prompt).then(function (res) {
 		if (res.status === 204 || res.status === 200) { setContinueStatus('queued: ' + label, 'ok'); return; }
@@ -4921,9 +4941,13 @@ function onSheetContinue(prompt, label) {
    decision can still be made: crabd holds the hook ~55 s and then hands the
    request back to the terminal dialog, which was always the fallback. */
 function onSheetDecide(decision) {
-	if (!sheetSessionId) return;
+	/* lane C: the Detail page's Approve and Deny are THESE controls and reach this
+	   one implementation — the pairing code, the requestId echo and the
+	   403/409/429 wording are inherited rather than re-typed. The sheet wins when
+	   one is open, because it is a modal over that page. */
+	var id = laneCActionSessionId();
+	if (!id) return;
 	if (decision !== DECIDE_ALLOW && decision !== DECIDE_DENY) return;
-	var id = sheetSessionId;
 	/* v0.27.0: not paired = nothing goes on the wire and the sheet STAYS OPEN, so the
 	   operator reads why instead of finding the card still armed after a close. */
 	if (tokenRequired() && !pairingCode()) {
@@ -5680,6 +5704,12 @@ function onSheetClick(ev) {
 	   prompt on data-continue-prompt and no data-sheet-action. */
 	var contBtn = t.closest ? t.closest('[data-continue-prompt]') : null;
 	if (contBtn) { onSheetContinue(contBtn.getAttribute('data-continue-prompt'), contBtn.getAttribute('data-continue-label') || 'Continue'); return; }
+	/* lane C: Full view. Routed above the generic branch, the rule Dismiss and Pin
+	   keep, because it wears .sheet-btn for its looks and carries no
+	   data-sheet-action. */
+	if (t.closest && t.closest('[data-full-view]')) { laneCOpenDetail(sheetSessionId); return; }
+	/* lane E: Bring to front. Same rule as the four branches above it. */
+	if (t.closest && t.closest('[data-focus-session]')) { laneESendFocus(); return; }
 	var btn = t.closest ? t.closest('.sheet-btn') : null;
 	if (btn) {
 		onSheetAction(btn.getAttribute('data-sheet-action'), btn.getAttribute('data-sheet-text') || '');
@@ -6884,14 +6914,15 @@ function syncSensorRow() {
 	/* A cell is shown when it has something true to say, which for the CPU cell is
 	   a temperature OR a host figure — the two are independent, and a bridge that
 	   cannot answer must not take the companion's number off the glass with it. */
-	var cpuOn = sensorShown.cpu || hostMetrics.cpuPct !== null;
-	var gpuOn = sensorShown.gpu || warn;
+	var cpuOn = sensorShown.cpu || hostMetrics.cpuPct !== null || laneACpuOn();   /* lane A */
+	var gpuOn = sensorShown.gpu || warn || laneAGpuOn();   /* lane A */
 	var memOn = hostMetrics.memPct !== null;
 	ui.sensorCpu.classList.toggle('shown', cpuOn);
 	ui.sensorGpu.classList.toggle('shown', gpuOn);
 	ui.hostMem.classList.toggle('shown', memOn);
+	syncLaneASensorCells();   /* lane A: the CPU and GPU cells, from the companion */
 
-	var any = cpuOn || gpuOn || memOn || unset;
+	var any = cpuOn || gpuOn || memOn || unset || laneAAnyCell();   /* lane A */
 	ui.sensors.classList.toggle('shown', any);
 
 	/* THE DRILL-IN (v0.22.0), decided here because this function is the row's one
@@ -6977,6 +7008,8 @@ function renderHost(host) {
 		ui.hostMem.removeAttribute('title');
 		ui.hostMem.removeAttribute('aria-label');
 	}
+	/* ---- lane A: the four additive members, read on the same pass ---- */
+	renderHostExtras(host);
 	syncSensorRow();
 }
 
@@ -7010,6 +7043,7 @@ function sampleHost(doc) {
 	hostRing.push({ t: now, cpu: h ? hostPct(h.cpuPct) : null, mem: h ? hostPct(h.memPct) : null });
 	var cut = now - HOST_WINDOW_MS;
 	while (hostRing.length && (hostRing[0].t < cut || hostRing.length > HOST_RING_MAX)) hostRing.shift();
+	laneASampleHost(doc);   /* lane A: the second ring, on the same poll */
 }
 
 /* The ring split into CONTIGUOUS runs — the segments the line may actually be drawn
@@ -7053,7 +7087,8 @@ function hostCount(key) {
    bridge, they are not sampled into the ring, and a sheet that charted nothing
    would be a control that opens an empty view. */
 function hostSheetAvailable() {
-	return hostMetrics.cpuPct !== null || hostMetrics.memPct !== null;
+	return hostMetrics.cpuPct !== null || hostMetrics.memPct !== null ||
+		laneAHostAvailable();   /* lane A */
 }
 
 function openHostSheet() {
@@ -7092,7 +7127,7 @@ function syncHostSheet() {
 	var last = hostRing.length ? hostRing[hostRing.length - 1] : null;
 	var sig = [hostRing.length, last ? last.t : 0, hostCount('cpu'), hostCount('mem'),
 		hostMetrics.cpuPct, hostMetrics.memPct, hostMetrics.memUsedGB, hostMetrics.memTotalGB,
-		sensorText('cpu'), sensorText('gpu')].join('#');
+		sensorText('cpu'), sensorText('gpu'), laneAHostSig()].join('#');
 	if (sig === hostSig) return;
 	hostSig = sig;
 
@@ -7119,8 +7154,13 @@ function syncHostSheet() {
 	}
 	var line = document.createElement('div');
 	line.className = 'hs-temps';
-	line.textContent = temps.length ? temps.join('     ') : 'no hardware sensor reading';
-	ui.sheetHost.appendChild(line);
+	/* lane A: the bridge is no longer the only source of a temperature, so "no
+	   hardware sensor reading" is only true when the companion has none either -
+	   otherwise this line would sit two lines above twenty-four of them. */
+	line.textContent = temps.length ? temps.join('     ')
+		: (laneAHasTemps() ? '' : 'no hardware sensor reading');
+	if (line.textContent) ui.sheetHost.appendChild(line);
+	appendLaneAHostBlocks();   /* lane A */
 }
 
 /* One temperature in words, or '' when the row has nothing true to say about it —
@@ -7898,6 +7938,10 @@ function tick() {
 	/* The approval hold on the OPEN sheet. The cards' copies ride tickAges; this
 	   one is a single element outside the grid, so it gets its own line. */
 	tickSheetApproval(now.getTime());
+	/* lane C: the Detail page's elapsed figure, its event ages and its own copy of
+	   the approval hold. Same reason the line above it is here: the hold is the
+	   answer to whether the button under a thumb still reaches anything. */
+	laneCTickDetail(now.getTime());
 	/* The gauge countdowns move between polls too, and a minute boundary crossed
 	   three seconds late is the one thing a countdown must not do. */
 	tickResets(now.getTime(), use24);
@@ -7922,6 +7966,636 @@ function tick() {
 	sensorStaleCheck();
 }
 
+/* ==== lane B: the push transport, the settings sheet and the chime ==== */
+
+/* ---- lane B: push transport (server-sent events) ---- */
+
+/* crabd 0.31.0+ serves GET /v1/events, and in the STANDALONE host that stream is
+   this page's transport: every new snapshot arrives as it is published instead of
+   up to POLL_MS after it. The poll is not replaced, it is demoted to the fallback —
+   it runs whenever the stream is not open, and every document from either route
+   goes through the SAME acceptDoc, so the schema check, the generatedAt check and
+   the stale/dead-feed rendering cannot fork between the two.
+
+   INSIDE iCUE NOTHING CHANGES. The widget's origin there is `null` and its fetches
+   go to 127.0.0.1 by IP; an EventSource is one more thing to go wrong on a surface
+   with no devtools, for a saving of two and a half seconds on a panel that has
+   polled happily since v0.1. Gated on isStandalone(). */
+var SSE_PATH = '/v1/events';
+var SSE_RETRY_MIN_MS = 3000;
+var SSE_RETRY_MAX_MS = 30000;
+var sseSource = null;
+var sseRetryMs = SSE_RETRY_MIN_MS;
+var sseRetryTimer = null;
+
+/* The diagnostic the panel-log and a devtools session both read. NOT a bare global
+   and not a property name: `__sidecrabTransport` is assigned onto window, so the
+   0.27.1 collision (an iCUE property and a top-level declaration sharing a name,
+   which is a parse error and a blank panel) cannot happen to it. */
+function transportDiag() {
+	if (typeof window === 'undefined') return null;
+	if (!window.__sidecrabTransport) window.__sidecrabTransport = { mode: 'poll', lastEventAt: null };
+	return window.__sidecrabTransport;
+}
+
+function setTransportMode(mode, why) {
+	var d = transportDiag();
+	if (!d || d.mode === mode) return;
+	d.mode = mode;
+	logLine('transport: ' + mode + (why ? ' (' + why + ')' : ''));
+}
+
+function noteTransportEvent() {
+	var d = transportDiag();
+	if (d) d.lastEventAt = Date.now();
+}
+
+/* EventSource.OPEN is 1. Read off readyState rather than a flag of our own: the
+   browser owns the connection's state and a second copy of it can disagree. */
+function sseDelivering() {
+	return !!(sseSource && sseSource.readyState === 1);
+}
+
+function sseWanted() {
+	if (mockName) return false;          /* a fixture is a file, not a stream */
+	if (!isStandalone()) return false;
+	return typeof EventSource !== 'undefined';
+}
+
+function sseStart() {
+	transportDiag();
+	if (!sseWanted()) { setTransportMode('poll', 'no stream in this host'); return; }
+	sseConnect();
+}
+
+function sseConnect() {
+	if (sseRetryTimer) { clearTimeout(sseRetryTimer); sseRetryTimer = null; }
+	var es;
+	try { es = new EventSource(baseUrl() + SSE_PATH); }
+	catch (e) { sseFellBack('EventSource refused'); return; }
+	sseSource = es;
+	es.addEventListener('open', function () { setTransportMode('sse', 'stream open'); });
+	es.addEventListener('state', function (ev) { onSseState(ev); });
+	/* A ping is liveness and nothing else: it carries no document, so it must not
+	   touch pollFailed, lastGoodAtMs or anything else the stale logic reads. */
+	es.addEventListener('ping', function () { noteTransportEvent(); });
+	es.addEventListener('error', function (ev) { onSseError(ev); });
+}
+
+function onSseState(ev) {
+	noteTransportEvent();
+	setTransportMode('sse', 'state frame');
+	sseRetryMs = SSE_RETRY_MIN_MS;
+	var doc;
+	try { doc = JSON.parse(ev.data); }
+	catch (e) {
+		/* The one place the two transports could have forked. A frame that is not
+		   JSON is a dead feed, exactly as an unparseable poll body is — same latch,
+		   same render, not a silent drop. */
+		pollFailed = true;
+		render();
+		return;
+	}
+	acceptDoc(doc);
+}
+
+function onSseError(ev) {
+	/* TRAP, and the reason this is one listener and not two. EventSource dispatches
+	   BOTH a server-sent `event: error` frame and its own transport failure as type
+	   "error". The frame is a MessageEvent and carries `data` — crabd sends one
+	   while it has no snapshot yet and then keeps the stream open — and the
+	   transport failure carries none. Treating them alike would tear the stream
+	   down every time crabd said "state not built yet", which is exactly the moment
+	   it is about to start serving. */
+	if (ev && typeof ev.data === 'string') {
+		noteTransportEvent();
+		logLine('sse: ' + ev.data);
+		return;
+	}
+	sseFellBack('stream error');
+}
+
+function sseFellBack(why) {
+	sseClose();
+	setTransportMode('poll', why);
+	/* OUR backoff, not the browser's. EventSource reconnects on its own `retry:`
+	   clock for ever, so closing it here is what turns a crabd that is down into a
+	   3 / 6 / 12 / 24 / 30 s ladder instead of a fixed-rate reconnect storm. */
+	var wait = sseRetryMs;
+	sseRetryMs = Math.min(SSE_RETRY_MAX_MS, sseRetryMs * 2);
+	sseRetryTimer = setTimeout(function () { sseRetryTimer = null; sseConnect(); }, wait);
+	logLine('sse retry in ' + Math.round(wait / 1000) + 's');
+	/* The fallback poll runs NOW rather than at the next interval: the stream may
+	   have been the only thing feeding this page, and the panel is already as stale
+	   as whatever killed the stream made it. */
+	poll();
+}
+
+function sseClose() {
+	if (!sseSource) return;
+	try { sseSource.close(); } catch (e) { /* already gone */ }
+	sseSource = null;
+}
+
+/* ---- lane B: the chime ---- */
+
+/* One soft two-note chime when a session STARTS waiting on a human. Edge-triggered
+   off the diffed document, so it says the same thing the amber card does and never
+   more often. */
+var CHIME_COOLDOWN_MS = 5000;
+var CHIME_SMOKE_ID = 'smoke-test';
+var CHIME_VOLUME_DEFAULT = 60;
+/* The peak gain at volume 100. Measured by ear on the Edge's own output: a sine
+   pair at 0.22 is audible across a room and is not an alarm. */
+var CHIME_PEAK_AT_FULL = 0.22;
+var chimePrevStates = null;     /* null means NO document yet — see chimeDecision */
+var chimeLastAt = 0;
+var chimeCtx = null;
+
+function chimeOn() { return boolProp('chime', true); }
+
+/* NAMED chimeLevel AND NOT chimeVolume, deliberately: `chimeVolume` is an iCUE
+   PROPERTY, and iCUE injects every property into the page as a same-named global
+   with `let` semantics. A function declaration sharing a property's name is a
+   parse error and a blank panel - 0.27.0 shipped exactly that with `panelToken`,
+   and nothing in a browser or a mock run can catch it. The reader gets a
+   different name; the property keeps its own. */
+function chimeLevel() {
+	var n = Number(getIcueProperty('chimeVolume'));
+	if (!isFinite(n)) n = CHIME_VOLUME_DEFAULT;
+	return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/* THE DECISION, pure, so every gate is provable without an audio device
+   (widget/tests/test_chime.js). `prev` is the previous document's id -> state map,
+   `next` is this document's sessions array.
+
+   The gates, and what each one is for:
+     - `prev === null` is BOOT. A panel that started while three sessions were
+       already waiting must not play three chimes at the sight of them; nothing on
+       the glass changed, only what this page knows.
+     - an id ABSENT from prev, after boot, DOES chime: a row that was not in the
+       last document and is waiting in this one is a new alert (a done row is
+       dropped ~10 min after it finishes, so a question in it comes back as a new
+       id). This is the one branch a "must have been seen before" rule gets wrong.
+     - `prev[id] === 'needs_input'` is the same question still waiting. Re-render,
+       not news.
+     - the smoke test's own session never chimes: it MANUFACTURES a needs_input row
+       to prove the panel lights up, and a chime for it would be the instrument
+       ringing at its own test.
+     - quiet and the `chime` prop are hard offs.
+   Reduced motion is DELIBERATELY not a gate. It is a statement about animation,
+   not about sound, and the operator who turned it on did not ask for silence. */
+function chimeDecision(prev, next, quietActive, chimeEnabled, now, lastChimeAt) {
+	if (!chimeEnabled) return false;
+	if (quietActive) return false;
+	if (!prev) return false;
+	if (isFinite(lastChimeAt) && isFinite(now) && now - lastChimeAt < CHIME_COOLDOWN_MS) return false;
+	var rows = Array.isArray(next) ? next : [];
+	for (var i = 0; i < rows.length; i++) {
+		var s = rows[i];
+		if (!s || !s.id || s.state !== 'needs_input') continue;
+		if (s.id === CHIME_SMOKE_ID) continue;
+		if (prev[s.id] === 'needs_input') continue;
+		return true;
+	}
+	return false;
+}
+
+function detectChime(doc) {
+	var rows = doc && Array.isArray(doc.sessions) ? doc.sessions : [];
+	/* ABSENT quiet is false, never unknown: crabd omits the block entirely when no
+	   quiet hours are configured, so a truthiness test on doc.quiet is the reading. */
+	var quiet = !!(doc && doc.quiet && doc.quiet.active === true);
+	var now = Date.now();
+	if (chimeDecision(chimePrevStates, rows, quiet, chimeOn(), now, chimeLastAt)) {
+		chimeLastAt = now;
+		playChime(chimeLevel());
+	}
+	var next = {};
+	for (var i = 0; i < rows.length; i++) {
+		if (rows[i] && rows[i].id) next[rows[i].id] = rows[i].state;
+	}
+	chimePrevStates = next;
+}
+
+/* One context for the life of the page. A context per chime leaks an audio device
+   handle per alert, and Chromium caps them. */
+function chimeAudio() {
+	if (typeof window === 'undefined') return null;
+	var Ctx = window.AudioContext || window.webkitAudioContext;
+	if (!Ctx) return null;
+	if (!chimeCtx) {
+		try { chimeCtx = new Ctx(); } catch (e) { return null; }
+	}
+	/* Suspended is what an autoplay policy looks like from in here. The panel host
+	   passes --autoplay-policy=no-user-gesture-required so this never happens on the
+	   glass; in a plain browser the first resume lands on the operator's own tap. */
+	if (chimeCtx.state === 'suspended') { try { chimeCtx.resume(); } catch (e) {} }
+	return chimeCtx;
+}
+
+/* Two notes, ~350 ms, SYNTHESIZED. There is no audio file in this tree and adding
+   one would put a binary into a package iCUE validates and a store reviews; a pair
+   of sine oscillators is four lines and no asset. A5 then D6 — RISING, because a
+   falling pair reads as something finishing and this is something starting to
+   wait. */
+function playChime(volume) {
+	var ctx = chimeAudio();
+	if (!ctx) return false;
+	var peak = Math.max(0, Math.min(100, Number(volume) || 0)) / 100 * CHIME_PEAK_AT_FULL;
+	if (peak <= 0) return false;
+	var t0 = ctx.currentTime + 0.01;
+	chimeNote(ctx, 880.0, t0, 0.2, peak);
+	chimeNote(ctx, 1174.66, t0 + 0.15, 0.2, peak * 0.85);
+	return true;
+}
+
+function chimeNote(ctx, hz, at, dur, peak) {
+	var osc, gain;
+	try { osc = ctx.createOscillator(); gain = ctx.createGain(); }
+	catch (e) { return; }
+	osc.type = 'sine';
+	osc.frequency.setValueAtTime(hz, at);
+	/* A 12 ms attack and an exponential tail. A square-edged gain is an audible
+	   CLICK at this level, and exponentialRampToValueAtTime throws on a zero
+	   target — hence the 0.0001 floor at both ends rather than 0. */
+	gain.gain.setValueAtTime(0.0001, at);
+	gain.gain.exponentialRampToValueAtTime(peak, at + 0.012);
+	gain.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+	osc.connect(gain);
+	gain.connect(ctx.destination);
+	osc.start(at);
+	osc.stop(at + dur + 0.02);
+}
+
+/* ---- lane B: the panel-host message bridge ---- */
+
+/* The standalone host is the only surface that can SAVE a setting: iCUE owns its
+   own property sheet and a widget cannot write it back (v0.17.0), and a plain
+   browser at /panel/ has no file to write. So the bridge is feature-detected and
+   its absence is said out loud rather than papered over. */
+var hostInfo = null;
+
+function panelBridge() {
+	try {
+		var w = typeof window !== 'undefined' && window.chrome && window.chrome.webview;
+		return w && typeof w.postMessage === 'function' ? w : null;
+	} catch (e) { return null; }
+}
+
+function bridgeInit() {
+	var b = panelBridge();
+	if (!b || typeof b.addEventListener !== 'function') return;
+	b.addEventListener('message', function (ev) { onHostMessage(ev); });
+	try { b.postMessage({ type: 'host-info' }); } catch (e) { /* an older host */ }
+}
+
+function onHostMessage(ev) {
+	var msg = ev && ev.data;
+	/* WebView2 delivers postMessage(object) on `data` as an object and
+	   postMessageAsString as a string. Both shapes are read, neither is trusted:
+	   every branch below tests the type it is about to use. */
+	if (typeof msg === 'string') {
+		try { msg = JSON.parse(msg); } catch (e) { return; }
+	}
+	if (!msg || typeof msg !== 'object') return;
+	if (msg.type === 'settings-saved') { onSettingsSaved(msg.props); return; }
+	if (msg.type === 'host-info') { hostInfo = msg; renderSettingsFoot(); return; }
+	if (msg.type === 'focus-result') { laneEOnFocusResult(msg); return; }   /* lane E */
+}
+
+/* ---- lane B: the settings sheet ---- */
+
+/* The props this sheet may edit, and NOTHING else. crabdPort, display and the
+   pairing code are deliberately absent: the port and the display are how the host
+   finds crabd and the glass, and a page that could move either could hide itself;
+   the pairing code is the one secret a visited page must never be able to read or
+   write. The host validates this list again on its own side — this copy is the UI,
+   not the gate. */
+var SETTINGS_TOGGLES = [
+	['clock24', '24-hour clock', false],
+	['alertFlash', 'Flash on new alert', true],
+	['crabStyle', 'Crab accessories', true],
+	['chime', 'Chime on a new question', true],
+	['touchDiag', 'Touch diagnostics', false]
+];
+var SETTINGS_SLIDERS = [
+	['transparency', 'Background transparency', 0, '%'],
+	['chimeVolume', 'Chime volume', CHIME_VOLUME_DEFAULT, '']
+];
+/* A small fixed palette per colour, plus whatever the panel is actually set to —
+   a swatch row that could not show the current value would be a control that
+   cannot represent its own state. */
+var SETTINGS_COLORS = [
+	['textColor', 'Text', '#EDE7DF', ['#EDE7DF', '#FFFFFF', '#D9D2C7', '#B8AEA2']],
+	['accentColor', 'Accent', '#6F94CC', ['#6F94CC', '#2E7FF2', '#6FBF73', '#E8A33D', '#A39C93']],
+	['backgroundColor', 'Background', '#0F0E0D', ['#0F0E0D', '#000000', '#1A1816', '#12161C']]
+];
+var settingsDraft = null;
+
+function gearWanted() {
+	/* Standalone, where the sheet can actually save; or mock mode, where it is the
+	   only way to see the sheet off-glass. Never in iCUE: the property sheet is the
+	   settings surface there, and a second one that cannot write would be a lie. */
+	return isStandalone() || !!mockName;
+}
+
+function settingsCurrent() {
+	var d = {};
+	var i;
+	for (i = 0; i < SETTINGS_TOGGLES.length; i++) {
+		var t = SETTINGS_TOGGLES[i];
+		d[t[0]] = t[0] === 'crabStyle' ? !crabPlain() : boolProp(t[0], t[2]);
+	}
+	for (i = 0; i < SETTINGS_SLIDERS.length; i++) {
+		var sl = SETTINGS_SLIDERS[i];
+		var n = Number(getIcueProperty(sl[0]));
+		if (!isFinite(n)) n = sl[2];
+		d[sl[0]] = Math.max(0, Math.min(100, Math.round(n)));
+	}
+	for (i = 0; i < SETTINGS_COLORS.length; i++) {
+		var c = SETTINGS_COLORS[i];
+		d[c[0]] = normHex(strProp(c[0], c[2]), c[2]);
+	}
+	return d;
+}
+
+function normHex(value, dflt) {
+	var m = /^#?([0-9a-f]{6})$/i.exec(String(value === null || value === undefined ? '' : value).trim());
+	return m ? '#' + m[1].toUpperCase() : dflt;
+}
+
+function settingsValues() {
+	if (!settingsDraft) settingsDraft = settingsCurrent();
+	return settingsDraft;
+}
+
+function openSettingsSheet() {
+	if (!ui.sheetSettings) return;
+	settingsDraft = settingsCurrent();
+	sheetSessionId = null;
+	sheetGen++;
+	sheetOpenState = null;
+	sheetMode = 'settings';
+	clearSheetTimer();
+	sheetBusy = false;
+	ui.sheet.classList.remove('busy');
+	setSheetStatus('', '');
+	ui.sheet.setAttribute('data-mode', 'settings');
+	ui.sheet.setAttribute('data-detail-state', '');
+	ui.sheet.setAttribute('data-approval', '');
+	ui.sheet.setAttribute('data-continue', '');
+	setVar(ui.sheet, '--sheet-accent', 'var(--accent)');
+	setText(ui.sheetTitle, 'Panel settings');
+	ui.sheetTitle.classList.remove('title-derived');
+	setText(ui.sheetRepo, panelBridge() ? 'saved to panel-settings.json' : 'preview only');
+	buildSettingsRows();
+	ui.sheet.classList.add('open');
+	ui.sheet.setAttribute('aria-hidden', 'false');
+	enterSheetFocus();
+}
+
+/* Built in JS rather than written into index.html, for the reason the burn list and
+   the card grid are: iCUE parses index.html as strict XML, and thirty controls of
+   static markup is thirty chances to ship an unclosed element to a surface with no
+   devtools. The region in the markup is one empty div. */
+function buildSettingsRows() {
+	var root = ui.sheetSettings;
+	if (!root) return;
+	var values = settingsValues();
+	root.textContent = '';
+	var i;
+	for (i = 0; i < SETTINGS_TOGGLES.length; i++) {
+		root.appendChild(settingsToggleRow(SETTINGS_TOGGLES[i][0], SETTINGS_TOGGLES[i][1], values));
+	}
+	for (i = 0; i < SETTINGS_COLORS.length; i++) {
+		root.appendChild(settingsColorRow(SETTINGS_COLORS[i], values));
+	}
+	for (i = 0; i < SETTINGS_SLIDERS.length; i++) {
+		root.appendChild(settingsSliderRow(SETTINGS_SLIDERS[i], values));
+	}
+	root.appendChild(settingsActions());
+	renderSettingsFoot();
+}
+
+function settingsRow(label) {
+	var row = document.createElement('div');
+	row.className = 'set-row';
+	var name = document.createElement('div');
+	name.className = 'set-label';
+	name.textContent = label;
+	row.appendChild(name);
+	return row;
+}
+
+function settingsToggleRow(key, label, values) {
+	var row = settingsRow(label);
+	var btn = document.createElement('button');
+	btn.type = 'button';
+	btn.className = 'set-btn set-toggle';
+	btn.setAttribute('data-set-key', key);
+	paintSettingsToggle(btn, !!values[key]);
+	btn.addEventListener('click', function () {
+		var next = !settingsValues()[key];
+		settingsValues()[key] = next;
+		paintSettingsToggle(btn, next);
+		setSettingsStatus('not saved yet', 'pending');
+	});
+	row.appendChild(btn);
+	return row;
+}
+
+function paintSettingsToggle(btn, on) {
+	btn.textContent = on ? 'On' : 'Off';
+	btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+	btn.setAttribute('data-on', on ? '1' : '0');
+}
+
+function settingsColorRow(spec, values) {
+	var key = spec[0];
+	var row = settingsRow(spec[1]);
+	var wrap = document.createElement('div');
+	wrap.className = 'set-swatches';
+	var palette = spec[3].slice();
+	var current = normHex(values[key], spec[2]);
+	if (palette.indexOf(current) === -1) palette.push(current);
+	for (var i = 0; i < palette.length; i++) {
+		wrap.appendChild(settingsSwatch(key, palette[i], current));
+	}
+	row.appendChild(wrap);
+	return row;
+}
+
+function settingsSwatch(key, hex, current) {
+	var b = document.createElement('button');
+	b.type = 'button';
+	b.className = 'set-swatch';
+	b.setAttribute('data-set-key', key);
+	b.setAttribute('aria-label', key + ' ' + hex);
+	b.setAttribute('title', hex);
+	b.style.background = hex;
+	b.setAttribute('aria-pressed', hex === current ? 'true' : 'false');
+	b.addEventListener('click', function () {
+		settingsValues()[key] = hex;
+		var sibs = b.parentNode ? b.parentNode.querySelectorAll('.set-swatch') : [];
+		for (var i = 0; i < sibs.length; i++) sibs[i].setAttribute('aria-pressed', 'false');
+		b.setAttribute('aria-pressed', 'true');
+		setSettingsStatus('not saved yet', 'pending');
+	});
+	return b;
+}
+
+function settingsSliderRow(spec, values) {
+	var key = spec[0];
+	var row = settingsRow(spec[1]);
+	var input = document.createElement('input');
+	input.type = 'range';
+	input.className = 'set-range';
+	input.min = '0';
+	input.max = '100';
+	input.step = '1';
+	input.value = String(values[key]);
+	input.setAttribute('data-set-key', key);
+	input.setAttribute('aria-label', spec[1]);
+	var out = document.createElement('span');
+	out.className = 'set-value';
+	out.textContent = values[key] + spec[3];
+	input.addEventListener('input', function () {
+		var n = Math.max(0, Math.min(100, Math.round(Number(input.value) || 0)));
+		settingsValues()[key] = n;
+		out.textContent = n + spec[3];
+		setSettingsStatus('not saved yet', 'pending');
+	});
+	row.appendChild(input);
+	row.appendChild(out);
+	return row;
+}
+
+function settingsActions() {
+	var row = document.createElement('div');
+	row.className = 'set-actions';
+
+	var test = document.createElement('button');
+	test.type = 'button';
+	test.className = 'set-btn';
+	test.id = 'setTest';
+	test.textContent = 'Test chime';
+	/* Plays whatever the sliders say RIGHT NOW, and plays through quiet hours: a
+	   deliberate tap on a button labelled "Test chime" is the operator asking to
+	   hear it, and a control that silently did nothing would be indistinguishable
+	   from a broken one. The automatic chime keeps its quiet gate. */
+	test.addEventListener('click', function () {
+		var v = settingsValues();
+		if (playChime(v.chimeVolume)) setSettingsStatus('played at ' + v.chimeVolume + '%', 'ok');
+		else setSettingsStatus('no audio output on this host', 'err');
+	});
+	row.appendChild(test);
+
+	var save = document.createElement('button');
+	save.type = 'button';
+	save.className = 'set-btn set-btn-save';
+	save.id = 'setSave';
+	save.textContent = 'Save';
+	save.addEventListener('click', onSettingsSave);
+	row.appendChild(save);
+
+	var status = document.createElement('div');
+	status.className = 'set-status';
+	status.id = 'setStatus';
+	row.appendChild(status);
+	ui.setStatus = status;
+
+	var foot = document.createElement('div');
+	foot.className = 'set-foot';
+	foot.id = 'setFoot';
+	row.appendChild(foot);
+	ui.setFoot = foot;
+	return row;
+}
+
+function setSettingsStatus(text, kind) {
+	if (!ui.setStatus) return;
+	setText(ui.setStatus, text);
+	if (ui.setStatus.getAttribute('data-kind') !== (kind || '')) {
+		ui.setStatus.setAttribute('data-kind', kind || '');
+	}
+}
+
+/* What the sheet says about WHERE a save goes. Honest in all three hosts: the file
+   the host named, or the plain statement that there is nothing to save to. */
+function renderSettingsFoot() {
+	if (!ui.setFoot) return;
+	if (!panelBridge()) {
+		setText(ui.setFoot, 'saving needs the SideCrab panel host');
+		return;
+	}
+	if (hostInfo && typeof hostInfo.settingsPath === 'string') {
+		setText(ui.setFoot, 'panel host ' + (hostInfo.version || '') + ' ' + EMDASH + ' ' + hostInfo.settingsPath);
+		return;
+	}
+	setText(ui.setFoot, 'panel host connected');
+}
+
+function onSettingsSave() {
+	var b = panelBridge();
+	if (!b) {
+		/* The honest answer, and the whole reason the sheet still renders here: this
+		   page in a plain browser has no file to write and no host to write it. */
+		setSettingsStatus('saving needs the SideCrab panel host', 'err');
+		return;
+	}
+	try { b.postMessage({ type: 'settings', props: settingsValues() }); }
+	catch (e) {
+		setSettingsStatus('save not sent ' + EMDASH + ' the host refused the message', 'err');
+		return;
+	}
+	setSettingsStatus('saving', 'pending');
+}
+
+/* The host's answer, and the ONLY thing that moves the live props: what it echoes
+   back is what it actually stored, after its own whitelist and clamps, which is
+   not necessarily what this page sent. */
+function onSettingsSaved(props) {
+	if (!props || typeof props !== 'object') { setSettingsStatus('nothing saved', 'err'); return; }
+	var host = typeof window !== 'undefined' ? window.__sidecrabHost : null;
+	if (host && typeof host === 'object' && host.props && typeof host.props === 'object') {
+		for (var k in props) {
+			if (Object.prototype.hasOwnProperty.call(props, k)) host.props[k] = props[k];
+		}
+	}
+	settingsDraft = null;
+	/* Live, with no reload: a reload would throw away the open sheet under the
+	   operator's hand and cost a second of blank glass for a colour change. */
+	applyProperties();
+	if (sheetMode === 'settings') buildSettingsRows();
+	setSettingsStatus('saved', 'ok');
+}
+
+/* ---- lane B: boot ---- */
+
+function laneBInit() {
+	/* Resolved here rather than added to init()'s id list, so this lane's elements
+	   are found in one place with the code that uses them. */
+	ui.gearChip = document.getElementById('gearChip');
+	ui.sheetSettings = document.getElementById('sheetSettings');
+	transportDiag();
+	if (ui.gearChip) {
+		/* Whether the chip shows is fixed for the life of the page (the host and
+		   the mock flag are both settled before this runs), so it is decided once
+		   rather than on every render. */
+		ui.gearChip.classList.toggle('shown', gearWanted());
+		ui.gearChip.addEventListener('click', openSettingsSheet);
+	}
+	bridgeInit();
+	sseStart();
+	/*   &settings=1   open the settings sheet on boot, for the shot. Mock-gated like
+	     every other dev flag, so it is unreachable from the iCUE origin. */
+	if (mockName && /[?&]settings=1\b/.test(window.location.search)) openSettingsSheet();
+}
+
+/* ==== end lane B ==== */
+
 function init() {
 	var ids = ['flash', 'banner', 'bannerText', 'crab', 'crabWrap', 'limitsHead', 'clockHm', 'clockSs', 'clockDate',
 		'quietNote', 'fleet', 'fleetGlow', 'fleetToast',
@@ -7941,7 +8615,10 @@ function init() {
 		'sheetApprovalDetail', 'sheetApprovalTool', 'sheetApprovalSummary', 'sheetApprovalLeft',
 		'sheetApprovalThreshold', 'sheetApprove', 'sheetDeny',
 		'sheetContinue', 'sheetContinueBtns', 'sheetContinueStatus',
-		'notice', 'noticeText'];
+		'notice', 'noticeText',
+		/* lane C: the view switcher's chips and containers, and the canvas crab. */
+		'chipViewSessions', 'chipViewBurn', 'chipViewWeek', 'chipViewDetail', 'viewBadge',
+		'viewBurn', 'viewWeek', 'viewDetail', 'sheetFullView', 'crabCanvas'];
 	for (var i = 0; i < ids.length; i++) ui[ids[i]] = document.getElementById(ids[i]);
 	ui.extraRows = [];
 	ui.sparkBars = [];
@@ -8178,6 +8855,11 @@ function init() {
 	   gridCapacity reads the class's result off the computed style. */
 	applyDensity();
 	syncHeaderChips();
+	/* lane C. Before the first render for the reason applyDensity is above it: the
+	   active view decides the card grid's box, and gridCapacity reads the result
+	   off the computed style rather than a second copy of it. */
+	laneCViewsInit();
+	laneCCrabInit();
 
 	ui.cards.addEventListener('click', onCardsClick);
 	ui.sheet.addEventListener('click', onSheetClick);
@@ -8239,6 +8921,8 @@ function init() {
 	tick();
 	poll();
 	setInterval(poll, POLL_MS);
+	laneBInit();        /* lane B: the push transport, the gear chip and the bridge */
+	laneEInit();        /* lane E: AFTER laneBInit, which is what proves the bridge */
 	setInterval(tick, 1000);
 	if (forcedTrick) startForcedTrick(forcedTrick);
 	scheduleBlink();
@@ -8360,6 +9044,2497 @@ function autoOpenMatch(target, wantWaiting) {
 		}
 	}
 	return false;
+}
+
+
+/* ---- lane A: the host sensor row, the GPU cell and the load charts ----------
+
+   crabd serves four additive members inside `host`: `sensors` (a curated, capped
+   list from HWiNFO's shared memory), `sensorsSource` (its provenance and its own
+   freshness), `gpu` (nvidia-smi) and `load` (disk, network, commit, the busiest
+   process). Everything below renders them, and everything below is presence-
+   detected member by member, never on the block being truthy — the v0.21.0 rule,
+   for the same reason: an older crabd sends none of this, a current one may send
+   any member as null, and both have to land on "the segment is simply absent".
+
+   WHICH SOURCE OWNS A TEMPERATURE. The bridge, when there is one. `sensorApi` is
+   bound only inside iCUE (or behind the dev &sensors= flag), and where it is bound
+   the operator has PICKED the two sensors those cells are about — a companion-side
+   list must not overwrite a choice. Where there is no bridge (the standalone host,
+   and a plain browser) these cells are the only temperatures the panel has, so
+   they render. Deliberately keyed on the BRIDGE and not on isStandalone(): the
+   question this answers is "does something already own these cells", and an iCUE
+   install whose Sensors plugin is missing is the same answer as a dev browser. */
+
+var hostSensors = [];            /* host.sensors, as served */
+var hostSensorsSource = null;    /* host.sensorsSource, or null when absent */
+var hostGpu = null;              /* host.gpu when available:true, else null */
+var hostLoad = null;             /* host.load */
+var hostLoadStale = false;
+var hostGpuStale = false;
+/* The second ten-minute ring, beside hostRing and on the same poll. A ring of its
+   own rather than four more members on hostRing's entries: these come from three
+   samplers on a 5 s cadence against a 2 s document, so an entry here is null far
+   more often than a cpu/mem one, and hostRuns' "a null breaks the line" rule would
+   then be reading one sampler's silence as another's. */
+var laneARing = [];
+var laneACells = null;           /* built-once marker for the one span this block adds */
+/* Which shared cells this block last painted. The CPU and GPU value spans belong to
+   the bridge too, so "clear what I wrote" has to be a fact this block remembers
+   rather than a guess from the current state. */
+var laneAPaintedCpu = false;
+var laneAPaintedGpu = false;
+/* Freshness for the two samplers that carry their own timestamp. 30 s is the number
+   the whole feed is called stale at and the number crabd's own sensorsSource uses,
+   so the panel has ONE definition of old. */
+var LANE_A_STALE_MS = 30000;
+/* 11 characters, against the bridge row's 13 (SENSOR_NAME_MAX), and it is the row's
+   width guarantee rather than a preference: the CSS cap that backs it is 11 vmin
+   (79.2 px at 2560x720) instead of 13.5, which is what pays for the extra cell. The
+   number is chosen the way v0.21.0 chose 13.5 - off the label that will actually
+   paint. HWiNFO's CPU label here is "CPU (Tctl/Tdie)", which this block shortens to
+   "Tctl/Tdie": 9 characters, inside the clamp with room, so the most ordinary label
+   on this row is not the one that ellipses. */
+var LANE_A_NAME_MAX = 11;
+var LANE_A_SENSOR_CLASSES = [
+	['vrm', /\bvrm\b|\bvsoc\b|\bmos\b|vcore\s*soc/i],
+	['drive', /\bdrive\b|\bnvme\b|\bssd\b|\bhdd\b|\bdisk\b/i],
+	['board', /motherboard|chipset|\bpch\b|\bsystem\b|ambient/i],
+	['gpu', /\bgpu\b|\bvideo\b/i],
+	['cpu', /\bcpu\b|\btctl\b|\btdie\b|\bccd\d*\b|\bdie\b|package/i]
+];
+
+function laneASensorsOwnTheRow() { return !sensorApi; }
+
+/* One served sensor's class. Matched on the LABEL in specificity order, the same
+   walk crabd ranks with — a VRM probe labelled "CPU VDDCR_VDD VRM (SVI3 TFN)" is a
+   VRM temperature, and a CPU-first walk would file it as a CPU one. */
+function laneASensorClass(sensor) {
+	if (!sensor || typeof sensor !== 'object') return 'other';
+	if (sensor.kind === 'fan') return 'fan';
+	if (sensor.kind === 'power') return 'power';
+	if (sensor.kind !== 'temp') return 'other';
+	var label = String(sensor.name || '');
+	for (var i = 0; i < LANE_A_SENSOR_CLASSES.length; i++) {
+		if (LANE_A_SENSOR_CLASSES[i][1].test(label)) return LANE_A_SENSOR_CLASSES[i][0];
+	}
+	return 'other';
+}
+
+function laneAFirstOfClass(want) {
+	for (var i = 0; i < hostSensors.length; i++) {
+		if (laneASensorClass(hostSensors[i]) === want &&
+			typeof hostSensors[i].value === 'number' && isFinite(hostSensors[i].value)) {
+			return hostSensors[i];
+		}
+	}
+	return null;
+}
+
+/* The fastest fan or pump, and how many there are. Compact BY MEASUREMENT: six fan
+   cells do not fit the row (see DEV.md), and the one number that answers "is the
+   cooling working" is the highest. The rest ride on title/aria. */
+function laneAFan() {
+	var best = null, count = 0, all = [];
+	for (var i = 0; i < hostSensors.length; i++) {
+		var s = hostSensors[i];
+		if (laneASensorClass(s) !== 'fan') continue;
+		if (typeof s.value !== 'number' || !isFinite(s.value)) continue;
+		count++;
+		all.push(laneASheetName(s) + ' ' + Math.round(s.value) + ' rpm');
+		if (!best || s.value > best.value) best = s;
+	}
+	return best ? { sensor: best, count: count, all: all } : null;
+}
+
+/* HWiNFO's labels are already short and already name the sensor, so this is NOT
+   shortSensorName: that one splits on "/" to take the last segment of an iCUE
+   device path, and "CPU (Tctl/Tdie)" — the single most likely label on this row —
+   comes out of it as "Tdie)". Here the cell key already says CPU or GPU, so the
+   leading word is dropped, the brackets go with it, and the trailing
+   "Temperature" the degree sign has already said goes too. Same 13-character
+   clamp as the bridge's labels, so the row's width guarantee is one number. */
+function shortHostSensorName(raw) {
+	if (raw === undefined || raw === null) return '';
+	var s = String(raw).replace(/\s+/g, ' ').trim();
+	if (!s) return '';
+	s = s.replace(/^(cpu|gpu|drive|disk)\s+/i, '');
+	s = s.replace(/\s*\b(temperatures?|temps?)\b\s*$/i, '').trim();
+	s = s.replace(/^\((.*)\)$/, '$1').trim();
+	if (!s) return '';
+	if (s.length > LANE_A_NAME_MAX) s = s.slice(0, LANE_A_NAME_MAX - 1).trim() + '…';
+	return s;
+}
+
+/* A number that is a number, at the contract's own bounds. Mirrors hostPct's rule:
+   a contract-legal null must never arrive as Number(null) === 0. */
+function laneANum(v) {
+	return (typeof v === 'number' && isFinite(v)) ? v : null;
+}
+
+function laneAAgeMs(iso, now) {
+	if (!iso) return null;
+	var t = Date.parse(iso);
+	return isFinite(t) ? Math.max(0, now - t) : null;
+}
+
+/* Read the four members off the document. Called from renderHost, so the row and
+   this share one clock and one source of truth. */
+function renderHostExtras(host) {
+	var have = !!(host && typeof host === 'object' && !Array.isArray(host));
+	var now = Date.now();
+	hostSensors = have && Array.isArray(host.sensors) ? host.sensors : [];
+	hostSensorsSource = have && host.sensorsSource &&
+		typeof host.sensorsSource === 'object' ? host.sensorsSource : null;
+	/* `available:false` is an ANSWER — this machine has no NVIDIA card, or nvidia-smi
+	   could not be run — and it is rendered as the absence of the reading, never as a
+	   cell of em-dashes that reads like a broken sensor. */
+	hostGpu = (have && host.gpu && typeof host.gpu === 'object' &&
+		host.gpu.available === true) ? host.gpu : null;
+	hostLoad = have && host.load && typeof host.load === 'object' ? host.load : null;
+	var gpuAge = hostGpu ? laneAAgeMs(hostGpu.sampledAt, now) : null;
+	hostGpuStale = gpuAge !== null && gpuAge > LANE_A_STALE_MS;
+	var loadAge = hostLoad ? laneAAgeMs(hostLoad.sampledAt, now) : null;
+	hostLoadStale = loadAge !== null && loadAge > LANE_A_STALE_MS;
+}
+
+function laneASensorsStale() {
+	return !!(hostSensorsSource && hostSensorsSource.stale === true);
+}
+
+/* Does this block have anything to put on the row? Asked by syncSensorRow, which
+   owns visibility for the whole row — the v0.21.0 rule that the row is assembled in
+   ONE place from all of the state. */
+/* Does the companion have a temperature of its own? Asked by the shipping sheet
+   before it says there are none. Not laneAAnyCell: that one asks whether this block
+   OWNS the row, and inside iCUE the bridge owns it while these readings still exist. */
+function laneAHasTemps() {
+	for (var i = 0; i < hostSensors.length; i++) {
+		if (hostSensors[i] && hostSensors[i].kind === 'temp' &&
+			typeof hostSensors[i].value === 'number' && isFinite(hostSensors[i].value)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function laneAAnyCell() {
+	if (!laneASensorsOwnTheRow()) return false;
+	return !!(laneAGpuOn() || laneAFirstOfClass('cpu'));
+}
+
+/* The CPU cell can now be lit by a THIRD source. Until this block there were two -
+   the bridge's temperature and the feed's utilization - and a machine with neither
+   but with a readable HWiNFO mapping would have had its temperature computed, served,
+   and then hidden by a visibility test that had never heard of it. */
+function laneACpuOn() {
+	return !!(laneASensorsOwnTheRow() && laneAFirstOfClass('cpu'));
+}
+
+function laneAGpuOn() {
+	if (!laneASensorsOwnTheRow()) return false;
+	return !!(laneAGpuTemp() !== null || (hostGpu && laneANum(hostGpu.utilPct) !== null));
+}
+
+/* The card's temperature, preferring nvidia-smi and falling back to HWiNFO's own
+   GPU row. Both are real readings of the same die; nvidia-smi is preferred because
+   it is the source that also carries the utilisation beside it. */
+function laneAGpuTemp() {
+	if (hostGpu) {
+		var t = laneANum(hostGpu.tempC);
+		if (t !== null) return t;
+	}
+	var s = laneAFirstOfClass('gpu');
+	return s ? s.value : null;
+}
+
+/* The drive's friendly name, for title/aria: the part after "S.M.A.R.T.: " and
+   before the bracketed serial. A serial number is not something to put on a panel. */
+function laneADeviceLabel(device) {
+	var s = String(device || '').replace(/^[^:]*:\s*/, '').trim();
+	var cut = s.indexOf(' (');
+	if (cut > 0) s = s.slice(0, cut);
+	return s.replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+}
+
+/* The one element this block adds to the row, built once and lazily. */
+function laneABuildCells() {
+	if (laneACells || !ui.sensors || !ui.hostMem) return laneACells;
+	/* NO NEW CELL, and that is a measurement rather than a decision about taste.
+	   This row is one line inside a zone that gives it 561.9 px at 2560x720 (the
+	   v0.21.0 figure, re-measured on HEAD this session: unchanged), the cells do not
+	   shrink, and the widest each can ever paint is fixed text plus the capped name:
+	   CPU 228.9, GPU 145.0, MEM 95.8, three gaps 47.4 - 501.3 px, 58.7 px spare.
+	   ONE more cell costs 93.1 px plus a 15.8 px gap and paints 610.3, which is
+	   50.3 px PAST the zone edge (measured off the glass, not computed). So the VRM,
+	   the drive, the fans and the package power go to the host sheet, which is one
+	   tap away and has the width this line does not. The cells this block writes are
+	   the two the row already has.
+	   laneACells stays an object so the row has one owner either way. */
+	laneACells = {};
+	/* The GPU cell's utilisation segment, beside its temperature exactly as the CPU
+	   cell's host figure sits beside its own. Appended to the SHIPPING cell rather
+	   than to a new one: it is the same cell, and a second GPU cell would be the
+	   panel saying there are two cards. */
+	if (ui.sensorGpu && !ui.hostGpuVal) {
+		var x = document.createElement('span');
+		x.className = 'sensor-x';
+		x.id = 'hostGpuVal';
+		ui.sensorGpu.insertBefore(x, ui.sensorGpuWarn || null);
+		ui.hostGpuVal = x;
+	}
+	return laneACells;
+}
+
+/* The threshold colouring, the bridge's rule applied to the companion's numbers:
+   80/90 in Celsius, and a reading in any other unit is shown plainly rather than
+   being called red at 80°F. */
+function laneATempColor(value, unit) {
+	var u = String(unit || '').replace(/^\s*°?/, '').toUpperCase();
+	var isC = u === '' || u.charAt(0) === 'C';
+	if (!isC) return 'var(--text-color)';
+	return value >= SENSOR_RED_C ? 'var(--red)'
+		: value >= SENSOR_AMBER_C ? 'var(--amber)'
+		: 'var(--text-color)';
+}
+
+/* THE UNIT LETTER IS SPENT ONLY WHEN IT CHANGES THE MEANING. Celsius is the scale
+   this row's 80/90 thresholds are in and the scale it colours against, so "60°" says
+   everything "60°C" does — and the letter costs 11.0 px per cell, measured, which at
+   four cells is most of a cell. A reading in any other unit KEEPS its letter, because
+   there the letter is the whole difference between 140°F and a machine on fire. */
+function laneAPaintTemp(el, value, unit) {
+	var u = String(unit || '').replace(/^\s*°?/, '').toUpperCase();
+	var bare = u === '' || u.charAt(0) === 'C';
+	setText(el, Math.round(value) + (bare ? '°' : '°' + u.charAt(0)));
+	setVar(el, '--sensor-color', laneATempColor(value, unit));
+}
+
+/* The row's lane A half, painted after syncSensorRow has decided the rest. */
+function syncLaneASensorCells() {
+	if (!laneABuildCells()) return;   /* the row is not in the DOM yet */
+	var own = laneASensorsOwnTheRow();
+	var stale = laneASensorsStale();
+
+	/* THE CPU AND GPU CELLS ARE SHARED with the bridge, so they are only written
+	   here when nothing else owns them — and when the bridge takes over, what this
+	   block wrote is cleared rather than left behind. */
+	var cpu = own ? laneAFirstOfClass('cpu') : null;
+	var gpuTemp = own ? laneAGpuTemp() : null;
+	var cpuName = cpu ? shortHostSensorName(cpu.name) : '';
+	/* The tighter name cap travels with the state that needs it, so a row the bridge
+	   owns keeps its own 13.5 vmin exactly as it does today. */
+	ui.sensors.classList.toggle('host-sensors', own);
+
+	if (cpu && ui.sensorCpuVal) {
+		laneAPaintTemp(ui.sensorCpuVal, cpu.value, cpu.unit);
+		ui.sensorCpuVal.classList.toggle('stale', stale);
+		setText(ui.sensorCpuName, cpuName);
+		ui.sensorCpuName.classList.toggle('shown', !!cpuName);
+		if (cpu.name) {
+			ui.sensorCpuName.setAttribute('title', String(cpu.name));
+			ui.sensorCpuName.setAttribute('aria-label', String(cpu.name));
+		}
+		laneAPaintedCpu = true;
+	} else if (laneAPaintedCpu) {
+		/* WHAT THIS BLOCK WROTE, THIS BLOCK CLEARS, and the NAME goes with the value:
+		   a crabd that stops serving `host.sensors` (a downgrade, or HWiNFO closing)
+		   left "Tctl/Tdie" sitting beside the load percentage with no reading behind
+		   it - a label for a temperature that is no longer on the glass. That is
+		   v0.21.0's hideSensor lesson, one source along. Guarded on having painted,
+		   so this can never blank a cell the BRIDGE owns. */
+		laneAPaintedCpu = false;
+		setText(ui.sensorCpuVal, '');
+		ui.sensorCpuVal.classList.remove('stale');
+		setText(ui.sensorCpuName, '');
+		ui.sensorCpuName.classList.remove('shown');
+		ui.sensorCpuName.removeAttribute('title');
+		ui.sensorCpuName.removeAttribute('aria-label');
+	}
+
+	if ((own || laneAPaintedGpu) && ui.sensorGpuVal) {
+		laneAPaintedGpu = gpuTemp !== null;
+		if (gpuTemp !== null) {
+			var gpuUnit = hostGpu && laneANum(hostGpu.tempC) !== null ? 'C'
+				: (laneAFirstOfClass('gpu') || {}).unit;
+			laneAPaintTemp(ui.sensorGpuVal, gpuTemp, gpuUnit);
+			ui.sensorGpuVal.classList.toggle('stale', hostGpu ? hostGpuStale : stale);
+		} else {
+			setText(ui.sensorGpuVal, '');
+		}
+		var util = own && hostGpu ? laneANum(hostGpu.utilPct) : null;
+		if (ui.hostGpuVal) {
+			setText(ui.hostGpuVal, util === null ? '' : Math.round(util) + '%');
+			ui.hostGpuVal.classList.toggle('shown', util !== null);
+			ui.hostGpuVal.classList.toggle('stale', hostGpuStale);
+			if (util !== null && hostGpu && hostGpu.name) {
+				ui.sensorGpu.setAttribute('title', String(hostGpu.name));
+				ui.sensorGpu.setAttribute('aria-label', String(hostGpu.name) +
+					' utilization ' + Math.round(util) + '%');
+			}
+		}
+	}
+
+}
+
+/* ---- the ten-minute ring for the new series -------------------------------- */
+
+function laneASampleHost(doc) {
+	var h = doc && doc.host && typeof doc.host === 'object' && !Array.isArray(doc.host)
+		? doc.host : null;
+	var gpu = h && h.gpu && typeof h.gpu === 'object' && h.gpu.available === true
+		? h.gpu : null;
+	var load = h && h.load && typeof h.load === 'object' ? h.load : null;
+	var now = Date.now();
+	laneARing.push({
+		t: now,
+		gpu: gpu ? laneANum(gpu.utilPct) : null,
+		gputemp: gpu ? laneANum(gpu.tempC) : null,
+		commit: load ? laneANum(load.commitPct) : null,
+		disk: laneASum(load, 'diskReadBps', 'diskWriteBps'),
+		net: laneASum(load, 'netRxBps', 'netTxBps')
+	});
+	var cut = now - HOST_WINDOW_MS;
+	while (laneARing.length && (laneARing[0].t < cut || laneARing.length > HOST_RING_MAX)) {
+		laneARing.shift();
+	}
+}
+
+/* Two halves of one throughput figure. Null unless BOTH are readable: "1.2 MB/s of
+   reads plus an unknown number of writes" is not a total, and adding a null as zero
+   would draw a line that is wrong by exactly the part that could not be measured. */
+function laneASum(load, a, b) {
+	if (!load) return null;
+	var x = laneANum(load[a]), y = laneANum(load[b]);
+	return (x === null || y === null) ? null : x + y;
+}
+
+function laneARuns(key) {
+	var runs = [], cur = [], prevT = null;
+	for (var i = 0; i < laneARing.length; i++) {
+		var s = laneARing[i];
+		if (s[key] === null) {
+			if (cur.length) runs.push(cur);
+			cur = []; prevT = null;
+			continue;
+		}
+		if (prevT !== null && s.t - prevT > HOST_GAP_MS) {
+			if (cur.length) runs.push(cur);
+			cur = [];
+		}
+		cur.push(s);
+		prevT = s.t;
+	}
+	if (cur.length) runs.push(cur);
+	return runs;
+}
+
+function laneACount(key) {
+	var n = 0;
+	for (var i = 0; i < laneARing.length; i++) { if (laneARing[i][key] !== null) n++; }
+	return n;
+}
+
+function laneAMax(key) {
+	var m = 0;
+	for (var i = 0; i < laneARing.length; i++) {
+		if (laneARing[i][key] !== null && laneARing[i][key] > m) m = laneARing[i][key];
+	}
+	return m;
+}
+
+/* ---- the host sheet's lane A half ------------------------------------------ */
+
+function fmtRate(bps) {
+	if (bps === null || bps === undefined) return EMDASH;
+	if (bps >= 1048576) return (bps / 1048576).toFixed(1) + ' MB/s';
+	if (bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
+	return Math.round(bps) + ' B/s';
+}
+
+/* Whether this block has anything for the sheet. Folded into hostSheetAvailable, so
+   a machine whose kernel counters cannot be read but whose card can still opens. */
+function laneAHostAvailable() {
+	if (hostGpu) return true;
+	if (hostSensors.length) return true;
+	if (hostLoad) {
+		var keys = ['diskReadBps', 'diskWriteBps', 'netRxBps', 'netTxBps', 'commitPct'];
+		for (var i = 0; i < keys.length; i++) {
+			if (laneANum(hostLoad[keys[i]]) !== null) return true;
+		}
+		if (hostLoad.topProcess && typeof hostLoad.topProcess === 'object') return true;
+	}
+	return false;
+}
+
+/* What the sheet's signature has to include, so a changed reading repaints it and
+   an unchanged one does not. Same discipline as hostSig's own members. */
+function laneAHostSig() {
+	var top = hostLoad && hostLoad.topProcess ? hostLoad.topProcess : null;
+	return [laneARing.length, hostSensors.length,
+		hostSensorsSource ? hostSensorsSource.stale : null,
+		hostSensorsSource ? hostSensorsSource.available : null,
+		hostGpu ? hostGpu.tempC : null, hostGpu ? hostGpu.utilPct : null,
+		hostGpu ? hostGpu.memUsedMB : null, hostGpu ? hostGpu.powerW : null,
+		hostLoad ? hostLoad.diskReadBps : null, hostLoad ? hostLoad.netRxBps : null,
+		hostLoad ? hostLoad.commitPct : null,
+		top ? top.name + top.cpuPct : null].join('#');
+}
+
+function laneANote(text, stale) {
+	var el = hostNote(text);
+	if (stale) el.classList.add('stale');
+	return el;
+}
+
+function appendLaneAHostBlocks() {
+	if (!ui.sheetHost) return;
+	/* THE GPU LINE. Absent when there is no card — an unavailable block is an answer,
+	   and a row of em-dashes for a machine that has no NVIDIA GPU is not it. */
+	if (hostGpu) {
+		var bits = [];
+		var used = laneANum(hostGpu.memUsedMB), total = laneANum(hostGpu.memTotalMB);
+		if (used !== null && total !== null) {
+			bits.push((used / 1024).toFixed(1) + ' / ' + (total / 1024).toFixed(1) +
+				' GB VRAM');
+		}
+		var watts = laneANum(hostGpu.powerW), limit = laneANum(hostGpu.powerLimitW);
+		if (watts !== null) {
+			bits.push(Math.round(watts) + ' W' +
+				(limit !== null ? ' of ' + Math.round(limit) + ' W' : ''));
+		}
+		var clock = laneANum(hostGpu.clockMHz);
+		if (clock !== null) bits.push(Math.round(clock) + ' MHz');
+		if (bits.length) {
+			ui.sheetHost.appendChild(laneANote(
+				(hostGpu.name ? String(hostGpu.name) + ' ' + EMDASH + ' ' : '') +
+				bits.join(', '), hostGpuStale));
+		}
+	}
+
+	/* THE LOAD LINE. Each half is independently null, so a machine whose PDH query
+	   failed still gets its commit figure and its busiest process. */
+	if (hostLoad) {
+		var load = [];
+		var dr = laneANum(hostLoad.diskReadBps), dw = laneANum(hostLoad.diskWriteBps);
+		if (dr !== null || dw !== null) {
+			load.push('disk ' + fmtRate(dr) + ' read, ' + fmtRate(dw) + ' write');
+		}
+		var rx = laneANum(hostLoad.netRxBps), tx = laneANum(hostLoad.netTxBps);
+		if (rx !== null || tx !== null) {
+			load.push('net ' + fmtRate(rx) + ' in, ' + fmtRate(tx) + ' out');
+		}
+		var commit = laneANum(hostLoad.commitPct);
+		if (commit !== null) load.push('commit ' + Math.round(commit) + '%');
+		var top = hostLoad.topProcess;
+		if (top && typeof top === 'object' && laneANum(top.cpuPct) !== null) {
+			load.push('top: ' + String(top.name || '?') + ' ' +
+				top.cpuPct.toFixed(1) + '%');
+		}
+		if (load.length) {
+			ui.sheetHost.appendChild(laneANote(load.join('     '), hostLoadStale));
+		}
+	}
+
+	/* THE SENSOR PROVENANCE, said out loud. A row of temperatures with no statement
+	   of where they came from or how old they are is the exact failure the v0.18.0
+	   through v0.21.0 releases were about, one source along. */
+	if (hostSensorsSource) {
+		var src;
+		if (hostSensorsSource.available !== true) {
+			src = 'sensors ' + EMDASH + ' ' + (hostSensorsSource.note || 'unavailable');
+		} else if (hostSensorsSource.stale === true) {
+			src = 'sensors ' + EMDASH + ' ' + hostSensors.length + ' from HWiNFO, ' +
+				laneAAgeWords(hostSensorsSource.ageSec) + ' old. ' +
+				(hostSensorsSource.note || '');
+		} else {
+			src = 'sensors ' + EMDASH + ' ' + hostSensors.length + ' from HWiNFO, ' +
+				laneAAgeWords(hostSensorsSource.ageSec) + ' old';
+		}
+		ui.sheetHost.appendChild(laneANote(src, hostSensorsSource.stale === true ||
+			hostSensorsSource.available !== true));
+	}
+
+	/* THE TEMPERATURES THE ROW HAS NO WIDTH FOR. The row paints the CPU and the GPU
+	   and is 58.7 px from its own edge doing it; everything else crabd curated - the
+	   VRM, the drive, the board, the package power - is here, where a line can be as
+	   long as the sheet is wide. Named, because a temperature with no subject is the
+	   failure the v0.21.0 release was about. */
+	var rest = laneAOtherReadings();
+	if (rest.length) {
+		ui.sheetHost.appendChild(laneANote(rest.join(', '), laneASensorsStale()));
+	}
+
+	/* THE FANS, for the same reason, and all of them: a stopped fan beside three
+	   spinning ones is the reading somebody opened this view for - and a card fan at
+	   0 rpm is a MEASURED zero, fan-stop at idle, not an absence. */
+	var fans = laneAFan();
+	if (fans) {
+		ui.sheetHost.appendChild(laneANote('fans ' + EMDASH + ' ' + fans.all.join(', '),
+			laneASensorsStale()));
+	}
+
+	/* TWO NEW CHARTS, AND THE COUNT IS A MEASUREMENT. This sheet's visible column is
+	   541 px at 2560x720 and a chart costs 145 px of it (measured off the glass); the
+	   shipped CPU and MEM charts plus their notes already spend 328. Four new charts
+	   paint 1078 px and put half of this view below a fold the panel's own scrolling
+	   is not proven to reach (v0.23.0). So the two series that have a SHAPE worth
+	   seeing get charts - the card's utilisation, which swings, and disk throughput,
+	   which spikes - and commit and network keep their numbers in the load line above,
+	   where they cost one line each. */
+	laneAChart('GPU', 'gpu', hostGpu ? laneANum(hostGpu.utilPct) : null, 100, '%');
+	laneARateChart('DISK', 'disk', laneASum(hostLoad, 'diskReadBps', 'diskWriteBps'));
+}
+
+/* A reading's name FOR THE SHEET, which has width the row does not: the label as
+   HWiNFO wrote it, minus only the trailing "Temperature" the degree sign already
+   says. Deliberately not shortHostSensorName — that one strips the leading CPU/GPU
+   word because the row's cell key had already said it, and here nothing has: it
+   turns the integrated card's "GPU Temperature" into an empty string, which is a
+   number with no subject. */
+function laneASheetName(sensor) {
+	var s = String((sensor && sensor.name) || '').replace(/\s+/g, ' ').trim();
+	s = s.replace(/\s*(temperatures?|temps?)\s*$/i, '').trim();
+	return s;
+}
+
+/* Every curated reading the row did not paint, in words: the VRM, the drive, the
+   board, the package power, and any GPU probe beside the one on the row. Fans are a
+   line of their own because they are the one kind whose zero means something.
+
+   NAMES ARE DISAMBIGUATED RATHER THAN SUPPRESSED, which is the v0.24.0 rule turned
+   around for a surface that can afford it: two cells showing one name name neither,
+   but in a LIST the answer is to say which device each came from. Measured cause -
+   this machine reports "GPU Temperature" from both the discrete card and the
+   integrated one, and "Drive Temperature" three times from one SSD. */
+function laneAOtherReadings() {
+	var rowCpu = laneAFirstOfClass('cpu');
+	var rowGpu = laneAFirstOfClass('gpu');
+	var picked = [], counts = {}, i, s, name;
+	for (i = 0; i < hostSensors.length; i++) {
+		s = hostSensors[i];
+		if (s === rowCpu || s === rowGpu) continue;
+		var cls = laneASensorClass(s);
+		if (cls === 'fan' || cls === 'other') continue;
+		if (typeof s.value !== 'number' || !isFinite(s.value)) continue;
+		name = laneASheetName(s);
+		if (!name) continue;
+		picked.push({ s: s, cls: cls, name: name });
+		counts[name.toLowerCase()] = (counts[name.toLowerCase()] || 0) + 1;
+	}
+	var out = [];
+	for (i = 0; i < picked.length; i++) {
+		var row = picked[i];
+		var unit = String(row.s.unit || '').replace(/^\s*°?/, '');
+		var device = counts[row.name.toLowerCase()] > 1
+			? laneADeviceLabel(row.s.device) : '';
+		out.push(row.name + (device ? ' (' + device + ')' : '') + ' ' +
+			(row.cls === 'power' ? Math.round(row.s.value) + ' ' + unit
+				: Math.round(row.s.value) + '°' +
+					(unit.toUpperCase().charAt(0) === 'C' ? '' : unit)));
+	}
+	return out;
+}
+
+function laneAAgeWords(sec) {
+	if (typeof sec !== 'number' || !isFinite(sec)) return 'unknown age';
+	if (sec < 90) return Math.round(sec) + ' s';
+	if (sec < 5400) return Math.round(sec / 60) + ' min';
+	return Math.round(sec / 3600) + ' h';
+}
+
+/* A percentage chart, the same shape and the same "collecting" floor appendHostChart
+   uses — two points are a slope, not a trend. Written here rather than by widening
+   that function because the rate charts below need a stated scale, and one function
+   that is sometimes 0-100 and sometimes not is a scale nobody can read off. */
+function laneAChart(label, key, nowValue, scaleMax, unit) {
+	if (!laneACount(key) && nowValue === null) return;
+	laneAAppendChart(label, key, nowValue === null ? EMDASH
+		: Math.round(nowValue) + unit, '0-' + scaleMax + unit, scaleMax);
+}
+
+function laneARateChart(label, key, nowValue) {
+	if (!laneACount(key) && nowValue === null) return;
+	/* THE SCALE IS STATED, never implied. A throughput has no natural 100%, so the
+	   axis is the window's own peak — and printing it in the head is what keeps that
+	   honest: without it a flat idle line and a flat saturated line look identical. */
+	var peak = Math.max(laneAMax(key), nowValue === null ? 0 : nowValue, 1024);
+	laneAAppendChart(label, key, fmtRate(nowValue), '0-' + fmtRate(peak), peak);
+}
+
+function laneAAppendChart(label, key, nowText, rangeText, scaleMax) {
+	var wrap = document.createElement('div');
+	wrap.className = 'hs-chart';
+	var head = document.createElement('div');
+	head.className = 'hs-head';
+	var name = document.createElement('span');
+	name.className = 'hs-name';
+	name.textContent = label;
+	var now = document.createElement('span');
+	now.className = 'hs-now';
+	now.textContent = nowText;
+	var range = document.createElement('span');
+	range.className = 'hs-range';
+	range.textContent = rangeText;
+	head.appendChild(name);
+	head.appendChild(now);
+	head.appendChild(range);
+	wrap.appendChild(head);
+
+	var have = laneACount(key);
+	if (have < HOST_MIN_SAMPLES) {
+		wrap.appendChild(hostNote('collecting ' + EMDASH + ' ' + have + ' of ' +
+			HOST_MIN_SAMPLES + ' samples'));
+		ui.sheetHost.appendChild(wrap);
+		return;
+	}
+	wrap.appendChild(laneAPlot(key, scaleMax));
+	var axis = document.createElement('div');
+	axis.className = 'hs-axis';
+	var l = document.createElement('span');
+	l.textContent = '10 min ago';
+	var r = document.createElement('span');
+	r.textContent = 'now';
+	axis.appendChild(l);
+	axis.appendChild(r);
+	wrap.appendChild(axis);
+	ui.sheetHost.appendChild(wrap);
+}
+
+/* buildHostPlot's mechanism against this ring and a stated scale: time on x so a run
+   of missed polls leaves a hole of the right width, and nothing bridged — a straight
+   segment across a gap is a reading nobody took. */
+function laneAPlot(key, scaleMax) {
+	var W = 1000, H = 100;
+	var svg = document.createElementNS(SVG_NS, 'svg');
+	svg.setAttribute('class', 'hs-plot');
+	svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+	svg.setAttribute('preserveAspectRatio', 'none');
+	svg.setAttribute('aria-hidden', 'true');
+	svg.setAttribute('focusable', 'false');
+
+	var half = document.createElementNS(SVG_NS, 'line');
+	half.setAttribute('class', 'hs-grid');
+	half.setAttribute('x1', '0');
+	half.setAttribute('x2', String(W));
+	half.setAttribute('y1', String(H / 2));
+	half.setAttribute('y2', String(H / 2));
+	svg.appendChild(half);
+
+	var now = Date.now();
+	var t0 = now - HOST_WINDOW_MS;
+	var top = scaleMax > 0 ? scaleMax : 1;
+	function px(t) { return Math.max(0, Math.min(W, ((t - t0) / HOST_WINDOW_MS) * W)); }
+	function py(v) { return H - (Math.max(0, Math.min(top, v)) / top) * H; }
+
+	var runs = laneARuns(key);
+	for (var i = 0; i < runs.length; i++) {
+		var run = runs[i];
+		if (run.length === 1) {
+			var dot = document.createElementNS(SVG_NS, 'circle');
+			dot.setAttribute('class', 'hs-dot');
+			dot.setAttribute('cx', px(run[0].t).toFixed(1));
+			dot.setAttribute('cy', py(run[0][key]).toFixed(1));
+			dot.setAttribute('r', '2');
+			svg.appendChild(dot);
+			continue;
+		}
+		var pts = [];
+		for (var j = 0; j < run.length; j++) {
+			pts.push(px(run[j].t).toFixed(1) + ',' + py(run[j][key]).toFixed(1));
+		}
+		var line = document.createElementNS(SVG_NS, 'polyline');
+		line.setAttribute('class', 'hs-line');
+		line.setAttribute('points', pts.join(' '));
+		svg.appendChild(line);
+	}
+	return svg;
+}
+
+/* ---- lane E: bring a session to the front ---- */
+
+/* Provisional labels: widget v0.31.0, host 0.3.0.
+
+   The operator is standing at the Edge, a card says a session wants an answer, and
+   the keyboard is two feet away in front of a display holding nine windows. This
+   control asks the panel HOST to put that session's window in front. The answer is
+   then typed where it was always going to be typed.
+
+   WHAT IT DOES NOT DO, deliberately and permanently. Nothing on this page and
+   nothing in the host types into a session, pastes into one, or clicks anything
+   inside one. Answering a session's multiple-choice question from the glass has no
+   supported path (see docs/notes/lane-e-spike.md), and the unsupported ones are all
+   the same thing: synthesising input into a window on the operator's behalf, which
+   is prompt injection wearing a different hat. Bringing the window forward is the
+   mitigation, and the person answers.
+
+   STANDALONE ONLY, gated on the BRIDGE rather than on isStandalone() - the rule
+   lane B's settings sheet keeps. iCUE has no host to ask and a plain browser at
+   /panel/ has no desktop to reach, and both of those are "no bridge". The controls
+   are BUILT rather than hidden, so in iCUE they do not exist at all.
+
+   ONE STATUS, TWO SURFACES. The sheet's shared status line is display:none in
+   detail mode (.sheet[data-mode="detail"] .sheet-status), which is why the continue
+   row carries its own, and why this lane carries its own twice: one line in the
+   sheet and one in the Detail head, both painted from the same two variables so a
+   result cannot show on one surface and not the other. */
+
+var LANE_E_STATUS_MS = 6000;
+
+/* What the host's refusal reasons say on the glass. Every branch is a sentence the
+   operator can act on: "no window" means answer at the keyboard the ordinary way,
+   "more than one" means the ranking would have had to guess. */
+var LANE_E_REASONS = {
+	'no-window': 'no window found for this session',
+	'no-match': 'no window found for this session',
+	'ambiguous': 'more than one window could be this session',
+	'refused': 'Windows would not change the foreground window',
+	'enumerate-failed': 'The host could not read the desktop'
+};
+
+var laneEStatusText = '';
+var laneEStatusKind = '';
+var laneEStatusTimer = null;
+var laneEPending = null;
+var laneESheetStatus = null;
+var laneEDetailStatus = null;
+
+function laneEAvailable() { return panelBridge() !== null; }
+
+function laneEButton(cls, label) {
+	var b = document.createElement('button');
+	b.type = 'button';
+	b.className = cls;
+	/* Its own attribute, matched above the generic .sheet-btn branch in onSheetClick
+	   exactly as Dismiss, Pin and Full view are: it wears .sheet-btn for its looks
+	   and carries no data-sheet-action, and the generic branch would POST an action
+	   of null to crabd. */
+	b.setAttribute('data-focus-session', '1');
+	b.textContent = label;
+	return b;
+}
+
+/* The session a tap belongs to. The SHEET wins when one is open, the same rule
+   laneCActionSessionId keeps; detailTarget() is the fallback because the Detail
+   page renders a chosen session OR the one the operator would have picked, and the
+   control has to follow what is on the glass. */
+function laneETarget() {
+	var id = laneCActionSessionId();
+	var s = id ? findSession(id) : null;
+	if (s) return s;
+	return currentView().key === 'detail' ? detailTarget() : null;
+}
+
+function laneESendFocus() {
+	var b = panelBridge();
+	var s = laneETarget();
+	if (!b || !s || !s.id) return;
+	laneEPending = String(s.id);
+	laneESetStatus('bringing it to the front', 'pending');
+	try {
+		/* Four FACTS about a session, and never a window handle: the host ranks the
+		   windows it enumerated itself. A handle from here would be a window picker
+		   a visited page could aim anywhere on the desktop. */
+		b.postMessage({
+			type: 'focus-session',
+			sessionId: String(s.id),
+			title: typeof s.title === 'string' ? s.title : '',
+			cwd: typeof s.cwd === 'string' ? s.cwd : '',
+			repo: typeof s.repo === 'string' ? s.repo : ''
+		});
+	} catch (e) {
+		laneEPending = null;
+		laneESetStatus('the host refused the message', 'err');
+	}
+}
+
+function laneEOnFocusResult(msg) {
+	/* A reply carrying a different session is a late answer to an earlier tap. The
+	   operator has moved on and the line belongs to the newer attempt. */
+	if (laneEPending !== null && String(msg.sessionId) !== laneEPending) return;
+	laneEPending = null;
+	if (msg.ok === true) {
+		/* Two different true answers, and the page must not blur them. The desktop app
+		   holds every session that has no window of its own in ONE window, so the host
+		   could not have found "this session's window" - it found the app, and the
+		   session is picked in its sidebar. Saying "brought to front" there would be a
+		   claim the host never made. */
+		laneESetStatus(msg.reason === 'desktop-app'
+			? 'brought the Claude app to the front'
+			: 'brought to front', 'ok');
+		return;
+	}
+	var reason = typeof msg.reason === 'string' ? msg.reason : '';
+	laneESetStatus(LANE_E_REASONS[reason] || LANE_E_REASONS['no-window'], 'err');
+}
+
+function laneESetStatus(text, kind) {
+	laneEStatusText = text || '';
+	laneEStatusKind = kind || '';
+	laneEPaintStatus();
+	if (laneEStatusTimer) { clearTimeout(laneEStatusTimer); laneEStatusTimer = null; }
+	/* A pending line stays until the host answers; a settled one clears itself, so
+	   a result from five minutes ago is never read as this tap's. */
+	if (laneEStatusText && laneEStatusKind !== 'pending') {
+		laneEStatusTimer = setTimeout(function () {
+			laneEStatusTimer = null;
+			laneEStatusText = '';
+			laneEStatusKind = '';
+			laneEPaintStatus();
+		}, LANE_E_STATUS_MS);
+	}
+}
+
+function laneEPaintStatus() {
+	laneEPaintStatusNode(laneESheetStatus, 'sheet-focus-status');
+	laneEPaintStatusNode(laneEDetailStatus, 'dv-focus-status');
+}
+
+function laneEPaintStatusNode(el, base) {
+	if (!el) return;
+	setText(el, laneEStatusText);
+	el.className = base + (laneEStatusKind ? ' ' + laneEStatusKind : '');
+}
+
+/* The Detail head's status node, re-made on every rebuild of that page and re-filled
+   from the same two variables. renderDetailView rebuilds whenever the session's own
+   facts change, which can land inside the six seconds a result is on screen. */
+function laneEDetailStatusNode() {
+	var el = document.createElement('div');
+	laneEDetailStatus = el;
+	laneEPaintStatusNode(el, 'dv-focus-status');
+	return el;
+}
+
+function laneEInit() {
+	if (!laneEAvailable()) return;
+	var pinRow = ui.sheetPin ? ui.sheetPin.parentNode : null;
+	if (!pinRow || !pinRow.parentNode) return;
+	/* Its OWN row, below the pin row and not in it. The pin row's own comment is the
+	   argument: it carries Pin and Full view at a 48 px fingertip floor, and a third
+	   control joining them moves both under a finger already travelling toward one. */
+	var row = document.createElement('div');
+	row.className = 'sheet-focus-actions';
+	row.appendChild(laneEButton('sheet-btn sheet-btn-focus', 'Bring to front'));
+	var status = document.createElement('span');
+	laneESheetStatus = status;
+	laneEPaintStatusNode(status, 'sheet-focus-status');
+	row.appendChild(status);
+	pinRow.parentNode.insertBefore(row, pinRow.nextSibling);
+}
+
+/* ======================================================================
+   ---- lane C: the grid-zone view switcher ----
+
+   The grid zone showed one thing: the session cards. It now shows four, chosen
+   by the chips in its own header, and the identity and Limits zones are
+   untouched by any of it.
+
+     sessions  the card grid, exactly as before. The filter and density chips
+               narrow THIS view and no other, which is why they stay where they
+               were rather than joining the switcher.
+     burn      today's spend, full width: by session, by model, and the 24 h
+               series the Limits sparkline only has room to sketch.
+     week      recap.week as a seven-day strip with the day drill INLINE.
+     detail    one session as a page, with the controls its sheet already has.
+
+   THE CARD GRID KEEPS ITS LAYOUT WHILE THE OTHER VIEWS ARE UP, and that is a
+   trap rather than a tidiness preference. gridCapacity() reads the computed
+   grid-template lists off #cards, and a display:none grid computes both axes to
+   the single token "none" — trackCount() would fall back to its 4x2 default and
+   a compact or a narrow slot would come back to the wrong capacity. The
+   stylesheet therefore gives #cards a zero height instead, where both axes still
+   resolve to a list of lengths and the count survives. Measured both ways; see
+   docs/notes/lane-c-dev.md.
+
+   AN ALERT NEVER HIDES BEHIND A VIEW, and it never yanks the glass out from
+   under a fingertip either. A session that flips to needs_input while another
+   view is up is counted on the Sessions chip and the chip pulses; nothing
+   switches by itself. Forcing the view would move a control out from under a
+   finger already travelling toward it, which is the failure every sheet on this
+   panel is built to avoid. */
+
+var VIEWS = [
+	{ key: 'sessions', chip: 'chipViewSessions' },
+	{ key: 'burn',     chip: 'chipViewBurn' },
+	{ key: 'week',     chip: 'chipViewWeek' },
+	{ key: 'detail',   chip: 'chipViewDetail' }
+];
+/* The property NAME inside the same vendor-storage object the filter, the
+   density and the pin map already share (see savePrefs). One object per widget
+   instance is the vendor's own pattern; a second key would be a second thing to
+   keep in step. */
+var VIEW_PROP = 'gridView';
+var viewIdx = 0;
+var viewStoredUnknown = null;  /* a value a NEWER build wrote — round-tripped, not replaced */
+var viewForced = null;         /* dev-only &view=, mock mode only, in memory only */
+var detailSessionId = null;    /* never persisted: a stored id restores a page for a session that has gone */
+var viewAlerts = {};           /* ids that started waiting while another view was up */
+var viewPrevState = {};
+var viewPrevSeeded = false;
+var viewBadgeSig = null;
+var burnViewSig = null;
+var weekViewSig = null;
+var detailViewSig = null;
+var detailContinueSig = null;
+var HEAD_SWIPE_PX = 48;        /* header travel that commits to a view change; 4x the tap slop */
+var headSwipe = null;
+
+/* The day drilled INSIDE the week view. Its own state, because the sheet's day
+   drill is a different surface with its own navigation — but NOT its own fetch:
+   both go through fetchHistory(), which owns the mock routing, the timeout, the
+   abort and the rebase. A second fetch here would be a second copy of four
+   behaviours that have each already been got wrong once. */
+var weekDay = null;
+var weekDayDoc = null;
+var weekDayBusy = false;
+var weekDayReq = 0;
+var weekDayFail = null;
+
+function currentView() { return VIEWS[viewIdx] || VIEWS[0]; }
+
+/* Every entry point routes through here, so the body attribute, the stored
+   preference, the card signature and the repaint can never disagree. cardSig is
+   cleared for the reason cycleDensity clears it: capacity is read off the grid's
+   computed rows and the class that decides them has only just moved. */
+function setGridView(key) {
+	var i = prefIndexOrNone(VIEWS, key);
+	if (i < 0) return;
+	viewIdx = i;
+	/* The tap is the operator overriding whatever a newer build had stored — the
+	   rule cycleFilter keeps, in a third place. */
+	viewStoredUnknown = null;
+	savePrefs();
+	if (VIEWS[i].key === 'sessions') viewAlerts = {};
+	applyGridView();
+	burnViewSig = weekViewSig = detailViewSig = null;
+	cardSig = '';
+	render();
+}
+
+function applyGridView() {
+	var key = currentView().key;
+	if (document.body.getAttribute('data-grid-view') !== key) {
+		document.body.setAttribute('data-grid-view', key);
+	}
+}
+
+function stepGridView(delta) {
+	var n = VIEWS.length;
+	setGridView(VIEWS[((viewIdx + delta) % n + n) % n].key);
+}
+
+/* Called from render(), after the cards are in the DOM: the badge counts off the
+   same document the grid was just built from. */
+function laneCRenderViews(doc, sessions, status, quiet) {
+	trackViewAlerts(sessions);
+	syncViewChips();
+	var key = currentView().key;
+	if (key === 'burn') renderBurnView(doc);
+	else if (key === 'week') renderWeekView(doc);
+	else if (key === 'detail') renderDetailView(sessions, quiet);
+}
+
+/* The EDGE, never the value — the rule detectTricks states for the party hat and
+   the reason is the same one: a view opened beside three waiting sessions has not
+   just been handed three alerts, and a panel that booted into the Burn view has
+   watched nothing happen at all.
+
+   THE BASELINE IS THE FIRST DOCUMENT, NOT THE FIRST RENDER, and that distinction
+   was a real defect for one round: render() runs once before any poll has landed,
+   so the first render seeded an EMPTY map and the first real document then read
+   every waiting session as brand new. Photographed on ?mock=rework&view=burn: a
+   badge of 1 on a panel that had been up for two seconds. everHadData is the
+   panel's own answer to "has a document arrived", so it is what gates the seed. */
+function trackViewAlerts(sessions) {
+	var away = currentView().key !== 'sessions';
+	var next = {};
+	var i, s, id;
+	for (i = 0; i < sessions.length; i++) {
+		s = sessions[i];
+		if (!s || !s.id) continue;
+		next[String(s.id)] = s.state;
+		if (away && viewPrevSeeded && s.state === 'needs_input' &&
+			viewPrevState[String(s.id)] !== 'needs_input') viewAlerts[String(s.id)] = 1;
+	}
+	viewPrevState = next;
+	if (everHadData) viewPrevSeeded = true;
+	/* An alert answered ANYWHERE — at the keyboard, by the crab tap, by the session
+	   moving on — stops counting here too. The badge is a count of what is still
+	   waiting, not a tally of what once arrived. */
+	for (id in viewAlerts) {
+		if (!Object.prototype.hasOwnProperty.call(viewAlerts, id)) continue;
+		var live = findSession(id);
+		if (!live || live.state !== 'needs_input' || effectiveAcked(live)) delete viewAlerts[id];
+	}
+}
+
+function viewAlertCount() {
+	var n = 0;
+	for (var id in viewAlerts) { if (Object.prototype.hasOwnProperty.call(viewAlerts, id)) n++; }
+	return n;
+}
+
+function syncViewChips() {
+	var key = currentView().key;
+	for (var i = 0; i < VIEWS.length; i++) {
+		var el = ui[VIEWS[i].chip];
+		if (!el) continue;
+		var on = VIEWS[i].key === key ? '1' : '';
+		if (el.getAttribute('data-active') !== on) el.setAttribute('data-active', on);
+	}
+	var n = viewAlertCount();
+	var sig = key + '#' + n;
+	if (sig === viewBadgeSig) return;
+	viewBadgeSig = sig;
+	if (ui.viewBadge) {
+		setText(ui.viewBadge, n ? String(n) : '');
+		ui.viewBadge.classList.toggle('shown', n > 0);
+	}
+	var chip = ui[VIEWS[0].chip];
+	if (!chip) return;
+	chip.setAttribute('data-alert', n > 0 ? '1' : '');
+	/* The WORD, not only the number: this glass is read from across a room and
+	   reported from photographs, so a count that exists only as a badge is a count
+	   somebody misses. It rides on aria-label, where the sensor names and the diag
+	   chip already keep their long form. */
+	chip.setAttribute('aria-label', n > 0
+		? 'Grid view: session cards ' + EMDASH + ' ' + n + ' now waiting'
+		: 'Grid view: session cards');
+}
+
+/* ---------------------------------------------------------- the burn view */
+
+/* Today's spend at full width. Every honesty rule the Limits zone keeps applies
+   here unchanged: an absent figure is an em-dash or an omitted block, never a
+   zero, and the by-session rows are labelled as live sessions because they do
+   NOT add up to the day total (subagent spend and ended sessions are in the
+   total and cannot be in the rows). */
+function renderBurnView(doc) {
+	var burn = doc && doc.burn ? doc.burn : null;
+	var sessions = doc && Array.isArray(doc.sessions) ? doc.sessions : [];
+	var rows = [];
+	for (var i = 0; i < sessions.length; i++) {
+		var s = sessions[i];
+		if (!s) continue;
+		var v = s.todayOutputTokens;
+		/* typeof, not Number(): a session crabd has no figure for is left OUT of the
+		   list rather than listed at zero. A row of zeroes reads as a quiet session,
+		   which is the opposite of "nobody measured this one". */
+		if (typeof v !== 'number' || !isFinite(v)) continue;
+		rows.push({ id: s.id, title: titleParts(s).text, model: shortModel(s.model) || EMDASH, tokens: v });
+	}
+	rows.sort(function (a, b) { return b.tokens - a.tokens; });
+
+	var byModel = burn && Array.isArray(burn.byModel) ? burn.byModel.slice(0, BYMODEL_MAX) : [];
+	var hourly = burn && Array.isArray(burn.hourly) ? burn.hourly.slice(-SPARK_BUCKETS) : [];
+	var today = burn && burn.today ? burn.today : null;
+	var cost = burn && typeof burn.costUSD === 'number' && isFinite(burn.costUSD) ? burn.costUSD : null;
+	var budget = burn && burn.budget && typeof burn.budget === 'object' && !Array.isArray(burn.budget)
+		? burn.budget : null;
+
+	var sig = rows.map(function (r) { return r.id + ':' + r.tokens + ':' + r.model; }).join('|') +
+		'#' + byModel.map(function (m) { return String(m && m.model) + ':' + (m && m.outputTokens); }).join(',') +
+		'#' + hourly.map(function (h) { return String(h && h.hourStart) + ':' + (h && h.outputTokens); }).join(',') +
+		'#' + (today ? today.outputTokens + '/' + today.messages : '') + '#' + cost +
+		'#' + (budget ? budget.dailyOutputTokens + '/' + budget.todayPct : '');
+	if (sig === burnViewSig) return;
+	burnViewSig = sig;
+
+	var root = ui.viewBurn;
+	root.textContent = '';
+	root.appendChild(viewHead('Today', burnHeadNote(today, cost, budget)));
+
+	var split = document.createElement('div');
+	split.className = 'bv-split';
+	/* Each half is PRESENCE-GATED and says so when it is missing. The feed that
+	   carries neither renders two stated absences and a chart, which is an honest
+	   page; a feed that carries both renders the page this view is for. */
+	split.appendChild(rows.length
+		? burnList('by session (live sessions)', rows.map(function (r) {
+			return { a: r.title, b: r.model, c: fmtNum(r.tokens) };
+		}))
+		: burnAbsent('by session', 'This companion serves no per-session token figure.'));
+	split.appendChild(byModel.length
+		? burnList('by model', byModel.map(function (m) {
+			var v = m && m.outputTokens;
+			return {
+				a: shortModel(m && m.model) || EMDASH,
+				b: '',
+				c: typeof v === 'number' && isFinite(v) ? fmtNum(v) : EMDASH
+			};
+		}))
+		: burnAbsent('by model', 'This feed carries no by-model split.'));
+	root.appendChild(split);
+	root.appendChild(burnChart(hourly, budget));
+}
+
+/* The head line: the day's own totals, the dollar figure when telemetry is
+   flowing, and the budget percentage when one is configured. Each clause is
+   dropped entirely when its source is absent — a "$0.00" derived from an absent
+   cost is the one thing this line must never print. */
+function burnHeadNote(today, cost, budget) {
+	var parts = [];
+	parts.push((today ? fmtNum(today.outputTokens) : EMDASH) + ' out');
+	parts.push((today ? fmtNum(today.inputTokens) : EMDASH) + ' in');
+	parts.push((today ? fmtNum(today.messages) : EMDASH) + ' msgs');
+	if (cost !== null) parts.push('$' + cost.toFixed(2));
+	var pct = budget && typeof budget.todayPct === 'number' && isFinite(budget.todayPct) && budget.todayPct >= 0
+		? Math.round(budget.todayPct * 100) : null;
+	if (pct !== null) {
+		parts.push('budget ' + pct + '%' +
+			(pct >= BUDGET_RED_PCT ? ' ' + EMDASH + ' far over' : pct >= BUDGET_AMBER_PCT ? ' ' + EMDASH + ' over' : ''));
+	}
+	return parts.join('   ' + EMDASH + '   ');
+}
+
+function burnList(label, items) {
+	var wrap = document.createElement('div');
+	wrap.className = 'bv-panel';
+	var head = document.createElement('div');
+	head.className = 'bv-panel-head';
+	head.textContent = label;
+	wrap.appendChild(head);
+	var list = document.createElement('div');
+	list.className = 'bv-rows';
+	for (var i = 0; i < items.length; i++) {
+		var row = document.createElement('div');
+		row.className = 'bv-row';
+		var a = document.createElement('span');
+		a.className = 'bv-name';
+		a.textContent = items[i].a;
+		a.setAttribute('title', items[i].a);
+		var b = document.createElement('span');
+		b.className = 'bv-model';
+		b.textContent = items[i].b;
+		var c = document.createElement('span');
+		c.className = 'bv-tokens';
+		c.textContent = items[i].c;
+		row.appendChild(a);
+		row.appendChild(b);
+		row.appendChild(c);
+		list.appendChild(row);
+	}
+	wrap.appendChild(list);
+	return wrap;
+}
+
+function burnAbsent(label, why) {
+	var wrap = document.createElement('div');
+	wrap.className = 'bv-panel';
+	var head = document.createElement('div');
+	head.className = 'bv-panel-head';
+	head.textContent = label;
+	var note = document.createElement('div');
+	note.className = 'bv-absent';
+	note.textContent = why;
+	wrap.appendChild(head);
+	wrap.appendChild(note);
+	return wrap;
+}
+
+/* The 24 h series at the size the Limits zone cannot give it. The scale rule is
+   the Limits sparkline's own (renderSparkTarget): the marker is drawn in the
+   UNITS OF THE SERIES under it, so on hourly bars the daily budget is a PACE
+   line and not a ceiling, and the chart scales to the target when the target is
+   above every bar — a marker off the top of a chart says nothing. */
+function burnChart(hourly, budget) {
+	var wrap = document.createElement('div');
+	wrap.className = 'bv-chart';
+	var head = document.createElement('div');
+	head.className = 'bv-panel-head';
+
+	var peak = 0, i;
+	for (i = 0; i < hourly.length; i++) {
+		var v = hourly[i] && Number(hourly[i].outputTokens);
+		if (isFinite(v) && v > peak) peak = v;
+	}
+	var perDay = budget && typeof budget.dailyOutputTokens === 'number' &&
+		isFinite(budget.dailyOutputTokens) && budget.dailyOutputTokens > 0 ? budget.dailyOutputTokens : null;
+	var target = perDay === null ? null : perDay / HOURS_PER_DAY;
+	var scaleMax = target !== null && target > peak ? target : peak;
+
+	head.textContent = '24 h burn';
+	var max = document.createElement('span');
+	max.className = 'bv-chart-max';
+	max.textContent = peak > 0 ? 'peak ' + fmtNum(peak) : EMDASH;
+	head.appendChild(max);
+	wrap.appendChild(head);
+
+	var bars = document.createElement('div');
+	bars.className = 'bv-bars';
+	if (target !== null && scaleMax > 0) {
+		var mark = document.createElement('div');
+		mark.className = 'bv-target';
+		setVar(mark, '--t', String(Math.round((target / scaleMax) * 100)));
+		mark.setAttribute('title', 'budget pace ' + fmtNum(Math.round(target)) + ' per hour');
+		bars.appendChild(mark);
+	}
+	var offset = SPARK_BUCKETS - hourly.length;
+	for (i = 0; i < SPARK_BUCKETS; i++) {
+		var item = i >= offset ? hourly[i - offset] : null;
+		var val = item ? Number(item.outputTokens) : NaN;
+		var bar = document.createElement('div');
+		bar.className = 'bv-bar' + (i === SPARK_BUCKETS - 1 && hourly.length ? ' recent' : '');
+		setVar(bar, '--h', String(scaleMax > 0 && isFinite(val) ? Math.round((val / scaleMax) * 100) : 0));
+		bars.appendChild(bar);
+	}
+	wrap.appendChild(bars);
+
+	var labels = document.createElement('div');
+	labels.className = 'bv-labels';
+	for (i = 0; i < SPARK_BUCKETS; i++) {
+		var lab = document.createElement('span');
+		var it = i >= offset ? hourly[i - offset] : null;
+		/* Every third bucket, so twenty-four labels do not become a grey smear. The
+		   hour is cut out of the string by hand: a bare local date-time is parsed as
+		   LOCAL by the spec and as UTC by nothing, but crabd may serve either form and
+		   a reading that depends on which one arrived is a reading that slides by the
+		   offset. The string is what the contract states, so the string is what is
+		   read. */
+		lab.textContent = (it && i % 3 === 0) ? hourLabel(it.hourStart) : '';
+		labels.appendChild(lab);
+	}
+	wrap.appendChild(labels);
+	return wrap;
+}
+
+function hourLabel(hourStart) {
+	var m = /T(\d{2})/.exec(String(hourStart || ''));
+	return m ? m[1] : '';
+}
+
+/* ---------------------------------------------------------- the week view */
+
+/* recap.week at full width, with the day drill INLINE rather than behind a
+   sheet. The rows a tap produces are the sheet's own rows and the fetch is the
+   sheet's own fetch (fetchHistory), so mock routing, the 4 s timeout, the abort
+   and the today-rebase all stay in one place. What is NOT shared is the
+   navigation: the sheet drill has prev/next chevrons and a Back that returns to
+   the timeline, and neither has anything to return to here. */
+function renderWeekView(doc) {
+	var week = weekRows(doc ? doc.recap : null);
+	var use24 = use24Clock();
+	var sig = (use24 ? '24' : '12') + '#' + todayKey() + '#' + String(weekDay) + '#' + String(weekDayFail) +
+		'#' + (week ? week.map(function (d) {
+			return d.day + ':' + d.letter + ':' + d.done + ':' + d.commits;
+		}).join(',') : '') +
+		'#' + (weekDayDoc ? String(weekDayDoc.day) + ':' + (Array.isArray(weekDayDoc.events) ? weekDayDoc.events.length : 0) +
+			':' + weekDayDoc.count + ':' + (weekDayDoc.truncated === true ? 't' : '') : '');
+	if (sig === weekViewSig) return;
+	weekViewSig = sig;
+
+	var root = ui.viewWeek;
+	root.textContent = '';
+	root.appendChild(viewHead('Last 7 days', week ? 'tap a day to read it' : ''));
+	if (!week) {
+		root.appendChild(viewNote('This feed carries no weekly recap.'));
+		return;
+	}
+
+	var strip = document.createElement('div');
+	strip.className = 'wv-strip';
+	for (var i = 0; i < week.length; i++) {
+		var d = week[i];
+		var col = document.createElement('div');
+		col.className = 'wv-col' + (i === week.length - 1 ? ' wv-today' : '') +
+			(d.day && d.day === weekDay ? ' wv-open' : '');
+		/* A column with no usable day gets no affordance at all — the gate weekRows
+		   already applies to the sheet's strip, kept here rather than re-derived. */
+		if (d.day) {
+			col.className += ' tappable';
+			col.setAttribute('data-week-day', d.day);
+			col.setAttribute('role', 'button');
+			col.setAttribute('tabindex', '0');
+			col.setAttribute('aria-label', 'open ' + d.day);
+		}
+		col.appendChild(wvCell('wv-letter', d.letter));
+		col.appendChild(wvCell('wv-date', d.day ? d.day.slice(8) : EMDASH));
+		col.appendChild(wvCell('wv-done', d.done === null ? EMDASH : String(d.done)));
+		col.appendChild(wvCell('wv-k', 'done'));
+		col.appendChild(wvCell('wv-commits', d.commits === null ? EMDASH : String(d.commits)));
+		col.appendChild(wvCell('wv-k', 'commits'));
+		strip.appendChild(col);
+	}
+	root.appendChild(strip);
+
+	var pane = document.createElement('div');
+	pane.className = 'wv-day';
+	if (weekDayFail) {
+		/* Honest failure, and NOT a latch: an older crabd 404s /v1/history and the
+		   very next tap tries again, because crabd redeploys under a live widget. */
+		pane.appendChild(viewNote("That day's history could not be read " + EMDASH +
+			' the companion may predate 0.8.0. Tap the day again to retry.'));
+	} else if (!weekDay) {
+		pane.appendChild(viewNote('Tap a day above to read its history.'));
+	} else if (!weekDayDoc) {
+		pane.appendChild(viewNote('Reading ' + dayTitle(weekDay) + ' ' + EMDASH + ' …'));
+	} else {
+		pane.appendChild(weekDayRows(weekDayDoc, use24));
+	}
+	root.appendChild(pane);
+}
+
+function wvCell(cls, text) {
+	var el = document.createElement('span');
+	el.className = cls;
+	el.textContent = text;
+	return el;
+}
+
+function weekDayRows(doc, use24) {
+	var wrap = document.createElement('div');
+	wrap.className = 'wv-rows';
+	var head = document.createElement('div');
+	head.className = 'bv-panel-head';
+	/* The contract's own pair, restated rather than reconciled: `count` is the
+	   length of what crabd RETURNED and `truncated` says more exist beyond it, so
+	   this line and the "+N earlier" tail are two different caps and each says so
+	   in its own words. */
+	var count = typeof doc.count === 'number' && isFinite(doc.count) ? doc.count : null;
+	head.textContent = dayTitle(doc.day) + '   ' + EMDASH + '   ' +
+		(count === null ? EMDASH : String(count)) + (count === 1 ? ' event' : ' events') +
+		(doc.truncated === true ? ' (truncated)' : '');
+	wrap.appendChild(head);
+
+	var events = Array.isArray(doc.events) ? doc.events : [];
+	var rows = [];
+	for (var i = 0; i < events.length; i++) {
+		var ev = events[i];
+		if (!ev || typeof ev !== 'object') continue;
+		var at = Date.parse(ev.ts);
+		if (!isFinite(at)) continue;
+		/* The contract's event is { ts, kind, sessionId, title }: `kind` is the text
+		   column and `title` is the tag, because the title is the session's title AT
+		   THE TIME and it is the only thing that makes a four-day-old row legible. */
+		rows.push({ at: at, tag: shortTitle(ev.title), text: ev.kind ? String(ev.kind) : 'event' });
+	}
+	rows.sort(function (a, b) { return b.at - a.at; });
+	var hidden = Math.max(0, rows.length - DAY_ROWS_MAX);
+	rows = rows.slice(0, DAY_ROWS_MAX);
+
+	var list = document.createElement('div');
+	list.className = 'wv-list';
+	if (!rows.length) {
+		/* An empty day is a FACT, not a failure: crabd answers 200 with no events for
+		   a day it has no history for, and the contract is explicit that the absence
+		   of history is not an error. */
+		list.appendChild(viewNote('No events recorded for this day.'));
+	}
+	for (var r = 0; r < rows.length; r++) {
+		var row = document.createElement('div');
+		row.className = 'tl-row';
+		var time = document.createElement('span');
+		time.className = 'tl-time';
+		time.textContent = fmtTimeOfDay(new Date(rows[r].at), use24);
+		var tag = document.createElement('span');
+		tag.className = 'tl-session';
+		tag.textContent = rows[r].tag;
+		var text = document.createElement('span');
+		text.className = 'tl-text';
+		text.textContent = rows[r].text;
+		row.appendChild(time);
+		row.appendChild(tag);
+		row.appendChild(text);
+		list.appendChild(row);
+	}
+	if (hidden > 0) list.appendChild(viewNote('+' + hidden + ' earlier'));
+	wrap.appendChild(list);
+	return wrap;
+}
+
+/* The tap. One in flight at a time and a request counter, the two guards
+   openDaySheet already carries: a second tap on a slow fetch would otherwise
+   race two documents into one pane and the loser could land last. */
+function openWeekDay(day) {
+	if (!DAY_RE.test(String(day || ''))) return;
+	if (weekDayBusy) return;
+	weekDayBusy = true;
+	weekDay = day;
+	weekDayDoc = null;
+	weekDayFail = null;
+	weekViewSig = null;
+	render();
+	var req = ++weekDayReq;
+	fetchHistory(day).then(function (doc) {
+		weekDayBusy = false;
+		if (req !== weekDayReq) return;
+		if (!doc || typeof doc !== 'object') { weekDayFail = 'malformed reply'; weekViewSig = null; render(); return; }
+		doc.day = day;
+		weekDayDoc = doc;
+		weekViewSig = null;
+		render();
+	}).catch(function (e) {
+		weekDayBusy = false;
+		if (req !== weekDayReq) return;
+		weekDayFail = e && e.message ? e.message : 'fetch failed';
+		logLine('history ' + day + ' unavailable (' + weekDayFail + ')');
+		weekViewSig = null;
+		render();
+	});
+}
+
+/* -------------------------------------------------------- the detail view */
+
+/* One session as a page. Every control on it is the sheet's own control reaching
+   the sheet's own write path — onSheetDecide for Approve and Deny, onSheetContinue
+   for the queued prompts — so there is exactly one implementation of each write
+   in this file and the pairing code, the requestId echo, the 403/409/429 wording
+   and the no-latch continue handling are inherited rather than re-typed. The two
+   functions read laneCActionSessionId() instead of sheetSessionId alone, which is
+   the whole of the change they needed. */
+
+/* Which session a decide or a continue belongs to. The SHEET wins when one is
+   open: it is a modal over this page, and a control the operator can actually
+   see must be the one the write follows. */
+function laneCActionSessionId() {
+	if (sheetSessionId !== null && sheetSessionId !== undefined) return sheetSessionId;
+	return currentView().key === 'detail' ? detailSessionId : null;
+}
+
+/* The session the Detail view is showing. A chosen one when it is still in the
+   feed; otherwise the row the operator would have picked — waiting first, because
+   that is the one thing on this panel that is about the person in front of it. */
+function detailTarget() {
+	var s = detailSessionId ? findSession(detailSessionId) : null;
+	if (s) return s;
+	var sessions = lastGoodDoc && Array.isArray(lastGoodDoc.sessions) ? lastGoodDoc.sessions : [];
+	var order = ['needs_input', 'working', 'done', 'idle'];
+	for (var b = 0; b < order.length; b++) {
+		for (var i = 0; i < sessions.length; i++) {
+			if (sessions[i] && sessions[i].state === order[b]) {
+				detailSessionId = String(sessions[i].id);
+				return sessions[i];
+			}
+		}
+	}
+	return null;
+}
+
+function laneCOpenDetail(id) {
+	if (!id) return;
+	detailSessionId = String(id);
+	detailViewSig = null;
+	/* The button lives in the sheet and the page is behind it. */
+	if (sheetMode !== null) closeSheet();
+	setGridView('detail');
+}
+
+function renderDetailView(sessions, quiet) {
+	var s = detailTarget();
+	var root = ui.viewDetail;
+	if (!s) {
+		if (detailViewSig === 'none') return;
+		detailViewSig = 'none';
+		root.textContent = '';
+		root.appendChild(viewHead('Session', ''));
+		root.appendChild(viewNote(sessions.length
+			? 'That session has gone. Tap Sessions for the ones that are still here.'
+			: 'No active Claude sessions.'));
+		return;
+	}
+
+	var pend = s.state === 'needs_input' && s.pendingPermission &&
+		typeof s.pendingPermission === 'object' && !Array.isArray(s.pendingPermission)
+		? s.pendingPermission : null;
+	var subs = subList(s);
+	var events = Array.isArray(s.events) ? s.events.slice(0, SHEET_EVENTS_MAX) : [];
+	var qLabel = queuedLabel(s);
+	var ctxPct = ctxFillPct(s);
+
+	/* Ages are deliberately absent from the signature, exactly as they are from the
+	   card signature: they move on every poll and would rebuild the page every 3 s.
+	   laneCTickDetail relabels them in place at 1 Hz. */
+	/* lane D: the button set is in the signature because it is now per SESSION and
+	   per config - without it, a config edit repainted the sheet's row and left this
+	   page showing the old buttons until something else in the row happened to move. */
+	var contSig = continueButtons(s).map(function (b) { return b.prompt; }).join('|');
+	var sig = [s.id, s.state, titleParts(s).text, repoLine(s), s.model, s.speed, contSig,
+		s.question || '', effectiveAcked(s) ? '1' : '',
+		pend ? String(pend.tool) + '|' + String(pend.summary) : '',
+		typeof s.contextTokens === 'number' ? String(s.contextTokens) : '',
+		String(ctxPct), qLabel || '',
+		subs.map(function (d) { return String(d && d.label); }).join(','),
+		events.map(function (e) { return String(e && e.at) + String(e && e.text); }).join('|'),
+		quiet ? 'q' : ''].join('#');
+	if (sig === detailViewSig) { laneCTickDetail(Date.now()); return; }
+	detailViewSig = sig;
+	detailContinueSig = null;
+
+	root.textContent = '';
+	root.appendChild(detailHead(s, pend));
+	if (laneEAvailable()) root.appendChild(laneEDetailStatusNode());   // lane E
+	if (ctxPct !== null) root.appendChild(detailCtx(s, ctxPct));
+
+	var body = document.createElement('div');
+	body.className = 'dv-body';
+	body.appendChild(detailMain(s, pend, qLabel));
+	body.appendChild(detailSide(s, subs, events));
+	root.appendChild(body);
+	laneCTickDetail(Date.now());
+}
+
+function detailHead(s, pend) {
+	var head = document.createElement('div');
+	head.className = 'dv-head';
+
+	var back = document.createElement('button');
+	back.type = 'button';
+	back.className = 'head-chip dv-back';
+	back.setAttribute('data-view-back', '1');
+	back.setAttribute('aria-label', 'Back to the session cards');
+	back.textContent = 'Back';
+	head.appendChild(back);
+
+	var titles = document.createElement('div');
+	titles.className = 'dv-titles';
+	var tp = titleParts(s);
+	var title = document.createElement('div');
+	title.className = 'dv-title' + (tp.derived ? ' title-derived' : '');
+	title.textContent = tp.text;
+	var repo = document.createElement('div');
+	repo.className = 'dv-repo';
+	repo.textContent = repoLine(s);
+	titles.appendChild(title);
+	titles.appendChild(repo);
+	head.appendChild(titles);
+
+	var chips = document.createElement('div');
+	chips.className = 'dv-chips';
+	var state = document.createElement('span');
+	state.className = 'dv-chip dv-chip-state';
+	state.setAttribute('data-state', s.state || 'idle');
+	/* The card's own words, never a second vocabulary. The elapsed figure is filled
+	   by the tick, so the element carries its anchor rather than a rendered age. */
+	state.textContent = (s.state === 'needs_input' ? 'needs input' : (s.state || 'idle')).toUpperCase() + '  ';
+	var since = document.createElement('span');
+	since.className = 'dv-elapsed';
+	since.setAttribute('data-state-since', String(Date.parse(s.stateSince) || ''));
+	since.textContent = EMDASH;
+	state.appendChild(since);
+	chips.appendChild(state);
+	var model = shortModel(s.model);
+	if (model) {
+		var m = document.createElement('span');
+		m.className = 'dv-chip';
+		m.textContent = model;
+		chips.appendChild(m);
+	}
+	if (s.speed === 'fast') {
+		var f = document.createElement('span');
+		f.className = 'dv-chip dv-chip-fast';
+		f.textContent = 'FAST';
+		chips.appendChild(f);
+	}
+	if (effectiveAcked(s)) {
+		var a = document.createElement('span');
+		a.className = 'dv-chip dv-chip-ack';
+		a.textContent = 'ACKED';
+		chips.appendChild(a);
+	}
+	if (pend) {
+		var p = document.createElement('span');
+		p.className = 'dv-chip dv-chip-pend';
+		p.textContent = 'PERMISSION';
+		chips.appendChild(p);
+	}
+	head.appendChild(chips);
+	/* lane E: standalone only, so the chip does not exist in iCUE at all. Its status
+	   is NOT in this row: measured at 2560 px on 2026-09-21, the head already spends
+	   its width on the title, three chips and this button, and the status line ended
+	   up ellipsed to "Brought t..." - a result nobody can read. It goes below. */
+	if (laneEAvailable()) head.appendChild(laneEButton('head-chip dv-focus', 'Bring to front'));
+	return head;
+}
+
+/* The hairline WITH its numbers, which is the one thing the card cannot give it:
+   a card has room for a 3 px rule and a tooltip nobody can hover on a wall panel,
+   and this page has room to print the fill, the window and the percentage. */
+function detailCtx(s, pct) {
+	var wrap = document.createElement('div');
+	wrap.className = 'dv-ctx';
+	var label = document.createElement('span');
+	label.className = 'dv-ctx-k';
+	label.textContent = 'context';
+	var track = document.createElement('span');
+	track.className = 'dv-ctx-track';
+	var fill = document.createElement('span');
+	fill.className = 'dv-ctx-fill';
+	setVar(fill, '--w', String(pct));
+	setVar(fill, '--ctx-color', ctxColor(pct));
+	track.appendChild(fill);
+	var num = document.createElement('span');
+	num.className = 'dv-ctx-n';
+	num.textContent = fmtNum(s.contextTokens) + ' of ' + fmtNum(ctxWindowTokens(s)) + '  ' + EMDASH + '  ' + pct + '%';
+	wrap.appendChild(label);
+	wrap.appendChild(track);
+	wrap.appendChild(num);
+	return wrap;
+}
+
+function detailMain(s, pend, qLabel) {
+	var col = document.createElement('div');
+	col.className = 'dv-col dv-main';
+
+	if (pend) {
+		var box = document.createElement('div');
+		box.className = 'dv-approval';
+		var lab = document.createElement('div');
+		lab.className = 'dv-approval-label';
+		lab.textContent = 'permission request';
+		var tool = document.createElement('div');
+		tool.className = 'dv-approval-tool';
+		tool.textContent = pend.tool ? String(pend.tool) : 'a tool';
+		box.appendChild(lab);
+		box.appendChild(tool);
+		if (pend.summary) {
+			var sum = document.createElement('div');
+			sum.className = 'dv-approval-summary';
+			sum.textContent = String(pend.summary);
+			box.appendChild(sum);
+		}
+		/* The hold countdown, filled by the tick for the reason the sheet's copy is:
+		   the poll is 3 s and this number answers whether the button under a thumb
+		   still reaches anything. */
+		var left = document.createElement('div');
+		left.className = 'dv-approval-left';
+		left.setAttribute('data-approval-at', String(Date.parse(pend.requestedAt) || ''));
+		box.appendChild(left);
+
+		var btns = document.createElement('div');
+		btns.className = 'dv-approval-actions';
+		/* data-decide is the SHEET's own attribute and these reach the sheet's own
+		   handler: Deny first and styled as the safe default, Approve carrying the
+		   tool name, because approving a shell command from a touchscreen must show
+		   WHAT is being approved. */
+		var deny = document.createElement('button');
+		deny.type = 'button';
+		deny.className = 'sheet-btn sheet-btn-deny';
+		deny.setAttribute('data-decide', DECIDE_DENY);
+		deny.textContent = 'Deny';
+		var allow = document.createElement('button');
+		allow.type = 'button';
+		allow.className = 'sheet-btn sheet-btn-approve';
+		allow.setAttribute('data-decide', DECIDE_ALLOW);
+		allow.textContent = 'Approve ' + (pend.tool ? String(pend.tool) : 'a tool');
+		btns.appendChild(deny);
+		btns.appendChild(allow);
+		box.appendChild(btns);
+		col.appendChild(box);
+	} else if (s.question) {
+		var qh = document.createElement('div');
+		qh.className = 'bv-panel-head';
+		qh.textContent = 'question';
+		var q = document.createElement('div');
+		/* WHOLE, and that is the point of this page: the card clamps the question to
+		   three lines and the action sheet to its own region, and this is the one
+		   surface that shows all of it. The block SCROLLS rather than clamping, so
+		   nothing is cut and nothing overflows the zone. */
+		q.className = 'dv-question';
+		q.textContent = String(s.question);
+		col.appendChild(qh);
+		col.appendChild(q);
+	} else if (s.lastEvent) {
+		var eh = document.createElement('div');
+		eh.className = 'bv-panel-head';
+		eh.textContent = 'latest';
+		var e = document.createElement('div');
+		e.className = 'dv-question';
+		e.textContent = String(s.lastEvent);
+		col.appendChild(eh);
+		col.appendChild(e);
+	}
+
+	if (qLabel) {
+		var queued = document.createElement('div');
+		queued.className = 'dv-queued';
+		queued.textContent = 'queued: ' + qLabel;
+		col.appendChild(queued);
+	}
+
+	/* Tap-to-continue on a working or done session, the sheet's own rule. The
+	   buttons carry the sheet's data-continue-prompt / data-continue-label, so the
+	   click routes into onSheetContinue and the wire prompt is the full instruction
+	   exactly as it is there. */
+	if (s.state === 'working' || s.state === 'done') {
+		var cont = document.createElement('div');
+		cont.className = 'dv-continue';
+		var ch = document.createElement('div');
+		ch.className = 'bv-panel-head';
+		ch.textContent = 'continue this session';
+		cont.appendChild(ch);
+		var row = document.createElement('div');
+		row.className = 'dv-continue-btns';
+		var list = continueButtons(s);   /* lane D: the sheet's own builder */
+		for (var i = 0; i < list.length; i++) {
+			var btn = document.createElement('button');
+			btn.type = 'button';
+			btn.className = 'sheet-btn dv-continue-btn';
+			btn.setAttribute('data-continue-prompt', list[i].prompt);
+			btn.setAttribute('data-continue-label', list[i].label);
+			btn.textContent = list[i].label;
+			row.appendChild(btn);
+		}
+		cont.appendChild(row);
+		var status = document.createElement('div');
+		status.className = 'dv-continue-status';
+		status.id = 'dvContinueStatus';
+		cont.appendChild(status);
+		col.appendChild(cont);
+	}
+	return col;
+}
+
+function detailSide(s, subs, events) {
+	var col = document.createElement('div');
+	col.className = 'dv-col dv-side';
+
+	var sh = document.createElement('div');
+	sh.className = 'bv-panel-head';
+	sh.textContent = 'subagents';
+	col.appendChild(sh);
+	var rows = buildSubRows(subs, SHEET_SUB_MAX);
+	if (rows) col.appendChild(rows);
+	else col.appendChild(viewNote('No subagents running.'));
+
+	var eh = document.createElement('div');
+	eh.className = 'bv-panel-head';
+	eh.textContent = 'events';
+	col.appendChild(eh);
+	var list = document.createElement('div');
+	list.className = 'dv-events';
+	if (!events.length) {
+		list.appendChild(viewNote('No events recorded since crabd started.'));
+	}
+	for (var i = 0; i < events.length; i++) {
+		var row = document.createElement('div');
+		row.className = 'event-row';
+		row.setAttribute('data-at', String(Date.parse(events[i] && events[i].at) || ''));
+		var age = document.createElement('span');
+		age.className = 'event-age';
+		age.textContent = EMDASH;
+		var text = document.createElement('span');
+		text.className = 'event-text';
+		text.textContent = (events[i] && events[i].text) ? String(events[i].text) : 'event';
+		row.appendChild(age);
+		row.appendChild(text);
+		list.appendChild(row);
+	}
+	col.appendChild(list);
+	return col;
+}
+
+/* The page's ages, at 1 Hz from tick(). The approval hold is the reason it is a
+   tick and not the poll: crabd holds the hook about 55 s and a countdown that
+   jumped three seconds at a time would be a worse answer than no countdown. */
+function laneCTickDetail(nowMs) {
+	if (currentView().key !== 'detail' || !ui.viewDetail) return;
+	var el = ui.viewDetail.querySelector('.dv-elapsed');
+	if (el) {
+		var since = Number(el.getAttribute('data-state-since'));
+		setText(el, isFinite(since) && since > 0 ? fmtDur((nowMs - since) / 1000) : EMDASH);
+	}
+	var ap = ui.viewDetail.querySelector('.dv-approval-left');
+	if (ap) {
+		var at = Number(ap.getAttribute('data-approval-at'));
+		var left = approvalRemaining(at, nowMs);
+		setText(ap, approvalText(left));
+		ap.classList.toggle('expired', left === 0);
+	}
+	var rows = ui.viewDetail.querySelectorAll('.event-row');
+	for (var i = 0; i < rows.length; i++) {
+		var eat = Number(rows[i].getAttribute('data-at'));
+		setText(rows[i].querySelector('.event-age'),
+			isFinite(eat) && eat > 0 ? fmtDur((nowMs - eat) / 1000) + ' ago' : EMDASH);
+	}
+	var subAges = ui.viewDetail.querySelectorAll('.sub-age');
+	var s = detailSessionId ? findSession(detailSessionId) : null;
+	var list = subList(s);
+	for (var k = 0; k < subAges.length && k < list.length; k++) {
+		var secs = list[k] ? Number(list[k].ageSec) : NaN;
+		setText(subAges[k], isFinite(secs) ? fmtDur(secs) : EMDASH);
+	}
+}
+
+/* The continue status line, mirrored out of setContinueStatus so the sheet and
+   the page report one write in one place. */
+function laneCMirrorContinueStatus(text, kind) {
+	if (!ui.viewDetail) return;
+	var el = ui.viewDetail.querySelector('.dv-continue-status');
+	if (!el) return;
+	setText(el, text);
+	el.className = 'dv-continue-status' + (text && kind ? ' ' + kind : '');
+}
+
+/* ------------------------------------------------------- shared furniture */
+
+function viewHead(label, note) {
+	var head = document.createElement('div');
+	head.className = 'gv-head';
+	var h = document.createElement('h3');
+	h.className = 'zone-label';
+	h.textContent = label;
+	head.appendChild(h);
+	if (note) {
+		var n = document.createElement('span');
+		n.className = 'gv-note';
+		n.textContent = note;
+		head.appendChild(n);
+	}
+	return head;
+}
+
+function viewNote(text) {
+	var el = document.createElement('div');
+	el.className = 'gv-empty';
+	el.textContent = text;
+	return el;
+}
+
+/* ------------------------------------------------------------- the taps */
+
+function onViewChipClick(ev) {
+	var el = ev.target && ev.target.closest ? ev.target.closest('.view-chip') : null;
+	if (!el) return;
+	setGridView(el.getAttribute('data-view'));
+}
+
+/* The views' own controls. One listener per view container rather than one on
+   the zone: the zone also carries the header and the card grid, both of which
+   already have handlers, and a third listener over the top of them would be a
+   third claim on the same taps. */
+function onGridViewClick(ev) {
+	var t = ev.target;
+	if (!t || !t.closest) return;
+	if (t.closest('[data-view-back]')) { setGridView('sessions'); return; }
+	var day = t.closest('[data-week-day]');
+	if (day) { openWeekDay(day.getAttribute('data-week-day')); return; }
+	/* Approve / Deny and the continue buttons are the SHEET's attributes reaching
+	   the SHEET's handlers — one implementation of each write, routed from a second
+	   surface. Matched above nothing else, because this container has no generic
+	   button branch to fall through to. */
+	var decide = t.closest('[data-decide]');
+	if (decide) { onSheetDecide(decide.getAttribute('data-decide')); return; }
+	var cont = t.closest('[data-continue-prompt]');
+	if (cont) { onSheetContinue(cont.getAttribute('data-continue-prompt'), cont.getAttribute('data-continue-label') || 'Continue'); return; }
+	/* lane E: the Detail head's Bring-to-front chip reaching the same one sender. */
+	if (t.closest('[data-focus-session]')) { laneESendFocus(); return; }
+}
+
+/* A HORIZONTAL SWIPE ON THE HEADER ROW switches views. Deliberately not on the
+   cards area: a horizontal drag on a card is already ack/dismiss, and two
+   meanings for one gesture on one surface is the thing a fingertip gets wrong.
+
+   Its own listeners on the header element rather than a branch inside the
+   document-level gesture layer, because it needs nothing that layer tracks and
+   the layer already does the one thing this gesture depends on: onPointerUp
+   calls suppressClick() for any travel past TAP_SLOP_PX, so a swipe can never
+   also open the Today timeline. The threshold here is four times that slop, so
+   a committing swipe is always suppressed by the time it commits.
+   A second finger abandons it outright: two fingers is the ack-all gesture and a
+   view change underneath it would be a second reading of one intention. */
+function onHeadPointerDown(ev) {
+	if (livePointers() > 1) { headSwipe = null; return; }
+	if (ev.target && ev.target.closest && ev.target.closest('.head-chip')) { headSwipe = null; return; }
+	headSwipe = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, dx: 0, dy: 0 };
+}
+
+function onHeadPointerMove(ev) {
+	if (!headSwipe || headSwipe.id !== ev.pointerId) return;
+	if (livePointers() > 1) { headSwipe = null; return; }
+	headSwipe.dx = ev.clientX - headSwipe.x0;
+	headSwipe.dy = ev.clientY - headSwipe.y0;
+}
+
+function onHeadPointerUp(ev) {
+	if (!headSwipe || headSwipe.id !== ev.pointerId) return;
+	var dx = headSwipe.dx, dy = headSwipe.dy;
+	headSwipe = null;
+	if (Math.abs(dx) < HEAD_SWIPE_PX || Math.abs(dx) <= Math.abs(dy)) return;
+	/* Left is forward, the direction the chips read in. It wraps, because four
+	   chips in a row are a cycle and a swipe that dead-ends at Detail would be a
+	   gesture that works three times out of four. */
+	stepGridView(dx < 0 ? 1 : -1);
+}
+
+function onHeadPointerCancel(ev) {
+	if (headSwipe && headSwipe.id === ev.pointerId) headSwipe = null;
+}
+
+/* ------------------------------------------------------------ the wiring */
+
+function laneCViewsInit() {
+	/* Dev-only, mock mode only, in memory only: the discipline &filter= and
+	   &density= keep. A screenshot flag that wrote to the vendor store would leave
+	   the operator's own panel on a view they never chose. Read AFTER loadPrefs so
+	   the flag wins on a run that also carries &uid=. */
+	if (mockName) {
+		var vw = /[?&]view=([a-z]+)/i.exec(window.location.search);
+		if (vw && prefIndexOrNone(VIEWS, vw[1].toLowerCase()) >= 0) viewForced = vw[1].toLowerCase();
+	}
+	if (viewForced) viewIdx = prefIndex(VIEWS, viewForced);
+	applyGridView();
+	syncViewChips();
+
+	for (var i = 0; i < VIEWS.length; i++) {
+		var chip = ui[VIEWS[i].chip];
+		if (chip) chip.addEventListener('click', onViewChipClick);
+	}
+	var views = [ui.viewBurn, ui.viewWeek, ui.viewDetail];
+	for (var v = 0; v < views.length; v++) {
+		if (views[v]) views[v].addEventListener('click', onGridViewClick);
+	}
+	if (ui.gridHead) {
+		ui.gridHead.addEventListener('pointerdown', onHeadPointerDown, { passive: true });
+		ui.gridHead.addEventListener('pointermove', onHeadPointerMove, { passive: true });
+		ui.gridHead.addEventListener('pointerup', onHeadPointerUp, { passive: true });
+		ui.gridHead.addEventListener('pointercancel', onHeadPointerCancel, { passive: true });
+	}
+}
+
+/* ======================================================================
+   ---- lane C: the canvas crab ----
+
+   Claw'd, painted to a canvas instead of held still in an SVG. Every rect below
+   is transcribed from the SVG in index.html at the SAME coordinates on the SAME
+   half-cell grid (viewBox 0 -4 52 44, 2 units = one half cell, 4 units = one
+   cell), so the still frames are the frames that shipped; what is new is that
+   the poses in between exist.
+
+   THE SVG IS STILL THE TRUTH ABOUT STATE. This renderer reads data-mood,
+   data-acc and the trick classes off #crab and the quiet/esc2 classes off body,
+   and writes nothing anywhere. Nothing else in the widget knows it is here: the
+   mood ladder, the wardrobe hysteresis, the dance's three gates, scheduleBlink
+   and every &crab= / &mood= / &celebrate= / &blink= flag all drive the same
+   attributes they always did and this follows them.
+
+   THE SVG IS ALSO THE FALLBACK. It is hidden only once a 2D context has actually
+   been obtained, so a host with no canvas renders exactly what it rendered
+   before rather than an empty box.
+
+   MOTION IS EASED IN TIME AND QUANTIZED IN SPACE, which is the pixel-art idiom
+   and not a compromise: every pose lands on an integer viewBox unit, so the
+   blocks stay hard-edged (the canvas equivalent of shape-rendering crispEdges),
+   and the EASING decides which unit it is on at a given millisecond. A sweep
+   across four units is five poses arriving on an ease-out curve, where the CSS
+   keyframes had two arriving on a steps(1, end).
+
+   THE FRAME BUDGET IS THE POINT, because this panel runs 24/7 on a desk. There
+   are three scheduling states and only one of them is requestAnimationFrame:
+
+     tricks   wave, snap, bounce, dance, juggle. All bounded (520 ms to 6 s), all
+              rAF, and the loop STOPS when the last one ends.
+     drip     the sweating mood, which can hold for hours. A fixed 83 ms timer,
+              because an eight-step fall over 1.4 s changes pose about six times
+              a second and 60 Hz would be ten wake-ups per pose.
+     breath   the idle. The pose is binary and the timer is scheduled AT the next
+              boundary, so it wakes about twice every 4.2 s and not at all under
+              quiet or reduced motion.
+
+   With nothing running, nothing is scheduled. Idle CPU measured both ways; see
+   docs/notes/lane-c-dev.md. */
+
+/* Timings copied from the keyframes they replace (sidecrab.css), so the canvas
+   and the CSS fallback agree about how long a trick lasts. Changing one means
+   changing the other AND the JS latch it is paired with (SNAP_MS and friends). */
+var CRAB_WAVE_MS = 640, CRAB_WAVE_N = 3;
+var CRAB_SNAP_MS = 260, CRAB_SNAP_N = 2;
+var CRAB_HOP_MS = 380, CRAB_HOP_N = 2;
+var CRAB_DANCE_MS = 390, CRAB_DANCE_N = 4;
+var CRAB_JUGGLE_MS = 750, CRAB_JUGGLE_N = 8;
+var CRAB_BREATH_MS = 4200;     /* one whole breath; the shell swells 1 unit and settles */
+var CRAB_DRIP_MS = 1400;       /* a drop's fall */
+var CRAB_DRIP_GAP_MS = 400;    /* and the beat before the next one forms */
+var CRAB_DRIP_STEP_MS = 83;    /* ~12 Hz: an 8-unit fall changes pose ~6 times a second */
+var CRAB_FRAME_RING = 120;     /* paint durations kept for window.__sidecrabCrabFrames */
+
+/* The art. Groups in PAINT ORDER, exactly the document order of the SVG: the
+   shell and its limbs, the eyes, the costume over them, the sweat, the balls. */
+var CRAB_BODY = [8, 6, 36, 20];
+var CRAB_CLAW_L = [0, 14, 8, 6];
+var CRAB_CLAW_R = [44, 14, 8, 6];
+var CRAB_LEGS = [[8, 26, 6, 8], [20, 26, 4, 8], [28, 26, 4, 8], [38, 26, 6, 8]];
+var CRAB_ZZZ = [[46, 0, 6, 2], [50, 2, 2, 2], [48, 4, 2, 2], [46, 6, 6, 2]];
+var CRAB_EYES_OPEN = [[16, 10, 4, 4], [32, 10, 4, 4]];
+var CRAB_EYES_SLEEP = [[16, 12, 4, 2], [32, 12, 4, 2]];
+var CRAB_EYES_WORRIED = [[16, 10, 2, 6], [34, 10, 2, 6]];
+var CRAB_ACC = {
+	sunglasses: [
+		['--acc-frame', [[12, 8, 12, 8], [28, 8, 12, 8], [23, 10, 6, 2], [5, 10, 8, 2], [39, 10, 8, 2]]],
+		['--acc-lens', [[13, 9, 10, 6], [29, 9, 10, 6]]],
+		['--acc-glare', [[14, 10, 4, 2], [19, 12, 2, 2], [30, 10, 4, 2], [35, 12, 2, 2]]]
+	],
+	party: [
+		['--acc-party', [[24, -2, 4, 4], [23, 2, 6, 3], [22, 5, 8, 3]]],
+		['--acc-stripe', [[24, 1, 4, 1], [23, 4, 6, 1], [21, 7, 10, 1]]],
+		['--acc-topper', [[24, -4, 4, 2]]]
+	],
+	nightcap: [
+		['--acc-cap', [[11, 0, 23, 3], [9, -2, 19, 2], [4, -4, 16, 2], [3, -4, 8, 7]]],
+		['--acc-band', [[9, 3, 29, 3]]],
+		['--acc-pom', [[0, 1, 7, 6]]]
+	]
+};
+/* Three drops, each a 1-unit tip over a 3x3 body with a 1-unit glint. `fall` is
+   how far it may travel before it restarts, and it is CLEARANCE and not taste:
+   the claws sit at y 14..20 across x 0..8 and x 44..52, and each of these three
+   is in one of those columns. Drop 2 starts eight units lower than the others,
+   so three is all the room it has. Measured against the claw's own top edge. */
+var CRAB_SWEAT = [
+	{ tip: [46, 0], box: [45, 1], fall: 8 },
+	{ tip: [49, 6], box: [48, 7], fall: 3 },
+	{ tip: [4, 1], box: [3, 2], fall: 8 }
+];
+var CRAB_SWEAT_FILL = '#8FD8E8';
+var CRAB_SWEAT_GLINT = '#FFFFFF';
+/* The balls' arc: out to x 1 and x 23 on the half-cell grid (a translate of
+   -22 / +22 from the parked rect at x 24), and one cell above the shell at the
+   apex. The reach was measured on a shot at v0.11.0: at -20 the low balls fused
+   with the shell's own top corners and read as two bumps on the crab. */
+var CRAB_BALL = [24, -4, 4, 4];
+var CRAB_BALL_REACH = 22;
+var CRAB_BALL_DROP = 6;
+
+var crabCanvasOn = false;
+var crabCtx = null;
+var crabPal = null;
+var crabPalAt = 0;
+var crabRaf = 0;
+var crabSlowTimer = null;
+var crabPoseSig = null;
+var crabDprW = 0, crabDprH = 0;
+var crabObs = null;
+var crabBodyObs = null;
+var crabMotion = {};           /* class name -> the ms the motion started */
+var crabFrames = [];
+
+/* Install. Returns silently on any host that cannot give a 2D context, leaving
+   the SVG to render exactly as it did. */
+function laneCCrabInit() {
+	var cv = ui.crabCanvas;
+	if (!cv || !ui.crab || typeof cv.getContext !== 'function') return;
+	try { crabCtx = cv.getContext('2d'); } catch (e) { crabCtx = null; }
+	if (!crabCtx) return;
+	crabCanvasOn = true;
+	/* NOT the canvas element's own class name, and that is a trap with a
+	   measurement behind it: the first cut called both `crab-canvas`, so the
+	   element rule's `transform: translateY(1.4 vmin)` matched `body.crab-canvas`
+	   as well and translated the WHOLE PANEL down 10.08 px. Every zone still
+	   measured zero overflow against itself, and the page overflowed by exactly
+	   that amount (2560x720, all four fixtures, all four views). A state class on
+	   body and a styling class on an element must never share a name. */
+	document.body.classList.add('crab-canvas-on');
+
+	/* The attributes and classes ARE the state, so a mutation is the only event
+	   this renderer needs. Two observers because the two carry different facts:
+	   #crab has the mood, the costume and the trick classes; body has quiet (which
+	   silences every trick) and esc2 (which lifts the waving arm a second cell). */
+	if (typeof MutationObserver === 'function') {
+		crabObs = new MutationObserver(onCrabMutate);
+		crabObs.observe(ui.crab, { attributes: true, attributeFilter: ['data-mood', 'data-acc', 'class'] });
+		crabBodyObs = new MutationObserver(onCrabMutate);
+		crabBodyObs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+	}
+	/* The box is a flex child of a zone that reflows with the slot, so the bitmap
+	   has to follow it. ResizeObserver where it exists; the window resize listener
+	   init() already installs is the floor everywhere else. */
+	if (typeof ResizeObserver === 'function') {
+		try { new ResizeObserver(function () { crabResize(); crabPaint(true); }).observe(ui.crabWrap); }
+		catch (e) { /* the window listener below is the floor */ }
+	}
+	window.addEventListener('resize', function () { crabResize(); crabPaint(true); });
+	/* A dev reader for the frame timings, the idiom the sensor log already keeps. */
+	try { window.__sidecrabCrabFrames = crabFrames; } catch (e) {}
+	crabResize();
+	crabSync();
+}
+
+function onCrabMutate() {
+	/* The mood decides --crab-fill, so a mood change is a palette change. */
+	crabPal = null;
+	crabSync();
+}
+
+/* Read the CLASSES, start or stop the motions they name, repaint, reschedule.
+   The class is authoritative in both directions: a trick whose latch expired has
+   had its class removed by the same setTimeout that removed it before this
+   renderer existed. */
+function crabSync() {
+	if (!crabCanvasOn) return;
+	var cls = ui.crab.classList;
+	var now = laneCNow();
+	var names = ['waveonce', 'snap', 'bounce', 'dance', 'juggling'];
+	for (var i = 0; i < names.length; i++) {
+		var on = cls.contains(names[i]);
+		if (on && crabMotion[names[i]] === undefined) crabMotion[names[i]] = now;
+		else if (!on && crabMotion[names[i]] !== undefined) delete crabMotion[names[i]];
+	}
+	crabPaint(true);
+}
+
+function laneCNow() {
+	try { return performance.now(); } catch (e) { return Date.now(); }
+}
+
+function crabResize() {
+	if (!crabCanvasOn) return;
+	var cv = ui.crabCanvas;
+	var w = cv.clientWidth, h = cv.clientHeight;
+	if (!(w > 0 && h > 0)) return;
+	var dpr = window.devicePixelRatio || 1;
+	var bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+	if (bw === crabDprW && bh === crabDprH) return;
+	crabDprW = cv.width = bw;
+	crabDprH = cv.height = bh;
+	/* A bitmap resize clears the canvas and invalidates the pose cache with it. */
+	crabPoseSig = null;
+}
+
+/* Every colour is read from the SVG's own computed custom properties, never
+   baked in: the mood sets --crab-fill, the stylesheet sets the costume tokens
+   and applyProperties writes the personalization ones onto documentElement at
+   runtime, so a getComputedStyle here is what keeps an iCUE override winning.
+   Cached for three seconds, and dropped outright on any mutation — a forced
+   style read per frame would put a recalc in the animation loop. */
+function crabPalette() {
+	var now = Date.now();
+	if (crabPal && now - crabPalAt < 3000) return crabPal;
+	var cs = window.getComputedStyle(ui.crab);
+	function tok(name, dflt) {
+		var v = cs.getPropertyValue(name);
+		v = v === null || v === undefined ? '' : String(v).trim();
+		return v || dflt;
+	}
+	crabPal = {
+		fill: tok('--crab-fill', '#E45C28'),
+		eye: tok('--crab-eye', '#14120F'),
+		'--acc-party': tok('--acc-party', '#F4BC45'),
+		'--acc-stripe': tok('--acc-stripe', '#D4553F'),
+		'--acc-topper': tok('--acc-topper', '#F7F3EC'),
+		'--acc-cap': tok('--acc-cap', '#7C86A8'),
+		'--acc-band': tok('--acc-band', '#F0EBE2'),
+		'--acc-pom': tok('--acc-pom', '#F7F3EC'),
+		'--acc-frame': tok('--acc-frame', '#0B0907'),
+		'--acc-lens': tok('--acc-lens', '#1E2A33'),
+		'--acc-glare': tok('--acc-glare', '#FFFFFF')
+	};
+	crabPalAt = now;
+	return crabPal;
+}
+
+/* ---------------------------------------------------------------- the poses */
+
+/* Where a motion is, as a fraction of ONE iteration, or null when it is not
+   running. Iterations are counted rather than modulo'd forever: a class that
+   outlives its own animation (a latch cleared late, a forced trick on a loop)
+   must hold the last frame rather than restart, which is what the CSS does. */
+function crabPhase(name, period, iterations, now) {
+	var t0 = crabMotion[name];
+	if (t0 === undefined) return null;
+	var t = (now - t0) / period;
+	if (t >= iterations) return null;
+	if (t < 0) t = 0;
+	return t - Math.floor(t);
+}
+
+/* ease-in-out, the curve a limb moves on. Written out rather than imported
+   because a cubic-bezier evaluator would be a dependency for one line. */
+function crabEase(p) {
+	return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+}
+
+/* Everything the next paint needs, in viewBox UNITS and already rounded to them.
+   Kept as one object so the pose can be hashed: an unchanged hash skips the
+   clear and the fills entirely, which is what makes a 60 Hz loop cost about what
+   a 12 Hz one does. */
+function crabPose(now) {
+	var crab = ui.crab;
+	var mood = crab.getAttribute('data-mood') || 'content';
+	var acc = crab.getAttribute('data-acc') || '';
+	var cls = crab.classList;
+	var body = document.body.classList;
+	var quiet = body.contains('quiet');
+	var esc2 = body.contains('esc2');
+	var still = quiet || reducedMotion();
+
+	var pose = {
+		mood: mood,
+		acc: cls.contains('juggling') ? '' : acc,
+		blink: cls.contains('blink'),
+		esc2: esc2,
+		quiet: quiet,
+		armL: 0, armR: 0, clawR: 0,
+		rigX: 0, rigY: 0,
+		breath: 0,
+		juggle: null,
+		sweat: null,
+		zzz: mood === 'asleep'
+	};
+
+	/* The static mood poses, unchanged: celebrating parks both arms a cell up,
+	   waving parks the right one, and tier 2 parks it a second cell higher. Quiet
+	   flattens celebrating and holds waving at one cell, exactly as the stylesheet
+	   does two rules apart. */
+	if (mood === 'celebrating' && !quiet) { pose.armL = -4; pose.armR = -4; }
+	if (mood === 'waving') pose.armR = (esc2 && !quiet) ? -8 : -4;
+
+	if (!still) {
+		/* The wave SWEEP. The CSS ran two frames on a steps(1, end); this runs the
+		   same nought-to-one-cell travel on an ease, so the arm arrives instead of
+		   teleporting. It REPLACES the mood's parked arm for its 1.9 s, which is what
+		   an animation does to a static transform in CSS. */
+		var w = crabPhase('waveonce', CRAB_WAVE_MS, CRAB_WAVE_N, now);
+		if (w !== null) pose.armR = -Math.round(4 * crabEase(w < 0.5 ? w * 2 : (1 - w) * 2));
+
+		/* The claw snap: a half cell in and back, twice. */
+		var sn = crabPhase('snap', CRAB_SNAP_MS, CRAB_SNAP_N, now);
+		if (sn !== null) pose.clawR = -Math.round(2 * crabEase(sn < 0.5 ? sn * 2 : (1 - sn) * 2));
+
+		/* The hop. A sine rather than the ease, because a jump is a parabola and the
+		   animal should hang at the top of it. */
+		var hp = crabPhase('bounce', CRAB_HOP_MS, CRAB_HOP_N, now);
+		if (hp !== null) pose.rigY = -Math.round(4 * Math.sin(Math.PI * hp));
+
+		/* The four beats. The CSS held each of the four whole-cell positions for a
+		   beat; this slides between them on the ease, so the shimmy reads as a slide
+		   and a hop rather than as four stills. */
+		var dn = crabPhase('dance', CRAB_DANCE_MS, CRAB_DANCE_N, now);
+		if (dn !== null) {
+			var beats = [[-4, 0], [0, -4], [4, 0], [0, -4], [-4, 0]];
+			var total = (now - crabMotion['dance']) / CRAB_DANCE_MS;
+			var beat = Math.min(CRAB_DANCE_N - 1, Math.floor(total));
+			var f = crabEase(total - beat);
+			pose.rigX = Math.round(beats[beat][0] + (beats[beat + 1][0] - beats[beat][0]) * f);
+			pose.rigY = Math.round(beats[beat][1] + (beats[beat + 1][1] - beats[beat][1]) * f);
+		}
+
+		/* The juggle, as three arcs rather than three snapped positions. Each ball is
+		   a third of a cycle behind the last, which is the same relationship the
+		   animation-delays expressed. */
+		var jg = crabPhase('juggling', CRAB_JUGGLE_MS, CRAB_JUGGLE_N, now);
+		if (jg !== null && !quiet) {
+			pose.juggle = [];
+			for (var b = 0; b < 3; b++) {
+				var p = (jg + b / 3) % 1;
+				pose.juggle.push([
+					Math.round(-CRAB_BALL_REACH + 2 * CRAB_BALL_REACH * p),
+					Math.round(CRAB_BALL_DROP * (1 - Math.sin(Math.PI * p)))
+				]);
+			}
+		}
+
+		/* The drip. Each drop accelerates (t squared is close enough to gravity at
+		   this size), falls its own clearance, then leaves a beat before the next one
+		   forms — which is what makes three drops read as sweating rather than as
+		   three ornaments sliding down the shell. */
+		if (mood === 'sweating' && !cls.contains('juggling')) {
+			pose.sweat = [];
+			var cycle = CRAB_DRIP_MS + CRAB_DRIP_GAP_MS;
+			for (var d = 0; d < CRAB_SWEAT.length; d++) {
+				var dp = ((now / cycle) + d / CRAB_SWEAT.length) % 1;
+				var ms = dp * cycle;
+				pose.sweat.push(ms >= CRAB_DRIP_MS ? null
+					: Math.round(CRAB_SWEAT[d].fall * Math.pow(ms / CRAB_DRIP_MS, 2)));
+			}
+		}
+
+		/* The breath. The shell's TOP edge rises a unit and settles: the legs stay
+		   planted and the claws stay where they are, because an animal that breathed
+		   by levitating would not read as one. Binary by construction, so the
+		   scheduler can wake at the boundary instead of sixty times a second. */
+		pose.breath = ((now % CRAB_BREATH_MS) / CRAB_BREATH_MS) < 0.42 ? 1 : 0;
+	}
+	if (mood === 'sweating' && still && !cls.contains('juggling')) pose.sweat = [0, 0, 0];
+	if (quiet) pose.sweat = null;   /* the belt body.quiet .crab .sweat already wears */
+	return pose;
+}
+
+function crabPoseKey(p) {
+	return p.mood + '|' + p.acc + '|' + (p.blink ? 'b' : '') + '|' + p.armL + ',' + p.armR + ',' +
+		p.clawR + ',' + p.rigX + ',' + p.rigY + ',' + p.breath + '|' +
+		(p.juggle ? p.juggle.join(';') : '') + '|' + (p.sweat ? p.sweat.join(';') : '') +
+		'|' + (p.zzz ? 'z' : '') + '|' + crabDprW + 'x' + crabDprH;
+}
+
+/* ---------------------------------------------------------------- the paint */
+
+function crabPaint(force) {
+	if (!crabCanvasOn) return;
+	crabResize();
+	if (!(crabDprW > 0 && crabDprH > 0)) { crabSchedule(); return; }
+	var now = laneCNow();
+	var pose = crabPose(now);
+	var key = crabPoseKey(pose);
+	if (!force && key === crabPoseSig) { crabSchedule(); return; }
+	crabPoseSig = key;
+
+	var t0 = laneCNow();
+	var pal = crabPalette();
+	var ctx = crabCtx;
+	/* preserveAspectRatio="xMidYMid meet", replicated: the SVG scales its 52x44
+	   viewBox to fit and centres the remainder, so anything else here would move
+	   the animal relative to the badge and the clock it was placed against. */
+	var scale = Math.min(crabDprW / 52, crabDprH / 44);
+	var ox = (crabDprW - 52 * scale) / 2;
+	var oy = (crabDprH - 44 * scale) / 2 + 4 * scale;   /* the viewBox starts at y -4 */
+
+	ctx.clearRect(0, 0, crabDprW, crabDprH);
+
+	/* Whole device pixels on every edge, which is the canvas spelling of
+	   shape-rendering="crispEdges": two rects that share an edge in viewBox units
+	   round to the same device pixel, so the silhouette stays one solid shape
+	   instead of growing seams. */
+	function rect(x, y, w, h) {
+		var x0 = Math.round(ox + x * scale);
+		var y0 = Math.round(oy + y * scale);
+		var x1 = Math.round(ox + (x + w) * scale);
+		var y1 = Math.round(oy + (y + h) * scale);
+		ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+	}
+	function rects(list, dx, dy) {
+		for (var i = 0; i < list.length; i++) {
+			rect(list[i][0] + (dx || 0), list[i][1] + (dy || 0), list[i][2], list[i][3]);
+		}
+	}
+
+	var rx = pose.rigX, ry = pose.rigY;
+
+	ctx.fillStyle = pal.fill;
+	/* The shell, breathing: the top edge rises and the bottom stays on the legs. */
+	rect(CRAB_BODY[0] + rx, CRAB_BODY[1] + ry - pose.breath, CRAB_BODY[2], CRAB_BODY[3] + pose.breath);
+	rect(CRAB_CLAW_L[0] + rx, CRAB_CLAW_L[1] + ry + pose.armL, CRAB_CLAW_L[2], CRAB_CLAW_L[3]);
+	rect(CRAB_CLAW_R[0] + rx + pose.clawR, CRAB_CLAW_R[1] + ry + pose.armR, CRAB_CLAW_R[2], CRAB_CLAW_R[3]);
+	rects(CRAB_LEGS, rx, ry);
+	if (pose.zzz) rects(CRAB_ZZZ, rx, ry);
+
+	/* The eyes, and the blink's two directions. A blink on the sleeping crab OPENS
+	   the eyes for its frame, so a tap answers whatever the mood is; the worried
+	   crab is excluded outright, because its eyes are a third group and painting
+	   the sleep bars beside them would put four eyes on the animal. */
+	ctx.fillStyle = pal.eye;
+	var eyes = CRAB_EYES_OPEN;
+	if (pose.mood === 'asleep') eyes = pose.blink ? CRAB_EYES_OPEN : CRAB_EYES_SLEEP;
+	else if (pose.mood === 'worried') eyes = CRAB_EYES_WORRIED;
+	else if (pose.blink) eyes = CRAB_EYES_SLEEP;
+	rects(eyes, rx, ry - pose.breath);
+
+	/* The costume, over the eyes exactly as the SVG paints it, and lifted with the
+	   shell it is worn on. */
+	var acc = CRAB_ACC[pose.acc];
+	if (acc) {
+		for (var a = 0; a < acc.length; a++) {
+			ctx.fillStyle = pal[acc[a][0]];
+			rects(acc[a][1], rx, ry - pose.breath);
+		}
+	}
+
+	if (pose.sweat) {
+		for (var s = 0; s < CRAB_SWEAT.length; s++) {
+			var drop = pose.sweat[s];
+			if (drop === null || drop === undefined) continue;
+			var d = CRAB_SWEAT[s];
+			ctx.fillStyle = CRAB_SWEAT_FILL;
+			rect(d.tip[0] + rx, d.tip[1] + ry + drop, 1, 1);
+			rect(d.box[0] + rx, d.box[1] + ry + drop, 3, 3);
+			ctx.fillStyle = CRAB_SWEAT_GLINT;
+			rect(d.box[0] + rx, d.box[1] + ry + drop, 1, 1);
+		}
+	}
+
+	if (pose.juggle) {
+		ctx.fillStyle = pal.fill;
+		for (var j = 0; j < pose.juggle.length; j++) {
+			rect(CRAB_BALL[0] + rx + pose.juggle[j][0], CRAB_BALL[1] + ry + pose.juggle[j][1],
+				CRAB_BALL[2], CRAB_BALL[3]);
+		}
+	}
+
+	if (crabFrames.length >= CRAB_FRAME_RING) crabFrames.shift();
+	crabFrames.push(Math.round((laneCNow() - t0) * 100) / 100);
+	crabSchedule();
+}
+
+/* ------------------------------------------------------------ the scheduler */
+
+/* The whole CPU story is in this function. rAF is entered only for a bounded
+   trick and left the moment the last one ends; the drip gets a fixed 83 ms
+   timer; the breath gets a timer aimed AT its next pose boundary; and an idle
+   panel under quiet or reduced motion schedules nothing at all. */
+function crabSchedule() {
+	if (crabRaf) { cancelAnimationFrame(crabRaf); crabRaf = 0; }
+	if (crabSlowTimer) { clearTimeout(crabSlowTimer); crabSlowTimer = null; }
+	if (!crabCanvasOn) return;
+	var still = document.body.classList.contains('quiet') || reducedMotion();
+	if (still) return;
+
+	var now = laneCNow();
+	var tricks = ['waveonce', 'snap', 'bounce', 'dance', 'juggling'];
+	var periods = [CRAB_WAVE_MS * CRAB_WAVE_N, CRAB_SNAP_MS * CRAB_SNAP_N, CRAB_HOP_MS * CRAB_HOP_N,
+		CRAB_DANCE_MS * CRAB_DANCE_N, CRAB_JUGGLE_MS * CRAB_JUGGLE_N];
+	for (var i = 0; i < tricks.length; i++) {
+		var t0 = crabMotion[tricks[i]];
+		if (t0 !== undefined && now - t0 < periods[i]) {
+			crabRaf = requestAnimationFrame(function () { crabRaf = 0; crabPaint(false); });
+			return;
+		}
+	}
+	if ((ui.crab.getAttribute('data-mood') || '') === 'sweating' && !ui.crab.classList.contains('juggling')) {
+		crabSlowTimer = setTimeout(function () { crabSlowTimer = null; crabPaint(false); }, CRAB_DRIP_STEP_MS);
+		return;
+	}
+	/* The breath's next boundary, computed rather than polled: the pose flips at
+	   42% and at the end of the cycle, so the wait is whichever of those is next. */
+	var p = (now % CRAB_BREATH_MS) / CRAB_BREATH_MS;
+	var nextAt = p < 0.42 ? 0.42 : 1;
+	crabSlowTimer = setTimeout(function () { crabSlowTimer = null; crabPaint(false); },
+		Math.max(16, (nextAt - p) * CRAB_BREATH_MS));
+}
+
+/* ---- lane D: continue vocabulary per repo ---- */
+
+/* The continue buttons for ONE session, in the order they are drawn: the three
+   hardcoded defaults, then the global continuePrompts the feed carries at the top
+   level, then that session's own continuePrompts.
+
+   `sessions[].continuePrompts` is v0.33.0 (provisional) and ADDITIVE: an older
+   crabd sends no such key, the second pool is then empty, and the row is
+   byte-for-byte the one that shipped. Absent is not [] - crabd omits the key
+   entirely for a session with no project prompts rather than serving an empty
+   list, so nothing here has to tell "configured with nothing" from "not
+   configured".
+
+   THE ALLOWLIST IS crabd's, NOT THIS FUNCTION'S. These strings arrive already
+   filtered against the builtins, the globals and the session's own project keys,
+   and queue-continue re-checks the tapped prompt server-side against the same
+   per-session set. A button this function invented would 400 on the tap.
+
+   `seen` is Object.create(null) deliberately: a plain {} inherits
+   Object.prototype, so seen['constructor'] and seen['toString'] read TRUTHY and a
+   prompt with either text would be dropped as a duplicate it never had. */
+function continueButtons(s) {
+	var list = CONTINUE_DEFAULTS.slice();
+	var seen = Object.create(null);
+	/* BOTH halves of each default, which is what crabd's own builtin set holds: the
+	   duplicate the operator would see is a second button with the same FACE, and a
+	   config prompt reading "Continue" is exactly that. */
+	for (var d = 0; d < list.length; d++) { seen[list[d].prompt] = 1; seen[list[d].label] = 1; }
+	var pools = [
+		lastGoodDoc && Array.isArray(lastGoodDoc.continuePrompts) ? lastGoodDoc.continuePrompts : [],
+		s && Array.isArray(s.continuePrompts) ? s.continuePrompts : []
+	];
+	for (var p = 0; p < pools.length; p++) {
+		for (var i = 0; i < pools[p].length; i++) {
+			var raw = pools[p][i];
+			if (typeof raw !== 'string') continue;
+			var txt = raw.trim();
+			if (!txt || seen[txt]) continue;
+			seen[txt] = 1;
+			/* A config-fed prompt is one string: it is both the wire prompt and the
+			   label, clamped on the button face by CSS. */
+			list.push({ label: txt, prompt: txt });
+		}
+	}
+	return list;
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

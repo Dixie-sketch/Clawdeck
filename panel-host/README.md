@@ -25,8 +25,20 @@ caveats").
   corrects `ZoomFactor` so the CSS viewport equals the physical size.
 - **Locked to the panel.** Any navigation that is not `http://127.0.0.1:<port>/panel/…` (or the
   host's own fallback page) is cancelled and logged; new windows are refused; swipe navigation,
-  pinch zoom, the context menu, browser accelerator keys, autofill, host objects and web messages
-  are all off.
+  pinch zoom, the context menu, browser accelerator keys, autofill and host objects are all off.
+- **Takes settings from the panel, and only from the panel.** Web messages are on (host objects
+  are not), and every message is checked on its `Source` against the same navigation lock above.
+  Two are answered: `host-info` returns the host version, the settings path and whether a pairing
+  code is present — never the code — and `settings` writes `panel-settings.json`. Its `props` go
+  through a whitelist with a type and a range for each key: unknown keys are dropped, wrong types
+  are dropped rather than coerced, colours must be `#RRGGBB`, percentages are clamped to 0..100,
+  and nothing is written when nothing survives. `panelToken`, `crabdPort` and `display` are not on
+  that list. The file is merged and written atomically, so every other key survives, and the save
+  does not reload the page (the panel has already applied it).
+- **Lets the panel make a sound.** `--autoplay-policy=no-user-gesture-required` is always on the
+  WebView2 command line. The window never activates, and the alert the panel's chime answers
+  arrives while nobody is touching the glass, so Chromium's default policy would leave the
+  `AudioContext` suspended and the chime silent with no error anywhere.
 - **Honest when crabd is down.** A failed load shows a dark "companion not reachable" page naming
   the URL and the reason, and the host retries every 5 seconds; a crashed WebView2 process is
   re-created; an unhandled exception exits non-zero so the scheduled task relaunches it.

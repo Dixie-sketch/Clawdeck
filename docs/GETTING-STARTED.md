@@ -102,9 +102,12 @@ that dashboard off for the Edge in iCUE (fans and lighting keep working). If the
 shows "SideCrab companion not reachable", the companion is down or older than 0.31.0: run
 `Update-SideCrab.ps1`; the host retries every 5 seconds.
 
-The host reads `~/.sidecrab/panel-settings.json` if you make one (the README lists the keys) and
-writes what it did to `~/.sidecrab/logs/panel.log`. Temperatures are the one thing this host does
-not show: they came from iCUE's sensors.
+Once the panel is on the Edge, tap the **gear beside the clock**. That is where the panel's
+colours, the clock format, the chime and the rest live, and it writes them to
+`~/.sidecrab/panel-settings.json` for you (the README lists the keys if you prefer the file). Try
+**Test chime** first: if you hear nothing, the page is not running in the panel host, and
+`~/.sidecrab/logs/panel.log` says what it loaded. Temperatures need one more thing, HWiNFO;
+section 3c.
 
 ---
 
@@ -132,6 +135,40 @@ with your iCUE version.
 
 ---
 
+## 3c. Temperatures: HWiNFO (optional)
+
+The companion reads hardware sensors from **HWiNFO**, a separate, free download from `hwinfo.com`
+(free for non-commercial use; the Pro licence covers commercial use). Install it, then:
+
+1. Open HWiNFO. In **Settings**, on the **General / User Interface** tab, tick **Shared Memory
+   Support**, **Sensors-only**, **Minimize Main Window on Startup** and **Minimize Sensors on
+   Startup**, then OK.
+2. Click **Sensors** so the Sensors window opens. **The shared memory exists only while that window
+   is open.** Minimised counts; closed does not.
+
+HWiNFO needs administrator rights for its kernel driver, so it runs elevated. The companion only
+reads what it publishes; it never writes to it.
+
+**What you should see:** once HWiNFO finishes its first sensor scan (a minute or two on a
+well-populated PC) the hardware row shows a CPU temperature with its sensor's name, and tapping the row lists the VRM, the drives, the fans and the rest. The
+graphics card needs nothing: wherever an NVIDIA driver is installed, `nvidia-smi` is there and the
+card's temperature, utilisation, VRAM and power appear on their own.
+
+**The free build stops publishing about twelve hours after it starts.** It keeps running and keeps
+showing you readings; it simply stops sharing them. The panel notices: the readings dim and the host
+sheet says *"HWiNFO stopped publishing (free build 12-hour limit): relaunch HWiNFO"*. To stop
+thinking about it, register the relaunch task from an **elevated** PowerShell 7:
+
+```powershell
+pwsh -File .\setup\Register-HwinfoRelaunch.ps1
+```
+
+It creates one scheduled task, `SideCrab-hwinfo`, that starts HWiNFO at logon and relaunches it
+daily at 04:00, so the twelve hours begin afresh while you are asleep. `-WhatIf` shows what it
+would do, `-Remove` unregisters it. The Pro licence removes the need for it entirely.
+
+---
+
 ## 4. Your first session
 
 Open a terminal, `cd` into any project, and run `claude`. Ask it anything.
@@ -140,6 +177,15 @@ Open a terminal, `cd` into any project, and run `claude`. Ask it anything.
 title, the repo name, and a WORKING state. The two LIMITS gauges fill in with your current usage
 and reset times. When the session finishes its turn, the card turns DONE; when it asks you a
 question, the card turns to NEEDS INPUT and the crab perks up.
+
+The Sessions zone has four views, and the chips at the right of its header switch between them:
+the **session cards**, a **Burn** page with today's tokens by session, by model and by hour, a
+**Week** strip you can tap a day of to read its history, and a **Detail** page that shows one
+session in full, with the whole question, the whole permission request and its Approve and Deny
+buttons, every subagent and every event. A swipe across the header row steps through them, and the
+panel remembers which one you were on. You will not miss a question while you are reading another
+view: if a session starts waiting, the Sessions chip grows a pulsing count. The panel never
+switches views for you.
 
 If no card appears, the hooks are not reaching the companion. Run `Test-SideCrab.ps1` and look
 at the hook rows.
@@ -172,10 +218,33 @@ The file is created for you; every key is optional.
   "toast":  { "enabled": true, "thresholdSec": 120 },  // toast after a session waits this long
   "digest": { "enabled": true, "time": "09:00" },      // one "yesterday" summary toast a day
   "budget": { "dailyOutputTokens": 5000000 },          // a daily token budget marker and toast
-  "continuePrompts": ["Continue", "Run the tests"],    // extra next-step buttons on a card
+  "continuePrompts": ["Continue", "Run the tests"],    // extra next-step buttons on every card
+  "continuePromptsByRepo": {                           // and per repo, for the work that repo needs
+    "acme-api": [
+      "Rebuild the report",
+      "Run the migrations",
+      "Check the seed data",
+      "Roll the staging deploy back",
+      "Write the release note"
+    ]
+  },
+  "continuePromptsByPath": {                           // or per folder, for anything git cannot name
+    "C:\\Work\\acme-api-lane-b": ["Fold the lane in"]
+  },
   "recapRepos": ["C:\\Dev\\my-project"]                // repos whose commits count in the recap
 }
 ```
+
+Tap a working or finished session and the sheet offers next steps: Continue, Run the tests and
+Commit + push to start with. `continuePrompts` adds buttons to every session. `continuePromptsByRepo`
+adds them to one repo only, so the five buttons above appear on `acme-api` sessions and nowhere else,
+and you can give each project the words you use on it. The key is the repo name printed under the
+session title. `continuePromptsByPath` does the same for a folder, which is what to reach for when two
+checkouts of one repo need different buttons, or when the folder is not a repo.
+
+Each string is both the face of the button and the instruction that is sent to the session, so write
+it as an instruction: "Run the migrations", not "migrations". Nothing else can be sent from the panel,
+and a button only works on the project you configured it for.
 
 The moon button beside the clock is quiet hours on the glass: tap for an hour of quiet, tap again
 to stay awake through tonight's window, tap again to go back to the schedule.
@@ -229,6 +298,8 @@ approvals" section has the full guarantees.
 | Tap a limit gauge | See when the window resets and when your current pace would fill it |
 | Tap a day in the week strip | Drill into that day |
 | Pull down from the top | Refresh now |
+| Tap the gear beside the clock | The panel's settings: clock format, colours, the chime, Test chime |
+| Tap the hardware row | Ten minutes of CPU, memory, GPU and disk, plus every other sensor |
 
 The crab is the summary. Calm means nothing needs you. Alert with a glow means a session is
 waiting. Worried and grey means the data is stale: the companion stopped, or the feed is older

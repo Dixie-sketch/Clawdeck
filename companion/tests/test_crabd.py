@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import struct                          # lane A: the HWiNFO shared-memory layout
 import subprocess
 import sys
 import tempfile
@@ -3193,7 +3194,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.31.0")
+        self.assertEqual(crabd.VERSION, "0.33.0")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -5957,7 +5958,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.31.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.33.0")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -7399,6 +7400,19 @@ class ContinueQueueUnitTests(unittest.TestCase):
         self.assertEqual(self.queue.drain("new", self.now), "Continue")
 
 
+class _FixedGit:
+    """GitLookup's shape with the answer pinned (lane D). The served fixtures' cwd is a
+    real directory, so the repo NAME a test would otherwise match on is whichever
+    checkout the suite is running from."""
+
+    def __init__(self, repo, branch="main"):
+        self.repo = repo
+        self.branch = branch
+
+    def get(self, cwd):
+        return (self.repo, self.branch) if cwd else (None, None)
+
+
 class ContinuePromptWhitelistTests(unittest.TestCase):
     """UserConfig.continue_prompts - the set a tap may say."""
 
@@ -7459,6 +7473,145 @@ class ContinuePromptWhitelistTests(unittest.TestCase):
         self.write({"continuePrompts": [f"prompt {i}" for i in range(500)]})
         self.assertEqual(len(self.config.continue_extras(time.time())),
                          crabd.CONTINUE_PROMPTS_CAP)
+
+    # ---- lane D (v0.33.0, provisional): a vocabulary per project ----
+
+    PROJECTS = {
+        "continuePrompts": ["ship it"],
+        "continuePromptsByRepo": {
+            "acme-api": ["Rebuild the report", "Run the migrations"],
+            "orbit-desktop": ["Sign the installer"],
+        },
+        "continuePromptsByPath": {
+            "C:\\Work\\acme-api-lane-b": ["Fold the lane in"],
+            "C:\\Work\\acme": ["Never reached by the lane tree"],
+        },
+    }
+
+    def extras(self, repo, cwd):
+        return self.config.continue_session_extras(time.time(), repo, cwd)
+
+    def test_a_repo_list_reaches_that_repo_and_no_other(self):
+        self.write(self.PROJECTS)
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"),
+                         ["Rebuild the report", "Run the migrations"])
+        self.assertEqual(self.extras("orbit-desktop", "C:\\Work\\orbit"),
+                         ["Sign the installer"])
+        self.assertEqual(self.extras("sample-app", "C:\\Work\\sample-app"), [])
+
+    def test_a_session_with_no_repo_still_gets_its_path_list(self):
+        """The gap the path map exists for: a cwd that is not a repo has repo null, and
+        no repo key can ever reach it."""
+        self.write(self.PROJECTS)
+        self.assertEqual(self.extras(None, "C:\\Work\\acme-api-lane-b\\companion"),
+                         ["Fold the lane in"])
+
+    def test_the_repo_key_is_matched_case_insensitively(self):
+        self.write({"continuePromptsByRepo": {"Acme-API": ["Rebuild the report"]}})
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"),
+                         ["Rebuild the report"])
+
+    def test_two_repo_keys_differing_only_in_case_do_not_merge(self):
+        """The first key wins, and the second is dropped rather than silently appended -
+        a merge would give that repo a vocabulary neither key asked for."""
+        self.write({"continuePromptsByRepo": {"acme-api": ["first"],
+                                              "ACME-API": ["second"]}})
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"), ["first"])
+
+    def test_a_path_key_matches_at_a_boundary_not_as_a_string_prefix(self):
+        """C:\\Work\\acme must not own C:\\Work\\acme-api-lane-b. A bare startswith does."""
+        self.write({"continuePromptsByPath": {"C:\\Work\\acme": ["the short key"]}})
+        self.assertEqual(self.extras(None, "C:\\Work\\acme-api-lane-b"), [])
+        self.assertEqual(self.extras(None, "C:\\Work\\acme"), ["the short key"])
+        self.assertEqual(self.extras(None, "C:\\Work\\acme\\companion"), ["the short key"])
+
+    def test_the_longest_path_key_wins_and_only_it(self):
+        self.write(self.PROJECTS)
+        self.assertEqual(self.extras(None, "C:\\Work\\acme-api-lane-b"),
+                         ["Fold the lane in"])
+
+    def test_a_path_key_ignores_separator_and_case(self):
+        """Hand-edited JSON: the operator writes forward slashes, or the drive letter in
+        the other case, and the key they typed is the one they meant."""
+        self.write({"continuePromptsByPath": {"c:/work/acme-api": ["Rebuild the report"]}})
+        self.assertEqual(self.extras(None, "C:\\Work\\acme-api\\companion"),
+                         ["Rebuild the report"])
+
+    def test_a_relative_path_key_is_dropped(self):
+        """It could never match a session cwd, which is absolute."""
+        self.write({"continuePromptsByPath": {"acme-api": ["never"]}})
+        self.assertEqual(self.extras(None, "C:\\Work\\acme-api"), [])
+
+    def test_a_project_prompt_already_builtin_or_global_is_dropped(self):
+        """The widget draws builtins, then the globals, then these. A duplicate here is
+        one button drawn twice."""
+        self.write({"continuePrompts": ["ship it"],
+                    "continuePromptsByRepo": {"acme-api": ["ship it", "Continue",
+                                                           "Rebuild the report"]}})
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"),
+                         ["Rebuild the report"])
+
+    def test_the_repo_and_path_lists_join_in_that_order(self):
+        self.write({"continuePromptsByRepo": {"acme-api": ["from the repo key"]},
+                    "continuePromptsByPath": {"C:\\Work\\acme-api": ["from the path key"]}})
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"),
+                         ["from the repo key", "from the path key"])
+
+    def test_each_list_and_the_combined_result_are_bounded(self):
+        cap = crabd.CONTINUE_PROMPTS_PROJECT_CAP
+        self.write({"continuePromptsByRepo": {"acme-api": [f"repo {i}" for i in range(500)]},
+                    "continuePromptsByPath": {"C:\\Work\\acme-api":
+                                              [f"path {i}" for i in range(500)]}})
+        self.assertEqual(len(self.extras("acme-api", "C:\\Work\\acme-api")), cap)
+        self.write({"continuePromptsByRepo": {"acme-api": ["one repo prompt"]},
+                    "continuePromptsByPath": {"C:\\Work\\acme-api":
+                                              [f"path {i}" for i in range(500)]}})
+        self.assertEqual(len(self.extras("acme-api", "C:\\Work\\acme-api")), cap)
+
+    def test_the_number_of_project_keys_is_bounded(self):
+        keys = crabd.CONTINUE_PROMPTS_PROJECT_KEYS
+        self.write({"continuePromptsByRepo": {f"repo-{i}": ["x"] for i in range(keys * 3)}})
+        by_repo, _ = self.config._projects_parsed(time.time())
+        self.assertEqual(len(by_repo), keys)
+
+    def test_a_malformed_project_map_cannot_disarm_the_builtin_buttons(self):
+        """Same rule the global extras keep: the widget is SHOWING those buttons."""
+        for bad in ("not an object", 42, [], [1, 2], {"acme-api": "not a list"},
+                    {"acme-api": [None, 7]}, {"": ["blank key"]}, {12: ["not a string"]}):
+            self.write({"continuePromptsByRepo": bad})
+            self.assertEqual(self.config.continue_prompts_for(
+                time.time(), "acme-api", "C:\\Work\\acme-api"),
+                crabd.CONTINUE_PROMPTS_BUILTIN, bad)
+
+    def test_junk_inside_a_project_list_does_not_take_the_rest(self):
+        self.write({"continuePromptsByRepo":
+                    {"acme-api": [None, "", "   ", 7, "Rebuild the report",
+                                  "Rebuild the report", "x" * (crabd.CONTINUE_PROMPT_MAX + 1)]}})
+        self.assertEqual(self.extras("acme-api", "C:\\Work\\acme-api"),
+                         ["Rebuild the report"])
+
+    def test_the_maps_are_parsed_once_per_config_load(self):
+        """Not an optimisation: the parse is where the config.json warnings are emitted,
+        and a parse on every 2 s build would turn one bad key into a heartbeat."""
+        self.write(self.PROJECTS)
+        now = time.time()
+        self.assertIs(self.config._projects_parsed(now),
+                      self.config._projects_parsed(now))
+
+    def test_a_project_prompt_is_not_on_another_sessions_whitelist(self):
+        """The gate itself, at the level below the endpoint."""
+        self.write(self.PROJECTS)
+        now = time.time()
+        mine = self.config.continue_prompts_for(now, "acme-api", "C:\\Work\\acme-api")
+        theirs = self.config.continue_prompts_for(now, "orbit-desktop", "C:\\Work\\orbit")
+        self.assertIn("Rebuild the report", mine)
+        self.assertNotIn("Rebuild the report", theirs)
+        self.assertNotIn("Sign the installer", mine)
+        for builtin in crabd.CONTINUE_PROMPTS_BUILTIN:
+            self.assertIn(builtin, mine)
+            self.assertIn(builtin, theirs)
+        self.assertIn("ship it", mine)
+        self.assertIn("ship it", theirs)
 
 
 class ContinueEndpointTests(V12ServedTests):
@@ -7704,6 +7857,113 @@ class ContinueEndpointTests(V12ServedTests):
             status, body = self.post("/v1/hook/stop", raw)
             self.assertEqual(status, 200, raw)
             self.assertEqual(json.loads(body), {}, raw)
+
+    # ---- lane D (v0.33.0, provisional): the per-SESSION whitelist ----
+
+    PROJECT_CONFIG = {
+        "continuePrompts": ["ship it"],
+        "continuePromptsByRepo": {
+            "acme-api": ["Rebuild the report", "Run the migrations"],
+            "orbit-desktop": ["Sign the installer"],
+        },
+    }
+    OTHERS = "Sign the installer"
+
+    def use_project_config(self, repo="acme-api", config=None):
+        """Pin this session's repo, then load a project map and rebuild.
+
+        The repo is PINNED rather than read: the served fixture's cwd is a real
+        directory on whatever machine runs the suite, so GitLookup answers with the
+        name of whatever checkout that happens to be, and a map keyed on it would pass
+        or fail by accident.
+        """
+        self.builder.git = _FixedGit(repo)
+        self.config_path.write_text(json.dumps(config or self.PROJECT_CONFIG),
+                                    encoding="utf-8")
+        self.builder.config = crabd.UserConfig(self.config_path)
+        return self.rebuild()
+
+    def test_a_projects_prompts_ride_the_row_and_the_queue_accepts_them(self):
+        """Both halves, as the global extras have: the widget can only learn about the
+        prompt from the feed, and the queue has to accept what it sends back."""
+        self.use_project_config()
+        self.assertEqual(self.row()["continuePrompts"],
+                         ["Rebuild the report", "Run the migrations"])
+        self.assertEqual(self.state()["continuePrompts"], ["ship it"])
+        status, _ = self.action({"sessionId": self.SID, "action": "queue-continue",
+                                 "prompt": "Rebuild the report"})
+        self.assertEqual(status, 204)
+        self.assertEqual(self.continues.peek(self.SID, time.time()),
+                         "Rebuild the report")
+
+    def test_a_prompt_from_another_project_is_refused_with_the_unknown_prompt_400(self):
+        """THE GATE. `Sign the installer` is configured, and it is configured for a repo
+        this session is not in. The whitelist is per session, so the tap is refused with
+        exactly the 400 an invented string has always had - and nothing is queued."""
+        self.use_project_config(repo="acme-api")
+        status, body = self.action({"sessionId": self.SID, "action": "queue-continue",
+                                    "prompt": self.OTHERS})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body),
+                         {"error": "prompt must be one of the configured continue prompts"})
+        self.assertIsNone(self.continues.peek(self.SID, time.time()))
+        self.assertNotIn(self.OTHERS, self.row().get("continuePrompts", []))
+
+    def test_mutation_a_flattened_whitelist_accepts_what_the_gate_refuses(self):
+        """MUTATION CHECK for the test above, run through the real endpoint.
+
+        The wrong way to build this is to flatten every configured list into one
+        whitelist - it passes every "the button works" test and the refusal is the only
+        thing that catches it. Here that mutant is installed on the live builder and the
+        same POST is made: it answers 204 and queues the other project's prompt, so the
+        test above is able to fail.
+        """
+        self.use_project_config(repo="acme-api")
+
+        class _FlattenedConfig(crabd.UserConfig):
+            def continue_prompts_for(self, now, repo, cwd):
+                by_repo, by_path = self._projects_parsed(now)
+                every = [p for lst in by_repo.values() for p in lst]
+                every += [p for _, _, lst in by_path for p in lst]
+                return (tuple(crabd.CONTINUE_PROMPTS_BUILTIN)
+                        + tuple(self.continue_extras(now)) + tuple(every))
+
+        shipped = self.builder.config
+        self.builder.config = _FlattenedConfig(self.config_path)
+        try:
+            status, _ = self.action({"sessionId": self.SID,
+                                     "action": "queue-continue", "prompt": self.OTHERS})
+        finally:
+            self.builder.config = shipped
+        self.assertEqual(status, 204)
+        self.assertEqual(self.continues.peek(self.SID, time.time()), self.OTHERS)
+
+    def test_a_session_in_an_unconfigured_repo_has_no_key_at_all(self):
+        """Absent, never []. An empty list would be a claim that crabd looked at this
+        project and found it configured with nothing."""
+        self.use_project_config(repo="sample-app")
+        self.assertNotIn("continuePrompts", self.row())
+        self.assertEqual(self.state()["continuePrompts"], ["ship it"])
+        self.assertEqual(self.action({"sessionId": self.SID, "action": "queue-continue",
+                                      "prompt": "ship it"})[0], 204)
+
+    def test_no_project_map_at_all_leaves_every_row_as_it_was(self):
+        self.use_project_config(repo="acme-api", config={"continuePrompts": ["ship it"]})
+        self.assertNotIn("continuePrompts", self.row())
+        self.assertEqual(self.action({"sessionId": self.SID, "action": "queue-continue",
+                                      "prompt": "Continue"})[0], 204)
+
+    def test_an_unknown_session_is_still_404_and_the_gate_order_is_unchanged(self):
+        """Shape before existence: an unknown prompt is 400 whatever session it names,
+        and a known one against an unknown session is 404. The per-session lookup did
+        not reorder the gates."""
+        self.use_project_config(repo="acme-api")
+        self.assertEqual(self.action({"sessionId": "not-a-session",
+                                      "action": "queue-continue",
+                                      "prompt": "Continue"})[0], 404)
+        self.assertEqual(self.action({"sessionId": "not-a-session",
+                                      "action": "queue-continue",
+                                      "prompt": "Rebuild the report"})[0], 400)
 
 
 def _shipped_claude_binary():
@@ -11421,3 +11681,970 @@ class PanelRouteAndHostGateTests(ServedOverASocket):
         rows = {(e["origin"], e["source"]): e
                 for e in self.client.get("/v1/health").json()["originsSeen"]}
         self.assertIn((crabd.ORIGIN_ABSENT, "browser"), rows)
+
+
+# ---- lane B: server-sent events (GET /v1/events) ----------------------------------
+
+class SseSubscriberCapTests(unittest.TestCase):
+    """The cap alone, so the arithmetic is provable without a socket. Broken on purpose
+    while it was written: `>=` to `>` in acquire() lets a ninth subscriber in and
+    test_the_cap_is_exact_and_a_released_slot_comes_back fails."""
+
+    def test_the_cap_is_exact_and_a_released_slot_comes_back(self):
+        slots = crabd.SseSubscribers(3)
+        self.assertTrue(all(slots.acquire() for _ in range(3)))
+        self.assertEqual(slots.count, 3)
+        self.assertFalse(slots.acquire())
+        self.assertEqual(slots.count, 3)
+        slots.release()
+        self.assertEqual(slots.count, 2)
+        self.assertTrue(slots.acquire())
+        self.assertFalse(slots.acquire())
+
+    def test_release_never_goes_negative(self):
+        """A double release (a handler whose finally runs twice through some future
+        refactor) must not mint free slots."""
+        slots = crabd.SseSubscribers(2)
+        slots.release()
+        slots.release()
+        self.assertEqual(slots.count, 0)
+        self.assertTrue(slots.acquire())
+        self.assertTrue(slots.acquire())
+        self.assertFalse(slots.acquire())
+
+    def test_the_production_cap_is_eight(self):
+        self.assertEqual(crabd.SseSubscribers().limit, 8)
+        self.assertEqual(crabd.SSE_MAX_SUBSCRIBERS, 8)
+
+    def test_a_frame_is_one_event_and_one_data_line(self):
+        self.assertEqual(crabd.sse_frame("state", b'{"a":1}'),
+                         b'event: state\ndata: {"a":1}\n\n')
+
+
+class SseEventStreamTests(ServedOverASocket):
+    """GET /v1/events: the headers, the first frame, a published snapshot arriving as a
+    second frame, the two gates, the cap, and a teardown that does not hang.
+
+    Read with http.client directly rather than the keep-alive client: this is the one
+    route whose body never ends, so `response.read()` - which every other endpoint test
+    uses - would block until the server went away."""
+
+    def open_stream(self, headers=None, timeout=10.0, path="/v1/events"):
+        """-> (conn, response), closed at teardown whatever the test does. The response
+        is left OPEN so frames can be read a line at a time.
+
+        TRAP, measured here: closing the CONNECTION does not hang up on this route.
+        crabd answers with `Connection: close`, so `getresponse()` sees will_close and
+        hands the socket to the response there and then (conn.sock is already None on
+        return) - and the response's makefile() holds an io ref, so the fd stays open
+        until the RESPONSE is closed. A test that closed the connection to simulate a
+        hang-up would sit there watching a subscriber slot that never comes back."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        self.addCleanup(conn.close)
+        conn.request("GET", path, headers=headers or {})
+        response = conn.getresponse()
+        self.addCleanup(response.close)
+        return conn, response
+
+    @staticmethod
+    def read_frame(response, timeout=5.0):
+        """One SSE frame -> {"event": str|None, "data": bytes|None, "retry": str|None}.
+
+        The socket timeout is what bounds this: a frame that never arrives raises
+        TimeoutError out of readline() and fails the test, which is the point."""
+        response.fp.raw._sock.settimeout(timeout)
+        frame = {"event": None, "data": None, "retry": None}
+        while True:
+            line = response.readline()
+            if not line:
+                raise AssertionError("the stream closed before the frame ended")
+            line = line.rstrip(b"\r\n")
+            if line == b"":
+                if frame["event"] or frame["data"] is not None or frame["retry"]:
+                    return frame
+                continue            # a stray blank line is a keep-alive, not a frame
+            if line.startswith(b"event: "):
+                frame["event"] = line[len(b"event: "):].decode("utf-8")
+            elif line.startswith(b"data: "):
+                frame["data"] = line[len(b"data: "):]
+            elif line.startswith(b"retry: "):
+                frame["retry"] = line[len(b"retry: "):].decode("utf-8")
+
+    def publish(self):
+        """What the refresh thread does in production, which this fixture does not run:
+        build a snapshot and hand it to the builder."""
+        state = self.builder.build()
+        with self.builder._lock:
+            self.builder._state = state
+        return state
+
+    # ---- headers and the first frames -------------------------------------------------
+
+    def test_the_headers_and_the_first_state_frame(self):
+        _, response = self.open_stream()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers.get("Content-Type"), "text/event-stream")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.headers.get("X-Accel-Buffering"), "no")
+        self.assertIsNone(response.headers.get("Content-Length"))
+        first = self.read_frame(response)
+        self.assertEqual(first["retry"], str(crabd.SSE_RETRY_MS))
+        second = self.read_frame(response)
+        self.assertEqual(second["event"], "state")
+        pushed = json.loads(second["data"])
+        polled = self.client.get("/v1/state").json()
+        self.assertEqual(pushed["schema"], polled["schema"])
+        self.assertEqual(pushed["generatedAt"], polled["generatedAt"])
+        self.assertEqual([s["id"] for s in pushed["sessions"]],
+                         [s["id"] for s in polled["sessions"]])
+        # ONE line, or an EventSource reads the tail of the document as a second event.
+        self.assertNotIn(b"\n", second["data"])
+
+    def test_the_own_origin_is_reflected_on_the_stream(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        _, response = self.open_stream(headers={"Origin": origin})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertEqual(response.headers.get("Vary"), "Origin")
+
+    def test_no_snapshot_yet_is_an_error_event_and_the_stream_stays_open(self):
+        """Cold start. The poll answers 503 and closes; the stream says the same thing in
+        an `error` event and WAITS, because the first build is seconds away."""
+        with self.builder._lock:
+            self.builder._state = None
+        _, response = self.open_stream()
+        self.assertEqual(self.read_frame(response)["retry"], str(crabd.SSE_RETRY_MS))
+        first = self.read_frame(response)
+        self.assertEqual(first["event"], "error")
+        self.assertEqual(json.loads(first["data"]), {"error": "state not built yet"})
+        published = self.publish()
+        nxt = self.read_frame(response, timeout=5.0)
+        self.assertEqual(nxt["event"], "state")
+        self.assertEqual(json.loads(nxt["data"])["generatedAt"], published["generatedAt"])
+
+    # ---- a new snapshot is pushed ----------------------------------------------------
+
+    def test_a_new_snapshot_arrives_as_a_second_frame_within_a_second(self):
+        """The whole point of the route. Detection is identity OR generatedAt, so a
+        rebuild inside the same wall-clock second (which _utc_iso cannot distinguish)
+        still pushes."""
+        _, response = self.open_stream()
+        self.read_frame(response)                       # retry
+        self.read_frame(response)                       # the snapshot already held
+        started = time.monotonic()
+        self.publish()
+        frame = self.read_frame(response, timeout=3.0)
+        elapsed = time.monotonic() - started
+        self.assertEqual(frame["event"], "state")
+        self.assertLess(elapsed, 1.0,
+                        "a published snapshot took %.3fs to push" % elapsed)
+
+    def test_the_same_snapshot_is_never_pushed_twice(self):
+        """A subscriber must not be handed the same document every 250 ms. With nothing
+        republished the only thing that may arrive is a ping, and not before its 15 s."""
+        _, response = self.open_stream()
+        self.read_frame(response)
+        self.read_frame(response)
+        with self.assertRaises(TimeoutError):
+            self.read_frame(response, timeout=1.5)
+
+    # ---- the gates -------------------------------------------------------------------
+
+    def test_a_refused_host_is_421_on_this_route(self):
+        for host in ("evil.example:%d" % self.port, "127.0.0.1:%d" % (self.port + 1),
+                     "127.0.0.1", "127.0.0.1.evil.example:%d" % self.port):
+            _, response = self.open_stream(headers={"Host": host})
+            self.assertEqual(response.status, 421, host)
+            self.assertEqual(json.loads(response.read()),
+                             {"error": "host not allowed"}, host)
+
+    def test_a_refused_origin_is_403_on_this_route(self):
+        for origin in ("https://evil.example", "http://127.0.0.1:%d" % (self.port + 1),
+                       "https://127.0.0.1:%d" % self.port, "http://localhost"):
+            _, response = self.open_stream(headers={"Origin": origin})
+            self.assertEqual(response.status, 403, origin)
+            self.assertEqual(json.loads(response.read()),
+                             {"error": "cross-site request refused"}, origin)
+            self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"), origin)
+
+    def test_a_refused_request_never_takes_a_subscriber_slot(self):
+        """The gates run BEFORE the cap, so a rebinding page cannot exhaust the slots a
+        real panel needs with requests it is never going to be served."""
+        for _ in range(crabd.SSE_MAX_SUBSCRIBERS + 4):
+            _, response = self.open_stream(headers={"Origin": "https://evil.example"})
+            response.read()
+        self.assertEqual(self.server.sse_slots.count, 0)
+
+    # ---- the cap ---------------------------------------------------------------------
+
+    def test_the_ninth_subscriber_is_refused_and_a_freed_slot_is_reusable(self):
+        conns = []
+        for i in range(crabd.SSE_MAX_SUBSCRIBERS):
+            conn, response = self.open_stream()
+            self.assertEqual(response.status, 200, i)
+            self.read_frame(response)               # retry: proves the stream is live
+            conns.append((conn, response))
+        settle(lambda: self.server.sse_slots.count == crabd.SSE_MAX_SUBSCRIBERS,
+               what="eight subscribers registering")
+        _, ninth = self.open_stream()
+        self.assertEqual(ninth.status, 503)
+        self.assertEqual(json.loads(ninth.read()), {"error": "too many subscribers"})
+
+        # A hang-up frees the slot. The RESPONSE is what holds the socket here - see
+        # open_stream's trap note - and closing it is what puts a FIN on the wire.
+        conns[0][1].close()
+        settle(lambda: self.server.sse_slots.count < crabd.SSE_MAX_SUBSCRIBERS,
+               timeout=10.0, what="the hung-up subscriber's slot coming back")
+        _, reused = self.open_stream()
+        self.assertEqual(reused.status, 200)
+        self.assertEqual(self.read_frame(reused)["retry"], str(crabd.SSE_RETRY_MS))
+
+    # ---- teardown --------------------------------------------------------------------
+
+    def test_shutting_the_server_down_with_an_open_stream_completes_quickly(self):
+        """A subscriber parks a handler thread. Without the stop event that thread goes
+        on holding its slot and writing pings to a closed socket for the life of the
+        process. Its own server, so this test does not tear the fixture's down early."""
+        import http.client
+        server, thread, port, client = start_test_server(
+            lambda: crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler))
+        self.addCleanup(client.close)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/v1/events")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.read_frame(response)["retry"], str(crabd.SSE_RETRY_MS))
+        started = time.monotonic()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        elapsed = time.monotonic() - started
+        self.assertFalse(thread.is_alive())
+        self.assertLess(elapsed, 5.0,
+                        "teardown with an open stream took %.2fs" % elapsed)
+        self.assertTrue(server.sse_stop.is_set())
+        settle(lambda: server.sse_slots.count == 0, timeout=5.0,
+               what="the stream's slot being released after shutdown")
+
+# ---- lane A: the HWiNFO / GPU / load samplers -------------------------------------
+#
+# The parser is exercised against a SYNTHETIC mapping built from the documented layout
+# rather than against the live one: a test that needs HWiNFO running is a test that
+# reports success on whichever machines happen to have it, and the failure shapes that
+# matter here - a truncated section, a wrong signature, a revision with larger elements,
+# a poll time from half a day ago - cannot be produced on a healthy machine at all.
+#
+# MEASURED AGAINST THE LIVE MAPPING 2026-09-21 (HWiNFO64 v8.52-6060, sensors window
+# open, elevated), and the numbers below are that measurement: signature b"HWiS",
+# version 2, revision 1, the header PACKED so poll_time sits at offset 12, sensor
+# section at 48 with 392-byte elements x 23, reading section at 9064 with 460-byte
+# elements x 524, and the four doubles at +284 inside a reading. Both element sizes are
+# LARGER than the documented v1 minimums (264 / 316): the known fields sit at the front
+# and the remainder is newer trailing fields, which is exactly why the stride comes off
+# the header and never off a computed sizeof.
+
+HWINFO_LIVE_SENSOR_ELEM = 392
+HWINFO_LIVE_READING_ELEM = 460
+
+
+def shm_blob(sensors, readings, *, poll_time=None, padded=False, version=2, revision=1,
+             sensor_elem=HWINFO_LIVE_SENSOR_ELEM, reading_elem=HWINFO_LIVE_READING_ELEM,
+             value_off=None, truncate=0, signature=b"HWiS"):
+    """One HWiNFO_SENSORS_SHARED_MEM2 mapping, as bytes.
+
+    `padded` writes the layout an 8-byte-aligning compiler produces (poll_time at 16,
+    the doubles at 288); the default is the PACKED layout the live mapping carries.
+    Both are built here because the reader chooses between them at run time, and a
+    chooser proved against one input is not a chooser.
+    """
+    if poll_time is None:
+        poll_time = int(time.time())
+    if value_off is None:
+        value_off = 288 if padded else 284
+    poll_off = 16 if padded else 12
+    sensor_off = poll_off + 32
+    if padded:
+        sensor_off = 48
+    reading_off = sensor_off + sensor_elem * len(sensors)
+    buf = bytearray(reading_off + reading_elem * len(readings))
+    struct.pack_into("<4sII", buf, 0, signature, version, revision)
+    struct.pack_into("<q", buf, poll_off, poll_time)
+    struct.pack_into("<6I", buf, poll_off + 8, sensor_off, sensor_elem, len(sensors),
+                     reading_off, reading_elem, len(readings))
+    for i, name in enumerate(sensors):
+        base = sensor_off + i * sensor_elem
+        struct.pack_into("<II", buf, base, 0xF0000300 + i, 0)
+        raw = name.encode("latin-1")
+        buf[base + 8:base + 8 + len(raw)] = raw
+    for i, r in enumerate(readings):
+        base = reading_off + i * reading_elem
+        struct.pack_into("<III", buf, base, r["type"], r["sensor"], i)
+        label = r["label"].encode("latin-1")
+        buf[base + 12:base + 12 + len(label)] = label
+        unit = r.get("unit", "").encode("latin-1")
+        buf[base + 268:base + 268 + len(unit)] = unit
+        struct.pack_into("<4d", buf, base + value_off, r["value"],
+                         r.get("min", r["value"] - 1.0), r.get("max", r["value"] + 1.0),
+                         r.get("avg", r["value"]))
+    blob = bytes(buf)
+    return blob[:-truncate] if truncate else blob
+
+
+# The live machine's shape, trimmed to what the curation has an opinion about. Device
+# strings are the real ones with the drive's serial number removed - a fixture is a
+# committed file, and a serial is not a thing that belongs in one.
+SHM_SENSORS = ["System", "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced",
+               "ASUS ROG CROSSHAIR (Nuvoton NCT6701D)", "ASUS EC",
+               "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]",
+               "iGPU [#1]: AMD Radeon",
+               "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070"]
+DEG_C = "°C"
+
+
+def shm_reading(label, value, sensor=1, type_=1, unit=DEG_C, **kw):
+    return dict(label=label, value=value, sensor=sensor, type=type_, unit=unit, **kw)
+
+
+SHM_READINGS = [
+    shm_reading("CPU (Tctl/Tdie)", 60.4),
+    shm_reading("CPU Die (average)", 56.6),
+    shm_reading("CPU CCD1 (Tdie)", 51.1),
+    shm_reading("Core0 (CCD1)", 50.2),          # per-core: not curated
+    shm_reading("L3 Cache (CCD1)", 39.9),       # cache detail: not curated
+    shm_reading("CPU VDDCR_VDD VRM (SVI3 TFN)", 47.3),
+    shm_reading("VRM", 47.0, sensor=3),
+    shm_reading("Motherboard", 41.0, sensor=2),
+    shm_reading("Temp9", 26.0, sensor=2),       # unpopulated board header
+    shm_reading("Accumulated CPU Temperature", 194117396.0, sensor=3),
+    shm_reading("Drive Temperature", 51.0, sensor=4),
+    shm_reading("GPU Temperature", 48.3, sensor=5),     # the iGPU
+    shm_reading("GPU Temperature", 48.1, sensor=6),     # the card
+    shm_reading("GPU Memory A0 Temperature", 52.0, sensor=6),
+    shm_reading("CPU Package Power", 93.7, sensor=1, type_=5, unit="W"),
+    shm_reading("Accumulated CPU Power", 135046525.0, sensor=3, type_=5, unit="W"),
+    shm_reading("AIO Pump", 3391.0, sensor=2, type_=3, unit="RPM", min=0.0, max=4000.0),
+    shm_reading("GPU Fan1", 0.0, sensor=6, type_=3, unit="RPM", min=0.0, max=3000.0),
+    shm_reading("Core 9 T0 Effective Clock", 29.0, type_=6, unit="MHz", min=0.0, max=6000.0),
+]
+
+
+def shm_names(sensors):
+    return [row["name"] for row in sensors]
+
+
+class HwinfoParserTests(unittest.TestCase):
+    """The layout half: what the parser does with bytes that are, and are not, a mapping."""
+
+    def parse(self, **kw):
+        return crabd.hwinfo_parse(shm_blob(SHM_SENSORS, SHM_READINGS, **kw))
+
+    def test_the_live_layout_parses_packed_with_the_measured_element_sizes(self):
+        out = self.parse()
+        self.assertTrue(out["ok"])
+        self.assertIsNone(out["note"])
+        names = shm_names(out["sensors"])
+        self.assertIn("CPU (Tctl/Tdie)", names)
+        self.assertIn("AIO Pump", names)
+        by_name = {row["name"]: row for row in out["sensors"]}
+        self.assertEqual(by_name["CPU (Tctl/Tdie)"]["kind"], "temp")
+        self.assertEqual(by_name["CPU (Tctl/Tdie)"]["value"], 60.4)
+        self.assertEqual(by_name["AIO Pump"]["kind"], "fan")
+        self.assertEqual(by_name["AIO Pump"]["value"], 3391)
+
+    def test_the_padded_layout_parses_too_and_the_value_offset_is_chosen_not_assumed(self):
+        """An 8-byte-aligning compiler puts poll_time at 16 and the doubles at 288.
+        Reading THAT mapping at the packed offsets yields denormals, so a parser with
+        one hard-coded offset serves garbage on half the possible builds."""
+        out = self.parse(padded=True, reading_elem=320)
+        self.assertTrue(out["ok"])
+        by_name = {row["name"]: row for row in out["sensors"]}
+        self.assertEqual(by_name["CPU (Tctl/Tdie)"]["value"], 60.4)
+
+    def test_minimum_element_sizes_parse_as_well_as_the_live_larger_ones(self):
+        """The documented v1 minimums. The stride is the header's field either way."""
+        out = self.parse(sensor_elem=264, reading_elem=316)
+        self.assertTrue(out["ok"])
+        self.assertIn("CPU (Tctl/Tdie)", shm_names(out["sensors"]))
+
+    def test_a_future_revision_with_larger_elements_still_parses(self):
+        """Trailing fields this crabd knows nothing about, on a revision it has never
+        seen. The known fields are a PREFIX, so striding by the header's own element
+        size is what makes an unknown tail harmless rather than fatal."""
+        out = self.parse(version=9, revision=7, sensor_elem=1024, reading_elem=2048)
+        self.assertTrue(out["ok"])
+        self.assertIn("CPU (Tctl/Tdie)", shm_names(out["sensors"]))
+
+    def test_a_truncated_blob_is_unreadable_and_never_a_partial_answer(self):
+        """The header's own arithmetic runs off the end of what was mapped. Half a
+        reading section is not half an answer - it is bytes of something else."""
+        out = self.parse(truncate=2000)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["note"], crabd.HWINFO_NOTE_UNREADABLE)
+        self.assertEqual(out["sensors"], [])
+
+    def test_a_wrong_signature_is_unreadable(self):
+        out = self.parse(signature=b"XXXX")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["note"], crabd.HWINFO_NOTE_UNREADABLE)
+
+    def test_a_header_that_is_all_zeroes_is_unreadable(self):
+        out = crabd.hwinfo_parse(bytes(4096))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["note"], crabd.HWINFO_NOTE_UNREADABLE)
+
+    def test_a_blob_shorter_than_a_header_is_unreadable(self):
+        self.assertFalse(crabd.hwinfo_parse(b"HWiS")["ok"])
+
+    def test_the_unit_decodes_from_the_single_byte_degree_sign(self):
+        """HWiNFO writes ANSI, so "°C" is 0xB0 followed by "C". utf-8 refuses that byte
+        and utf-8-with-replacement turns the degree sign into a question mark."""
+        out = self.parse()
+        temps = [row for row in out["sensors"] if row["kind"] == "temp"]
+        self.assertTrue(temps)
+        self.assertEqual(temps[0]["unit"], DEG_C)
+
+    def test_values_are_rounded_to_sensor_precision_not_float_precision(self):
+        blob = shm_blob(SHM_SENSORS, [shm_reading("CPU (Tctl/Tdie)", 56.692291259765625),
+                                      shm_reading("AIO Pump", 3391.4, sensor=2, type_=3,
+                                                  unit="RPM", min=0.0, max=4000.0)])
+        rows = {row["name"]: row["value"] for row in crabd.hwinfo_parse(blob)["sensors"]}
+        self.assertEqual(rows["CPU (Tctl/Tdie)"], 56.7)
+        self.assertEqual(rows["AIO Pump"], 3391)
+
+    def test_a_reading_index_past_the_sensor_list_gets_an_empty_device(self):
+        """A sensor_index that names no sensor is a malformed mapping, and the answer
+        is a reading with no device rather than an IndexError into the builder."""
+        blob = shm_blob(["only one"], [shm_reading("CPU (Tctl/Tdie)", 60.0, sensor=44)])
+        out = crabd.hwinfo_parse(blob)
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["sensors"][0]["device"], "")
+
+
+class HwinfoCurationTests(unittest.TestCase):
+    """The policy half: which of 524 readings the row is allowed to be about."""
+
+    def curated(self, readings=SHM_READINGS, cap=crabd.HWINFO_SENSOR_CAP):
+        blob = shm_blob(SHM_SENSORS, readings)
+        return crabd.hwinfo_curate(
+            [dict(row, value=row["value"]) for row in _raw_readings(blob)], cap)
+
+    def names(self):
+        return shm_names(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, SHM_READINGS))["sensors"])
+
+    def test_the_four_measured_traps_are_all_excluded(self):
+        """Every one of these was read off the live mapping, not imagined:
+        an accumulator labelled as a temperature (194,117,396 °C), the same in watts,
+        an unpopulated board header called "Temp9", and per-core / L3 / GPU-memory
+        detail this one-line row has no width for."""
+        names = self.names()
+        for trap in ("Accumulated CPU Temperature", "Accumulated CPU Power", "Temp9",
+                     "Core0 (CCD1)", "L3 Cache (CCD1)", "GPU Memory A0 Temperature"):
+            self.assertNotIn(trap, names)
+
+    def test_a_temperature_outside_the_plausible_range_is_not_a_temperature(self):
+        """The range gate is the backstop UNDER the name gate: rename the accumulator
+        and it is still not 194 million degrees."""
+        readings = [shm_reading("CPU Package", 194117396.0),
+                    shm_reading("CPU (Tctl/Tdie)", 60.4)]
+        names = shm_names(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, readings))["sensors"])
+        self.assertEqual(names, ["CPU (Tctl/Tdie)"])
+
+    def test_a_fahrenheit_reading_is_judged_against_the_fahrenheit_range(self):
+        readings = [shm_reading("CPU (Tctl/Tdie)", 140.0, unit="°F")]
+        self.assertEqual(len(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, readings))["sensors"]), 1)
+
+    def test_an_unknown_unit_is_left_alone_rather_than_judged_against_a_guess(self):
+        readings = [shm_reading("CPU (Tctl/Tdie)", 9999.0, unit="K")]
+        self.assertEqual(len(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, readings))["sensors"]), 1)
+
+    def test_a_zero_rpm_fan_is_a_reading_and_not_an_absence(self):
+        """Measured: both card fans read 0 RPM at idle. A fan-stop mode is the fan
+        WORKING, and a row that dropped it would be reporting an absent sensor."""
+        rows = {row["name"]: row for row in
+                crabd.hwinfo_parse(shm_blob(SHM_SENSORS, SHM_READINGS))["sensors"]}
+        self.assertIn("GPU Fan1", rows)
+        self.assertEqual(rows["GPU Fan1"]["value"], 0)
+
+    def test_a_vrm_probe_whose_label_also_says_cpu_is_filed_as_a_vrm(self):
+        """Measured: the board labels its VRM probes "CPU VDDCR_VDD VRM (SVI3 TFN)".
+        A CPU-first walk files all three as CPU temperatures and the row shows no VRM."""
+        rows = crabd.hwinfo_parse(shm_blob(SHM_SENSORS, SHM_READINGS))["sensors"]
+        order = shm_names(rows)
+        self.assertLess(order.index("VRM"), order.index("Drive Temperature"))
+        self.assertLess(order.index("CPU (Tctl/Tdie)"), order.index("VRM"))
+
+    def test_the_discrete_card_outranks_the_integrated_gpu(self):
+        """Both report "GPU Temperature" and both are real; the one the operator means
+        is the card, so the iGPU's row goes last inside the GPU rank."""
+        rows = [row for row in
+                crabd.hwinfo_parse(shm_blob(SHM_SENSORS, SHM_READINGS))["sensors"]
+                if row["name"] == "GPU Temperature"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0]["device"].startswith("dGPU"))
+
+    def test_the_cap_holds_at_twenty_four(self):
+        many = [shm_reading("CPU Die %d" % i, 40.0 + i) for i in range(40)]
+        self.assertEqual(len(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, many))["sensors"]),
+                         crabd.HWINFO_SENSOR_CAP)
+
+    def test_MUTATION_the_cap_policy_is_load_bearing_a_flat_slice_loses_whole_kinds(self):
+        """THE PROOF THAT THE ROUND ROBIN IS NOT DECORATION.
+
+        Thirty CPU temperatures, one fan, one drive, cap 24 - the shape the live
+        mapping really has (37 ranked readings, 10 of them CPU, 10 GPU). The shipping
+        policy fills one per rank per pass, so the fan and the drive both survive. The
+        MUTATION is the obvious implementation, written out here: sort by rank and take
+        the first 24. It keeps 24 CPU temperatures and drops both - which is a cap
+        deleting whole KINDS rather than depth within a kind, and is what this test
+        would go on passing over if the policy were reverted.
+        """
+        readings = ([shm_reading("CPU Die %d" % i, 40.0 + i) for i in range(30)] +
+                    [shm_reading("AIO Pump", 3391.0, sensor=2, type_=3, unit="RPM",
+                                 min=0.0, max=4000.0),
+                     shm_reading("Drive Temperature", 51.0, sensor=4)])
+        shipping = shm_names(crabd.hwinfo_parse(shm_blob(SHM_SENSORS, readings))["sensors"])
+        self.assertEqual(len(shipping), 24)
+        self.assertIn("AIO Pump", shipping)
+        self.assertIn("Drive Temperature", shipping)
+
+        raw = _raw_readings(shm_blob(SHM_SENSORS, readings))
+        ranked = [(crabd._hwinfo_rank(r), i, r) for i, r in enumerate(raw)]
+        naive = [r for rank, _i, r in sorted((row for row in ranked if row[0] is not None),
+                                             key=lambda row: (row[0], row[1]))][:24]
+        naive_names = shm_names(naive)
+        self.assertEqual(len(naive_names), 24)
+        self.assertNotIn("AIO Pump", naive_names)
+        self.assertNotIn("Drive Temperature", naive_names)
+
+
+def _raw_readings(blob):
+    """Every reading in a blob, uncurated - the input hwinfo_curate is given. Used by
+    the mutation proof, which has to run the REJECTED policy over the same input the
+    shipping one saw, or it is comparing two different questions."""
+    head = crabd._hwinfo_header(blob, len(blob))
+    devices = []
+    for i in range(head["sensorCount"]):
+        base = head["sensorOff"] + i * head["sensorElem"]
+        devices.append(crabd._hwinfo_str(blob, base + 8 + crabd.HWINFO_STR_LEN,
+                                         crabd.HWINFO_STR_LEN)
+                       or crabd._hwinfo_str(blob, base + 8, crabd.HWINFO_STR_LEN))
+    value_off = crabd._hwinfo_value_offset(blob, head)
+    out = []
+    for i in range(head["readingCount"]):
+        base = head["readingOff"] + i * head["readingElem"]
+        kind_id, sensor_index = struct.unpack_from("<II", blob, base)
+        kind = crabd.HWINFO_KINDS.get(int(kind_id), "other")
+        value = struct.unpack_from("<d", blob, base + value_off)[0]
+        out.append({
+            "name": crabd._hwinfo_str(blob, base + crabd.HWINFO_LABEL_OFF + crabd.HWINFO_STR_LEN,
+                                      crabd.HWINFO_STR_LEN)
+                    or crabd._hwinfo_str(blob, base + crabd.HWINFO_LABEL_OFF,
+                                         crabd.HWINFO_STR_LEN),
+            "device": devices[sensor_index] if sensor_index < len(devices) else "",
+            "kind": kind,
+            "unit": crabd._hwinfo_str(blob, base + crabd.HWINFO_UNIT_OFF,
+                                      crabd.HWINFO_UNIT_LEN),
+            "value": crabd._hwinfo_round(kind, crabd._finite_number(value)),
+        })
+    return out
+
+
+class HwinfoReaderTests(unittest.TestCase):
+    """The freshness half: what `sensorsSource` says, and when."""
+
+    NOW = 1_790_000_000.0
+
+    def reader(self, opener):
+        return crabd.HwinfoReader(opener=opener)
+
+    def fresh_blob(self, age=1.0):
+        return shm_blob(SHM_SENSORS, SHM_READINGS, poll_time=int(self.NOW - age))
+
+    def test_a_fresh_mapping_is_available_and_not_stale(self):
+        blob = self.fresh_blob(age=1.0)
+        sensors, source = self.reader(lambda: (blob, len(blob))).read(self.NOW)
+        self.assertTrue(source["available"])
+        self.assertFalse(source["stale"])
+        self.assertIsNone(source["note"])
+        self.assertEqual(source["provider"], "hwinfo")
+        self.assertEqual(source["ageSec"], 1.0)
+        self.assertEqual(source["pollTime"], crabd._utc_iso(self.NOW - 1.0))
+        self.assertTrue(sensors)
+
+    def test_no_mapping_is_absent_and_names_all_three_causes(self):
+        """OpenFileMapping answers ERROR_FILE_NOT_FOUND for all three - HWiNFO not
+        running, its Sensors window closed (measured: the section exists only while
+        that window is open), and Shared Memory Support off - so the note names them
+        all rather than picking the one the reader cannot actually tell apart."""
+        sensors, source = self.reader(lambda: None).read(self.NOW)
+        self.assertEqual(sensors, [])
+        self.assertFalse(source["available"])
+        self.assertFalse(source["stale"])
+        self.assertIsNone(source["pollTime"])
+        self.assertIsNone(source["ageSec"])
+        self.assertEqual(source["note"], crabd.HWINFO_NOTE_ABSENT)
+
+    def test_a_stale_poll_time_keeps_the_readings_and_says_they_are_old(self):
+        """THE TWELVE-HOUR CASE. The free build stops publishing twelve hours after
+        launch and leaves the section in place with its last poll time frozen in it -
+        so "the mapping is there" is not freshness, and a reader that only checked for
+        the mapping would serve half-day-old temperatures as current forever."""
+        blob = shm_blob(SHM_SENSORS, SHM_READINGS, poll_time=int(self.NOW - 12 * 3600))
+        sensors, source = self.reader(lambda: (blob, len(blob))).read(self.NOW)
+        self.assertTrue(source["available"])
+        self.assertTrue(source["stale"])
+        self.assertEqual(source["note"], crabd.HWINFO_NOTE_STALE)
+        self.assertEqual(source["ageSec"], 43200.0)
+        # The readings still ride: they were real when they were taken, and the widget
+        # dims them. Dropping them would turn "old" into "absent", a different claim.
+        self.assertTrue(sensors)
+
+    def test_MUTATION_the_stale_gate_is_what_produces_that_verdict(self):
+        """THE GATE, BROKEN ON PURPOSE. Same twelve-hour blob, same reader, with
+        HWINFO_STALE_SEC widened past the age: the verdict flips to fresh and the note
+        disappears. A staleness test that passed with the threshold removed would be
+        proving something else."""
+        blob = shm_blob(SHM_SENSORS, SHM_READINGS, poll_time=int(self.NOW - 12 * 3600))
+        original = crabd.HWINFO_STALE_SEC
+        try:
+            crabd.HWINFO_STALE_SEC = 24 * 3600.0
+            _s, mutated = self.reader(lambda: (blob, len(blob))).read(self.NOW)
+        finally:
+            crabd.HWINFO_STALE_SEC = original
+        self.assertFalse(mutated["stale"])
+        self.assertIsNone(mutated["note"])
+        _s, shipping = self.reader(lambda: (blob, len(blob))).read(self.NOW)
+        self.assertTrue(shipping["stale"])
+
+    def test_the_boundary_is_thirty_seconds_and_lands_on_the_fresh_side(self):
+        for age, stale in ((30.0, False), (30.5, True)):
+            blob = shm_blob(SHM_SENSORS, SHM_READINGS, poll_time=int(self.NOW) - 0)
+            reader = self.reader(lambda: (blob, len(blob)))
+            _s, source = reader.read(self.NOW + age)
+            self.assertEqual(source["stale"], stale, "age %s" % age)
+
+    def test_a_poll_time_in_the_future_is_a_clock_that_moved_not_a_reading_from_ahead(self):
+        blob = shm_blob(SHM_SENSORS, SHM_READINGS, poll_time=int(self.NOW + 90))
+        _s, source = self.reader(lambda: (blob, len(blob))).read(self.NOW)
+        self.assertEqual(source["ageSec"], 0.0)
+        self.assertFalse(source["stale"])
+
+    def test_an_opener_that_raises_is_unreadable_and_never_reaches_the_builder(self):
+        def boom():
+            raise OSError("access denied")
+        sensors, source = self.reader(boom).read(self.NOW)
+        self.assertEqual(sensors, [])
+        self.assertFalse(source["available"])
+        self.assertEqual(source["note"], crabd.HWINFO_NOTE_UNREADABLE)
+
+    def test_a_malformed_blob_is_unreadable_rather_than_an_exception(self):
+        sensors, source = self.reader(lambda: (b"HWiS" + bytes(200), 204)).read(self.NOW)
+        self.assertEqual(sensors, [])
+        self.assertEqual(source["note"], crabd.HWINFO_NOTE_UNREADABLE)
+
+    def test_poll_honours_its_own_cadence_and_get_hands_back_copies(self):
+        calls = []
+        blob = self.fresh_blob()
+
+        def opener():
+            calls.append(1)
+            return (blob, len(blob))
+        reader = self.reader(opener)
+        self.assertTrue(reader.poll(self.NOW))
+        self.assertFalse(reader.poll(self.NOW + 1.0))
+        self.assertTrue(reader.poll(self.NOW + crabd.HWINFO_POLL_SEC))
+        self.assertEqual(len(calls), 2)
+        sensors, source = reader.get()
+        sensors.append("mutated")
+        source["available"] = "mutated"
+        again, source_again = reader.get()
+        self.assertNotIn("mutated", again)
+        self.assertTrue(source_again["available"])
+
+
+class NvidiaParseTests(unittest.TestCase):
+    """The column order IS the contract: --format=csv,noheader answers with no names."""
+
+    LIVE = ("NVIDIA GeForce RTX 5070, 610.74, 54, 2 %, 7114 MiB, 12227 MiB, "
+            "27.07 W, 250.00 W, 720 MHz")
+
+    def test_the_measured_row_parses_to_the_measured_numbers(self):
+        """Measured on this machine 2026-09-21, units and all."""
+        block = crabd.nvidia_parse(self.LIVE)
+        self.assertTrue(block["available"])
+        self.assertIsNone(block["note"])
+        self.assertEqual(block["name"], "NVIDIA GeForce RTX 5070")
+        self.assertEqual(block["driver"], "610.74")
+        self.assertEqual(block["tempC"], 54.0)
+        self.assertEqual(block["utilPct"], 2.0)
+        self.assertEqual(block["memUsedMB"], 7114.0)
+        self.assertEqual(block["memTotalMB"], 12227.0)
+        self.assertEqual(block["powerW"], 27.07)
+        self.assertEqual(block["powerLimitW"], 250.0)
+        self.assertEqual(block["clockMHz"], 720.0)
+
+    def test_not_available_fields_are_null_and_the_row_still_counts(self):
+        """A card that reports no power draw is still a card. [N/A] is an ANSWER about
+        one field, so it nulls that field and leaves the other eight standing."""
+        row = self.LIVE.replace("27.07 W", "[N/A]").replace(", 54,", ", [N/A],")
+        block = crabd.nvidia_parse(row)
+        self.assertTrue(block["available"])
+        self.assertIsNone(block["powerW"])
+        self.assertIsNone(block["tempC"])
+        self.assertEqual(block["utilPct"], 2.0)
+
+    def test_a_row_with_an_extra_column_is_refused_rather_than_shifted(self):
+        """A comma inside a field is not a decimal mark here - it is the SEPARATOR, so
+        "27,07 W" is ten columns, not nine. Ten parses cleanly into wrong answers
+        (powerW 27, powerLimitW 7), which is why the count is exact: a shifted row is
+        refused rather than served as a plausible reading."""
+        block = crabd.nvidia_parse(self.LIVE.replace("27.07 W", "27,07 W"))
+        self.assertFalse(block["available"])
+        self.assertEqual(block["note"], crabd.NVIDIA_NOTE_EMPTY)
+        self.assertIsNone(block["powerW"])
+
+    def test_a_short_row_is_refused_rather_than_shifted(self):
+        """Nine columns are asked for; three back means columns moved, and reading
+        memory out of the power slot is worse than reading nothing."""
+        block = crabd.nvidia_parse("NVIDIA GeForce RTX 5070, 610.74, 54")
+        self.assertFalse(block["available"])
+        self.assertEqual(block["note"], crabd.NVIDIA_NOTE_EMPTY)
+        self.assertIsNone(block["tempC"])
+
+    def test_empty_output_is_refused(self):
+        self.assertFalse(crabd.nvidia_parse("")["available"])
+        self.assertFalse(crabd.nvidia_parse("\n\n")["available"])
+
+    def test_a_gpu_name_containing_a_comma_survives_because_this_is_csv(self):
+        row = '"NVIDIA, Inc RTX", 610.74, 54, 2 %, 1 MiB, 2 MiB, 1 W, 2 W, 3 MHz'
+        self.assertEqual(crabd.nvidia_parse(row)["name"], "NVIDIA, Inc RTX")
+
+
+class GpuReaderTests(unittest.TestCase):
+    NOW = 1_790_000_000.0
+
+    def test_a_good_run_is_dated_with_its_own_sampledAt(self):
+        """Its OWN freshness, not the document's: this sampler runs on 5 s against a
+        2 s build, so `generatedAt` would date the figure two polls young."""
+        reader = crabd.GpuReader(runner=lambda t: (0, NvidiaParseTests.LIVE, ""))
+        block = reader.read(self.NOW)
+        self.assertTrue(block["available"])
+        self.assertEqual(block["sampledAt"], crabd._utc_iso(self.NOW))
+
+    def test_no_nvidia_smi_is_available_false_with_a_note_never_a_missing_block(self):
+        def missing(timeout):
+            raise FileNotFoundError("nvidia-smi")
+        block = crabd.GpuReader(runner=missing).read(self.NOW)
+        self.assertFalse(block["available"])
+        self.assertEqual(block["note"], crabd.NVIDIA_NOTE_ABSENT)
+        self.assertIsNone(block["sampledAt"])
+        for field in crabd.NVIDIA_FIELDS:
+            self.assertIsNone(block[field])
+
+    def test_a_timeout_says_so_rather_than_reporting_no_card(self):
+        def slow(timeout):
+            raise subprocess.TimeoutExpired("nvidia-smi", timeout)
+        block = crabd.GpuReader(runner=slow).read(self.NOW)
+        self.assertEqual(block["note"], crabd.NVIDIA_NOTE_TIMEOUT)
+
+    def test_a_nonzero_exit_is_not_a_reading(self):
+        block = crabd.GpuReader(runner=lambda t: (9, "", "boom")).read(self.NOW)
+        self.assertFalse(block["available"])
+
+    def test_the_default_result_before_any_poll_is_unavailable_not_absent(self):
+        self.assertFalse(crabd.GpuReader().get()["available"])
+
+    def test_poll_honours_its_cadence(self):
+        calls = []
+        reader = crabd.GpuReader(runner=lambda t: (calls.append(1),
+                                                   NvidiaParseTests.LIVE, "")[1:])
+        self.assertTrue(reader.poll(self.NOW))
+        self.assertFalse(reader.poll(self.NOW + 1.0))
+        self.assertTrue(reader.poll(self.NOW + crabd.NVIDIA_POLL_SEC))
+        self.assertEqual(len(calls), 2)
+
+
+class StubRates:
+    def __init__(self, *samples):
+        self.samples = list(samples)
+        self.calls = 0
+
+    def sample(self):
+        self.calls += 1
+        return self.samples[min(self.calls - 1, len(self.samples) - 1)]
+
+
+class LoadReaderTests(unittest.TestCase):
+    NOW = 1_790_000_000.0
+    FULL = {"diskReadBps": 1000, "diskWriteBps": 2000,
+            "netRxBps": 3000, "netTxBps": 4000}
+    NONE = {"diskReadBps": None, "diskWriteBps": None,
+            "netRxBps": None, "netTxBps": None}
+
+    def reader(self, **kw):
+        kw.setdefault("rates", StubRates(self.FULL))
+        kw.setdefault("commit", lambda: (66_000_000_000, 36_000_000_000))
+        kw.setdefault("processes", lambda: {})
+        kw.setdefault("cpu_count", 32)
+        return crabd.LoadReader(**kw)
+
+    def test_the_block_carries_its_own_sampled_at(self):
+        block = self.reader().read(self.NOW)
+        self.assertEqual(block["sampledAt"], crabd._utc_iso(self.NOW))
+
+    def test_commit_is_the_committed_fraction_of_the_commit_limit(self):
+        block = self.reader().read(self.NOW)
+        self.assertEqual(block["commitPct"], 45.5)
+
+    def test_a_commit_reader_that_fails_nulls_only_commit(self):
+        """Every member is independent: a failed commit read must not take the
+        throughput figures with it."""
+        def boom():
+            raise OSError("no")
+        block = self.reader(commit=boom).read(self.NOW)
+        self.assertIsNone(block["commitPct"])
+        self.assertEqual(block["diskReadBps"], 1000)
+
+    def test_more_available_commit_than_the_limit_is_not_a_size(self):
+        block = self.reader(commit=lambda: (1000, 9999)).read(self.NOW)
+        self.assertEqual(block["commitPct"], 0.0)
+
+    def test_a_zero_commit_limit_is_null_and_never_a_hundred_percent(self):
+        self.assertIsNone(self.reader(commit=lambda: (0, 0)).read(self.NOW)["commitPct"])
+
+    def test_pdh_nulls_pass_straight_through(self):
+        """PDH answers the FIRST collect of a rate counter with INVALID_DATA, because a
+        rate needs two. Null, never 0 - the same first-sample rule cpuPct keeps."""
+        block = self.reader(rates=StubRates(self.NONE)).read(self.NOW)
+        for key in self.NONE:
+            self.assertIsNone(block[key])
+
+    def test_a_rates_sampler_that_raises_leaves_the_rest_of_the_block_intact(self):
+        class Boom:
+            def sample(self):
+                raise RuntimeError("pdh went away")
+        block = self.reader(rates=Boom()).read(self.NOW)
+        self.assertIsNone(block["netRxBps"])
+        self.assertEqual(block["commitPct"], 45.5)
+
+    def test_the_first_process_sample_has_no_top_process(self):
+        """Process CPU time is cumulative since the process started, so utilization
+        exists only BETWEEN two snapshots - and "nothing measured yet" is not "nothing
+        is running at 0%"."""
+        snap = {(100, 1): ("pwsh.exe", 10_000_000)}
+        block = self.reader(processes=lambda: snap).read(self.NOW)
+        self.assertIsNone(block["topProcess"])
+
+    def test_the_second_sample_names_the_busiest_process(self):
+        """One core fully busy for 5 s on a 32-thread machine is 3.1% of the machine:
+        50,000,000 ticks of 100 ns over 5 s x 32 = 1,600,000,000."""
+        snaps = [{(100, 1): ("pwsh.exe", 0), (200, 2): ("idlecalc.exe", 0)},
+                 {(100, 1): ("pwsh.exe", 50_000_000), (200, 2): ("idlecalc.exe", 1_000)}]
+        reader = self.reader(processes=lambda: snaps.pop(0))
+        reader.read(self.NOW)
+        block = reader.read(self.NOW + 5.0)
+        self.assertEqual(block["topProcess"], {"name": "pwsh.exe", "pid": 100,
+                                               "cpuPct": 3.1})
+
+    def test_a_reused_pid_cannot_inherit_the_old_processs_baseline(self):
+        """Windows reuses pids. Keyed on (pid, creation time), so a short-lived
+        process handing its number to an unrelated one produces no delta at all
+        rather than a fabricated spike."""
+        snaps = [{(100, 111): ("old.exe", 900_000_000)},
+                 {(100, 222): ("new.exe", 10_000_000)}]
+        reader = self.reader(processes=lambda: snaps.pop(0))
+        reader.read(self.NOW)
+        self.assertIsNone(reader.read(self.NOW + 5.0)["topProcess"])
+
+    def test_a_counter_that_went_backwards_is_skipped_not_negated(self):
+        snaps = [{(100, 1): ("a.exe", 50_000_000), (200, 1): ("b.exe", 0)},
+                 {(100, 1): ("a.exe", 0), (200, 1): ("b.exe", 16_000_000)}]
+        reader = self.reader(processes=lambda: snaps.pop(0))
+        reader.read(self.NOW)
+        top = reader.read(self.NOW + 5.0)["topProcess"]
+        self.assertEqual(top["name"], "b.exe")
+
+    def test_a_process_snapshot_that_raises_nulls_only_the_top_process(self):
+        def boom():
+            raise OSError("snapshot")
+        block = self.reader(processes=boom).read(self.NOW)
+        self.assertIsNone(block["topProcess"])
+        self.assertEqual(block["diskReadBps"], 1000)
+
+    def test_a_zero_length_window_yields_no_top_process(self):
+        snap = {(100, 1): ("pwsh.exe", 10_000_000)}
+        reader = self.reader(processes=lambda: snap)
+        reader.read(self.NOW)
+        self.assertIsNone(reader.read(self.NOW)["topProcess"])
+
+    def test_get_hands_back_a_copy_of_the_nested_top_process(self):
+        snaps = [{(100, 1): ("pwsh.exe", 0)}, {(100, 1): ("pwsh.exe", 50_000_000)}]
+        reader = self.reader(processes=lambda: snaps.pop(0))
+        reader.poll(self.NOW)
+        reader.poll(self.NOW + crabd.LOAD_POLL_SEC)
+        first = reader.get()
+        first["topProcess"]["name"] = "mutated"
+        self.assertNotEqual(reader.get()["topProcess"]["name"], "mutated")
+
+
+class LaneAHostBlockTests(TempProjects):
+    """The three samplers where they actually land: inside `host`, additively."""
+
+    def builder(self, **kw):
+        return crabd.StateBuilder(crabd.TranscriptStore(self.projects),
+                                  crabd.HookTracker(), StubLimits(), time.time(),
+                                  host=StubHost(), **kw)
+
+    def test_a_builder_with_no_lane_a_readers_serves_the_v0_22_0_block_unchanged(self):
+        """The members are presence-detected, so a crabd without them must serve
+        exactly what it served before - not four nulls that read as four broken
+        sensors."""
+        host = self.builder().build()["host"]
+        self.assertEqual(host, StubHost.BLOCK)
+
+    def test_the_four_members_ride_inside_host(self):
+        blob = shm_blob(SHM_SENSORS, SHM_READINGS)
+        hwinfo = crabd.HwinfoReader(opener=lambda: (blob, len(blob)))
+        hwinfo.poll(time.time())
+        gpu = crabd.GpuReader(runner=lambda t: (0, NvidiaParseTests.LIVE, ""))
+        gpu.poll(time.time())
+        load = crabd.LoadReader(rates=StubRates(LoadReaderTests.FULL),
+                                commit=lambda: (66_000_000_000, 36_000_000_000),
+                                processes=lambda: {})
+        load.poll(time.time())
+        host = self.builder(hwinfo=hwinfo, gpu=gpu, load=load).build()["host"]
+        self.assertEqual(host["cpuPct"], StubHost.BLOCK["cpuPct"])
+        self.assertTrue(host["sensorsSource"]["available"])
+        self.assertTrue(host["sensors"])
+        self.assertEqual(host["gpu"]["name"], "NVIDIA GeForce RTX 5070")
+        self.assertEqual(host["load"]["diskReadBps"], 1000)
+        self.assertLessEqual(len(host["sensors"]), crabd.HWINFO_SENSOR_CAP)
+
+    def test_the_block_is_created_when_the_kernel_counters_cannot_be_read(self):
+        """A machine whose GetSystemTimes and GlobalMemoryStatusEx both fail can still
+        have a readable card. Dropping a measurement that WAS taken because an
+        unrelated counter was not is a second failure invented from the first."""
+        class NoCounters:
+            def sample(self):
+                return None
+        gpu = crabd.GpuReader(runner=lambda t: (0, NvidiaParseTests.LIVE, ""))
+        gpu.poll(time.time())
+        builder = crabd.StateBuilder(crabd.TranscriptStore(self.projects),
+                                     crabd.HookTracker(), StubLimits(), time.time(),
+                                     host=NoCounters(), gpu=gpu)
+        host = builder.build()["host"]
+        self.assertNotIn("cpuPct", host)
+        self.assertTrue(host["gpu"]["available"])
+
+    def test_the_document_still_serialises_with_every_member_present(self):
+        """dump_state is the last gate before the wire; a sampler that produced a
+        non-finite float would be caught here rather than on the glass."""
+        blob = shm_blob(SHM_SENSORS, SHM_READINGS)
+        hwinfo = crabd.HwinfoReader(opener=lambda: (blob, len(blob)))
+        hwinfo.poll(time.time())
+        state = self.builder(hwinfo=hwinfo).build()
+        round_tripped = json.loads(crabd.dump_state(state))
+        self.assertIn("sensorsSource", round_tripped["host"])
+        self.assertNotIn("NaN", crabd.dump_state(state).decode())

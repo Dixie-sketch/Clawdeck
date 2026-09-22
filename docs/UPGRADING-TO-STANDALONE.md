@@ -102,7 +102,7 @@ pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
    | Colours, 24-hour clock, flash on alert, crab accessories, transparency, touch diagnostics | `~/.sidecrab/panel-settings.json`, under `props`, same names (`clock24`, `alertFlash`, `crabStyle`, `textColor`, `accentColor`, `backgroundColor`, `transparency`, `touchDiag`) |
    | Quiet hours, toast, digest, budget | `~/.sidecrab/config.json`, where they already were; the host does not push these from a property sheet |
    | Approval pairing code | Read automatically from `~/.sidecrab/panel-token`. Nothing to paste |
-   | CPU and GPU sensors | No equivalent yet. They came from iCUE's sensor plugin, so the temperature row hides itself in the standalone host |
+   | CPU and GPU sensors | The companion, from HWiNFO's shared memory and `nvidia-smi`; see "Temperatures" below. Without HWiNFO the CPU cell hides itself; the GPU cell needs only the NVIDIA driver |
 
    A minimal `panel-settings.json`, every key optional:
 
@@ -130,6 +130,46 @@ pwsh -File .\setup\Install-SideCrab.ps1 -LimitsToken
   the host retries every five seconds. Start the companion and the panel returns.
 - **Logging.** `~/.sidecrab/logs/panel.log` records the display the host picked, the viewport it
   measured, and every re-pin and refused navigation.
+- **Live updates.** The companion pushes each new picture over `GET /v1/events`; a question shows
+  in about a tenth of a second instead of up to three. If the connection drops, the panel polls
+  every three seconds again and keeps retrying the stream. Nothing to configure.
+- **Settings on the glass.** The gear beside the clock opens a settings sheet; Save writes
+  `panel-settings.json` through the host and applies it with no reload. The sheet never touches
+  the port, the display or the pairing code.
+- **The chime.** A short two-note chime when a session starts waiting: once per question, silent
+  in quiet hours, never twice in five seconds. On after the upgrade; turn it off or set the volume
+  in the sheet, or put `"chime": false` in the `props` block of `panel-settings.json`.
+- **Temperatures.** Back, from HWiNFO and `nvidia-smi`; see the next section.
+- **Four views, and a crab that moves.** The Sessions header has chips for Sessions, Burn, Week
+  and Detail (or swipe across the header); a question arriving behind another view puts a pulsing
+  count on the Sessions chip. The crab is drawn to a canvas now and breathes, sweeps, sweats and
+  dances; he holds still in quiet hours and under reduced motion.
+- **Bring a session to the front.** A card's sheet and the Detail page carry a **Bring to front**
+  control that puts that session's window in front of you on your main display. The host works it
+  out from the session's title, working directory and repository and enumerates your windows
+  itself; the page never names one. If your sessions run in the Claude desktop app, expect
+  "brought the Claude app to the front", because that app keeps every session in a single window;
+  pick the session in its sidebar. Every attempt is written to `~/.sidecrab/logs/panel.log`. The
+  panel never takes the keyboard, and nothing in it types into a session: a multiple-choice
+  question is still answered in the session, by you.
+
+---
+
+## Temperatures: HWiNFO, and the twelve-hour relaunch task
+
+Install HWiNFO from `hwinfo.com` (free for non-commercial use; the Pro licence covers commercial
+use). In its **Settings**, General / User Interface tab, tick **Shared Memory Support**,
+**Sensors-only**, **Minimize Main Window on Startup** and **Minimize Sensors on Startup**; then open
+its **Sensors** window and leave it open (minimised is fine). The shared memory exists only while
+that window runs. HWiNFO is elevated for its driver; the companion only reads. Once HWiNFO finishes
+its first sensor scan (a minute or two) the row shows the CPU temperature with its sensor name; the host sheet lists the VRM, drives, board,
+chipset, package power and fans. The graphics card needs nothing beyond its NVIDIA driver.
+
+**The free build stops sharing about twelve hours after launch**; the panel dims the readings and
+says *"HWiNFO stopped publishing (free build 12-hour limit): relaunch HWiNFO"*. From an elevated
+PowerShell 7, `pwsh -File .\setup\Register-HwinfoRelaunch.ps1` registers `SideCrab-hwinfo`, a task
+that starts HWiNFO at logon and relaunches it daily at 04:00 (`-WhatIf`, `-Remove`). The Pro licence
+removes the need for it.
 
 ---
 
@@ -151,6 +191,9 @@ releases page and import it as before. It stops working the day iCUE updates its
 | Two dashboards flicker on the Edge | iCUE's own dashboard is still on for the Edge. Turn it off in iCUE |
 | `-Panel` fails with "dotnet not found" or an SDK version error | Install the .NET 10 SDK and re-run |
 | Approve or Deny says "not paired" | The host reads `~/.sidecrab/panel-token`; make sure the companion has started at least once (it mints the code) and restart `SideCrab-panel` |
+| No temperatures; the host sheet names HWiNFO | Install HWiNFO, turn on Shared Memory Support, open its Sensors window; `Test-SideCrab.ps1` has a `sensors` row that says which source is missing |
+| Temperatures dimmed with the 12-hour note | Relaunch HWiNFO, or register the `SideCrab-hwinfo` task |
+| No chime | Quiet hours, the chime setting, or the page is not in the panel host: the gear's Test chime tells you which |
 
 ---
 

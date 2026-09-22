@@ -203,6 +203,318 @@ ok(W.fmtNum(W.DIAG_COUNT_SHOWN_MAX).length <= 5,
 	'the diag counter stays inside its five-character width budget');
 eq(W.DIAG_COUNT_SHOWN_MAX, 999999, 'the diag clamp is still the value the width budget was measured on');
 
+/* ================================================= lane C: the view switcher */
+
+/* WHAT IS PINNED HERE. An alert must never hide behind a view, and the badge on
+   the Sessions chip is the whole of that promise: nothing force-switches the
+   glass, so if the badge is wrong the operator is looking at a burn chart with a
+   question waiting behind it and no sign of it anywhere.
+   It counts the EDGE and never the value, and the mutant at the end of the block
+   is a value count - which badges a panel that booted beside two waiting rows
+   and has watched nothing happen. */
+
+function laneCFeed(states) {
+	return states.map(function (st, i) { return sess('s' + i, st); });
+}
+function laneCDoc(list) { W.lastGoodDoc = { sessions: list }; return list; }
+function laneCView(key) { W.viewIdx = W.prefIndexOrNone(W.VIEWS, key); }
+function laneCReset(key, seeded) {
+	laneCView(key);
+	W.viewAlerts = {};
+	W.viewPrevState = {};
+	W.viewPrevSeeded = !!seeded;
+	W.everHadData = true;
+}
+
+/* The mutant: the badge as a count of what is waiting NOW. */
+function valueBadge(list) {
+	var n = 0;
+	for (var i = 0; i < list.length; i++) {
+		if (list[i].state === 'needs_input' && !W.effectiveAcked(list[i])) n++;
+	}
+	return n;
+}
+
+/* 1. A panel that boots straight into another view has watched nothing happen. */
+laneCReset('burn', false);
+var lcFeed = laneCDoc(laneCFeed(['needs_input', 'needs_input', 'working']));
+W.trackViewAlerts(lcFeed);
+eq(W.viewAlertCount(), 0, 'a boot into another view beside two waiting rows badges nothing');
+
+/* 2. A session that STARTS waiting while that view is up is counted, and only it. */
+lcFeed[2].state = 'needs_input';
+W.trackViewAlerts(lcFeed);
+eq(W.viewAlertCount(), 1, 'a session that starts waiting behind another view is counted');
+ok(W.viewAlerts['s2'] === 1, 'the row that flipped is the row that is counted');
+ok(W.viewAlerts['s0'] === undefined && W.viewAlerts['s1'] === undefined,
+	'the rows that were already waiting are not counted a second time');
+
+/* 3. A session brand new to the panel and already waiting is a new alert. */
+lcFeed.push(sess('sNEW', 'needs_input'));
+W.trackViewAlerts(lcFeed);
+eq(W.viewAlertCount(), 2, 'a session that arrives already waiting is an alert too');
+
+/* 4. Answered ANYWHERE - at the keyboard, by the crab tap, by the session moving
+      on - and it stops counting here. */
+lcFeed[2].acked = true;
+lcFeed[3].state = 'working';
+W.trackViewAlerts(lcFeed);
+eq(W.viewAlertCount(), 0, 'an alert answered anywhere stops counting on the chip');
+
+/* 5. On the Sessions view there is nothing to badge: the cards are on the glass. */
+laneCReset('sessions', true);
+var lcSeen = laneCDoc(laneCFeed(['working']));
+W.trackViewAlerts(lcSeen);
+lcSeen[0].state = 'needs_input';
+W.trackViewAlerts(lcSeen);
+eq(W.viewAlertCount(), 0, 'the Sessions view badges nothing: the card is already showing');
+
+/* 6. THE MUTATION PROOF. */
+laneCReset('burn', false);
+var lcBoot = laneCDoc(laneCFeed(['needs_input', 'needs_input', 'working']));
+W.trackViewAlerts(lcBoot);
+eq(W.viewAlertCount(), 0, 'the edge test badges a boot with nothing');
+ok(valueBadge(lcBoot) > 0,
+	'MUTATION: a count of the VALUE badges a panel that has watched nothing happen');
+
+/* ------------------------------------ the view preference, through the vendor store */
+
+/* Same object, same key discipline, same round-trip of a value this build does
+   not know (v0.16.0, audit F2): an untouched save must leave a NEWER build's
+   view exactly as it found it. */
+var lcStore = {};
+W.localStorage = {
+	getItem: function (k) { return Object.prototype.hasOwnProperty.call(lcStore, k) ? lcStore[k] : null; },
+	setItem: function (k, v) { lcStore[k] = String(v); }
+};
+lcStore['lane-c'] = JSON.stringify({ gridView: 'constellation', sessionFilter: 'all', density: 'comfortable' });
+W.mockName = 'rework';
+W.devUidOverride = 'lane-c';
+W.loadPrefs();
+eq(W.viewIdx, 0, 'a stored view this build does not know is the default mode, not an error');
+eq(W.viewStoredUnknown, 'constellation', 'and it is remembered so it can be written back');
+W.savePrefs();
+eq(JSON.parse(lcStore['lane-c']).gridView, 'constellation',
+	"an untouched save leaves a newer build's view exactly as it found it");
+/* A TAP is the operator overriding that. */
+W.viewIdx = W.prefIndexOrNone(W.VIEWS, 'week');
+W.viewStoredUnknown = null;
+W.savePrefs();
+eq(JSON.parse(lcStore['lane-c']).gridView, 'week', 'a tap writes this build`s own key');
+lcStore['lane-c'] = JSON.stringify({ gridView: 'detail' });
+W.loadPrefs();
+eq(W.VIEWS[W.viewIdx].key, 'detail', 'a stored view this build knows is restored');
+W.mockName = null;
+W.devUidOverride = null;
+W.viewIdx = 0;
+W.viewStoredUnknown = null;
+
+/* ------------------------------------------- where a decide or a continue goes */
+
+W.sheetSessionId = 'from-the-sheet';
+laneCView('detail');
+W.detailSessionId = 'from-the-page';
+eq(W.laneCActionSessionId(), 'from-the-sheet', 'a sheet is a modal over the page and wins');
+W.sheetSessionId = null;
+eq(W.laneCActionSessionId(), 'from-the-page', 'with no sheet the Detail page is the target');
+laneCView('sessions');
+eq(W.laneCActionSessionId(), null, 'no sheet and no Detail page is not a target');
+
+/* The page opens on the row that wants a human when nothing has been chosen. */
+laneCDoc(laneCFeed(['idle', 'working', 'needs_input']));
+W.detailSessionId = null;
+eq(W.detailTarget().state, 'needs_input', 'with nothing chosen the page opens on the waiting row');
+W.detailSessionId = 's1';
+eq(W.detailTarget().id, 's1', 'a chosen session that is still in the feed is kept');
+W.detailSessionId = 'gone';
+eq(W.detailTarget().state, 'needs_input', 'a chosen session that has gone falls back, it does not blank');
+W.detailSessionId = null;
+W.lastGoodDoc = null;
+eq(W.detailTarget(), null, 'an empty feed has no page to show, and says so rather than throwing');
+
+/* --------------------------------------------------- the canvas crab's timing */
+
+/* The ease is the curve a limb moves on: both ends exact, symmetric about the
+   middle, and monotonic - a pose that went backwards mid-sweep would read as a
+   stutter rather than as a wave. */
+eq(W.crabEase(0), 0, 'the ease starts where the pose starts');
+eq(W.crabEase(1), 1, 'and ends where it ends');
+eq(Math.round(W.crabEase(0.5) * 1000) / 1000, 0.5, 'and is symmetric about the middle');
+var lcPrev = -1, lcMono = true;
+for (var lcI = 0; lcI <= 100; lcI++) {
+	var lcV = W.crabEase(lcI / 100);
+	if (lcV < lcPrev) lcMono = false;
+	lcPrev = lcV;
+}
+ok(lcMono, 'the ease never goes backwards');
+
+/* A class that outlives its own animation holds the last frame rather than
+   restarting - what the CSS does at the end of an iteration count, and what a
+   bare modulo would have got wrong. */
+W.crabMotion = { dance: 1000 };
+eq(W.crabPhase('dance', 390, 4, 1000), 0, 'a motion starts at the top of its first iteration');
+ok(W.crabPhase('dance', 390, 4, 1000 + 390 * 4 - 1) !== null, 'the last iteration still runs');
+eq(W.crabPhase('dance', 390, 4, 1000 + 390 * 4), null, 'and the motion is over when its iterations are');
+eq(W.crabPhase('snap', 260, 2, 1000), null, 'a motion that is not running has no phase at all');
+W.crabMotion = {};
+
+/* The hour label is cut out of the contract's own string: a bare local date-time
+   is parsed as LOCAL by the spec and as UTC by some engines, and a reading that
+   depends on which one arrived slides by the offset. */
+eq(W.hourLabel('2026-08-25T13:00:00'), '13', 'the hour comes off the string');
+eq(W.hourLabel('2026-08-25T00:00:00Z'), '00', 'midnight is not falsy');
+eq(W.hourLabel(null), '', 'a missing bucket labels nothing');
+eq(W.hourLabel('nonsense'), '', 'and so does a string with no hour in it');
+
+/* ------------------------------------------ lane E: bring a session to the front */
+
+/* THE GATE. The control exists only where a panel host is listening. iCUE has no
+   host and a plain browser at /panel/ has no desktop to reach, and both of those
+   are "no bridge" — the same test lane B's settings save makes, for the same
+   reason. The vm context has no window.chrome at all, which is exactly the iCUE
+   shape, so the default here must be false. */
+eq(W.laneEAvailable(), false, 'with no host bridge the control does not exist');
+eq(W.laneETarget(), null, 'and with no sheet and no Detail page there is nothing to focus');
+
+/* A stub bridge is the standalone shape. It is installed and removed around the
+   check so nothing after this point runs against a fake host. */
+var leSent = [];
+W.chrome = { webview: { postMessage: function (m) { leSent.push(m); }, addEventListener: function () {} } };
+ok(W.laneEAvailable(), 'with the host bridge present the control exists');
+
+/* Four facts and NEVER a window handle: the host ranks the windows it enumerated
+   itself, and a handle from the page would be a window picker aimed by the page. */
+W.lastGoodDoc = { sessions: [{ id: 's1', state: 'needs_input', stateSince: '2026-09-21T12:00:00Z',
+	title: 'SideCrab Panel Windows app', cwd: 'C:\\Dev\\sidecrab', repo: 'sidecrab' }] };
+W.sheetSessionId = 's1';
+W.laneESendFocus();
+eq(leSent.length, 1, 'a tap sends exactly one message');
+eq(leSent[0].type, 'focus-session', 'and it is the focus-session type');
+eq(leSent[0].sessionId, 's1', 'carrying the session id');
+eq(leSent[0].title, 'SideCrab Panel Windows app', 'the title');
+eq(leSent[0].cwd, 'C:\\Dev\\sidecrab', 'the cwd');
+eq(leSent[0].repo, 'sidecrab', 'and the repo');
+eq(Object.keys(leSent[0]).length, 5, 'and nothing else at all — no handle, no command');
+eq(W.laneEStatusText, 'bringing it to the front', 'the line says the ask is in flight');
+
+/* The host's answer is what moves the line, and only for the session just asked
+   for: a reply carrying an older id is a late answer the operator has moved past. */
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 'other', ok: true });
+eq(W.laneEStatusText, 'bringing it to the front', 'a reply for another session is ignored');
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: true, reason: 'focused' });
+eq(W.laneEStatusText, 'brought to front', 'the session that was asked for is reported');
+
+/* Two different true answers. The desktop app holds every session that has no window
+   of its own in ONE window, so the host found the APP and not this session's window;
+   saying "brought to front" there would be a claim the host never made. */
+W.laneEPending = 's1';
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: true, reason: 'desktop-app' });
+eq(W.laneEStatusText, 'brought the Claude app to the front', 'the fallback says it was the app');
+
+W.laneEPending = 's1';
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: false, reason: 'no-match' });
+eq(W.laneEStatusText, 'no window found for this session', 'no match says so plainly');
+W.laneEPending = 's1';
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: false, reason: 'ambiguous' });
+eq(W.laneEStatusText, 'more than one window could be this session', 'a tie is named, not guessed at');
+W.laneEPending = 's1';
+/* A reason this build has never heard of still says something an operator can act
+   on, rather than printing the host's wire word at them. */
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: false, reason: 'something-new' });
+eq(W.laneEStatusText, 'no window found for this session', 'an unknown reason falls back to the plain one');
+
+/* ok must be the literal true. A truthy string from a future host is a host this
+   build does not understand, and "focused" must not be read as success. */
+W.laneEPending = 's1';
+W.laneEOnFocusResult({ type: 'focus-result', sessionId: 's1', ok: 'yes' });
+eq(W.laneEStatusText, 'no window found for this session', 'only a real true counts as brought forward');
+
+delete W.chrome;
+eq(W.laneEAvailable(), false, 'and the gate closes again with the bridge gone');
+W.sheetSessionId = null;
+W.lastGoodDoc = null;
+W.laneEPending = null;
+
+/* -------------------------------- lane D: the continue vocabulary per repo */
+
+/* The builder both the session sheet and the Detail view draw from. Order is the
+   drawing order - builtins, the feed's global extras, then this session's own -
+   and the mutant at the end is the flattened list the widget must NOT build. */
+
+function contSess(id, own) {
+	var s = { id: id, state: 'working', stateSince: '2026-09-21T12:00:00Z' };
+	if (own !== undefined) s.continuePrompts = own;
+	return s;
+}
+function prompts(list) { return list.map(function (b) { return b.prompt; }); }
+function labels(list) { return list.map(function (b) { return b.label; }); }
+
+var CONT_DEFAULTS = prompts(W.CONTINUE_DEFAULTS);
+
+/* 1. No feed and no session list: the three builtins, and nothing invented. */
+W.lastGoodDoc = null;
+eq(prompts(W.continueButtons(contSess('a'))), CONT_DEFAULTS,
+	'with no document at all the builtins are the whole set');
+eq(labels(W.continueButtons(contSess('a'))), ['Continue', 'Run the tests', 'Commit + push'],
+	'the builtin faces are the short labels, not the wire prompts');
+
+/* 2. ABSENT IS NOT EMPTY. crabd omits sessions[].continuePrompts for a session with
+      no project prompts, and an older crabd omits it always: same row either way. */
+W.lastGoodDoc = { continuePrompts: ['Open a pull request for this work.'] };
+var noOwn = prompts(W.continueButtons(contSess('a')));
+eq(noOwn, CONT_DEFAULTS.concat(['Open a pull request for this work.']),
+	'a session with no project prompts gets the builtins plus the global extras');
+eq(prompts(W.continueButtons(contSess('a', []))), noOwn,
+	'an empty per-session list renders exactly what an absent one does');
+eq(prompts(W.continueButtons(contSess('a', 'not an array'))), noOwn,
+	'a per-session value that is not an array is ignored, not rendered');
+
+/* 3. The session's own prompts come LAST, in the order crabd served them. */
+var own = ['Run the ordering tests', 'Take the screenshots'];
+eq(prompts(W.continueButtons(contSess('a', own))),
+	CONT_DEFAULTS.concat(['Open a pull request for this work.'], own),
+	'builtins, then the global extras, then this session\'s project prompts');
+eq(labels(W.continueButtons(contSess('a', own))).slice(-2), own,
+	'a config-fed prompt is its own button face');
+
+/* 4. TWO SESSIONS IN DIFFERENT REPOS get different sets from the same document -
+      the whole feature, at the level the widget owns. */
+var sideSet = prompts(W.continueButtons(contSess('side', ['Take the screenshots'])));
+var acmeSet = prompts(W.continueButtons(contSess('acme', ['Rebuild the report'])));
+ok(sideSet.indexOf('Take the screenshots') !== -1 && sideSet.indexOf('Rebuild the report') === -1,
+	'the sidecrab session sees only its own project prompt');
+ok(acmeSet.indexOf('Rebuild the report') !== -1 && acmeSet.indexOf('Take the screenshots') === -1,
+	'the acme-api session sees only its own project prompt');
+
+/* 5. Defensive on a hand-editable feed: blanks, non-strings and duplicates are
+      dropped, and a duplicate of a builtin or a global is dropped as well - the
+      same rule crabd applies, kept here because a stale crabd predates it. */
+eq(prompts(W.continueButtons(contSess('a', ['  Run the ordering tests  ', null, 7, '',
+	'   ', 'Run the ordering tests', 'Open a pull request for this work.', 'Continue']))),
+	CONT_DEFAULTS.concat(['Open a pull request for this work.', 'Run the ordering tests']),
+	'blanks, non-strings and every kind of duplicate are dropped');
+
+/* 6. THE PROTOTYPE TRAP. A plain {} for the seen-set inherits Object.prototype, so
+      seen['constructor'] reads truthy and a prompt with that text would vanish. */
+eq(prompts(W.continueButtons(contSess('a', ['constructor', 'toString', 'hasOwnProperty']))),
+	CONT_DEFAULTS.concat(['Open a pull request for this work.', 'constructor', 'toString',
+		'hasOwnProperty']),
+	'a prompt named after an Object.prototype member is not eaten as a duplicate');
+
+/* 7. THE MUTATION PROOF for check 4: the flattened builder - one list for every
+      session, which is what "per repo" looks like when the per-session half is
+      dropped - must fail it, or check 4 reports success forever. */
+function flattenedButtons(s, everyProjectPrompt) {
+	var list = W.CONTINUE_DEFAULTS.slice();
+	everyProjectPrompt.forEach(function (t) { list.push({ label: t, prompt: t }); });
+	return list;
+}
+var flat = prompts(flattenedButtons(contSess('side', ['Take the screenshots']),
+	['Take the screenshots', 'Rebuild the report']));
+ok(flat.indexOf('Rebuild the report') !== -1,
+	'MUTATION: a flattened builder puts another project\'s prompt on this sheet');
+W.lastGoodDoc = null;
+
 /* ---------------------------------------------------------------------- done */
 
 console.log((failures ? 'FAILED' : 'ok') + '  ' + (checks - failures) + '/' + checks + ' checks');

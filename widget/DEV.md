@@ -135,6 +135,7 @@ buys nothing — so it is gone. Count the table.)
 | `&budget=<percent>` | put the day at that percentage of its budget, for the 100% amber and 150% red steps. It moves the **budget**, not the spend: `dailyOutputTokens` is recomputed from the fixture's own output total (and clamped to the contract's range), so the document stays self-consistent and the pace marker moves with the figure — the `&age=` discipline, in a fourth place |
 | `&filter=<all\|waiting\|working\|quiet>` | set the session filter chip for the shot (v0.15.0). It sets the SAME variable a tap sets, so the mode in the picture is the real one. **In memory only** — the discipline `&pin=` keeps: a screenshot flag that wrote to the vendor store would leave the operator's own panel filtered. Applied AFTER `loadPrefs()`, so it still wins on a run that also carries `&uid=` |
 | `&density=<comfortable\|compact>` | set the density chip, same discipline. Compact is a third grid row plus smaller type, so `gridCapacity()` reads 12 instead of 8 at 2560x720 — pair it with `?mock=dense` or the extra cells are empty |
+| `&view=<sessions\|burn\|week\|detail>` | set the grid zone's view for the shot (v0.30.0). It sets the SAME variable a chip tap sets and nothing else, so what is photographed is the real view; it does **not** write to the vendor store, the discipline `&pin=`, `&filter=` and `&density=` keep: a screenshot flag that persisted would leave the operator's own panel on a view they never chose. Applied AFTER `loadPrefs()`, so it still wins on a run that also carries `&uid=` |
 | `&approvalsec=<seconds>` | stand in for the iCUE `approvalThreshold` property (v0.16.0), the way `&uid=` stands in for `uniqueId`. A dev browser has no property sheet, so without it the only observable state of the approval threshold off-glass is its default — and the whole setting is about what happens when it **moves**. It feeds `approvalPropertySec()` and nothing else, so what runs is the real baseline / touch / POST path. Boot once **without** it on a `&uid=` (the body logs no `approvalThresholdSec`), then reload **with** it on the same `&uid=` (the value has moved off the recorded baseline, so the key is in the body from then on). Clamped to 5..3600 on the way in |
 | `&hold=<seconds>` | start every `pendingPermission`'s hold with that many seconds left (v0.15.0), so the approval countdown can be aimed at. The instant is **pinned on first use**, the `&age=` discipline: it then counts down in real time and reaches `expired` by itself, which is the second shot. Clamped to `APPROVAL_HOLD_SEC` on the way in — a hold longer than crabd's own would be a fixture the daemon could not have produced |
 | `&sensors=<cpu>[,<gpu>][,C|F]` | stand in for the iCUE **Sensors bridge** (v0.17.0), the way `&uid=` stands in for `uniqueId`. `window.plugins` does not exist in any browser, so before this the hardware row was the one part of the Limits zone that could not be seen off-glass at all, and it is the part that decides whether that zone fits. It replaces the PLUGIN and nothing else: `refreshSensors` / `readSensor` / the 80/90 threshold colouring / `showSensor` / `markSensorZone` are the shipping ones, so the row in the shot is the row iCUE paints. Two numbers reach the amber and red steps (`&sensors=95,84`); the unit letter reaches the Fahrenheit branch, which is deliberately left uncoloured. **Mock-gated like every other flag, so the STANDALONE state, the one place the row is the only thing in the zone, cannot be combined with it** - force the classes from the console to measure that one |
@@ -166,6 +167,898 @@ touch `done` rows, so to exercise Dismiss over time, freeze the feed first
 **Since v0.14.0 the swipe dismiss is keyed the same way and inherits the same
 trap** — a swiped card comes back within ~3 s in mock mode and does not against
 crabd. The gesture test harness freezes the feed for exactly this reason.
+
+## v0.31.0 — the desk wave: bring a session to the front, and a continue vocabulary per project
+
+### Bring a session to the front (widget 0.31.0, panel host 0.3.0)
+
+Measurements are from the development PC on 2026-09-21; `docs/notes/lane-e-spike.md` carries the evidence,
+including the multiple-choice blocker re-verified against Claude Code 2.1.278.
+
+## The contract
+
+The page posts one message through the bridge lane B built:
+
+```json
+{ "type": "focus-session", "sessionId": "...", "title": "...", "cwd": "...", "repo": "..." }
+```
+
+Four facts about a session, and **never a window handle**. The host ranks windows it
+enumerated itself; a handle from the page would be a window picker a visited page could aim
+anywhere on the desktop.
+
+The host replies:
+
+```json
+{ "type": "focus-result", "sessionId": "...", "ok": true, "reason": "focused", "window": "..." }
+```
+
+`reason` is `focused` (a window matched), `desktop-app` (the fallback), `refused`,
+`no-window`, `no-match`, `ambiguous` or `enumerate-failed`. The page must treat `ok` as the
+literal `true`: a truthy string from a later host is a host this build does not understand.
+
+### Where the code is
+
+| What | Where |
+|---|---|
+| Message validation, ranking, cwd leaf, mutex name | `panel-host/SideCrab.Panel/PanelLogic.cs` |
+| Window enumeration and the foreground handover | `panel-host/SideCrab.Panel/WindowFocus.cs` |
+| The bridge case, logging, the reply | `PanelForm.FocusSessionFromPage` |
+| Page side, one block | `widget/scripts/sidecrab.js`, `---- lane E ----` |
+| Styles, one block | `widget/styles/sidecrab.css`, `---- lane E ----` |
+| Host tests | `panel-host/SideCrab.Panel.Tests/PanelLogicTests.cs` |
+| Page tests | `widget/tests/test_ordering.js` |
+
+Edits to existing functions are one line each and marked `lane E:`: the `focus-session`
+case in `OnWebMessageReceived`, the `focus-result` branch in `onHostMessage`, a routing
+branch in `onSheetClick` and in `onGridViewClick`, the chip in `detailHead`, the status line
+in `renderDetailView`, and `laneEInit()` after `laneBInit()` in `init`.
+
+### The ranking, and the numbers behind it
+
+`ScoreWindow` scores **evidence only**:
+
+| Signal | Score | Why that number |
+|---|---|---|
+| Window title equals the session title | 100 | The strongest evidence there is. |
+| Window title contains it (title >= 6 chars) | 60 | A real console title came back `Administrator:  lane E focus probe session ` - an equality test misses it. |
+| Repo name in a TERMINAL's title (>= 4 chars) | 20 | Claude Code names a terminal window (`claude -n`). |
+| cwd leaf in a TERMINAL's title (>= 4 chars) | 10 | Weakest signal, terminals only. |
+
+`SelectWindow` then: takes the unique top scorer; refuses a tie as `ambiguous`; falls back
+to the Claude desktop app when nothing scored; returns `no-match` when there is no app
+either.
+
+### Traps
+
+- **The desktop app must never score alongside evidence.** The first cut gave it a flat 30
+  for being the Claude process, and a live run asked for a session titled
+  `zzz no such window zzz` in `C:\zzz\nowhere`: the panel brought the app forward and
+  reported success. `no window found for this session` was unreachable while the app was
+  running. A control that cannot fail reports success forever. The test that fails if this
+  comes back is `The_desktop_app_is_a_labelled_fallback_and_never_a_silent_success`.
+- **The cwd leaf on this PC is `IT`, two characters, and four windows carry it.** That is
+  the `FocusMinWordMatch` floor, and it is why a tie is refused rather than broken. A coin
+  toss between four identically titled consoles is wrong three times in four, and being
+  wrong means taking the keyboard away from whatever was being typed into.
+- **`SetForegroundWindow` is refused when the host is not already the foreground process,
+  and returns as if it worked.** It flashes a taskbar button instead. Every step in
+  `WindowFocus.Bring` is verified by re-reading `GetForegroundWindow`, never by a return
+  value. `SwitchToThisWindow` carried every measured hard case.
+- **`AttachThreadInput` is deliberately absent.** It joins the host's input queue to the
+  foreground application's, and a hung application on the other end hangs the panel with
+  it. This is the one window in the estate that must never stop repainting.
+- **A control character in a page-supplied string would forge a line in `panel.log`.** The
+  log is the only account of what the host did, so `ValidateFocusRequest` strips control
+  characters and caps every value. Proven live: a title containing
+  `\n2026-01-01 00:00:00 focus(forged) granted by the page` landed on one line.
+- **A minimised window sits at -32000,-32000**, so the primary-display test reads
+  `GetWindowPlacement().rcNormalPosition`, not the live rectangle. `MonitorFromRect` is
+  called with `MONITOR_DEFAULTTONULL` so a window that is off every monitor is dropped
+  rather than snapped onto the primary.
+- **A class named `Focus` inside a `Form` subclass does not compile** (CS0119, against
+  `Control.Focus()`). It is `WindowFocus`.
+- **The Detail head has no room for a status line.** Measured at 2560 px: with the title,
+  three state chips and the button in that row, the status ellipsed to `Brought t...`. It
+  is its own line below the head, hidden by `:empty` when there is nothing to say.
+- **The sheet's shared status line is `display:none` in detail mode**, which is why lane E
+  carries its own - the same reason the continue row carries one.
+- **A CDP `Emulation.setDeviceMetricsOverride` fights the host's own zoom corrector.** The
+  two settle below the stylesheet's measured 1660 px breakpoint and the view switcher
+  disappears, so a screenshot of the Detail page silently comes back as the Sessions view.
+  Size the dev window to the Edge's own geometry instead.
+
+### Judgement calls, for the orchestrator to take or leave
+
+1. **The sheet control is its own row below the pin row, not in it.** The pin row's own
+   comment argues for this: it carries Pin and Full view at the 48 px fingertip floor, and
+   a third control joining them moves both under a finger already travelling toward one.
+2. **`brought to front` and `no window found for this session` are capitalised**, which the
+   panel's other status lines are not (`saved`, `acknowledged`, `sent: ...`). The strings
+   came from the brief verbatim. Lower-casing them is a one-line change in
+   `LANE_E_REASONS` and `laneEOnFocusResult` if house consistency should win.
+3. **The mutex change is lane E's, not the feature's.** It was needed to run a host built
+   from the worktree beside the operator's own. It is small and tested, and it can be
+   dropped without touching the feature.
+4. **The desktop-app fallback still brings the app forward for a session that is provably
+   not in it**, because nothing can tell the two apart. It is labelled rather than refused,
+   on the grounds that every session on this PC today lives in that app and refusing would
+   make the control useless. Refusing instead is a two-line change in `SelectWindow`.
+
+### Running it
+
+```powershell
+pwsh -File .\setup\Build-SideCrabPanel.ps1
+dotnet test panel-host\SideCrab.Panel.Tests
+node widget\tests\test_ordering.js
+```
+
+Tests: host 28 -> 38, `test_ordering.js` 173 -> 192 checks, `test_chime.js` 29 unchanged.
+
+### A continue vocabulary per project, and the row that had to give way (widget 0.31.0, crabd 0.33.0)
+
+The tap-to-continue buttons were one list for every session: the three hardcoded defaults
+plus whatever the feed carried at the top level in `continuePrompts`. crabd now also
+serves `sessions[].continuePrompts`, that session's own project prompts, and the panel
+draws builtins, then globals, then those.
+
+#### One builder, two surfaces
+
+`continueButtons(s)` is the whole rendering rule and both surfaces call it: `syncContinue`
+for the session sheet and `detailMain` for the Detail page. They had two copies of the
+same loop, and a per-session list would have been two chances to disagree about the order.
+The buttons still carry `data-continue-prompt` and `data-continue-label`, so the tap path
+is untouched and both surfaces still reach `onSheetContinue`.
+
+The prototype trap is worth keeping in mind if this function is ever rewritten: the
+duplicate check is `Object.create(null)`, because a plain `{}` inherits `Object.prototype`
+and `seen['constructor']` reads truthy, so a prompt with that text would vanish as a
+duplicate it never had. There is a test for exactly that.
+
+The Detail page's repaint signature now includes the button set. It did not, so a config
+edit repainted the sheet's row and left the page showing the old buttons until something
+else in the session happened to move.
+
+#### The width was never the problem; the height was
+
+Measured with headless Edge 153 over CDP, device metrics pinned, DPR 1, a fresh
+`--user-data-dir` per run, served from `widget/` over `http://127.0.0.1:8771`, densities
+set with `&density=`, the sheet opened with `&sheet2=` and the Detail page with the
+shipping `laneCOpenDetail`.
+
+**The sheet panel is already full at ten buttons.** Its `max-height` is 92% and the events
+list is the only child that could shrink, so it absorbed the overflow: read off the DOM at
+2560x720 with ten buttons, the events list was at 59.59 px of its 154 px of content while
+the button row kept all 260.78 px. That is the behaviour this lane had to preserve for
+modest lists and could not preserve at the cap.
+
+**At the configured cap, 3 builtins + 20 global + 20 project = 43 buttons, the old row
+walked the actions off the glass:**
+
+| slot | what overflowed | below the panel | off the glass |
+|---|---|---|---|
+| 2560x720 | sheet `.sheet-pin-actions` | 411.58 px | 382.77 px |
+| 2536x696 | sheet `.sheet-pin-actions` | 398.78 px | 370.94 px |
+| 2560x720 | Detail `.dv-continue` | 810.95 px | 782.16 px |
+| 2536x696 | Detail `.dv-continue` | 782.80 px | 754.97 px |
+
+The sheet also grew the page a 383 px scroll at 2560x720, which is the reading a per-zone
+probe would have missed.
+
+**The fix is shrink and scroll, never clamp**, the rule `.dv-question` already keeps. The
+continue block became shrinkable with `min-height: 0` and its button row scrolls. A clamp
+would hide buttons the operator configured with nothing to say they exist, while a
+shrinkable row gives way only once the panel is genuinely full.
+
+**An equal shrink factor was not good enough.** Flex shares a shrink in proportion to
+factor times base size, so with the events list at factor 1 the ten-button row lost
+63.33 px, which is three buttons behind a scroll on the one surface whose point is that
+the words are on the glass. The events list now has `flex-shrink: 200`, so it absorbs the
+whole overflow until it is itself at zero (about thirteen buttons here) and only then does
+the row scroll. The row's loss at ten buttons: 63.33 px at factor 1, 6.65 px at 24,
+0.83 px at 200. The factor is inert on every other sheet, because with nothing else
+shrinking it cannot matter, and the events list carries its own scroll either way.
+
+#### The numbers as shipped
+
+Zero overflow everywhere below, page overflow 0x0, no console errors, and the two
+densities are identical throughout, which is the expected reading for this zone.
+
+| case | buttons | block | row visible / content | scrolls | smallest button |
+|---|---|---|---|---|---|
+| sheet, 2560x720 | 10 | 259.94 | 199.23 / 200 | no | 64.00 |
+| sheet, 2536x696 | 10 | 251.34 | 192.92 / 194 | no | 62.00 |
+| sheet, 2560x720 | 6 | 186.70 | 126 / 126 | no | 126.00 |
+| sheet, 2536x696 | 6 | 180.42 | 122 / 122 | no | 122.00 |
+| Detail, 2560x720 | 10 | 376.44 | 331.09 / 331 | no | 60.47 |
+| Detail, 2536x696 | 10 | 363.52 | 320.08 / 320 | no | 58.45 |
+| sheet at the cap, 2560x720 | 43 | 313.72 | 253.02 / 703 | yes | 60.47 |
+| sheet at the cap, 2536x696 | 43 | 303.06 | 244.64 / 681 | yes | 58.45 |
+| Detail at the cap, 2560x720 | 43 | 435.31 | 389.97 / 1211 | yes | 60.47 |
+| Detail at the cap, 2536x696 | 43 | 421.59 | 378.16 / 1170 | yes | 58.45 |
+
+Every smallest button clears the 48 px fingertip floor, at the cap included.
+
+**The unchanged case is unchanged, and that is measured rather than asserted.**
+Twenty-eight captures are **byte-for-byte identical to the pre-lane tree**, every rect and
+every scroll height: twelve on fixtures that carry no project prompts (`?mock=normal` and
+`?mock=attention`, the detail sheet and the Detail page, both slots, both densities), and
+sixteen on the ACTION sheet (`&sheet=first` on `rework`, `attention`, `question` and
+`rework&approval=1`, both slots, both densities). The action sheet matters because
+`.sheet-events` is shared: it carries the continue row in the markup and renders zero
+buttons in it, so the shrink factor is provably inert there rather than argued to be.
+
+#### Verified
+
+`node --check scripts/sidecrab.js`, strict-XML parse of `index.html` (ElementTree and
+minidom), JSON parse of all 21 fixtures, `node widget/tests/test_ordering.js` **185/185**
+(was 173), and `python -m unittest discover -s companion/tests -t companion/tests`
+**1243 tests OK** (was 1220), 1 skipped.
+
+The per-session refusal is proved two ways and both mutations were run against the
+shipping code rather than reasoned about:
+
+- Remove the per-session gate, so the handler reads the global whitelist again: 2 failures,
+  the queue refuses this project's own prompt (`400 != 204`).
+- Flatten the whitelist across every configured project, which is what "per repo" looks
+  like when the per-session half is dropped: 2 failures, the refusal test gets its 204
+  (`204 != 400`).
+
+The flattened mutant is also installed on a live builder inside the suite itself, so the
+refusal test carries its own proof that it can fail.
+
+#### The pictures
+
+`docs/notes/lane-d-sheet-sidecrab.png` and `lane-d-sheet-acme-api.png`: the same document,
+two sessions in different repos, each sheet carrying its own project's buttons.
+`lane-d-detail-sidecrab.png`: the same vocabulary on the Detail page. All three at
+2560x720, comfortable, `?mock=rework`.
+
+## v0.30.1 — the pink goes: a quiet blue accent, and readings on the gauge blue
+
+The operator looked at the first renders of the four views and called the burn bars pink. They were the
+accent, `#BE7E6E`, which AUD-F1 (v0.26.0) had chosen as a quiet warm neighbour of the crab. Two changes, kept
+apart on purpose:
+
+- **The accent is now `#6F94CC`** (oklch L 0.662, C 0.094, H 258). It sits on the gauge blue's side of the
+  wheel at less than half its chroma, so brand chrome (chips, the working stripe, sheet borders, the pinned
+  and on states) and a usage reading share a family and never a value. The loudness rank AUD-F1 reads by is
+  unchanged: crab 0.181 > red 0.165 > esc2 0.154 > amber 0.140 > accent 0.094. Lightness is held near the old
+  0.655 for the gray-axis reason that audit measured. The same default moves in three places or the panel renders
+  one colour in a browser and another on the glass: `--accent` in the stylesheet, the `strProp('accentColor')`
+  default in `sidecrab.js`, and the property meta in `index.html`. The settings sheet's swatches are the new
+  default, the gauge blue, green, amber and the muted gray.
+- **Readings never follow the accent any more.** `.spark-bar`, `.bv-bar`, `.hs-line` and `.hs-dot` take
+  `--gauge-blue` outright, the rule the gauges have kept since v0.20.0: an operator who tints the accent must not
+  find the burn chart recoloured with it. The 0.55 opacity for past hours and full opacity for the current one
+  are unchanged, so the gradation reads as before.
+- The approval glow line moves from `#FF7D64` to `#FF7A3E` (the coral read as pink beside the new chrome); the
+  halo stays red.
+
+## v0.30.0 — temperatures without iCUE: HWiNFO, the card, and what the row could not hold
+
+The standalone panel had no temperatures at all (v0.29.0, "there is no sensor source in
+this host yet"). crabd now reads HWiNFO's shared memory, `nvidia-smi` and a PDH load
+sampler, and serves them inside `host`. The row and the host sheet render them.
+
+### Which source owns a cell
+
+`sensorApi` decides, and it is deliberately **not** `isStandalone()`. The question this
+answers is *does something already own these cells*, and an iCUE install whose Sensors
+plugin is missing is the same answer as a dev browser. Where a bridge is bound, the
+operator has *picked* the two sensors those cells are about and a companion-side list must
+not overwrite a choice; where there is none, these readings are the only temperatures the
+panel has. Verified both ways off-glass: `?mock=rework` paints the HWiNFO cells,
+`?mock=rework&sensors=63,50` paints the bridge's and the lane A cells vanish.
+
+The bridge is untouched. **The bridge-owned row is byte-identical to `d886232`**: 592.1 px
+in its forced worst case and 500.6 px with ordinary names, measured on both trees through
+the same probe.
+
+### The width budget, which is again where the work was
+
+The row is one line and the Limits zone gives it **561.9 px at 2560x720** (the v0.21.0
+figure, re-measured on HEAD this session: unchanged, which is the instrument check). Cells
+do not shrink, so the widest the row can ever paint is fixed text plus the capped name.
+
+| what | measured width |
+|---|---|
+| CPU cell, capped name, `100°` and `100%` | 228.9 px |
+| GPU cell, `100°` and `100%` | 145.0 px |
+| MEM cell, `100%` | 95.8 px |
+| inter-cell gap | 15.8 px |
+| **worst case, three cells** | **501.4 px of 560, 58.6 px spare, chevron clear 53.8** |
+| one more cell (VRM, no name) | 93.1 px plus a gap |
+| **worst case, four cells** | **610.3 px: 50.3 px past the zone edge** |
+
+So the row carries the three cells it has always carried and the extra readings go to the
+host sheet, which is one tap away and has width this line does not. The VRM, the drive,
+the board, the package power and all four fans are there.
+
+Two changes bought the three cells their fit:
+
+- **The CPU name's cap is 11 vmin (79.2 px) while this block owns the row**, against the
+  bridge row's 13.5. The two rows carry different labels: iCUE hands back an
+  operator-chosen sensor name (`CPU Package`, 87.0 px), while HWiNFO's is
+  `CPU (Tctl/Tdie)`, which the block shortens to `Tctl/Tdie` — 9 characters, inside 79.2
+  px with room. Scoped to `.sensors.host-sensors`, so a bridge-owned row keeps its own cap.
+- **The unit letter is spent only when it changes the meaning.** Celsius is the scale this
+  row's 80/90 thresholds are in and the scale it colours against, so `60°` says everything
+  `60°C` does and costs 11.0 px less per cell. A reading in any other unit keeps its
+  letter, because there the letter is the whole difference between 140°F and a machine on
+  fire.
+
+`shortHostSensorName` is a second shortener and it has to be: `shortSensorName` splits on
+`/` to take the last segment of an iCUE device path, and `CPU (Tctl/Tdie)` comes out of it
+as `Tdie)`.
+
+### The host sheet
+
+The sheet gains, in order: the GPU line (VRAM used and total, power and its limit, clock),
+the load line (disk and net throughput, commit, `top: <name> <pct>%`), the sensor
+provenance (how many readings, how old, and the note when there is one), every curated
+temperature the row had no width for, the fans, and two 10-minute charts.
+
+**Two charts, not four, and the count is a measurement.** The visible column is 541 px at
+2560x720 and a chart costs 145 px of it; the shipped CPU and MEM charts plus their notes
+already spend 328. Four new charts paint 1078 px and put half the view below a fold whose
+scrolling this panel's own touch handling is not proven to reach (v0.23.0). Two charts
+paint **795 px, 254 below the fold**, with every new *number* above it. The two series that
+earn a chart are the ones with a shape: the card's utilisation, which swings, and disk
+throughput, which spikes. Commit and network keep their numbers in the load line.
+
+A rate chart states its scale (`0-3.1 MB/s`) because a throughput has no natural 100%.
+Without the statement a flat idle line and a flat saturated line look identical. The
+percentage charts keep the fixed 0-100% the v0.22.0 charts use.
+
+Names in the sheet are **disambiguated rather than suppressed**, which is v0.24.0's rule
+turned around for a surface that can afford it. Two cells showing one name name neither;
+in a list the answer is to say which device each came from. The cause is measured: this
+machine reports `GPU Temperature` from both the discrete card and the integrated one, and
+`Drive Temperature` three times from one SSD.
+
+### Staleness, from three clocks
+
+HWiNFO, `nvidia-smi` and the load sampler each carry their own freshness, so the row can
+dim one cell and not another. Proved on `?mock=hot`, whose `sensorsSource.stale` is true
+while its `gpu.sampledAt` is fresh: the CPU value carries `.stale` at opacity 0.38 **and
+keeps its red threshold colour** (the v0.18.0 rule that opacity and colour must not fight
+over one property), while the GPU cell stays at opacity 1. Driving `gpu.sampledAt` two
+minutes into the past through the shipping `renderHost` dims the GPU temperature and its
+utilisation together, and restoring it brings both back.
+
+### What this block wrote, this block clears
+
+A crabd that stops serving `host.sensors` (a downgrade, or HWiNFO closing) used to leave
+`Tctl/Tdie` sitting beside the load percentage with no reading behind it: a label for a
+temperature that is no longer on the glass. That is v0.21.0's `hideSensor` lesson one
+source along. The clear is guarded on having painted, so it can never blank a cell the
+bridge owns. Driven end to end: `CPU 60° Tctl/Tdie 34%` becomes `CPU 34%` on the
+downgrade, comes back whole on restore, and the row empties on a `host` of null.
+
+### Fixtures and flags
+
+- `?mock=rework` carries the full block: 24 curated sensors, a fresh `sensorsSource`, a
+  live `gpu` and a full `load` with a `topProcess`. The row reads
+  `CPU 60° Tctl/Tdie 34%   GPU 48° 4%   MEM 58%`.
+- `?mock=hot` carries the **stale** case: `sensorsSource.stale` true with the relaunch
+  note and a 12-hour age, hot temperatures (CPU 91°, GPU 88°), a card at 99% and 243 W, a
+  90 MB/s disk, `commitPct` 91.4, `topProcess` `blender.exe` at 71.6%, and `netRxBps` and
+  `netTxBps` null so the load line's net phrase drops out honestly. Its `cpuPct` and
+  `memPct` stay null, so the row's only content is the new members, which is the strongest
+  off-glass test of them.
+- `&host=1` opens the host sheet, unchanged. Against `?mock=rework` it shows the
+  "collecting" state for all four charts; seed `hostRing` and `laneARing` from the console
+  to shoot the plots, the same technique the v0.22.0 record used.
+- The drive's serial number is removed from both fixtures. A fixture is a committed file.
+
+### Verified
+
+`node --check`, `test_ordering.js` 140/140, strict-XML parse of `index.html`, JSON parse of
+every fixture plus manifest and translation, `icuewidget validate widget` clean (the known
+`icueEvents` warning only).
+
+Headless Edge at 2560x720, DPR 1, a fresh `--user-data-dir` per run, DOM read over CDP:
+
+- **Page overflow 0x0 on every case measured**: `rework`, `hot`, `normal`, the
+  bridge-owned row, and both sheet states.
+- **The row's worst case, forced through the shipping spans**: 501.4 px of 560, zero
+  overflow, 53.8 px of chevron clearance.
+- **The instrument check**: the zone's content width reproduced the v0.21.0 record exactly
+  (561.9 px) before a line was written.
+- Screenshots in `docs/notes/`: `lane-a-row-rework.png`, `lane-a-row-hot-stale.png`,
+  `lane-a-row-bridge-wins.png`, `lane-a-sheet-rework.png`, `lane-a-sheet-hot-stale.png`,
+  `lane-a-sheet-collecting.png`.
+
+### The live mapping this was built against
+
+Measured 2026-09-21 on the reference machine, HWiNFO64 v8.52-6060, Sensors window open,
+elevated:
+
+- Header: signature `HWiS`, version 2, revision 1, **packed** (`poll_time` at offset 12,
+  not the 16 an 8-byte-aligning compiler would give). Sensor section at 48, element **392
+  bytes**, **23** sensors. Reading section at 9064, element **460 bytes**, **524**
+  readings. The four doubles sit at **+284** inside a reading element, the packed position.
+  A `dwPollingPeriod` of 2000 ms follows the documented header fields at offset 44.
+- Both element sizes are **larger than the documented v1 minimums** (264 and 316): the
+  known fields are a prefix and the remainder is newer trailing fields. The parser strides
+  by the header's own `dwSizeOf*` and never by a computed `sizeof`, which is what makes an
+  unknown tail harmless.
+- Both the packed and the 8-byte-aligned layouts are parsed; which one is live is decided
+  per mapping by validating the header's offsets against the mapped region and by scoring
+  the two candidate double offsets on `min <= value <= max`. Reading the doubles four bytes
+  early turns every value into a denormal, which is exactly the kind of wrong number that
+  looks like a reading.
+- Five readings as measured: `CPU (Tctl/Tdie)` 62.1 °C, `GPU Temperature` (dGPU) 47.6 °C,
+  `VRM` 47.0 °C, `AIO Pump` 3435 RPM, `CPU Package Power` 98.2 W.
+- 37 of the 524 readings pass the rank test; the round-robin cap serves 24 of them as
+  4 CPU, 4 GPU, 4 VRM, 3 drive, 3 board, 2 power, 4 fan.
+- `nvidia-smi` on the same machine:
+  `NVIDIA GeForce RTX 5070, 610.74, 48, 4 %, 4000 MiB, 12227 MiB, 12.26 W, 250.00 W, 382 MHz`.
+
+### The transport, the settings sheet and the chime (widget 0.30.0)
+
+### The transport: push, with the poll as the fallback
+
+crabd serves `GET /v1/events` as a `text/event-stream`, and in the **standalone host only** the
+widget subscribes to it. The rules, and why each is what it is:
+
+- **`sseWanted()`** is `isStandalone() && !mockName && typeof EventSource !== 'undefined'`. A
+  fixture is a file, not a stream; and inside iCUE the widget's origin is `null`, so an
+  `EventSource` there is one more thing to go wrong on a surface with no devtools for a saving of
+  two and a half seconds.
+- **Every frame goes through `acceptDoc`**, the poll's own path. That is the one place the two
+  transports could have forked, and a frame that is not JSON is a dead feed exactly as an
+  unparseable poll body is.
+- **`poll()` returns early while `sseDelivering()`** — read off `EventSource.readyState`, because
+  the browser owns the connection's state and a second copy of it can disagree. `diagFlush()` is
+  deliberately ABOVE that early return: whether state is arriving by push says nothing about
+  whether captured taps should reach the companion.
+- **The backoff is ours, not the browser's.** On a transport error the page closes the stream,
+  polls at once and reconnects on 3 / 6 / 12 / 24 / 30 s, reset by the next `state` frame. Left
+  to itself `EventSource` would reconnect on its `retry:` clock for ever.
+- **`window.__sidecrabTransport = {mode, lastEventAt}`** is the diagnostic, and one `logLine` goes
+  out on each switch.
+
+**TRAP — one `error` listener, two different events.** `EventSource` dispatches BOTH a server-sent
+`event: error` frame and its own transport failure as type `"error"`. The frame is a `MessageEvent`
+and carries `data` (crabd sends one while it has no snapshot yet and then keeps the stream open);
+the transport failure carries none. Treating them alike tears the stream down at exactly the moment
+crabd is about to start serving.
+
+### Testing the stream off-glass
+
+The `?mock=` fixtures are files, so they never exercise this path. Stand a crabd socket up
+directly instead — crabd's own `main()` writes `~/.sidecrab/history.jsonl` and reads the
+operator's live `~/.claude`, and neither belongs in a test:
+
+```python
+import crabd, threading, time
+crabd.PANEL_DIR = pathlib.Path("widget")          # serve THIS tree at /panel/
+
+class Stub:                                        # one dict, no files touched
+    def __init__(self): self._state = {...}        # a contract-shaped document
+    @property
+    def state(self): return self._state
+    def publish(self, d): self._state = d
+
+crabd.Handler.builder = Stub()
+server = crabd.CrabdServer(("127.0.0.1", 0), crabd.Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+```
+
+Then open `http://127.0.0.1:<port>/panel/` in headless Edge over CDP and read:
+
+| Read | What it says |
+|---|---|
+| `window.__sidecrabTransport` | `{"mode":"sse","lastEventAt":…}` once the first frame lands |
+| `window.sseSource.readyState` | `1` OPEN, `0` CONNECTING (the retry ladder), `2` CLOSED |
+| `server.sse_slots.count` | how many subscribers crabd is holding |
+| a `window.fetch` wrapper counting `/v1/state` | that the poll is genuinely skipping, rather than assumed to be |
+
+Wrap `window.acceptDoc` from `Page.addScriptToEvaluateOnNewDocument` to stamp each document's
+arrival, and the push latency is measurable end to end. **Measured on this machine, five
+publishes: 105.0 / 107.8 / 118.6 / 109.6 / 229.8 ms, mean 134.2** — consistent with crabd's 250 ms
+detection poll, against 3000 ms of poll interval before it.
+
+Kill crabd with the page open and the fallback is observable in the same session: `mode` goes back
+to `poll`, the `/v1/state` count starts climbing, `pollFailed` is true, `computeStatus()` is
+`stale` and the banner reads *"crabd not responding — data as of 5:26 PM"* — the same dead-feed
+rendering the poll has always produced.
+
+### The settings sheet
+
+A gear chip on the clock row opens the eighth sheet mode. It is shown when `isStandalone()` or
+`mockName`, and **never inside iCUE**: the property sheet is the settings surface there and a
+widget cannot write a property back, so a gear there would be a control that silently does nothing.
+
+- `&settings=1` (mock-gated, like every other dev flag) opens the sheet on boot for a screenshot.
+- The rows are built in JS into one empty `<div id="sheetSettings">`. Thirty controls of static
+  markup would be thirty chances to ship an unclosed element into a file iCUE parses as strict XML.
+- Every control binds its own listener on the element it creates, so `onSheetClick` needs no new
+  branch — and the buttons wear `.set-btn`, not `.sheet-btn`, so the generic branch cannot claim
+  them and POST an action of `null`.
+- **Save needs the panel host.** In a plain browser the sheet renders and says so:
+  *"saving needs the SideCrab panel host"*.
+
+**PLACEMENT, measured at 2560x720 before it was written.** The clear column to the right of the
+seconds is 86 px and the moon chip already spends 70 of them, so a second touch-floor control there
+sits 40 px ON the seconds. The gear goes LEFT of the hours instead, in the 56.9 px the diag chip
+already documents, out of flow like both of its neighbours so the identity column (and therefore
+the crab) pays nothing. Measured after: gear `0..50.4`, hours box from `116.3` — 65.9 px clear.
+
+**The sheet is TWO COLUMNS, and that was measured too.** Ten control rows in one column are 569 px
+against the 541 px the sheet gives them, so the list scrolled and the last row sat under the
+actions bar. `repeat(auto-fit, minmax(55 units, 1fr))` is two columns in 922 px of region and folds
+back to one on a narrower panel; the result is 332 px with no scroll at all, and the actions row is
+`position: sticky` for the case where it does.
+
+### The chime
+
+`chimeDecision(prev, next, quietActive, chimeEnabled, now, lastChimeAt)` is a pure function, so
+every gate is provable without an audio device — `node widget/tests/test_chime.js`, 29 checks.
+
+| Gate | Why |
+|---|---|
+| `prev === null` (boot) | a panel that starts while three sessions are waiting must not play three chimes; nothing on the glass changed, only what the page knows |
+| an id absent from `prev`, after boot | DOES chime. A done row is dropped about ten minutes after it finishes, so a question in it comes back as an id the last document did not have, and that is a new alert |
+| `prev[id] === 'needs_input'` | the same question still waiting. Re-render, not news |
+| `id === 'smoke-test'` | the smoke test manufactures a `needs_input` row to prove the panel lights up; a chime for it is the instrument ringing at its own test |
+| `quietActive`, `chimeEnabled` | hard offs. An absent `quiet` block reads as false — crabd omits it entirely when no quiet hours are set |
+| 5 s cooldown | a fleet landing four questions at once is one chime |
+
+**Reduced motion is deliberately NOT a gate.** It is a statement about animation, and the operator
+who turned it on did not ask for silence.
+
+The sound is two sine oscillators, A5 then D6, about 350 ms, with a 12 ms attack and an exponential
+tail — rising, because a falling pair reads as something finishing and this is something starting to
+wait. There is no audio file: a binary in a package iCUE validates and a store reviews, for four
+lines of Web Audio, is not a trade worth making. `exponentialRampToValueAtTime` throws on a zero
+target, hence the 0.0001 floor at both ends; a square-edged gain is an audible click at this level.
+
+**Testing it off-glass.** Headless Edge has Web Audio, so `playChime(60)` returns true and
+`chimeCtx.state` reads `running` under `--autoplay-policy=no-user-gesture-required`. What a
+headless browser cannot tell you is whether it sounds right — that is a desk check. To prove the
+GATES end to end over a real stream, wrap `window.playChime` and publish documents at the stub
+builder:
+
+```
+working              -> []                       no chime
+-> needs_input       -> [{v:60}]                 one
+-> working -> ask    -> [{v:60}]                 still one: inside the 5 s cooldown
+(wait 5 s) -> ask    -> [{v:60},{v:60}]          two
+```
+
+### Four views on one display, and a crab that moves (widget 0.30.0)
+
+The grid zone showed one thing. It now shows four, chosen by chips in its own header, and the
+crab is painted to a canvas instead of held still in an SVG. The identity zone and the Limits
+zone are byte-identical to v0.29.0.
+
+### The four views
+
+| chip | what the zone shows |
+|---|---|
+| **Sessions** | the card grid, unchanged. The filter and density chips narrow THIS view and no other, which is why they stay where they were rather than joining the switcher |
+| **Burn** | today's spend at full width: by session, by model, and the 24 h series the Limits sparkline only has room to sketch |
+| **Week** | `recap.week` as a seven-day strip with the day drill **inline** |
+| **Detail** | one session as a page, with the controls its sheet already has |
+
+The chips are the LAST items in the header on purpose: the tappable run of header that still
+opens the Today timeline is the left-hand half, where the heading and its visible hint are, and
+anything added here has to stay out of it. The active view persists in the same vendor-storage
+object the filter, the density and the pin map already share (`gridView`), with the same
+round-trip of a value this build does not know that v0.16.0's audit F2 put on the other two.
+
+### The trap: a hidden card grid loses its capacity
+
+`gridCapacity()` derives the capacity from the COMPUTED `grid-template` lists on `#cards`, which
+is what keeps the breakpoints in the stylesheet and out of JS. A `display:none` grid computes
+**both** axes to the single token `none`, so `trackCount()` falls back to its 4x2 default — and a
+compact grid or a 3-column slot would come back from another view with the wrong capacity and the
+"+N more" tile cutting the wrong rows.
+
+So the card grid is never `display:none` while another view is up. It keeps `display:grid` and
+takes a zero height instead, where both axes still resolve to a list of lengths. Measured off the
+DOM, all four views, both densities:
+
+| state | `grid-template-rows` | `grid-template-columns` | `gridCapacity()` |
+|---|---|---|---|
+| Sessions, comfortable | `282.25px 282.25px` | 4 x `326.766px` | 8 |
+| Burn/Week/Detail, comfortable | `0px 0px` | 4 x `326.766px` | **8** |
+| Sessions, compact | `188.656px` x 3 | 4 x `334.33px` | 12 |
+| Burn/Week/Detail, compact | `0px 0px 0px` | 4 x `334.33px` | **12** |
+
+The cards still render (the badge logic reads the same document the grid was built from) and they
+lay out into nothing.
+
+### An alert never hides behind a view, and never yanks the glass
+
+A session that flips to `needs_input` while another view is up is counted on the Sessions chip,
+the chip takes an amber border and the badge pulses. **Nothing force-switches.** Forcing the view
+would move a control out from under a finger already travelling toward it, which is the failure
+every sheet on this panel is built to avoid.
+
+The badge counts the **edge** and never the value — the rule `detectTricks` states for the party
+hat. Two things that are not alerts:
+
+- a panel that BOOTS into the Burn view beside two waiting sessions has watched nothing happen;
+- a row that was already waiting when the operator left the Sessions view is not news.
+
+**The baseline is the first DOCUMENT, not the first render**, and that was a real defect for one
+round: `render()` runs once before any poll has landed, so the first render seeded an empty map
+and the first real document then read every waiting session as brand new. Photographed on
+`?mock=rework&view=burn`: a badge of **1** on a panel that had been up for two seconds.
+`everHadData` is the panel's own answer to "has a document arrived", so it is what gates the seed.
+
+Pinned by test, with the mutant beside it: `widget/tests/test_ordering.js` counts the edge, and a
+value count is asserted to badge the boot case. Removing the seed guard from `trackViewAlerts`
+fails **6 of 173** checks.
+
+### The swipe is on the header row, and only there
+
+A horizontal swipe on `.grid-head` steps the view; left is forward and it wraps. The cards area
+keeps its own horizontal gesture (ack/dismiss) and gains nothing — two meanings for one gesture on
+one surface is the thing a fingertip gets wrong.
+
+It has its own listeners on the header rather than a branch inside the document-level gesture
+layer, because it needs nothing that layer tracks and the layer already does the one thing it
+depends on: `onPointerUp` calls `suppressClick()` for any travel past `TAP_SLOP_PX` (10 px), so a
+swipe can never also open the Today timeline. The threshold is `HEAD_SWIPE_PX` = 48, four times
+that slop, so a committing swipe is always suppressed by the time it commits. A second finger
+abandons it outright: two fingers is the ack-all gesture.
+
+Driven over CDP at 2560x720, from Sessions: swipe left → Burn, swipe left → Week, swipe right →
+Burn, a 20 px drag → Burn (unchanged), sheet open = **false** throughout. A plain tap on the
+header still opens the timeline (`data-mode="timeline"`, open = true).
+
+### What each view reuses rather than reimplements
+
+- **Burn** reads `sessions[].todayOutputTokens` for the by-session half and `burn.byModel` for the
+  by-model half, each presence-gated and each saying so when its source is absent — `typeof`, not
+  `Number()`, so a session crabd has no figure for is left OUT rather than listed at zero. The
+  chart's scale rule is `renderSparkTarget`'s own: on hourly bars the daily budget is a PACE line
+  and not a ceiling, and the chart scales to the target when the target is above every bar.
+- **Week** calls `fetchHistory()` — the sheet drill's own function, which owns the mock routing,
+  the 4 s timeout, the abort and the today-rebase. What is NOT shared is the navigation: the
+  sheet's drill has prev/next chevrons and a Back that returns to the timeline, and neither has
+  anything to return to here.
+- **Detail**'s Approve, Deny and continue buttons carry the SHEET's own `data-decide` and
+  `data-continue-prompt` attributes and reach `onSheetDecide` / `onSheetContinue`. Those two now
+  read `laneCActionSessionId()` instead of `sheetSessionId` alone, which is the whole of the change
+  they needed: the pairing code, the `requestId` echo, the 403/409/429 wording and the no-latch
+  continue handling are inherited, not re-typed. A sheet WINS when one is open, because it is a
+  modal over that page.
+
+Proved by wrapping `postAction` and tapping the real controls:
+
+```
+detail Deny     -> postAction("b21c8d55-…0001", "decide", null, "deny")
+detail Continue -> postAction("b21cd0e5-…0003", "queue-continue", "Keep going with what you were doing.")
+detail status   -> "queued: Continue"
+```
+
+The week drill, tapped through: 08-21 → 7 rows under "Friday, August 21, 2026 — 7 events";
+08-25 → 18 rows and a "+6 earlier" tail (both caps, each in its own words); 08-22 → "No events
+recorded for this day."; **08-20 → the file is not there, so the 404 is produced rather than
+simulated** and the pane says the companion may predate 0.8.0; the very next tap on 08-21 works
+again (no latch).
+
+### The Detail page
+
+Full height, two columns. Left: the question WHOLE (it scrolls rather than clamping — the card
+gives it three lines and this is the one surface that gives it all of them), or the permission
+block with Deny and Approve and the hold countdown; then the queued line and the continue
+buttons. Right: every subagent row and the events list whole. Above both: Back, the title and
+repo/branch, the state chip with its elapsed figure, the model, and the context hairline **with
+its numbers** — `972k of 1.0M — 97%`, which is the one thing a 3 px rule on a card cannot say.
+
+Reached two ways: the **Full view** button in the session sheet's pin row, and the Detail chip
+itself, which falls back to the row that wants a human (waiting, then working, then done, then
+idle) when nothing has been chosen. There is deliberately **no affordance on the card**, and the
+number is why: every control on this panel wears the 48 px fingertip floor, the card header is a
+single line box, and a floor-sized control in it would take that height off the card body at the
+density where the cards are already tightest (v0.28.2 measured that room down to single pixels).
+
+Ages are absent from the page's signature, exactly as they are from the card signature, and are
+relabelled in place by the 1 Hz tick — the approval hold is the reason it is a tick and not the
+poll.
+
+### The smaller slots keep one view, and it is the cards
+
+**1660 is a measured number.** The Sessions header's rigid content — the label 94.81, the hint
+68.39, the three old chips 60.47 / 129.14 / 91.28, the four new ones 100.75 / 62.89 / 62.89 /
+81.83, nine 10.8 px gaps and the zone's own 57.6 px of padding — is **907.2 px**, and the grid zone
+is 55.5% of the panel, so the switcher needs a panel of 907.2 / 0.555 = **1635 px**. Confirmed by
+sweeping the slot down: the header first overflows between 1700 (0.00) and 1600 (20.00 px). 1660
+is that threshold with one chip's worth of cushion for another engine's font metrics.
+
+Below it the switcher goes and the card grid comes back whatever the stored view says. The
+stylesheet owns that breakpoint exactly as it owns `gridCapacity`'s: nothing in JS knows which slot
+it is on, the stored view survives untouched, and it is on the glass again the moment the panel is
+wide enough to show its chips. No alert can hide behind a view there for the same reason — the
+view that is showing IS the cards.
+
+| slot | chips | Burn view | cards height | cards on glass | `gridCapacity()` | page overflow | zone overflow |
+|---|---|---|---|---|---|---|---|
+| 2560x720 | `block` | `flex` | 0 | 6 | 8 | 0x0 | 0.00 |
+| 2536x696 | `block` | `flex` | 0 | 6 | 8 | 0x0 | 0.00 |
+| 1661x720 | `block` | `flex` | 0 | 6 | 6 | 0x0 | 0.00 |
+| **1660x720** | `none` | `none` | 583 | 6 | 6 | 0x0 | 0.00 |
+| 840x696 | `none` | `none` | 362 | 4 | 4 | 0x0 | 0.00 |
+| 416x696 | `none` | `none` | 393 | 3 | 3 | 0x0 | 0.00 |
+| 840x344 | `none` | `none` | 260 | 4 | 4 | 0x0 | 0.00 |
+
+---
+
+### The canvas crab
+
+Every rect is transcribed from the SVG in `index.html` at the SAME coordinates on the SAME
+half-cell grid (viewBox `0 -4 52 44`, 2 units = one half cell, 4 units = one cell), so the still
+frames are the frames that shipped; what is new is that the poses in between exist.
+
+**The SVG is still the truth about state.** The renderer reads `data-mood`, `data-acc` and the
+trick classes off `#crab` and the quiet/esc2 classes off `body` through two MutationObservers, and
+writes nothing anywhere. The mood ladder, the wardrobe hysteresis, the dance's three gates,
+`scheduleBlink` and every `&crab=` / `&mood=` / `&celebrate=` / `&blink=` flag drive the same
+attributes they always did and this follows them.
+
+**The SVG is also the fallback**, hidden only once a 2D context has actually been obtained
+(`body.crab-canvas-on`), so a host with no canvas renders exactly what it rendered before. Its
+keyframes are stopped with it: a hidden element still runs its animations, and on a 24/7 panel
+that is a compositor job per frame for nothing.
+
+**Motion is eased in time and quantized in space**, which is the pixel-art idiom and not a
+compromise: every pose lands on an integer viewBox unit, so the blocks stay hard-edged (the canvas
+spelling of `shape-rendering="crispEdges"` is whole device pixels on every edge — two rects that
+share an edge in viewBox units round to the same device pixel, so the silhouette stays one solid
+shape instead of growing seams), and the EASING decides which unit it is on at a given
+millisecond. A sweep across four units is five poses arriving on an ease-out curve, where the CSS
+keyframes had two arriving on a `steps(1, end)`.
+
+| motion | before | now |
+|---|---|---|
+| `waveonce` | two frames, 640 ms x 3 | an eased nought-to-one-cell sweep, same 1.92 s |
+| `snap` | two frames, 260 ms x 2 | an eased half-cell travel in and back |
+| `bounce` | two frames, 380 ms x 2 | a sine hop, so the animal hangs at the top |
+| `dance` | four stills, 390 ms x 4 | eased slides between the same four beats |
+| `juggling` | three snapped positions | three parabolic arcs, a third of a cycle apart |
+| `sweating` | three static drops | three drops accelerating down their own clearance, then re-forming |
+| idle | a still image | the shell's top edge rises one unit and settles, ~4.2 s |
+
+The drips' fall distances are **clearance, not taste**: the claws sit at y 14..20 across x 0..8 and
+x 44..52, and each of the three drops is in one of those columns. Drop 2 starts eight units lower
+than the others, so three units is all the room it has (8 / 3 / 8).
+
+The hard hat is not here because it is not in the tree: it was retired at v0.18.0 and no art for it
+exists. `data-acc="hardhat"` paints no accessory, which is exactly what the SVG does.
+
+### The frame budget, which is the whole point on a 24/7 panel
+
+Three scheduling states and only one of them is `requestAnimationFrame`:
+
+| state | scheduler | why |
+|---|---|---|
+| a trick | `requestAnimationFrame` | all bounded (520 ms to 6 s), and the loop STOPS when the last one ends |
+| `sweating` | a fixed 83 ms timer | the mood can hold for hours, and an eight-step fall over 1.4 s changes pose about six times a second; 60 Hz would be ten wake-ups per pose |
+| idle | a timer aimed AT the breath's next pose boundary | the pose is binary, so it wakes about twice every 4.2 s |
+| quiet or reduced motion | **nothing is scheduled at all** | quiet means nothing on this panel moves |
+
+An unchanged pose hash skips the clear and the fills entirely, so a 60 Hz loop costs about what a
+12 Hz one does.
+
+Read off the running page:
+
+```
+idle              crabRaf = 0, crabSlowTimer set, crabMotion = {}
+a trick on a loop crabRaf > 0, crabMotion = ["juggling"]
+reduced motion    reducedMotion() = true, crabRaf = 0, crabSlowTimer = null
+```
+
+### Idle CPU, with and without
+
+`Performance.getMetrics`' `TaskDuration` is the renderer's cumulative main-thread task time, so two
+samples 30 s apart give a duty cycle out of the engine rather than out of Task Manager. Same page,
+same fixture, same window; the OFF run stops the renderer in-page before the sample starts.
+
+| state | crab ON | crab OFF | cost |
+|---|---|---|---|
+| idle, `?mock=recap` | **1.98%** | 1.96% | +0.02 pp |
+| a waiting session, `?mock=rework` | **2.25%** | 2.11% | +0.14 pp |
+| sweating for hours, `?mock=hot&mood=sweating` | **0.53%** | 0.21% | +0.32 pp |
+| quiet hours, `?mock=quiet` | **0.20%** | 0.18% | +0.02 pp |
+
+(The 10x between the top two rows and the bottom two is not the crab: `recap` and `rework` both
+carry an unacked `needs_input` card, and the card pulse is a CSS animation that runs whatever the
+crab is doing. `hot`'s waiting row is acked and quiet suppresses the pulse outright.)
+
+A trick held on a loop, which is the worst case the panel can reach and lasts seconds:
+
+| state | main thread |
+|---|---|
+| breath only, `?mock=recap` | 1.90% |
+| `&crab=juggle` on a loop | 2.30% |
+
+**Frame timings** (`window.__sidecrabCrabFrames` holds the last 120 paint durations in ms):
+during a trick, n = 120, min 0.00, median 0.00, p95 **0.10**, max **0.10** ms. Across every mood
+and accessory capture, max **0.20** ms.
+
+### The rules that did not move
+
+- **`prefers-reduced-motion`**: `fireDance` / `fireJuggle` / `fireSnap` / `fireBounce` all refuse
+  (`crabMotion` stays `{}`, no class is added, `crabRaf` stays 0), nothing is scheduled — **and a
+  mood change still repaints** (`waving` → `worried`, pixel hash changes).
+- **Quiet hours**: the same, plus the sweat is withheld and the juggle balls are not painted.
+  A mood change still repaints (`content` → `worried`).
+- **Tap-to-ack**: the canvas is `pointer-events: none`, `elementFromPoint` at the crab's centre
+  returns `crabWrap`, and a dispatched click takes **2 acks on `?mock=attention`**, identical to the
+  same page with the renderer switched off.
+- **Colour tokens win at runtime**: the palette is read from the SVG's own computed custom
+  properties and dropped on any mutation. Setting `--crab-fill` to `#00FF88` on `#crab` moves the
+  painted crab from `#E45C28` to `#00FF88`; setting `--accent` on `documentElement` moves the
+  active view chip's border to `rgb(0, 170, 255)`.
+- **The dance gates** (20 s minimum turn, 30 s cooldown, never beside a waiting session) are
+  untouched — they live in `fireDance` and `detectCelebration`, which this lane does not edit.
+
+### The trap this lane banked
+
+**A state class on `body` and a styling class on an element must never share a name.** The first
+cut called both `crab-canvas`, so the element rule's `transform: translateY(1.4 vmin)` matched
+`body.crab-canvas` as well and translated the WHOLE PANEL down **10.08 px**. Every zone still
+measured zero overflow against itself — the zones moved with the body — and the only thing that
+said so was the PAGE overflow, which was exactly 10 on all four fixtures in all four views. A
+per-zone probe would have shipped it.
+
+### Verified
+
+`node --check scripts/sidecrab.js`, strict-XML parse of `index.html` (ElementTree AND minidom),
+JSON parse of all 20 fixtures plus manifest and translation, `icuewidget validate widget`
+(CLI 0.4.45) clean with the known `icueEvents` warning, `node widget/tests/test_ordering.js`
+**173/173** (was 140), and `python -m unittest discover -s companion/tests -t companion/tests`
+**1147 tests OK** (1 skipped) — untouched, and proved untouched.
+
+Headless Edge 140, `--force-prefers-no-reduced-motion`, device metrics pinned, a FRESH
+`--user-data-dir` per run (the v0.28.2 trap: a shared profile served the old stylesheet for two
+whole passes), served from `widget/` over `http://127.0.0.1:8765`:
+
+- **Overflow sweep, 64 captures**: four fixtures (`rework`, `dense`, `attention`, `recap`) x four
+  views x two densities x two slots (2560x720, 2536x696). **Page overflow 0x0, worst zone overflow
+  0.00, header overflow 0.00, no offenders, no console errors, on every one.** 17,016 elements
+  measured against their own zone's border box, descent stopped at scroll containers.
+- **Seven slots** for the fallback band, in the table above: page 0x0 and zone 0.00 on all seven.
+- Type at 2560x720, both densities (they are identical — this zone's views are not density-scaled,
+  because density is a property of the CARD GRID and the chips say so by narrowing only it):
+  chip 15.12, burn row 19.44, panel head 15.12, hour label 12.24, week `done` figure 23.04, detail
+  title 24.48, detail chip 16.56, detail question 21.24 px.
+- **The widest row's spare width** at 2560x720, per view: Sessions header **61.74 px** spare with
+  the switcher in it; the week column 10.43; the burn row and the detail context line come out at
+  −0.03 and −0.02 px, which is the probe's own gap arithmetic on a flex row whose last item
+  ellipsises — the zone scan reads 0.00 for both.
+
+**Measured, not fixed, and left as one row for the next wave:** at an arbitrary 1400–1401 px panel
+width the identity zone overflows by 1.38–1.47 px at `clockSs` / `clockHm`. It reproduces at HEAD
+with this lane stashed, so it is not this lane's, and 1400 px is not a slot in the verified matrix.
+
+### Dev flag added
+
+| flag | effect |
+|---|---|
+| `&view=<sessions\|burn\|week\|detail>` | set the grid zone's view for the shot. It sets the SAME variable a chip tap sets and nothing else, so what is photographed is the real view; it does **not** write to the vendor store — the discipline `&pin=`, `&filter=` and `&density=` keep, because a screenshot flag that persisted would leave the operator's own panel on a view they never chose. Applied AFTER `loadPrefs()`, so it still wins on a run that also carries `&uid=` |
+
+### The pictures
+
+`docs/notes/lane-c-view-burn.png`, `lane-c-view-week.png` (with a day drilled inline),
+`lane-c-view-detail.png`; and the crab at `lane-c-crab-mood-{content,waving,asleep,worried,celebrating,sweating}.png`,
+`lane-c-crab-acc-{sunglasses,party,nightcap}.png`,
+`lane-c-crab-trick-{juggle,dance,bounce,snap}.png` — each trick caught mid-motion, with the pose
+it was caught at recorded beside it:
+
+| shot | pose (`armL,armR,clawR,rigX,rigY,breath`) |
+|---|---|
+| `trick-juggle` | balls at `19,5` / `-10,1` / `5,0` — three points of one arc |
+| `trick-dance` | `rigX 3, rigY -1`, mid-slide between two beats, shades on |
+| `trick-bounce` | `rigY -4`, the top of the hop |
+| `trick-snap` | `clawR -2`, the claw all the way in |
 
 ## v0.29.0 — two hosts, one codebase: the panel served by crabd
 

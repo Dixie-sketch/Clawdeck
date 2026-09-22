@@ -2,7 +2,7 @@ namespace SideCrab.Panel;
 
 internal static class Program
 {
-    public const string Version = "0.1.0";
+    public const string Version = "0.3.0";
 
     [STAThread]
     private static int Main(string[] args)
@@ -19,7 +19,15 @@ internal static class Program
         // One panel per session. A second instance exits 3 rather than stacking a second
         // topmost window on the Edge; the scheduled task's IgnoreNew policy is the other
         // half of the same guard.
-        using var mutex = new Mutex(initiallyOwned: true, name: @"Local\SideCrab.Panel", out var first);
+        //
+        // lane E: the name depends on the MODE, and the two must never share one. A
+        // --windowed dev host has no kiosk window and pins to nothing, so it cannot cause
+        // the harm this guard exists for - but while both used one name, starting a dev
+        // host on a PC with the pinned one running exited 3 and measuring anything from
+        // the worktree was impossible without stopping the operator's panel. The scheduled
+        // task NEVER passes --windowed (see Install-SideCrab.ps1), so the pinned instance
+        // always takes the bare name and the guard on the Edge is untouched.
+        using var mutex = new Mutex(initiallyOwned: true, name: PanelLogic.MutexName(opts.Windowed), out var first);
         if (!first)
         {
             log.Write("another SideCrab.Panel is already running in this session; exiting 3");

@@ -265,8 +265,14 @@ public sealed class PanelForm : Form
             // The command line wins; the settings file is how the scheduled-task instance
             // (which takes no arguments) opens the port for a desk-side measurement.
             var devtools = _opts.DevToolsPort > 0 ? _opts.DevToolsPort : _settings.DevToolsPort;
-            if (devtools > 0)
-                envOpts.AdditionalBrowserArguments = $"--remote-debugging-port={devtools}";
+            var browserArgs = new List<string>();
+            if (devtools > 0) browserArgs.Add($"--remote-debugging-port={devtools}");
+            // lane B. The panel's chime is Web Audio with no user gesture anywhere near
+            // it: the window never activates (WS_EX_NOACTIVATE) and the alert it answers
+            // arrives while nobody is touching the glass, so Chromium's default policy
+            // leaves the AudioContext suspended and the chime is silent with no error.
+            browserArgs.Add("--autoplay-policy=no-user-gesture-required");
+            envOpts.AdditionalBrowserArguments = string.Join(' ', browserArgs);
             var env = await CoreWebView2Environment.CreateAsync(null, userData, envOpts);
             await web.EnsureCoreWebView2Async(env);
             var core = web.CoreWebView2;
@@ -282,7 +288,11 @@ public sealed class PanelForm : Form
             s.IsGeneralAutofillEnabled = false;
             s.IsPasswordAutosaveEnabled = false;
             s.AreHostObjectsAllowed = false;
-            s.IsWebMessageEnabled = false;
+            // lane B. Host OBJECTS stay off - that is a live .NET surface reachable from
+            // script. Web MESSAGES are a JSON channel with a Source this host checks and
+            // a whitelist it validates against, which is what the settings sheet needs
+            // and the smallest thing that works.
+            s.IsWebMessageEnabled = true;
             s.AreDevToolsEnabled = devtools > 0;
             // Named in the UA so crabd's originsSeen shows which build is polling.
             try { s.UserAgent = s.UserAgent + " SideCrab.Panel/" + Program.Version; }
@@ -291,6 +301,7 @@ public sealed class PanelForm : Form
             core.NewWindowRequested += (_, e) => { e.Handled = true; _log.Write("new window refused: " + e.Uri); };
             core.NavigationCompleted += OnNavigationCompleted;
             core.ProcessFailed += OnProcessFailed;
+            core.WebMessageReceived += OnWebMessageReceived;   // lane B: the settings bridge
             _hostScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(HostScript());
             _log.Write($"webview2 {env.BrowserVersionString} ready; user data {userData}; " +
                        $"props {_settings.Props.Count} ({_settings.Source}); " +
@@ -403,7 +414,7 @@ public sealed class PanelForm : Form
         return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>SideCrab</title>" +
                "<style>html,body{margin:0;height:100%;background:#0F0E0D;color:#EDE7DF;font:28px/1.4 'Segoe UI',system-ui,sans-serif}" +
                ".w{display:flex;height:100%;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:0 8vw}" +
-               ".h{font-size:46px;font-weight:600;color:#BE7E6E}.m{opacity:.7;font-size:22px}</style></head><body><div class=\"w\">" +
+               ".h{font-size:46px;font-weight:600;color:#6F94CC}.m{opacity:.7;font-size:22px}</style></head><body><div class=\"w\">" +
                "<div class=\"h\">SideCrab companion not reachable</div>" +
                $"<div>{u}: {r}</div>" +
                "<div class=\"m\">The panel retries every 5 seconds. Start or update the companion with Update-SideCrab.ps1.</div>" +
@@ -430,6 +441,9 @@ public sealed class PanelForm : Form
             var dpr = doc.RootElement.GetProperty("dpr").GetDouble();
             var physical = _target?.Bounds.Width ?? Width;
             _log.Write($"viewport: {w}x{h} css px, dpr {dpr:0.###}, zoom {web.ZoomFactor:0.###}, window {Width}x{Height} physical");
+            // Within 2 css px is equal: 2560 / 1.5 rounds to 1707 logical px, which reads back
+            // as 2561 at zoom 0.667, and chasing that last pixel would loop the correction.
+            if (Math.Abs(w - physical) <= 2) return;
             var corrected = PanelLogic.CorrectedZoom(web.ZoomFactor, w, physical);
             if (Math.Abs(corrected - web.ZoomFactor) > 0.001 && _viewportChecks < 3)
             {
@@ -440,6 +454,181 @@ public sealed class PanelForm : Form
             }
         }
         catch (Exception ex) { _log.Write("viewport measure failed: " + ex.GetType().Name); }
+    }
+
+    // ------------------------------------------------------- lane B: the settings bridge
+
+    /// <summary>Set when THIS host wrote panel-settings.json, so the watcher's run does
+    /// not reload the page under the operator's hand: the sheet has already applied the
+    /// props live and a reload would throw it away.</summary>
+    private DateTime _selfWriteAt = DateTime.MinValue;
+
+    private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            // FIRST, before the body is even looked at: the message must have come from
+            // the page this host loaded. WebMessageReceived fires for every frame,
+            // including one the page was made to embed, and Source is the only thing
+            // that says which. The navigation lock already refuses to NAVIGATE anywhere
+            // else, so this is the second half of the same guarantee.
+            if (!PanelLogic.IsAllowedNavigation(e.Source, _panelUrl))
+            {
+                _log.Write("web message refused: source " + e.Source);
+                return;
+            }
+            using var doc = JsonDocument.Parse(e.WebMessageAsJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
+            if (!root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String) return;
+            switch (type.GetString())
+            {
+                case "host-info": SendHostInfo(); return;
+                case "settings": SaveSettingsFromPage(root); return;
+                case "focus-session": FocusSessionFromPage(root); return;   // lane E
+                default: _log.Write("web message ignored: type " + type.GetString()); return;
+            }
+        }
+        catch (Exception ex)
+        {
+            // A page cannot be allowed to kill the window with a malformed message.
+            _log.Write("web message failed: " + ex.GetType().Name + ": " + ex.Message);
+        }
+    }
+
+    private void Post(object payload)
+    {
+        var core = _web?.CoreWebView2;
+        if (core is null) return;
+        try { core.PostWebMessageAsJson(JsonSerializer.Serialize(payload)); }
+        catch (Exception ex) { _log.Write("web message not posted: " + ex.GetType().Name); }
+    }
+
+    /// <summary>What the sheet says about where a save goes. `hasToken` and never the
+    /// token: the page has the code already (the host script injects it as a prop), and
+    /// re-serving it here would be a second door to the same secret for no gain.</summary>
+    private void SendHostInfo() => Post(new
+    {
+        type = "host-info",
+        version = Program.Version,
+        settingsPath = Path.Combine(_dir, "panel-settings.json"),
+        hasToken = _settings.PanelToken is not null,
+    });
+
+    private void SaveSettingsFromPage(JsonElement root)
+    {
+        if (!root.TryGetProperty("props", out var props))
+        {
+            _log.Write("settings save ignored: no props");
+            return;
+        }
+        var clean = PanelLogic.ValidateSettingsProps(props);
+        if (clean.Count == 0)
+        {
+            // Nothing survived the whitelist, so nothing is written. A page that posts
+            // rubbish must not be able to rewrite the operator's file at all.
+            _log.Write("settings save ignored: nothing in it passed the whitelist");
+            return;
+        }
+        var path = Path.Combine(_dir, "panel-settings.json");
+        try
+        {
+            string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
+            var merged = PanelLogic.MergeSettingsJson(existing, clean);
+            // Atomic: a half-written settings file is one the host reads as unparseable
+            // and silently replaces with defaults on the next start, which would lose
+            // the port and the display along with everything else. Same-directory temp,
+            // so the move is a rename and not a copy across volumes.
+            var tmp = path + ".tmp";
+            Directory.CreateDirectory(_dir);
+            File.WriteAllText(tmp, merged);
+            File.Move(tmp, path, overwrite: true);
+            _selfWriteAt = DateTime.UtcNow;
+            _log.Write($"settings saved from the panel: {string.Join(", ", clean.Keys)}");
+        }
+        catch (Exception ex)
+        {
+            _log.Write("settings save failed: " + ex.GetType().Name + ": " + ex.Message);
+            return;
+        }
+
+        _settings = PanelSettings.Load(_dir, _log.Write);
+        ReinjectHostScript();
+        // What was ACTUALLY stored, not what the page sent: the whitelist and the clamps
+        // sit between the two, and the sheet repaints itself from this reply.
+        Post(new { type = "settings-saved", props = clean });
+    }
+
+    // ------------------------------------------- lane E: bring a session to the front
+
+    /// <summary>The page asked for a session's window. Validate like a settings save
+    /// (allowlisted keys, capped strings, nothing else read), rank the windows the host
+    /// enumerated itself, hand over the foreground, log the attempt and its result, and
+    /// answer the page either way.
+    ///
+    /// The page never names a window: it sends four facts about a session and this host
+    /// decides. A handle from the page would be a window picker a visited page could aim
+    /// anywhere on the desktop.</summary>
+    private void FocusSessionFromPage(JsonElement root)
+    {
+        var req = PanelLogic.ValidateFocusRequest(root);
+        if (req is null)
+        {
+            _log.Write("focus ignored: no usable sessionId in the message");
+            return;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        List<PanelLogic.WindowCandidate> candidates;
+        try { candidates = WindowFocus.Candidates(Environment.ProcessId); }
+        catch (Exception ex)
+        {
+            _log.Write("focus failed: window enumeration threw " + ex.GetType().Name);
+            Post(new { type = "focus-result", sessionId = req.SessionId, ok = false, reason = "enumerate-failed" });
+            return;
+        }
+
+        var choice = PanelLogic.SelectWindow(candidates, req);
+        if (choice.Window is null)
+        {
+            _log.Write($"focus({req.SessionId}) '{req.Title}': {choice.Reason}; " +
+                       $"{candidates.Count} candidate window(s) on the primary display in {sw.ElapsedMilliseconds} ms");
+            Post(new { type = "focus-result", sessionId = req.SessionId, ok = false, reason = choice.Reason });
+            return;
+        }
+
+        var target = choice.Window;
+        var outcome = WindowFocus.Bring(target.Handle, Handle);
+        // The panel's own window is re-read on every attempt, not assumed: WS_EX_NOACTIVATE
+        // is the whole reason a tap on the glass does not steal the keyboard, and a focus
+        // handover that ended with this window in front would be that guarantee broken.
+        _log.Write($"focus({req.SessionId}) '{req.Title}' -> {target.ProcessName} '{target.Title}' " +
+                   $"[{target.ClassName}] score {choice.Score}, {candidates.Count} candidates, " +
+                   $"{(target.Minimised ? "restored, " : "")}{outcome.How}, " +
+                   $"ok={outcome.Ok}, panel took focus={outcome.PanelTookFocus}, {sw.ElapsedMilliseconds} ms");
+        Post(new
+        {
+            type = "focus-result",
+            sessionId = req.SessionId,
+            ok = outcome.Ok,
+            // The FALLBACK travels to the page under its own name. A session with no
+            // window of its own ends up in front of the Claude app, and the page must be
+            // able to say that rather than claim the session's own window was found.
+            reason = outcome.Ok ? (choice.Reason == "desktop-app" ? "desktop-app" : "focused") : "refused",
+            window = target.Title,
+        });
+    }
+
+    private async void ReinjectHostScript()
+    {
+        var core = _web?.CoreWebView2;
+        if (core is null) return;
+        try
+        {
+            if (_hostScriptId is not null) core.RemoveScriptToExecuteOnDocumentCreated(_hostScriptId);
+            _hostScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(HostScript());
+        }
+        catch (Exception ex) { _log.Write("host script not re-injected: " + ex.GetType().Name); }
     }
 
     // ------------------------------------------------------------------ settings watch
@@ -473,9 +662,16 @@ public sealed class PanelForm : Form
         {
             if (_hostScriptId is not null) core.RemoveScriptToExecuteOnDocumentCreated(_hostScriptId);
             _hostScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(HostScript());
+            // lane B: our OWN save fired this watcher. Re-read and re-inject, so a later
+            // navigation carries the new props, but do NOT reload: the page applied them
+            // live the moment it got settings-saved, and a reload here would shut the
+            // settings sheet under the operator's hand. Three seconds is the debounce
+            // (1 s) plus room for a slow write, and it only ever suppresses a reload.
+            var mine = DateTime.UtcNow - _selfWriteAt < TimeSpan.FromSeconds(3);
             if (url != _panelUrl) { _panelUrl = url; NavigateToPanel("port changed"); }
             else if (_pageFailed) NavigateToPanel("settings changed");
-            else core.Reload();
+            else if (!mine) core.Reload();
+            else _log.Write("settings change was our own save; the page already has it");
         }
         catch (Exception ex) { _log.Write("settings reload failed: " + ex.GetType().Name); }
         Repin("settings changed");

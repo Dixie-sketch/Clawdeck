@@ -54,7 +54,9 @@ import json
 import math
 import os
 import re
+import select        # lane B: hang-up detection on an open /v1/events stream
 import secrets
+import struct                          # lane A: the HWiNFO shared-memory layout
 import subprocess
 import sys
 import threading
@@ -75,7 +77,7 @@ from pathlib import Path, PureWindowsPath
 # does NOT - the .icuewidget import is a double-click at the iCUE console - so shipping
 # schema N+1 dead-feeds the on-glass panel until someone stands at the desk.
 SCHEMA_BREAKING = 5
-VERSION = "0.31.0"
+VERSION = "0.33.0"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -480,6 +482,17 @@ CONTINUE_PROMPTS_BUILTIN = (
 )
 CONTINUE_PROMPT_MAX = 200       # bounds a config-supplied extra
 CONTINUE_PROMPTS_CAP = 20       # bounds how many extras config may add
+# v0.33.0 (provisional) - the per-project vocabularies, `continuePromptsByRepo` and
+# `continuePromptsByPath`. Same per-list bound as the global extras, and the same one
+# again on a SESSION's combined extras: the repo list fills first, so a path list only
+# reaches the sheet while the repo list has left room. Twenty is already past what the
+# sheet shows without scrolling (measured 2026-09-21: eight buttons fill the row at
+# 2560x720), so this cap bounds the payload, not the design.
+CONTINUE_PROMPTS_PROJECT_CAP = 20
+# How many KEYS each map may carry. This bounds the PARSE, not a request: the parse is
+# cached per config load (UserConfig._projects) and one queue-continue consults one
+# repo key plus one path key.
+CONTINUE_PROMPTS_PROJECT_KEYS = 50
 # Contract: crabd answers the Stop hook "within 2 s". This is a BUDGET the handler is
 # measured against, not a sleep - draining the queue is a dict lookup under a lock.
 STOP_HOOK_ANSWER_SEC = 2.0
@@ -798,6 +811,75 @@ PANEL_FILES = {
     "resources/icon.svg": ("resources/icon.svg", "image/svg+xml"),
 }
 PANEL_ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
+
+
+# ---- lane B: server-sent events (GET /v1/events) ----
+# The panel's own transport. The widget polled /v1/state every 3 s, so a question the
+# operator is standing in front of could sit unlit for that long; this route pushes each
+# NEW snapshot as it is published and keeps the poll as the fallback.
+#
+# It sits behind the SAME two gates as every other route - _host_allowed then
+# _refused_origin, in that order, with the same 421/403 bodies - because a long-lived
+# readable stream of /v1/state is the widest read surface crabd has: cwds, titles, the
+# full question text and pendingPermission, and an EventSource a visited page opened
+# would go on delivering them.
+SSE_MAX_SUBSCRIBERS = 8
+SSE_PING_SEC = 15.0
+# The builder publishes on its own 2 s cadence and never calls out to a subscriber, so
+# detection is a poll of builder.state (which takes the builder lock only to COPY the
+# reference, never across a socket write). 250 ms is a quarter of the "within 1 s" the
+# contract promises, and 8 subscribers x 4 reads/s is 32 lock acquisitions a second
+# against a lock the builder holds for one assignment.
+SSE_POLL_SEC = 0.25
+# Matches the widget's own first backoff step, so a client that honours the field and one
+# that reconnects on its own schedule behave alike.
+SSE_RETRY_MS = 3000
+SSE_TOO_MANY = b'{"error":"too many subscribers"}'
+
+
+class SseSubscribers:
+    """The concurrent-subscriber cap for GET /v1/events.
+
+    Each stream parks a handler THREAD for as long as it is open, so the cap is what
+    stops a page opening EventSources until crabd has no threads left for the hooks a
+    session is blocked on. Deliberately a counter and not a queue: a refused subscriber
+    is told so (503) rather than held, because a browser that is waiting for headers
+    looks exactly like one that is connected.
+    """
+
+    def __init__(self, limit: int = SSE_MAX_SUBSCRIBERS) -> None:
+        self.limit = limit
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if self._count >= self.limit:
+                return False
+            self._count += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            if self._count > 0:
+                self._count -= 1
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+
+# The fallbacks a Handler built without a CrabdServer gets (a bare double in a unit
+# test). Never reached by a served request: CrabdServer constructs its own pair.
+_SSE_FALLBACK_STOP = threading.Event()
+_SSE_FALLBACK_SLOTS = SseSubscribers()
+
+
+def sse_frame(event: str, data: bytes) -> bytes:
+    """One SSE frame. `data` must already be ONE line - json.dumps never emits a raw
+    newline, and a multi-line data field would be read as two events by the client."""
+    return b"event: " + event.encode("ascii") + b"\ndata: " + data + b"\n\n"
 
 
 # ---------------------------------------------------------------- v0.24.0 constants
@@ -1373,6 +1455,12 @@ class UserConfig:
         self._data = dict(self.DEFAULTS)
         self._checked_at = 0.0
         self._mtime: float | None = None
+        # lane D (v0.33.0): the parsed per-project maps, and the _data object they were
+        # parsed FROM. get() replaces _data with a new dict on every re-read, so an
+        # identity check is the whole invalidation - and it is what keeps a malformed
+        # map's warning to one line per config load rather than one every 2 s build.
+        self._projects: tuple[dict, list] | None = None
+        self._projects_for: dict | None = None
 
     @property
     def path(self) -> Path:
@@ -1473,6 +1561,156 @@ class UserConfig:
         turn them into 400s the operator cannot explain.
         """
         return tuple(CONTINUE_PROMPTS_BUILTIN) + tuple(self.continue_extras(now))
+
+    # ---- lane D (v0.33.0, provisional): a continue vocabulary per project ----
+
+    def _project_list(self, raw, where: str) -> list[str]:
+        """One project's prompts, validated exactly as continue_extras validates the
+        global list - strings only, whitespace collapsed, CONTINUE_PROMPT_MAX, deduped,
+        capped. A value that is not a list is empty, never an error: the rest of the
+        operator's config must survive one bad key."""
+        if not isinstance(raw, list):
+            _log_once("cfgproj:" + where,
+                      f"crabd: config.json {where} is not a list - ignored")
+            return []
+        out: list[str] = []
+        dropped = False
+        for entry in raw:
+            if len(out) >= CONTINUE_PROMPTS_PROJECT_CAP:
+                dropped = True
+                break
+            if not isinstance(entry, str):
+                dropped = True
+                continue
+            prompt = " ".join(entry.split())
+            if not prompt or len(prompt) > CONTINUE_PROMPT_MAX or prompt in out:
+                dropped = True
+                continue
+            out.append(prompt)
+        if dropped:
+            _log_once("cfgprojdrop:" + where,
+                      f"crabd: config.json {where} - some entries dropped (strings "
+                      f"only, 1..{CONTINUE_PROMPT_MAX} chars, deduped, "
+                      f"{CONTINUE_PROMPTS_PROJECT_CAP} max)")
+        return out
+
+    def _projects_parsed(self, now: float) -> tuple[dict, list]:
+        """(by-repo map, by-path list) from config.json, parsed once per config load.
+
+        by-repo is keyed by CASEFOLDED repo name: the key an operator types is the name
+        the card shows, and git's casing is not something they chose. Two keys differing
+        only in case are a collision the first one wins, warned rather than merged.
+
+        by-path answers a MEASURED gap, it is not a second way to say the same thing.
+        `sessions[].repo` is the origin remote's name (GitLookup._remote_name), so
+        measured 2026-09-21: a release tree and a linked worktree of the same repo BOTH
+        read `sidecrab`, and a session whose cwd is not a repo at all reads null - no
+        repo key can reach either case. Keyed on a path PREFIX, longest match wins,
+        sorted here so the match is a scan of a pre-ordered list.
+        """
+        data = self.get(now)
+        with self._lock:
+            if self._projects_for is data and self._projects is not None:
+                return self._projects
+
+        by_repo: dict[str, list[str]] = {}
+        raw_repo = data.get("continuePromptsByRepo")
+        if raw_repo is not None and not isinstance(raw_repo, dict):
+            _log_once("cfgrepo:type", "crabd: config.json continuePromptsByRepo is "
+                                      "not an object - ignored")
+            raw_repo = None
+        for key, value in list((raw_repo or {}).items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
+            name = key.strip() if isinstance(key, str) else ""
+            if not name:
+                _log_once("cfgrepo:blank", "crabd: config.json continuePromptsByRepo "
+                                           "has a blank key - ignored")
+                continue
+            folded = name.casefold()
+            if folded in by_repo:
+                _log_once("cfgrepo:dup:" + folded,
+                          f"crabd: config.json continuePromptsByRepo has two keys that "
+                          f"differ only in case ({name}) - the first one is used")
+                continue
+            prompts = self._project_list(value, f"continuePromptsByRepo[{name}]")
+            if prompts:
+                by_repo[folded] = prompts
+
+        by_path: list[tuple[str, str, list[str]]] = []
+        raw_path = data.get("continuePromptsByPath")
+        if raw_path is not None and not isinstance(raw_path, dict):
+            _log_once("cfgpath:type", "crabd: config.json continuePromptsByPath is "
+                                      "not an object - ignored")
+            raw_path = None
+        for key, value in list((raw_path or {}).items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
+            root = key.strip() if isinstance(key, str) else ""
+            # A RELATIVE key can never match - a session cwd is absolute - so it is
+            # refused with a line rather than kept as a key that silently never fires.
+            if not root or not os.path.isabs(root):
+                _log_once("cfgpath:rel:" + str(key)[:64],
+                          f"crabd: config.json continuePromptsByPath key {key!r} is "
+                          f"not an absolute path - ignored")
+                continue
+            norm = os.path.normcase(os.path.normpath(root))
+            prompts = self._project_list(value, f"continuePromptsByPath[{root}]")
+            if prompts:
+                # Matched at a path BOUNDARY, never as a bare string prefix: without
+                # the separator, C:\Dev\side would own C:\Dev\sidecrab as well.
+                boundary = norm if norm.endswith(os.sep) else norm + os.sep
+                by_path.append((norm, boundary, prompts))
+        by_path.sort(key=lambda row: -len(row[1]))   # longest prefix wins
+
+        parsed = (by_repo, by_path)
+        with self._lock:
+            self._projects_for = data
+            self._projects = parsed
+        return parsed
+
+    def continue_session_extras(self, now: float, repo, cwd) -> list[str]:
+        """The prompts THIS session gets beyond the global list, or [].
+
+        Served as `sessions[].continuePrompts` and consumed as the per-session half of
+        the whitelist, so the two can never disagree: one function, both readers.
+
+        Order is general to specific - the repo list, then the path list - and the
+        COMBINED result is capped at CONTINUE_PROMPTS_PROJECT_CAP, so a repo list that
+        fills the cap leaves no room for a path list. Anything already builtin or
+        already in the global extras is dropped here: the widget draws builtins, then
+        globals, then this, and a duplicate would be one button drawn twice.
+        """
+        by_repo, by_path = self._projects_parsed(now)
+        picked: list[str] = []
+        if isinstance(repo, str) and repo.strip():
+            picked.extend(by_repo.get(repo.strip().casefold(), ()))
+        if isinstance(cwd, str) and cwd.strip():
+            here = os.path.normcase(os.path.normpath(cwd.strip()))
+            for norm, boundary, prompts in by_path:
+                if here == norm or here.startswith(boundary):
+                    picked.extend(prompts)
+                    break
+        if not picked:
+            return []
+        globals_ = self.continue_extras(now)
+        out: list[str] = []
+        for prompt in picked:
+            if len(out) >= CONTINUE_PROMPTS_PROJECT_CAP:
+                break
+            if prompt in out or prompt in globals_ or prompt in CONTINUE_PROMPTS_BUILTIN:
+                continue
+            out.append(prompt)
+        return out
+
+    def continue_prompts_for(self, now: float, repo, cwd) -> tuple[str, ...]:
+        """The queue-continue whitelist for ONE session: the global set plus that
+        session's project prompts.
+
+        THE GATE THAT MATTERS: a prompt configured only for repo X is not on this tuple
+        for a session in repo Y, so that tap is refused with the same 400 an unknown
+        prompt has always had. The set stays server-side and stays a whitelist - a
+        project map widens what a given session may say, never who may say it, and
+        nothing reachable over HTTP can add a key to it.
+        """
+        return (tuple(CONTINUE_PROMPTS_BUILTIN) + tuple(self.continue_extras(now))
+                + tuple(self.continue_session_extras(now, repo, cwd)))
 
     def recap_repos(self, now: float) -> list[str]:
         """`recapRepos` - extra absolute paths for recap.commits (contract amendment
@@ -4496,6 +4734,975 @@ class HostSampler:
         return (int(status.ullTotalPhys), int(status.ullAvailPhys))
 
 
+# ---- lane A: HWiNFO shared memory, the NVIDIA GPU, machine load ----
+#
+# Three samplers, three threads, one additive home: they all land inside the v0.22.0
+# `host` block. None of them runs in the request path and none of them can raise into
+# build() - the same two rules HostSampler and FleetReader already keep, for the same
+# reason: /v1/state is a dict dump, and a wedged sampler must show up as a stale
+# `ageSec`/`sampledAt` rather than as a feed that stopped.
+
+# Both namespaces, in this order. HWiNFO publishes into the GLOBAL kernel namespace
+# when it runs elevated (which is how it reads most sensors) and into the session
+# namespace otherwise; a bare name resolves to the caller's session. Opening either is
+# unprivileged. OpenFileMapping - never CreateFileMapping, and never mmap's tagname,
+# which CREATES the section when it is missing: a crabd that invented an empty
+# `HWiNFO_SENS_SM2` would be a crabd that broke HWiNFO's own publish on the next launch.
+HWINFO_MAP_NAMES = ("Global\\HWiNFO_SENS_SM2", "HWiNFO_SENS_SM2")
+HWINFO_SIGNATURE = b"HWiS"
+HWINFO_POLL_SEC = 5.0
+# Beyond this the poll time is not a reading of now. HWiNFO's own sensor poll is ~2 s
+# by default, so 30 s is roughly fifteen missed polls - and it is the same number the
+# widget calls the whole feed stale at, which keeps one definition of "old" on the glass.
+HWINFO_STALE_SEC = 30.0
+HWINFO_SENSOR_CAP = 24
+# The documented element sizes (SDK "HWiNFO_SHM"): a sensor element is
+# 4 + 4 + 128 + 128, a reading element 4 + 4 + 4 + 128 + 128 + 16 + 4 doubles. They are
+# the FLOOR for a sane header and nothing else - the stride always comes off the
+# header's own dwSizeOf* fields, so a newer revision with bigger elements still parses.
+HWINFO_SENSOR_ELEM_MIN = 264
+HWINFO_READING_ELEM_MIN = 316
+HWINFO_SENSOR_ELEM_MAX = 4096
+HWINFO_READING_ELEM_MAX = 8192
+HWINFO_MAX_SENSORS = 4096
+HWINFO_MAX_READINGS = 65536
+HWINFO_STR_LEN = 128
+HWINFO_UNIT_LEN = 16
+# Where the four doubles start inside a reading element. The char arrays before them
+# end at 284, and MSVC's default 8-byte alignment then pushes `double Value` to 288 -
+# so the two candidates are 288 (padded, what a stock build of the SDK header emits)
+# and 284 (packed). Which one is live is DECIDED PER MAPPING by _hwinfo_value_offset
+# rather than assumed: reading the doubles four bytes early turns every value into a
+# denormal, which is exactly the kind of wrong number that looks like a reading.
+HWINFO_VALUE_OFFSETS = (288, 284)
+HWINFO_LABEL_OFF = 12
+HWINFO_UNIT_OFF = 268
+# THREE CAUSES, ALL OF THEM ORDINARY, and the note names all three because the reader
+# cannot tell them apart from the outside - OpenFileMapping answers ERROR_FILE_NOT_FOUND
+# for every one. Measured 2026-09-21: the section exists only while the SENSORS window is
+# open (minimized counts); HWiNFO with its main window up and no sensors window publishes
+# nothing at all, which is the cause an operator is least likely to guess.
+HWINFO_NOTE_ABSENT = ("HWiNFO not running, its Sensors window closed, "
+                      "or Shared Memory Support off")
+HWINFO_NOTE_STALE = ("HWiNFO stopped publishing (free build 12-hour limit): "
+                     "relaunch HWiNFO")
+HWINFO_NOTE_UNREADABLE = "unreadable"
+HWINFO_LOG_KEY = "host-hwinfo"
+
+# SENSOR_READING_TYPE -> the widget's fixed vocabulary. 4 (current) and 8 (other) both
+# land on "other": the row has no cell for amps, and inventing a word for one would be
+# a vocabulary the widget has to grow to match.
+HWINFO_KINDS = {0: "other", 1: "temp", 2: "volt", 3: "fan", 4: "other",
+                5: "power", 6: "clock", 7: "usage", 8: "other"}
+
+# CURATION, and the ORDER is the cap's policy: a mapping with more than 24 interesting
+# readings loses the least interesting ones, never an arbitrary 24.
+# Matched against the READING LABEL only, never the sensor (device) name. That is the
+# whole reason the row is not 32 rows long on this machine: the per-core temperatures
+# sit under a sensor called "CPU [#0]: ...", so a device-side match would sweep every
+# one of them in as a CPU temperature.
+HWINFO_PER_CORE_RE = re.compile(r"\bcore\s*#?\d", re.I)
+# MATCH ORDER IS SPECIFICITY; the number beside each pattern is the SERVING rank, and
+# the two orders are deliberately different. Measured on this machine 2026-09-21: the
+# board's VRM probes are labelled "CPU VDDCR_VDD VRM (SVI3 TFN)" and carry both words,
+# so a CPU-first walk files three VRM temperatures as CPU temperatures and the row
+# shows no VRM at all.
+HWINFO_TEMP_RANKS = (
+    (2, re.compile(r"\bvrm\b|\bvsoc\b|\bmos\b|vcore\s*soc", re.I)),
+    (3, re.compile(r"\bdrive\b|\bnvme\b|\bssd\b|\bhdd\b|\bdisk\b", re.I)),
+    (4, re.compile(r"motherboard|chipset|\bpch\b|\bsystem\b|ambient", re.I)),
+    (1, re.compile(r"\bgpu\b|\bvideo\b", re.I)),
+    (0, re.compile(r"\bcpu\b|\btctl\b|\btdie\b|\bccd\d*\b|\bdie\b|package", re.I)),
+)
+# A TEMPERATURE HAS TO BE ONE, AND A LABEL HAS TO NAME SOMETHING. Four exclusions, each
+# measured on this board 2026-09-21 rather than imagined:
+#   - "Accumulated CPU Temperature" reads 194,119,626 °C and "Accumulated CPU Power"
+#     135,046,525 W. They are counters wearing a temperature's name and unit; nine
+#     digits in a cell built for two is not a reading anyone can use.
+#   - "Temp9" is an unpopulated board header. A number with no subject is not a fact.
+#   - the sixteen per-core temperatures, the two L3 cache temperatures and the eight
+#     "GPU Memory A0..C1" rows are detail this row has no width for and the package
+#     figures already stand for.
+# The range gates are the backstop under the name gates, and they are applied only when
+# the unit says which scale it is - an unrecognised unit is left alone rather than
+# judged against a guess.
+HWINFO_EXCLUDE_RE = re.compile(
+    r"accumulated|^temp\d+$|\bl3\s*cache\b|\bmemory\s+[a-z]\d\b", re.I)
+HWINFO_TEMP_RANGE_C = (-50.0, 150.0)
+HWINFO_TEMP_RANGE_F = (-58.0, 302.0)
+HWINFO_POWER_MAX_W = 5000.0
+HWINFO_RANK_POWER = 5
+HWINFO_RANK_FAN = 6
+HWINFO_CPU_POWER_RE = re.compile(r"\bcpu\b", re.I)
+HWINFO_PACKAGE_POWER_RE = re.compile(r"package|\bppt\b", re.I)
+
+# nvidia-smi. The column list is fixed and ORDER IS THE CONTRACT - the answer carries no
+# header, so a column added in the middle of this string silently renames every field
+# after it. Measured on this machine 2026-09-21: one row,
+# "NVIDIA GeForce RTX 5070, 610.74, 54, 2 %, 7114 MiB, 12227 MiB, 27.07 W, 250.00 W, 720 MHz".
+NVIDIA_QUERY = ("name,driver_version,temperature.gpu,utilization.gpu,memory.used,"
+                "memory.total,power.draw,power.limit,clocks.sm")
+NVIDIA_NUMERIC_FIELDS = ("tempC", "utilPct", "memUsedMB", "memTotalMB",
+                         "powerW", "powerLimitW", "clockMHz")
+NVIDIA_FIELDS = ("name", "driver") + NVIDIA_NUMERIC_FIELDS
+NVIDIA_POLL_SEC = 5.0
+NVIDIA_TIMEOUT_SEC = 4.0
+NVIDIA_NOTE_ABSENT = "nvidia-smi not found - no NVIDIA driver on this machine"
+NVIDIA_NOTE_TIMEOUT = "nvidia-smi timed out"
+NVIDIA_NOTE_EMPTY = "nvidia-smi returned no readable row"
+NVIDIA_LOG_KEY = "host-gpu"
+# The leading number of a field, units and all: "27.07 W" -> 27.07, "2 %" -> 2,
+# "[N/A]" -> nothing. DELIBERATELY NOT locale-tolerant about the decimal mark: in this
+# output a comma is the FIELD separator, so "27,07 W" is not a number with a comma in
+# it, it is two columns - which is why the column count below is exact rather than a
+# minimum. Accepting a comma decimal here would turn a shifted row into a plausible
+# wrong reading instead of a refusal.
+NVIDIA_NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+
+LOAD_POLL_SEC = 5.0
+LOAD_LOG_KEY = "host-load"
+LOAD_COUNTERS = (("diskReadBps", "\\PhysicalDisk(_Total)\\Disk Read Bytes/sec"),
+                 ("diskWriteBps", "\\PhysicalDisk(_Total)\\Disk Write Bytes/sec"))
+LOAD_NET_COUNTERS = (("netRxBps", "\\Network Interface(*)\\Bytes Received/sec"),
+                     ("netTxBps", "\\Network Interface(*)\\Bytes Sent/sec"))
+# Instances that are NOT a wire. The sum is over physical adapters, and PDH's
+# `Network Interface` set lists every pseudo-interface beside them - loopback, tunnels,
+# and the virtual switch that carries the SAME bytes as the NIC underneath it, which is
+# the one that would double-count rather than merely inflate.
+LOAD_NET_PSEUDO = ("loopback", "isatap", "teredo", "pseudo", "tunnel", "vethernet",
+                   "virtual", "miniport", "filter", "qos", "bluetooth", "vpn", "tap-")
+PDH_FMT_DOUBLE = 0x00000200
+PDH_MORE_DATA = 0x800007D2       # PDH_MORE_DATA, returned by the sizing call
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+TH32CS_SNAPPROCESS = 0x00000002
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+def _hwinfo_str(blob, offset: int, length: int) -> str:
+    """A fixed char[] out of the mapping: latin-1, truncated at the first NUL.
+
+    latin-1 rather than utf-8 because HWiNFO writes single-byte code-page text and
+    "°C" arrives as one 0xB0 byte - which utf-8 refuses and utf-8-with-replacement
+    turns into a question mark. latin-1 cannot fail and maps 0xB0 to the degree sign.
+    """
+    raw = bytes(blob[offset:offset + length])
+    cut = raw.find(b"\x00")
+    if cut >= 0:
+        raw = raw[:cut]
+    return raw.decode("latin-1", errors="replace").strip()
+
+
+def _hwinfo_header(blob, size: int) -> dict | None:
+    """The SHM2 header, or None when nothing in this blob is one.
+
+    TWO CANDIDATE LAYOUTS, and the choice is made by validation rather than by belief.
+    `__time64_t poll_time` follows three DWORDs, so a compiler with 8-byte alignment
+    puts it at 16 and a packed one at 12 - and every offset after it moves with it.
+    Picking the wrong one yields a poll time of about 1970 and section offsets that
+    point outside the mapping, which is precisely what the checks below refuse.
+    """
+    if size < 44 or bytes(blob[0:4]) != HWINFO_SIGNATURE:
+        return None
+    for poll_off in (16, 12):
+        if size < poll_off + 32:
+            continue
+        try:
+            version, revision = struct.unpack_from("<II", blob, 4)
+            poll_time = struct.unpack_from("<q", blob, poll_off)[0]
+            (sensor_off, sensor_elem, sensor_n,
+             reading_off, reading_elem, reading_n) = struct.unpack_from(
+                "<6I", blob, poll_off + 8)
+        except struct.error:
+            continue
+        header_end = poll_off + 32
+        if not (HWINFO_SENSOR_ELEM_MIN <= sensor_elem <= HWINFO_SENSOR_ELEM_MAX):
+            continue
+        if not (HWINFO_READING_ELEM_MIN <= reading_elem <= HWINFO_READING_ELEM_MAX):
+            continue
+        if sensor_n > HWINFO_MAX_SENSORS or reading_n > HWINFO_MAX_READINGS:
+            continue
+        if sensor_off < header_end or reading_off < header_end:
+            continue
+        if sensor_off + sensor_elem * sensor_n > size:
+            continue
+        if reading_off + reading_elem * reading_n > size:
+            continue
+        if not (0 < poll_time < TS_MAX_EPOCH):
+            continue
+        return {"version": int(version), "revision": int(revision),
+                "pollTime": int(poll_time), "pollOffset": poll_off,
+                "sensorOff": int(sensor_off), "sensorElem": int(sensor_elem),
+                "sensorCount": int(sensor_n), "readingOff": int(reading_off),
+                "readingElem": int(reading_elem), "readingCount": int(reading_n)}
+    return None
+
+
+def _hwinfo_value_offset(blob, head: dict) -> int:
+    """Where `double Value` starts inside a reading element, decided by measurement.
+
+    The two candidates differ by the four padding bytes MSVC inserts after the 16-byte
+    unit string, and the wrong one reads each double from four bytes of zero padding
+    plus the low half of the real number - a denormal, or a value with no relation to
+    its own min/max. So each candidate is SCORED over the first readings: all four
+    doubles finite, and min <= value <= max, which is a relation the real layout holds
+    and a shifted one cannot hold by accident more than occasionally. Ties go to the
+    padded layout, which is what a stock compile of the SDK header produces.
+    """
+    best, best_score = HWINFO_VALUE_OFFSETS[0], -1
+    probe = min(head["readingCount"], 64)
+    for offset in HWINFO_VALUE_OFFSETS:
+        if offset + 32 > head["readingElem"]:
+            continue
+        score = 0
+        for i in range(probe):
+            base = head["readingOff"] + i * head["readingElem"]
+            try:
+                value, low, high, _avg = struct.unpack_from("<4d", blob, base + offset)
+            except struct.error:
+                break
+            if not (math.isfinite(value) and math.isfinite(low) and math.isfinite(high)):
+                continue
+            if low <= value <= high:
+                score += 1
+        if score > best_score:
+            best, best_score = offset, score
+    return best
+
+
+def hwinfo_parse(blob, size: int | None = None) -> dict:
+    """The whole mapping -> {'ok', 'note', 'pollTime', 'sensors'}. Never raises.
+
+    `sensors` is the CURATED list the contract serves, already capped and ordered.
+    """
+    if blob is None:
+        return {"ok": False, "note": HWINFO_NOTE_ABSENT, "pollTime": None, "sensors": []}
+    if size is None:
+        size = len(blob)
+    head = _hwinfo_header(blob, size)
+    if head is None:
+        return {"ok": False, "note": HWINFO_NOTE_UNREADABLE, "pollTime": None,
+                "sensors": []}
+    devices = []
+    for i in range(head["sensorCount"]):
+        base = head["sensorOff"] + i * head["sensorElem"]
+        original = _hwinfo_str(blob, base + 8, HWINFO_STR_LEN)
+        user = _hwinfo_str(blob, base + 8 + HWINFO_STR_LEN, HWINFO_STR_LEN)
+        devices.append(user or original)
+    value_off = _hwinfo_value_offset(blob, head)
+    readings = []
+    for i in range(head["readingCount"]):
+        base = head["readingOff"] + i * head["readingElem"]
+        try:
+            kind_id, sensor_index = struct.unpack_from("<II", blob, base)
+            value = struct.unpack_from("<d", blob, base + value_off)[0]
+        except struct.error:
+            break
+        original = _hwinfo_str(blob, base + HWINFO_LABEL_OFF, HWINFO_STR_LEN)
+        user = _hwinfo_str(blob, base + HWINFO_LABEL_OFF + HWINFO_STR_LEN,
+                           HWINFO_STR_LEN)
+        kind = HWINFO_KINDS.get(int(kind_id), "other")
+        readings.append({
+            "name": user or original,
+            "device": devices[sensor_index] if sensor_index < len(devices) else "",
+            "kind": kind,
+            "unit": _hwinfo_str(blob, base + HWINFO_UNIT_OFF, HWINFO_UNIT_LEN),
+            "value": _hwinfo_round(kind, _finite_number(value)),
+        })
+    return {"ok": True, "note": None, "pollTime": head["pollTime"],
+            "sensors": hwinfo_curate(readings)}
+
+
+def _hwinfo_round(kind: str, value):
+    """Sensor precision, not float precision. The mapping hands back a double carrying
+    seventeen digits of a die temperature the silicon reports to about half a degree -
+    serving `56.692291259765625` is false precision dressed as accuracy, and it is the
+    same 1-dp rule the v0.22.0 members already keep. RPM and MHz are whole numbers."""
+    if value is None:
+        return None
+    if kind in ("fan", "clock"):
+        return int(round(value))
+    return round(value, 3 if kind == "volt" else 1)
+
+
+def _hwinfo_unit_scale(unit: str) -> str:
+    """'C', 'F', or '' for a unit this code will not second-guess. The degree sign
+    arrives as a single 0xB0 byte, so it is stripped rather than matched."""
+    text = (unit or "").strip().lstrip("°").strip().upper()
+    if text.startswith("C"):
+        return "C"
+    if text.startswith("F"):
+        return "F"
+    return ""
+
+
+def _hwinfo_rank(reading: dict) -> int | None:
+    """The curation policy, as one number. None = this reading is not served."""
+    label = reading["name"]
+    if not label or HWINFO_EXCLUDE_RE.search(label):
+        return None
+    value = reading["value"]
+    if reading["kind"] == "fan":
+        return HWINFO_RANK_FAN          # fans and pumps are one reading type
+    if reading["kind"] == "power":
+        if not (HWINFO_CPU_POWER_RE.search(label)
+                and HWINFO_PACKAGE_POWER_RE.search(label)):
+            return None
+        return None if value is not None and value > HWINFO_POWER_MAX_W else HWINFO_RANK_POWER
+    if reading["kind"] != "temp":
+        return None
+    if HWINFO_PER_CORE_RE.search(label):
+        return None                     # per-core detail; the package figure stands for it
+    scale = _hwinfo_unit_scale(reading["unit"])
+    if scale and value is not None:
+        low, high = HWINFO_TEMP_RANGE_C if scale == "C" else HWINFO_TEMP_RANGE_F
+        if not (low <= value <= high):
+            return None
+    for rank, pattern in HWINFO_TEMP_RANKS:
+        if pattern.search(label):
+            return rank
+    return None
+
+
+def _hwinfo_within_rank(reading: dict) -> int:
+    """The tiebreak inside one rank. 1 sorts after 0.
+
+    THE INTEGRATED GPU ALSO REPORTS "GPU Temperature" (measured: sensor 13, the
+    Radeon in the CPU package, beside sensor 14's discrete card). Both are real, and
+    the one the operator means is the card - so the iGPU's rows go last inside the GPU
+    rank rather than being dropped, and the cap trims them first.
+    """
+    return 1 if (reading["device"] or "").strip().lower().startswith("igpu") else 0
+
+
+def hwinfo_curate(readings: list, cap: int = HWINFO_SENSOR_CAP) -> list:
+    """Rank, then fill ROUND ROBIN to the cap, then order by rank for serving.
+
+    THE CAP IS A POLICY, not a slice, and the live mapping is what proved it: 37 of
+    this machine's 524 readings pass the rank test, of which 10 are CPU temperatures
+    and 10 are GPU temperatures. A flat "sort by rank and take 24" served those twenty
+    plus four more and dropped every fan, every drive and the CPU package power -
+    which is to say the cap silently deleted whole kinds rather than depth within a
+    kind. Filling one reading per rank per pass gives every kind that exists a place,
+    and trims the deepest entries of the largest kinds, which is the only thing a cap
+    can take away without changing what the row is about.
+    """
+    buckets: dict[int, list] = {}
+    for index, reading in enumerate(readings):
+        rank = _hwinfo_rank(reading)
+        if rank is not None:
+            buckets.setdefault(rank, []).append((_hwinfo_within_rank(reading), index,
+                                                 reading))
+    for rows in buckets.values():
+        rows.sort(key=lambda row: (row[0], row[1]))
+    ranks = sorted(buckets)
+    chosen: list = []
+    depth = 0
+    while len(chosen) < cap and any(len(buckets[r]) > depth for r in ranks):
+        for rank in ranks:
+            if len(chosen) >= cap:
+                break
+            if len(buckets[rank]) > depth:
+                inner, index, reading = buckets[rank][depth]
+                chosen.append((rank, inner, index, reading))
+        depth += 1
+    chosen.sort(key=lambda row: (row[0], row[1], row[2]))
+    return [row[3] for row in chosen]
+
+
+class HwinfoReader:
+    """`host.sensors` + `host.sensorsSource` - HWiNFO's shared memory, read-only.
+
+    THE FREE BUILD STOPS PUBLISHING TWELVE HOURS AFTER LAUNCH and leaves the mapping in
+    place with its last poll time frozen in it. That is why `stale` is derived from the
+    poll time and not from "did the read succeed": a reader that only checked for the
+    mapping would go on serving half-day-old temperatures as current, which is the one
+    failure this whole block exists to refuse.
+
+    `opener` is injected by tests and returns (bytes-like, size) or None for "no
+    mapping". Production opens the section itself; nothing here writes to it.
+    """
+
+    def __init__(self, opener=None) -> None:
+        self._opener = opener
+        self._lock = threading.Lock()
+        self._sensors: list = []
+        self._source = self.unavailable(HWINFO_NOTE_ABSENT)
+        self._due = 0.0
+
+    @staticmethod
+    def unavailable(note: str) -> dict:
+        return {"provider": "hwinfo", "pollTime": None, "ageSec": None,
+                "stale": False, "available": False, "note": note}
+
+    def get(self) -> tuple[list, dict]:
+        with self._lock:
+            return list(self._sensors), dict(self._source)
+
+    def poll(self, now: float) -> bool:
+        with self._lock:
+            if now < self._due:
+                return False
+            self._due = now + HWINFO_POLL_SEC
+        sensors, source = self.read(now)
+        with self._lock:
+            self._sensors, self._source = sensors, source
+        return True
+
+    def read(self, now: float) -> tuple[list, dict]:
+        opener = self._opener or self._open_mapping
+        try:
+            opened = opener()
+        except Exception as exc:
+            _log_once(HWINFO_LOG_KEY,
+                      f"crabd: HWiNFO shared memory raised {type(exc).__name__}; "
+                      f"serving no sensors")
+            return [], self.unavailable(HWINFO_NOTE_UNREADABLE)
+        if opened is None:
+            return [], self.unavailable(HWINFO_NOTE_ABSENT)
+        try:
+            blob, size = opened
+            parsed = hwinfo_parse(blob, size)
+        except Exception as exc:
+            _log_once(HWINFO_LOG_KEY,
+                      f"crabd: HWiNFO shared memory parse raised "
+                      f"{type(exc).__name__}; serving no sensors")
+            return [], self.unavailable(HWINFO_NOTE_UNREADABLE)
+        if not parsed["ok"]:
+            return [], self.unavailable(parsed["note"] or HWINFO_NOTE_UNREADABLE)
+        # A poll time in the future is a clock that moved, not a reading from ahead;
+        # clamped to 0 so `ageSec` stays a duration rather than going negative.
+        age = round(max(0.0, now - parsed["pollTime"]), 1)
+        stale = age > HWINFO_STALE_SEC
+        return parsed["sensors"], {
+            "provider": "hwinfo",
+            "pollTime": _utc_iso(parsed["pollTime"]),
+            "ageSec": age,
+            "stale": stale,
+            "available": True,
+            "note": HWINFO_NOTE_STALE if stale else None,
+        }
+
+    @staticmethod
+    def _open_mapping():
+        """(snapshot bytes, size) for the live section, or None when there is none.
+
+        A COPY, taken with one string_at, rather than a view held open across the
+        parse: HWiNFO rewrites the section in place on its own poll, and parsing a
+        moving buffer would mix two polls' readings into one served list.
+        """
+        try:
+            kernel32 = ctypes.windll.kernel32
+        except AttributeError:          # not Windows - the platform gate, as HostSampler's is
+            return None
+        kernel32.OpenFileMappingW.restype = ctypes.c_void_p
+        kernel32.OpenFileMappingW.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                              ctypes.c_wchar_p]
+        kernel32.MapViewOfFile.restype = ctypes.c_void_p
+        kernel32.MapViewOfFile.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                           ctypes.c_uint32, ctypes.c_uint32,
+                                           ctypes.c_size_t]
+        kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        for name in HWINFO_MAP_NAMES:
+            handle = kernel32.OpenFileMappingW(0x0004, False, name)   # FILE_MAP_READ
+            if not handle:
+                continue
+            address = None
+            try:
+                address = kernel32.MapViewOfFile(handle, 0x0004, 0, 0, 0)
+                if not address:
+                    continue
+                size = _virtual_query_size(address)
+                if not size:
+                    continue
+                return (ctypes.string_at(address, size), size)
+            finally:
+                if address:
+                    kernel32.UnmapViewOfFile(ctypes.c_void_p(address))
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+
+
+class _MEMORY_BASIC_INFORMATION(ctypes.Structure):
+    """VirtualQuery's out-parameter. Only RegionSize is read: MapViewOfFile with a
+    length of 0 maps the whole section without saying how big it was, and reading past
+    it is an access violation rather than a Python exception."""
+    _fields_ = [("BaseAddress", ctypes.c_void_p),
+                ("AllocationBase", ctypes.c_void_p),
+                ("AllocationProtect", ctypes.c_uint32),
+                ("PartitionId", ctypes.c_uint16),
+                ("_pad", ctypes.c_uint16),
+                ("RegionSize", ctypes.c_size_t),
+                ("State", ctypes.c_uint32),
+                ("Protect", ctypes.c_uint32),
+                ("Type", ctypes.c_uint32),
+                ("_pad2", ctypes.c_uint32)]
+
+
+def _virtual_query_size(address: int) -> int:
+    try:
+        kernel32 = ctypes.windll.kernel32
+    except AttributeError:
+        return 0
+    info = _MEMORY_BASIC_INFORMATION()
+    written = kernel32.VirtualQuery(ctypes.c_void_p(address), ctypes.byref(info),
+                                    ctypes.sizeof(info))
+    if not written:
+        return 0
+    return int(info.RegionSize)
+
+
+def _lane_a_bps(value) -> int | None:
+    """Bytes per second as a whole number. PDH answers with a double carrying fifteen
+    digits of a figure that is a rate over a 5 s window; sub-byte precision on it is
+    noise dressed as measurement. Negative is not a throughput, so it is None."""
+    value = _finite_number(value)
+    if value is None or value < 0:
+        return None
+    return int(round(value))
+
+
+def _nvidia_number(text: str) -> float | None:
+    """One nvidia-smi cell as a number. '[N/A]', '', and anything unparseable -> None."""
+    if text is None:
+        return None
+    match = NVIDIA_NUM_RE.search(str(text))
+    if not match:
+        return None
+    try:
+        return _finite_number(float(match.group(0)))
+    except ValueError:
+        return None
+
+
+def nvidia_parse(stdout: str) -> dict:
+    """A --format=csv,noheader answer -> the served `host.gpu`, minus freshness.
+
+    csv rather than a split, for the reason FleetReader parses schtasks with it: a
+    field may be quoted, and a naive split on ', ' breaks the first time a GPU name
+    contains a comma.
+    """
+    rows = []
+    try:
+        for row in csv.reader((stdout or "").splitlines()):
+            if row and any(cell.strip() for cell in row):
+                rows.append(row)
+    except (csv.Error, ValueError):
+        rows = []
+    # EXACTLY nine columns. Fewer means a column vanished, MORE means one was split -
+    # and both shift every field after the break, which is how a memory figure ends up
+    # in the power slot reading like a plausible number.
+    if not rows or len(rows[0]) != len(NVIDIA_FIELDS):
+        block = {field: None for field in NVIDIA_FIELDS}
+        block.update({"available": False, "note": NVIDIA_NOTE_EMPTY})
+        return block
+    cells = [cell.strip() for cell in rows[0]]
+    block = {"name": cells[0] or None, "driver": cells[1] or None}
+    for index, field in enumerate(NVIDIA_NUMERIC_FIELDS, start=2):
+        block[field] = _nvidia_number(cells[index])
+    block.update({"available": True, "note": None})
+    return block
+
+
+class GpuReader:
+    """`host.gpu` - nvidia-smi, on its own thread.
+
+    A SUBPROCESS, so it is never on the request path and never on the builder's: the
+    same rule recap and fleet keep. `available: false` is served rather than the block
+    being dropped, because "this machine has no NVIDIA GPU" is an answer and a missing
+    key is not - the widget would have to tell it apart from an older crabd.
+    """
+
+    def __init__(self, runner=None) -> None:
+        self._runner = runner
+        self._lock = threading.Lock()
+        self._result = self.unavailable(NVIDIA_NOTE_ABSENT)
+        self._due = 0.0
+
+    @staticmethod
+    def unavailable(note: str) -> dict:
+        block = {field: None for field in NVIDIA_FIELDS}
+        block.update({"available": False, "note": note, "sampledAt": None})
+        return block
+
+    def get(self) -> dict:
+        with self._lock:
+            return dict(self._result)
+
+    def poll(self, now: float) -> bool:
+        with self._lock:
+            if now < self._due:
+                return False
+            self._due = now + NVIDIA_POLL_SEC
+        result = self.read(now)
+        with self._lock:
+            self._result = result
+        return True
+
+    def read(self, now: float) -> dict:
+        runner = self._runner or self._run
+        try:
+            code, out, _err = runner(NVIDIA_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            return self.unavailable(NVIDIA_NOTE_TIMEOUT)
+        except (OSError, ValueError):   # nvidia-smi absent, or the spawn failed
+            return self.unavailable(NVIDIA_NOTE_ABSENT)
+        except Exception as exc:
+            _log_once(NVIDIA_LOG_KEY,
+                      f"crabd: nvidia-smi raised {type(exc).__name__}; serving no GPU")
+            return self.unavailable(NVIDIA_NOTE_EMPTY)
+        if code != 0:
+            return self.unavailable(NVIDIA_NOTE_EMPTY)
+        block = nvidia_parse(out)
+        # Its OWN freshness, not the document's: this sampler runs on a 5 s cadence
+        # against a 2 s build, so `generatedAt` would date the figure two polls young.
+        block["sampledAt"] = _utc_iso(now) if block["available"] else None
+        return block
+
+    @staticmethod
+    def _run(timeout: float):
+        proc = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={NVIDIA_QUERY}", "--format=csv,noheader"],
+            capture_output=True, timeout=timeout, check=False,
+            # Same reason FleetReader passes it: no console under the Scheduled Task,
+            # and a window would flash on the desktop on an interactive login.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return (proc.returncode,
+                proc.stdout.decode("utf-8", errors="replace"),
+                proc.stderr.decode("utf-8", errors="replace"))
+
+
+class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
+    """PDH_FMT_COUNTERVALUE. The padding field is DECLARED rather than left to ctypes:
+    the C type is a DWORD followed by a union whose widest member is 8 bytes, so the
+    double sits at offset 8 on every build - and an implicit alignment that differed
+    would read the counter out of the CStatus word."""
+    _fields_ = [("CStatus", ctypes.c_uint32),
+                ("_pad", ctypes.c_uint32),
+                ("doubleValue", ctypes.c_double)]
+
+
+class _PDH_FMT_COUNTERVALUE_ITEM_W(ctypes.Structure):
+    _fields_ = [("szName", ctypes.c_wchar_p),
+                ("FmtValue", _PDH_FMT_COUNTERVALUE)]
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    """Toolhelp's process record. dwSize MUST be set before Process32FirstW or the call
+    fails - the same versioned-struct rule _MEMORYSTATUSEX carries."""
+    _fields_ = [("dwSize", ctypes.c_uint32),
+                ("cntUsage", ctypes.c_uint32),
+                ("th32ProcessID", ctypes.c_uint32),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", ctypes.c_uint32),
+                ("cntThreads", ctypes.c_uint32),
+                ("th32ParentProcessID", ctypes.c_uint32),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_uint32),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+class PdhRates:
+    """The two disk counters and the two network counter ARRAYS, in one long-lived query.
+
+    THE FIRST COLLECT OF A RATE COUNTER HAS NO RATE, and PDH says so with
+    PDH_CSTATUS_INVALID_DATA rather than with a zero. That is the same shape as
+    HostSampler's first `cpuPct`, and it gets the same answer: null, never 0.0. The
+    query is held OPEN between polls so each later collect measures against the
+    previous one - re-opening per poll would make every sample a first sample.
+    """
+
+    def __init__(self) -> None:
+        self._pdh = None
+        self._query = None
+        self._counters: list[tuple[str, ctypes.c_void_p]] = []
+        self._net: list[tuple[str, ctypes.c_void_p]] = []
+        self._opened = False
+
+    def _open(self) -> bool:
+        if self._opened:
+            return self._query is not None
+        self._opened = True
+        try:
+            pdh = ctypes.WinDLL("pdh")
+        except (AttributeError, OSError, FileNotFoundError):
+            _log_once(LOAD_LOG_KEY, "crabd: pdh.dll unavailable; serving no host load")
+            return False
+        pdh.PdhOpenQueryW.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t,
+                                      ctypes.POINTER(ctypes.c_void_p)]
+        pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                              ctypes.c_size_t,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+        pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+        pdh.PdhGetFormattedCounterValue.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(_PDH_FMT_COUNTERVALUE)]
+        pdh.PdhGetFormattedCounterArrayW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        # PDH_STATUS IS UNSIGNED, and ctypes' default c_int restype makes the two
+        # statuses this code branches on arrive NEGATIVE - PDH_MORE_DATA (0x800007D2)
+        # as -2147481646, which never equals the constant and silently turned every
+        # network figure into a null. Measured on this machine 2026-09-21.
+        for func in (pdh.PdhOpenQueryW, pdh.PdhAddEnglishCounterW,
+                     pdh.PdhCollectQueryData, pdh.PdhGetFormattedCounterValue,
+                     pdh.PdhGetFormattedCounterArrayW):
+            func.restype = ctypes.c_uint32
+        query = ctypes.c_void_p()
+        if pdh.PdhOpenQueryW(None, 0, ctypes.byref(query)) != 0:
+            _log_once(LOAD_LOG_KEY, "crabd: PdhOpenQueryW failed; serving no host load")
+            return False
+        self._pdh, self._query = pdh, query
+        for key, path in LOAD_COUNTERS:
+            handle = ctypes.c_void_p()
+            if pdh.PdhAddEnglishCounterW(query, path, 0, ctypes.byref(handle)) == 0:
+                self._counters.append((key, handle))
+        for key, path in LOAD_NET_COUNTERS:
+            handle = ctypes.c_void_p()
+            if pdh.PdhAddEnglishCounterW(query, path, 0, ctypes.byref(handle)) == 0:
+                self._net.append((key, handle))
+        # NO BASELINE COLLECT HERE, deliberately. Collecting twice back to back would
+        # produce a rate measured over a sub-millisecond window and serve it as a
+        # reading - the trap HostSampler documents for GetSystemTimes. The first
+        # sample() collect is answered PDH_CSTATUS_INVALID_DATA by PDH itself, which
+        # becomes a null; the second measures across a real 5 s window.
+        return True
+
+    def sample(self) -> dict:
+        blank = {key: None for key, _ in LOAD_COUNTERS + LOAD_NET_COUNTERS}
+        if not self._open():
+            return blank
+        pdh, query = self._pdh, self._query
+        if pdh.PdhCollectQueryData(query) != 0:
+            return blank
+        out = dict(blank)
+        for key, handle in self._counters:
+            value = _PDH_FMT_COUNTERVALUE()
+            status = pdh.PdhGetFormattedCounterValue(handle, PDH_FMT_DOUBLE, None,
+                                                     ctypes.byref(value))
+            if status == 0 and value.CStatus == 0:
+                out[key] = _lane_a_bps(value.doubleValue)
+        for key, handle in self._net:
+            out[key] = self._sum_instances(handle)
+        return out
+
+    def _sum_instances(self, handle) -> float | None:
+        """Every non-pseudo instance of a wildcard counter, added up. None when PDH
+        could not answer at all - an empty sum would be a measured zero."""
+        pdh = self._pdh
+        size = ctypes.c_uint32(0)
+        count = ctypes.c_uint32(0)
+        status = pdh.PdhGetFormattedCounterArrayW(handle, PDH_FMT_DOUBLE,
+                                                  ctypes.byref(size),
+                                                  ctypes.byref(count), None)
+        if status != PDH_MORE_DATA or size.value == 0 or count.value == 0:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        status = pdh.PdhGetFormattedCounterArrayW(handle, PDH_FMT_DOUBLE,
+                                                  ctypes.byref(size),
+                                                  ctypes.byref(count), buffer)
+        if status != 0:
+            return None
+        items = ctypes.cast(
+            buffer, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W * count.value)).contents
+        total = 0.0
+        seen = False
+        for item in items:
+            name = (item.szName or "").lower()
+            if not name or name == "_total":
+                continue
+            if any(marker in name for marker in LOAD_NET_PSEUDO):
+                continue
+            if item.FmtValue.CStatus != 0:
+                continue
+            value = _finite_number(item.FmtValue.doubleValue)
+            if value is None:
+                continue
+            total += value
+            seen = True
+        return _lane_a_bps(total) if seen else None
+
+
+class LoadReader:
+    """`host.load` - whole-machine disk and network throughput, commit, and the busiest
+    process. ctypes and stdlib only, on its own thread, 5 s.
+
+    EVERY MEMBER IS INDEPENDENT. PDH missing does not take the commit figure with it,
+    and a snapshot that cannot be taken does not blank the throughput - each failure
+    serves its own null, which is the three-tier rule HostSampler already keeps one
+    block up.
+    """
+
+    def __init__(self, rates=None, processes=None, commit=None, cpu_count=None) -> None:
+        self._rates = rates if rates is not None else PdhRates()
+        self._processes = processes
+        self._commit = commit
+        self._cpus = cpu_count or (os.cpu_count() or 1)
+        self._lock = threading.Lock()
+        self._result = self.blank()
+        self._due = 0.0
+        self._prev_times: dict | None = None
+        self._prev_at: float | None = None
+
+    @staticmethod
+    def blank() -> dict:
+        return {"diskReadBps": None, "diskWriteBps": None, "netRxBps": None,
+                "netTxBps": None, "commitPct": None, "topProcess": None,
+                "sampledAt": None}
+
+    def get(self) -> dict:
+        with self._lock:
+            result = dict(self._result)
+        if isinstance(result.get("topProcess"), dict):
+            result["topProcess"] = dict(result["topProcess"])
+        return result
+
+    def poll(self, now: float) -> bool:
+        with self._lock:
+            if now < self._due:
+                return False
+            self._due = now + LOAD_POLL_SEC
+        result = self.read(now)
+        with self._lock:
+            self._result = result
+        return True
+
+    def read(self, now: float) -> dict:
+        out = self.blank()
+        try:
+            out.update(self._rates.sample())
+        except Exception as exc:
+            _log_once(LOAD_LOG_KEY, f"crabd: PDH sample raised {type(exc).__name__}; "
+                                    f"serving no throughput")
+        out["commitPct"] = self._commit_pct()
+        out["topProcess"] = self._top_process(now)
+        out["sampledAt"] = _utc_iso(now)
+        return out
+
+    def _commit_pct(self) -> float | None:
+        """Committed bytes as a percentage of the commit limit, from the SAME
+        GlobalMemoryStatusEx call the v0.22.0 sampler uses - one syscall, no counter
+        subscription, and no first-sample hole because it is not a rate."""
+        reader = self._commit or self._read_commit
+        try:
+            reading = reader()
+        except Exception:
+            return None
+        if reading is None:
+            return None
+        try:
+            total, avail = reading
+        except (TypeError, ValueError):
+            return None
+        total = _finite_number(total)
+        avail = _finite_number(avail)
+        if total is None or total <= 0 or avail is None or avail < 0:
+            return None
+        return _pct(100.0 * (total - min(avail, total)) / total)
+
+    @staticmethod
+    def _read_commit() -> tuple[int, int] | None:
+        status = _MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        try:
+            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        except (AttributeError, OSError, ValueError):
+            return None
+        if not ok:
+            return None
+        return (int(status.ullTotalPageFile), int(status.ullAvailPageFile))
+
+    def _top_process(self, now: float) -> dict | None:
+        """The busiest process over the interval since the last sample, or None.
+
+        CPU TIME IS CUMULATIVE, exactly as GetSystemTimes is, so this is a delta and
+        the first sample has no answer - null, never a process at 0%. Keyed on
+        (pid, creation time) because Windows reuses pids: without the creation time a
+        short-lived process could hand its baseline to an unrelated one and produce a
+        fabricated spike.
+        """
+        reader = self._processes or self._read_process_times
+        try:
+            current = reader()
+        except Exception as exc:
+            _log_once(LOAD_LOG_KEY, f"crabd: process snapshot raised "
+                                    f"{type(exc).__name__}; serving no top process")
+            return None
+        if not current:
+            return None
+        previous, previous_at = self._prev_times, self._prev_at
+        self._prev_times, self._prev_at = current, now
+        if not previous or previous_at is None:
+            return None
+        elapsed = now - previous_at
+        if elapsed <= 0:
+            return None
+        window = elapsed * 1e7 * self._cpus      # 100 ns ticks of whole-machine capacity
+        best = None
+        for key, (name, ticks) in current.items():
+            was = previous.get(key)
+            if was is None:
+                continue                          # started since the last sample
+            delta = ticks - was[1]
+            if delta < 0:
+                continue
+            pct = _pct(100.0 * delta / window)
+            if pct is None:
+                continue
+            if best is None or pct > best["cpuPct"]:
+                best = {"name": name, "pid": key[0], "cpuPct": pct}
+        return best
+
+    @staticmethod
+    def _read_process_times() -> dict:
+        """{(pid, created): (name, kernel+user ticks)} for every process we may open.
+
+        Processes that refuse PROCESS_QUERY_LIMITED_INFORMATION are skipped rather
+        than counted as zero: a protected process is one this reader cannot measure,
+        and "0%" would be a claim about it.
+        """
+        try:
+            kernel32 = ctypes.windll.kernel32
+        except AttributeError:
+            return {}
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == INVALID_HANDLE_VALUE:
+            return {}
+        out: dict = {}
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        try:
+            more = kernel32.Process32FirstW(ctypes.c_void_p(snapshot),
+                                            ctypes.byref(entry))
+            while more:
+                pid = int(entry.th32ProcessID)
+                name = str(entry.szExeFile)
+                # pid 0 is the Idle process: it is the machine NOT working, and the
+                # contract's topProcess is the one that is.
+                if pid and name.lower() not in ("idle", "system idle process"):
+                    handle = kernel32.OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                    if handle:
+                        created, kernel_t, user_t = _FILETIME(), _FILETIME(), _FILETIME()
+                        exited = _FILETIME()
+                        ok = kernel32.GetProcessTimes(
+                            ctypes.c_void_p(handle), ctypes.byref(created),
+                            ctypes.byref(exited), ctypes.byref(kernel_t),
+                            ctypes.byref(user_t))
+                        kernel32.CloseHandle(ctypes.c_void_p(handle))
+                        if ok:
+                            out[(pid, _filetime(created))] = (
+                                name, _filetime(kernel_t) + _filetime(user_t))
+                more = kernel32.Process32NextW(ctypes.c_void_p(snapshot),
+                                               ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(snapshot))
+        return out
+
 # ---------------------------------------------------------------- continue queue
 
 class ContinueQueue:
@@ -5207,8 +6414,20 @@ class StateBuilder:
                  continues: "ContinueQueue | None" = None,
                  permissions: "PermissionBroker | None" = None,
                  host: "HostSampler | None" = None,
-                 models: "ModelCatalog | None" = None) -> None:
+                 models: "ModelCatalog | None" = None,
+                 # ---- lane A: the three host samplers ----
+                 # OPTIONAL and default None, like the v0.12.0 readers and deliberately
+                 # UNLIKE HostSampler: each one owns a thread and a live resource (a
+                 # kernel section, a subprocess, an open PDH query), so a
+                 # default-constructed reader would put every unit test one forgotten
+                 # patch away from opening them. Absent, the member is simply not served.
+                 hwinfo: "HwinfoReader | None" = None,
+                 gpu: "GpuReader | None" = None,
+                 load: "LoadReader | None" = None) -> None:
         self.store = store
+        self.hwinfo = hwinfo
+        self.gpu = gpu
+        self.load = load
         self.hooks = hooks
         self.limits = limits
         self.recap = recap
@@ -5292,6 +6511,23 @@ class StateBuilder:
         that arrives naming a session - ack, an OTLP error event, a queued continue."""
         return any(row["id"] == session_id
                    for row in (self.state or {}).get("sessions", []))
+
+    def session_project(self, session_id: str) -> tuple[str | None, str | None]:
+        """lane D (v0.33.0): the (repo, cwd) crabd SERVED for this row, or (None, None).
+
+        Read off the served document rather than re-derived from GitLookup on purpose:
+        the per-session whitelist must be built from the same `repo` the widget drew the
+        buttons from. A second derivation could answer differently mid-poll (the cache
+        is 30 s and a branch switch or a cwd that briefly failed to read moves it), and
+        the operator would see a button that 400s.
+
+        (None, None) for an unknown id, which lands on the global whitelist - the
+        existing `serving` gate below still answers 404 for it.
+        """
+        for row in (self.state or {}).get("sessions", []):
+            if row["id"] == session_id:
+                return row.get("repo"), row.get("cwd")
+        return None, None
 
     def transcript_age(self, session_id: str, now: float) -> float | None:
         """Seconds since this session's MAIN transcript last moved, or None when no
@@ -5489,9 +6725,38 @@ class StateBuilder:
         # is deliberately NOT copied - `fleet` names two things crabd owns and must
         # report on, while `host` is a capability the panel simply does or does not have.
         host = self._host.sample()
+        # ---- lane A: sensors / gpu / load join the same block ----
+        host = self._lane_a_host(host)
         if host is not None:
             document["host"] = host
         return document
+
+    # ---- lane A: the additive host members ----
+    def _lane_a_host(self, host: dict | None) -> dict | None:
+        """`host` with sensors / sensorsSource / gpu / load folded in.
+
+        IT MAY CREATE THE BLOCK. A machine whose GetSystemTimes and
+        GlobalMemoryStatusEx both fail can still have a readable GPU or a readable
+        HWiNFO mapping, and dropping a measurement that was taken because an
+        unrelated counter was not is a second failure invented from the first. Every
+        member here is presence-detected on its own, so a block carrying only
+        `gpu` is a shape the widget already handles.
+        """
+        extra: dict = {}
+        if self.hwinfo is not None:
+            sensors, source = self.hwinfo.get()
+            extra["sensors"] = sensors
+            extra["sensorsSource"] = source
+        if self.gpu is not None:
+            extra["gpu"] = self.gpu.get()
+        if self.load is not None:
+            extra["load"] = self.load.get()
+        if not extra:
+            return host
+        if host is None:
+            host = {}
+        host.update(extra)
+        return host
 
     def _limits_block(self, now: float, override: dict | None) -> dict:
         """`limits`, with the v0.12.0 `source` provenance stamped on it.
@@ -5719,9 +6984,22 @@ class StateBuilder:
                 # that will not be delivered.
                 "queuedContinue": (self.continues.entry(sid, now)
                                    if self.continues else None),
+                # lane D: this session's project prompts, or the key is ABSENT.
+                **self._lane_d_session_extras(repo, cwd, now),
             })
         rows.sort(key=lambda r: (order.get(r["state"], 9), -_parse_ts(r["lastActivityAt"])))
         return rows
+
+    def _lane_d_session_extras(self, repo, cwd, now: float) -> dict:
+        """`sessions[].continuePrompts` (v0.33.0, provisional), or nothing at all.
+
+        ABSENT when this session has no project prompts, never `[]`: the empty list is
+        what the TOP-LEVEL key serves, where always-present is the contract, and a
+        per-session `[]` would be a claim that crabd looked and found the project
+        configured with nothing. Presence is the widget's feature detection here.
+        """
+        extras = self.config.continue_session_extras(now, repo, cwd)
+        return {"continuePrompts": extras} if extras else {}
 
     def _context(self, sid: str, info: dict, now: float) -> dict:
         """`contextTokens` + the v0.12.0 `contextSource` provenance.
@@ -6142,6 +7420,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, dump_state(self._health()))
             elif path == "/v1/state":
                 self._do_state()
+            elif path == "/v1/events":      # lane B: the push transport, gated above
+                self._do_events()
             elif path == "/v1/history":
                 self._do_history(split.query)
             elif path == "/v1/panel-log":
@@ -6194,6 +7474,138 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, STATE_NOT_BUILT)
             return
         self._send(200, dump_state(state))
+
+    # ---- lane B: server-sent events ----
+
+    def _do_events(self) -> None:
+        """GET /v1/events - every NEW snapshot, pushed, as `text/event-stream`.
+
+        The gates ran in do_GET, so a refused Host never reaches here and a refused
+        Origin never reaches here: this route has no gate of its own to drift from
+        theirs. What it adds is the subscriber cap, and the cap is the FIRST thing,
+        before any header goes out - a 503 with a Content-Length is a clean answer a
+        browser can read, and half an event-stream is not.
+        """
+        server = getattr(self, "server", None)
+        slots = getattr(server, "sse_slots", None) or _SSE_FALLBACK_SLOTS
+        stop = getattr(server, "sse_stop", None) or _SSE_FALLBACK_STOP
+        if not slots.acquire():
+            self._send(503, SSE_TOO_MANY)
+            return
+        try:
+            self._stream_events(stop)
+        finally:
+            slots.release()
+
+    def _stream_events(self, stop: threading.Event) -> None:
+        # No Content-Length and no chunking: the body ends when the connection does,
+        # which is what every SSE client expects and what keeps the framing honest if
+        # crabd is killed mid-stream. close_connection stops BaseHTTPRequestHandler
+        # trying to read a second request off a socket that is now a one-way stream.
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        # Nothing proxies loopback today, but a buffering intermediary is the single
+        # failure mode that turns a push transport into a slower poll with no error.
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        acao = self._acao
+        if acao is not None:
+            self.send_header("Access-Control-Allow-Origin", acao)
+            self.send_header("Vary", "Origin")
+        self.end_headers()
+
+        # The reconnection time the client should use if it reconnects on its own.
+        if not self._sse_write(b"retry: %d\n\n" % SSE_RETRY_MS):
+            return
+
+        last_state = None
+        last_gen = None
+        state = self._sse_snapshot()
+        if state is None:
+            # Cold start. The honest answer is the one /v1/state gives, as an `error`
+            # event, and then the stream WAITS: the first snapshot is seconds away and
+            # closing here would send the client into its backoff for no reason.
+            if not self._sse_write(sse_frame("error", STATE_NOT_BUILT)):
+                return
+        else:
+            if not self._sse_write(sse_frame("state", dump_state(state))):
+                return
+            last_state, last_gen = state, state.get("generatedAt")
+
+        next_ping = time.monotonic() + SSE_PING_SEC
+        while not stop.is_set():
+            # stop.wait IS the sleep, so a shutdown ends the loop within one interval
+            # rather than one ping. Without it server_close() blocks on this thread for
+            # up to 15 s and a test's teardown looks like a hang.
+            if stop.wait(SSE_POLL_SEC):
+                return
+            if self._sse_peer_gone():
+                return
+            state = self._sse_snapshot()
+            if state is not None and (state is not last_state
+                                      or state.get("generatedAt") != last_gen):
+                # IDENTITY OR generatedAt, not generatedAt alone: _utc_iso has one-second
+                # resolution, so two builds inside the same second carry the same string
+                # and a string-only test would drop the second one.
+                if not self._sse_write(sse_frame("state", dump_state(state))):
+                    return
+                last_state, last_gen = state, state.get("generatedAt")
+                next_ping = time.monotonic() + SSE_PING_SEC
+                continue
+            if time.monotonic() >= next_ping:
+                if not self._sse_write(sse_frame("ping", b"{}")):
+                    return
+                next_ping = time.monotonic() + SSE_PING_SEC
+
+    def _sse_peer_gone(self) -> bool:
+        """True when the reader has closed its end.
+
+        The loop's only other liveness signal is the WRITE, and on a quiet panel the
+        next write is up to a ping away - so a page that navigates away would hold its
+        slot and its thread for 15 s, and eight of them would refuse the real panel for
+        that long. A closed peer shows up as a socket that is readable and yields
+        nothing; an SSE client sends nothing after its request, so there is no other
+        reason for this socket to be readable, and anything it did send is not part of
+        this protocol and is discarded.
+        """
+        sock = getattr(self, "connection", None)
+        if sock is None:
+            return False
+        try:
+            ready, _, _ = select.select([sock], [], [], 0)
+            if not ready:
+                return False
+            return sock.recv(1) == b""
+        except OSError:
+            return True
+
+    def _sse_snapshot(self):
+        """The current snapshot, or None. Reads the builder's `state` property, which
+        takes the builder lock only long enough to copy the reference - the lock is
+        never held across a socket write, so a hung subscriber cannot stall a build."""
+        builder = getattr(self, "builder", None)
+        if builder is None:
+            return None
+        try:
+            return builder.state
+        except Exception:       # noqa: BLE001 - a stream must never kill the builder
+            return None
+
+    def _sse_write(self, raw: bytes) -> bool:
+        """-> False when the client has gone. Narrowed to OSError for the reason
+        do_GET's own handler gives: BrokenPipe / ConnectionReset / ConnectionAborted /
+        Timeout are all OSError and all mean "the reader hung up", which is ORDINARY on
+        a stream a page closes by navigating away. Anything else is still a surprise and
+        still deserves its traceback."""
+        try:
+            self.wfile.write(raw)
+            self.wfile.flush()
+            return True
+        except OSError:
+            self.close_connection = True
+            return False
 
     def _health(self) -> dict:
         """GET /v1/health - is crabd up, and ARE THE FEEDS ARRIVING (v0.14.0).
@@ -6903,7 +8315,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.builder.config.allow_continue(now):
             self._send(403, b'{"error":"tap-to-continue is disabled"}')
             return
-        allowed = self.builder.config.continue_prompts(now)
+        # lane D (v0.33.0): the whitelist is now per SESSION - builtins, the global
+        # extras, and the project prompts for THIS row's repo/cwd. A prompt configured
+        # only for another project is refused here with the 400 an unknown prompt has
+        # always had. The gate ORDER is unchanged (shape before existence), so an
+        # unknown session still reads the global set and still 404s below.
+        repo, cwd = self.builder.session_project(session_id)
+        allowed = self.builder.config.continue_prompts_for(now, repo, cwd)
         if not isinstance(prompt, str) or prompt not in allowed:
             self._send(400, b'{"error":"prompt must be one of the configured continue '
                             b'prompts"}')
@@ -7182,6 +8600,26 @@ class CrabdServer(ThreadingHTTPServer):
     # 2026-08-26 as scattered "urlopen error timed out" at sock.connect().
     request_queue_size = 128
 
+    # ---- lane B: the SSE stop event and subscriber cap ----
+    # daemon_threads is what keeps server_close() from JOINING an open /v1/events
+    # stream (_Threads.append drops daemon threads, so join() never sees them) - but a
+    # dropped thread is not a stopped one: it goes on holding a subscriber slot and
+    # writing pings to a socket the server has closed, for the rest of the process. The
+    # event is what actually ends the loop. Both entry points set it, because a caller
+    # may use either, and setting an already-set Event is free.
+    def __init__(self, *args, **kwargs) -> None:
+        self.sse_stop = threading.Event()
+        self.sse_slots = SseSubscribers(SSE_MAX_SUBSCRIBERS)
+        super().__init__(*args, **kwargs)
+
+    def shutdown(self) -> None:
+        self.sse_stop.set()
+        super().shutdown()
+
+    def server_close(self) -> None:
+        self.sse_stop.set()
+        super().server_close()
+
 
 def _refresh_loop(builder: StateBuilder, stop: threading.Event) -> None:
     """The snapshot is built here, not in the request path, so /v1/state is a dict
@@ -7215,6 +8653,23 @@ def _fleet_loop(fleet: FleetReader, stop: threading.Event) -> None:
         except Exception as exc:  # a wedged schtasks must not kill the feed
             print(f"crabd: fleet error: {type(exc).__name__}", file=sys.stderr)
         stop.wait(FLEET_POLL_SEC)
+
+
+# ---- lane A: one loop body, three threads ----
+def _lane_a_sampler_loop(reader, label: str, interval: float,
+                         stop: threading.Event) -> None:
+    """A sampler's own thread, the shape _fleet_loop already has.
+
+    Each of the three gets its OWN thread rather than sharing one: they block on
+    different things (a kernel section, a subprocess, ~400 OpenProcess calls), and one
+    that wedges must not stop the other two from dating their own readings.
+    """
+    while not stop.is_set():
+        try:
+            reader.poll(time.time())
+        except Exception as exc:        # a wedged sampler must not kill the feed
+            print(f"crabd: {label} error: {type(exc).__name__}", file=sys.stderr)
+        stop.wait(interval)
 
 
 def _expiry_loop(builder: StateBuilder, stop: threading.Event) -> None:
@@ -7260,10 +8715,13 @@ def main() -> int:
     holder: dict = {}
     otlp = OtlpReceiver(
         on_event=lambda sid, text: holder["builder"].note_session_event(sid, text))
+    # ---- lane A: the three host samplers ----
+    hwinfo, gpu, load = HwinfoReader(), GpuReader(), LoadReader()
     builder = StateBuilder(TranscriptStore(PROJECTS_DIR), hooks,
                            LimitsReader(), started, UserConfig(), recap, fleet,
                            history, statusline, otlp, continues, permissions,
-                           models=ModelCatalog())
+                           models=ModelCatalog(),
+                           hwinfo=hwinfo, gpu=gpu, load=load)
     holder["builder"] = builder
     # v0.29.0: the pairing code is minted on first start and lives beside config.json.
     # Attached to the builder (like the broker) so a test double can carry its own.
@@ -7275,6 +8733,12 @@ def main() -> int:
     threading.Thread(target=_recap_loop, args=(recap, stop), daemon=True).start()
     threading.Thread(target=_fleet_loop, args=(fleet, stop), daemon=True).start()
     threading.Thread(target=_expiry_loop, args=(builder, stop), daemon=True).start()
+    # ---- lane A: the three host samplers ----
+    for reader, label, interval in ((hwinfo, "hwinfo", HWINFO_POLL_SEC),
+                                    (gpu, "gpu", NVIDIA_POLL_SEC),
+                                    (load, "load", LOAD_POLL_SEC)):
+        threading.Thread(target=_lane_a_sampler_loop,
+                         args=(reader, label, interval, stop), daemon=True).start()
 
     try:
         server = CrabdServer((HOST, PORT), Handler)

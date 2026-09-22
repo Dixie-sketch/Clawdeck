@@ -841,6 +841,28 @@ class Sec3ContinueGateLiveFireTests(LiveFireServed):
         self.builder.config = crabd.UserConfig(self.config_path)
         self.assertEqual(self.qc().status, 204)
 
+    def test_a_prompt_from_another_project_is_refused_on_the_live_path(self):
+        """lane D (v0.33.0). The whitelist is per SESSION, and this is the live-fire half
+        of that: `Sign the installer` IS configured, for a repo this session is not in,
+        so the tap is refused with the 400 an invented string gets - over a real socket,
+        against the running handler, not through UserConfig."""
+        self.builder.config = crabd.UserConfig(self.config_path)
+        self.config_path.write_text(json.dumps({"continuePromptsByPath": {
+            self.row()["cwd"]: ["Rebuild the report"],
+            "C:\Work\some-other-tree": ["Sign the installer"]}}), encoding="utf-8")
+        self.builder.config = crabd.UserConfig(self.config_path)
+        self.rebuild()
+
+        def qc(prompt):
+            return self.client.post("/v1/action", json.dumps(
+                {"sessionId": self.SID, "action": "queue-continue",
+                 "prompt": prompt}).encode())
+
+        self.assertEqual(qc("Rebuild the report").status, 204)
+        refused = qc("Sign the installer")
+        self.assertEqual(refused.status, 400)
+        self.assertEqual(self.continues.peek(self.SID, time.time()), "Rebuild the report")
+
     def test_allowcontinue_is_not_writable_over_http(self):
         """Like allowReply / panelApprovals: naming it in /v1/config is a 400, so nothing
         over the unauthenticated API can toggle the gate."""
@@ -1045,7 +1067,7 @@ class HealthEndpointTests(LiveFireServed):
         body = self.health()
         self.assertTrue(body["ok"])
         self.assertEqual(body["version"], crabd.VERSION)
-        self.assertEqual(crabd.VERSION, "0.31.0")
+        self.assertEqual(crabd.VERSION, "0.33.0")
 
     def test_the_shape_is_the_full_counter_set(self):
         self.assertEqual(sorted(self.health()),

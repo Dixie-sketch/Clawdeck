@@ -17,7 +17,7 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AssemblyName>SideCrab.Panel</AssemblyName>
     <RootNamespace>SideCrab.Panel</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.3.0</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationIcon>..\..\notifier\sidecrab.ico</ApplicationIcon>

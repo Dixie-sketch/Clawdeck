@@ -154,7 +154,7 @@ screen or dashboard settings); iCUE keeps running your fans and lighting. Settin
 {
   "crabdPort": 2722,
   "display": { "deviceId": "CRXED00", "width": 2560, "height": 720 },   // the Edge's PnP id, or its exact size
-  "props":   { "clock24": true, "accentColor": "#BE7E6E", "alertFlash": true, "crabStyle": true }
+  "props":   { "clock24": true, "accentColor": "#6F94CC", "alertFlash": true, "crabStyle": true }
 }
 ```
 
@@ -221,8 +221,14 @@ and restarts it, and the window reloads the page crabd serves.
 - **TODAY** shows token burn with a sparkline, the daily budget if you set one, and cost when
   Claude Code's telemetry is flowing to the companion.
 - **The week strip** is the daily recap: sessions, commits in your configured repos, tokens.
-- **The hardware row** shows CPU and GPU temperatures with the name of the sensor each reading
-  comes from, plus this PC's CPU and memory use while the companion runs.
+- **The hardware row** shows the CPU temperature with the sensor's own name beside it, the
+  graphics card's temperature and utilisation, and memory. Inside iCUE the temperatures come from
+  the Sensors plugin you picked in the widget settings; in the standalone host they come from the
+  companion, which reads HWiNFO's shared memory and `nvidia-smi` (see "Temperatures" below). Tap
+  the row for the last ten minutes and for everything the row has no width for: the VRM, each
+  drive, motherboard and chipset, CPU package power, every fan and pump, the card's VRAM and power
+  draw, and what the whole machine is doing with its disks, network and memory. With no HWiNFO
+  the row shows what it always showed; with no NVIDIA card the GPU cell is simply not there.
 
 ### Touch
 
@@ -238,6 +244,117 @@ and restarts it, and the window reloads the page crabd serves.
 | **Tap a day** in the week strip | Drill into that day; page with prev/next |
 | **Tap the moon** beside the clock | Quiet for an hour · stay awake through tonight's window · back to schedule |
 | **Filter and density chips** (top right) | Show only waiting / working / finished; comfortable or compact cards |
+| **View chips** at the right of the Sessions header, or **swipe** across that header | Sessions, Burn, Week or Detail; the choice is remembered |
+| **Bring to front** in a card's sheet, or the chip beside Back on the Detail page (standalone host) | Puts that session's window in front on your main display; the panel keeps its hands off the keyboard |
+| **Tap the gear** beside the clock (standalone host) | The panel's settings sheet: clock format, alert flash, crab accessories, colours, transparency, the chime and Test chime |
+| **Tap the hardware row** | Ten minutes of CPU, memory, GPU utilisation and disk throughput, plus every other sensor the row has no width for |
+
+### Four views, one display
+
+The Sessions half of the panel shows one of four things, and the chips at the right of its header
+choose which. A swipe left or right across that header row steps through them, and the panel
+remembers the one you picked.
+
+- **Sessions** is the card grid, one card per live Claude Code session, and what the panel shows
+  out of the box. The **All** and **Comfortable** chips beside the switcher narrow and tighten this
+  view and no other.
+- **Burn** is today's spend at full width: what each live session and each model has produced, the
+  last 24 hours as a chart with the hours marked, the day's totals, the dollar figure when Claude
+  Code's telemetry is flowing, and how much of your daily budget is used. Where the companion has
+  no figure, the panel leaves that half out and says so rather than showing a zero.
+- **Week** is the last seven days, one column per day: sessions finished and commits made. Tap a
+  day and its history opens underneath the strip, newest first. A day the companion cannot read
+  leaves the strip where it is and tells you why; tapping it again tries again.
+- **Detail** is one session as a page, with what a card has no room for: the whole question, the
+  full permission request with the same Approve and Deny buttons the card's sheet gives you, the
+  context window in tokens as well as on the bar, every subagent, the whole event list, and the
+  continue buttons. Open it from a card's sheet with **Full view**, or tap the **Detail** chip,
+  which opens whichever session most wants your attention. **Back** returns you to the cards.
+
+**A question never hides behind a view.** If a session starts waiting while you are looking at
+Burn, Week or Detail, the Sessions chip grows a pulsing count. The panel never switches views on
+its own, because moving the glass while your finger is on the way to it is worse than the thing
+it would be warning about.
+
+On a slot too narrow for the switcher the panel shows the cards and hides the chips. Your choice
+comes back on a slot wide enough to show it.
+
+### The crab
+
+Claw'd moves now. He breathes while idle, blinks every eight to ten seconds, sweeps an arm when a
+session wants you, sweats when a usage window goes red, and juggles, hops, snaps a claw or dances
+when the fleet gives him a reason. He still wears his sunglasses when everything is running and
+nothing is hot, his party hat when a session lands, and his nightcap during quiet hours. Tapping
+him still acknowledges every waiting session at once. During quiet hours, and on a machine set to
+reduce motion, he holds still.
+
+### Bring a session to the front (standalone host)
+
+Tap a card, and the sheet offers **Bring to front** under Pin session; the Detail view carries the
+same control as a chip beside Back. Tapping it puts that session's window in front of you on your
+main display, so you can answer at the keyboard without hunting for it. The panel itself never
+takes the keyboard: it has no taskbar entry, it is not in Alt-Tab, and bringing another window
+forward does not change that. It only ever looks at your main display, never at the Edge.
+
+| It says | What happened |
+|---|---|
+| brought to front | A window matched that session and it is in front of you now. |
+| brought the Claude app to the front | The Claude desktop app is in front. It keeps every session in one window, so pick the session in its sidebar. |
+| more than one window could be this session | Two windows looked equally likely. Nothing was moved, on purpose. |
+| no window found for this session | Nothing on your main display looks like that session. |
+
+**It does not answer for you.** Nothing in SideCrab types into a session, pastes into one, or
+clicks anything inside one. A session's multiple-choice question is answered in that session, by
+you; getting the right window in front of you is the whole of what this control does. Approve and
+Deny are not an exception to that rule: a tool permission request is a question Claude Code asks
+outside the session's own prompt, over a channel built for an answer, which is why the panel can
+answer it and nothing else. In iCUE the control is not there at all, because the widget has no host
+to ask.
+
+### Live updates, settings on the glass, and the chime (standalone host)
+
+**The panel updates itself.** The companion pushes each new picture over `GET /v1/events` as it
+has one, so a question that needs you appears on the glass when it is asked rather than up to
+three seconds later. If that connection drops (you restart or update the companion) the panel
+goes back to asking every three seconds and keeps trying the faster route in the background;
+nothing to restart, nothing to configure. The worried crab and the "data as of" banner still mean
+exactly what they meant. Inside iCUE the widget polls as it always has.
+
+**Settings on the glass.** Tap the gear beside the clock for a sheet with the things you would
+otherwise edit by hand: the 24-hour clock, the flash on a new alert, the crab's accessories,
+touch diagnostics, the chime and how loud it is, text, accent and background colour from a small
+palette, and background transparency. Tap **Save** and the panel applies it immediately, no
+restart and no reload. It is written to `~/.sidecrab/panel-settings.json`, the same file you can
+still edit by hand; the sheet leaves everything else in it alone. Two things are deliberately not
+on the sheet: the companion's port and the monitor, because a mistake in either leaves you with a
+window you cannot see, and the approval pairing code, which is never handed to the page at all.
+Inside iCUE there is no gear: iCUE's own property panel is where those settings live.
+
+**The chime.** When a session stops and asks you something, the panel plays a short two-note
+chime. Once, for that question: not again while it waits, not for a question that was already
+waiting when the panel started, and not more than once in five seconds however many sessions
+land together. It is silent during quiet hours. It is on by default; turn it off or change the
+volume in the settings sheet, where **Test chime** plays it at whatever the slider says. It needs
+the standalone panel host; a browser tab at the panel's address plays it only after you have
+tapped something on the page, which is the browser's own rule about sound.
+
+### Temperatures (standalone host, optional)
+
+The companion reads hardware sensors from **HWiNFO**, a separate free download from `hwinfo.com`
+(free for non-commercial use; the Pro licence covers commercial use and removes the limit below).
+Install it, open **Settings** and turn on **Shared Memory Support**, set it to start sensors-only
+and minimised, and keep its Sensors window open (minimised counts): the shared memory exists only
+while that window runs. HWiNFO runs elevated for its driver; the companion only reads what it
+publishes. Once HWiNFO finishes its first sensor scan (a minute or two on a well-populated PC;
+about 100 s measured on the reference machine) the row shows a CPU temperature with its sensor
+name within a poll or two, and the host sheet lists the rest. The graphics card needs nothing: wherever an NVIDIA driver is installed,
+`nvidia-smi` is there and the card's readings appear on their own.
+
+**The free build stops publishing about twelve hours after it starts.** The panel notices: the
+readings dim and the host sheet says *"HWiNFO stopped publishing (free build 12-hour limit):
+relaunch HWiNFO"*. From an **elevated** PowerShell, `pwsh -File .\setup\Register-HwinfoRelaunch.ps1`
+registers one scheduled task, `SideCrab-hwinfo`, that starts HWiNFO at logon and relaunches it
+daily at 04:00 (`-WhatIf` to preview, `-Remove` to unregister). The Pro licence removes the need.
 
 ### Sending a session its next step
 
@@ -276,14 +393,36 @@ settings sheet.
   "toast":  { "enabled": true, "thresholdSec": 120, "approvalThresholdSec": 20 },
   "digest": { "enabled": false, "time": "09:00" },     // one "yesterday" toast per day
   "budget": { "dailyOutputTokens": 5000000 },          // null to clear; one toast on crossing
-  "continuePrompts": ["Continue", "Run the tests"],    // extra taps on a stopped session
+  "continuePrompts": ["Continue", "Run the tests"],    // extra taps on every session
+  "continuePromptsByRepo": {                           // extra taps per repo
+    "acme-api": ["Rebuild the report", "Run the migrations"]
+  },
+  "continuePromptsByPath": {                           // extra taps per directory
+    "C:\\Work\\acme-api-lane-b": ["Fold the lane in"]
+  },
   "panelApprovals": { "enabled": false },              // approve/deny from the panel — see below
   "recapRepos": ["C:\\Dev\\sidecrab"]                  // extra repos to count commits in
 }
 ```
 
-`continuePrompts` and `recapRepos` are hand-edited only. The panel reads them but does not write
-them.
+`continuePrompts` is the list every session gets. `continuePromptsByRepo` adds buttons to the sessions
+in one repo, keyed on the repo name the card shows under the title; case does not matter.
+`continuePromptsByPath` adds buttons to the sessions under one directory, keyed on an absolute path; the
+longest key that matches a session's folder wins. Use it for a project git cannot name on its own: a
+worktree, which reports the name of the repo it was cut from, or a folder that is not a repo at all.
+
+A session's sheet then shows the three built-in buttons, then your global list, then that project's
+list. Each string is both the button face and the instruction that is sent, so keep them short and say
+what you mean. Twenty prompts per list, twenty per session, two hundred characters each; a prompt that
+repeats a built-in or a global one is drawn once.
+
+**A prompt only works where you configured it.** The companion checks a tap against that session's own
+list, so a button configured for one repo cannot be sent to a session in another, and nothing but the
+strings in this file can ever be sent.
+
+`continuePrompts`, `continuePromptsByRepo`, `continuePromptsByPath` and `recapRepos` are hand-edited
+only. The panel reads them but does not write them. A key it cannot parse is skipped and named in the
+companion's log, and the three built-in buttons always work.
 
 ---
 
@@ -324,6 +463,9 @@ guarantees are worth reading rather than assuming:
 | You see | It means | Do |
 |---|---|---|
 | Worried grey crab, "data as of HH:MM" | The companion is stopped, or the feed is older than 30 s | `Install-SideCrab.ps1 -Status`, then `Update-SideCrab.ps1` to restart the task |
+| No temperatures on the standalone panel; the host sheet says HWiNFO is not running, its Sensors window is closed, or Shared Memory Support is off | Exactly one of those three | Install HWiNFO, turn on Shared Memory Support, open its Sensors window (minimised is fine) |
+| Temperatures dimmed, "HWiNFO stopped publishing (free build 12-hour limit)" | The free build's shared memory froze | Relaunch HWiNFO, or register `SideCrab-hwinfo` with `setup\Register-HwinfoRelaunch.ps1` |
+| No chime when a session asks a question | Quiet hours, the chime setting is off, or the page is not running in the panel host | Gear beside the clock: Test chime; `~/.sidecrab/logs/panel.log` says what the host loaded |
 | Panel is fine but no session cards | Hooks are not firing | Check `~/.claude/settings.json` has the SideCrab entries; re-run the installer, which merges them idempotently |
 | Limit gauges show an em-dash and "token expired" | The CLI's access token in `~/.claude` has passed its ~6 h life and nothing has refreshed it | Store a long-lived token once (below), or run any `claude` command in a terminal to refresh the file |
 | Temperatures frozen or wrong | The wrong iCUE sensor is selected | The row names the sensor it reads. Pick the right one in the widget settings |
@@ -339,6 +481,10 @@ guarantees are worth reading rather than assuming:
 
 ## Known caveats
 
+- **HWiNFO's free build is licensed for non-commercial use and stops sharing after twelve
+  hours.** Both are HWiNFO's terms, not ours: the panel dims stale readings and says so, and the
+  `SideCrab-hwinfo` relaunch task works around the limit; the Pro licence removes it and covers
+  commercial use.
 - **iCUE 5.51.40 and newer block the widget.** That build added a widget URL-permission layer:
   every request the widget makes to `127.0.0.1` is refused inside iCUE, and a manifest
   permissions entry works after an import and dies on the next iCUE start, because iCUE saves the

@@ -138,6 +138,7 @@
   "sessions": [
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10001",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "acme-api — retry backoff policy",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -208,6 +209,7 @@
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10004",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "acme-api — migration dry run",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -250,6 +252,7 @@
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10006",
+      "continuePrompts": ["Run the smoke suite"],
       "title": "infra-tools — log shipper config",
       "cwd": "C:\\Dev\\infra-tools",
       "repo": "infra-tools",
@@ -316,6 +319,7 @@
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10009",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "acme-api — rate limit tests",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -336,6 +340,7 @@
     },
     {
       "id": "b21cd0e5-4a11-4d70-9e33-51aa77c10010",
+      "continuePrompts": ["Run the smoke suite"],
       "title": "infra-tools — backup verification",
       "cwd": "C:\\Dev\\infra-tools",
       "repo": "infra-tools",

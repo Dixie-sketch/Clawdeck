@@ -90,13 +90,25 @@
 	     widget/DEV.md under v0.23.0. -->
 	<meta name="x-icue-property" content="touchDiag" data-label="tr('Touch Diagnostics')" data-type="switch" data-default="false" />
 
+	<!-- The chime (lane B). A session moving INTO needs_input plays a short
+	     two-note chime; the gates are in chimeDecision and the sound is in
+	     playChime. These two are properties as well as panel-settings props
+	     because the on-glass settings sheet is standalone-only, and a panel inside
+	     iCUE with a chime it cannot turn off is a control nobody can reach.
+	     The READERS are chimeOn() and chimeLevel(): a function may never share a
+	     property's name, because iCUE injects each property as a same-named global
+	     with let semantics and the collision is a parse error, not a warning
+	     (0.27.0 shipped blank on exactly that). -->
+	<meta name="x-icue-property" content="chime" data-label="tr('Chime On New Question')" data-type="switch" data-default="true" />
+	<meta name="x-icue-property" content="chimeVolume" data-label="tr('Chime Volume')" data-type="slider" data-default="60" data-min="0" data-max="100" data-step="5" data-unit-label="'%'" />
+
 	<meta name="x-icue-property" content="textColor" data-label="tr('Text Color')" data-type="color" data-default="'#EDE7DF'" />
 	<!-- The accent default is stated in THREE places — here, :root in sidecrab.css,
 	     and the strProp fallback in sidecrab.js — and they move together: iCUE
 	     writes this one over the CSS at runtime, so a mismatch renders one colour in
 	     a browser and another on the glass. v0.26.0 value and the measurements
 	     behind it: the AUD-F1 note on the accent token in sidecrab.css. -->
-	<meta name="x-icue-property" content="accentColor" data-label="tr('Accent Color')" data-type="color" data-default="'#BE7E6E'" />
+	<meta name="x-icue-property" content="accentColor" data-label="tr('Accent Color')" data-type="color" data-default="'#6F94CC'" />
 	<meta name="x-icue-property" content="backgroundColor" data-label="tr('Background Color')" data-type="color" data-default="'#0F0E0D'" />
 	<meta name="x-icue-property" content="transparency" data-label="tr('Background Transparency')" data-type="slider" data-default="0" data-min="0" data-max="100" data-step="1" data-unit-label="'%'" />
 
@@ -636,6 +648,18 @@
 					</g>
 				  </g>
 				</svg>
+				<!-- lane C: the canvas renderer. It paints the SAME art on the SAME
+				     half-cell grid as the SVG above (viewBox 0 -4 52 44, every rect
+				     transcribed, every colour read from the SVG's own computed custom
+				     properties so an iCUE accent override still wins), and it is a pure
+				     OBSERVER: the data-mood and data-acc attributes and the trick classes
+				     on #crab stay the one source of truth, so nothing else in the widget
+				     knows this exists.
+				     The SVG is the fallback and is hidden only once the canvas has a 2D
+				     context: a host without one renders exactly what it rendered before.
+				     pointer-events are off it, so the crab's ack-all tap target is the
+				     wrapper it always was and the renderer can never swallow a tap. -->
+				<canvas id="crabCanvas" class="crab-canvas" aria-hidden="true"></canvas>
 			</div>
 
 			<div class="clock">
@@ -709,6 +733,33 @@
 							<span id="moonMode" class="moon-mode">auto</span>
 							<span id="moonLeft" class="moon-left"></span>
 						</span>
+					</button>
+					<!-- THE SETTINGS CHIP (lane B). Opens the panel settings sheet,
+					     which writes ~/.sidecrab/panel-settings.json through the
+					     standalone host.
+
+					     PLACEMENT, and why it is not to the RIGHT of the moon chip.
+					     The clear column to the right of the seconds is 86 px at
+					     2560x720 and the moon chip already spends 70 of them, so a
+					     second touch-floor control there sits 40 px ON the seconds.
+					     The left of the hours is the other 56.9 px of clear column
+					     the diag chip already documents, so the chip goes there, out
+					     of flow like both of its neighbours, costing the identity
+					     column (and therefore the crab) exactly zero height.
+
+					     SHOWN ONLY where a setting can be saved or previewed: the
+					     standalone host, and mock mode for an off-glass look. Inside
+					     iCUE the property sheet is the settings surface and a widget
+					     cannot write a property back, so a gear there would be a
+					     control that silently does nothing. -->
+					<button type="button" id="gearChip" class="gear-chip" aria-label="Panel settings">
+						<!-- geometricPrecision, the moon chip's argument: a pixel gear
+						     at this size lands about a pixel per tooth and renders as
+						     mush. Eight teeth on a 16-cell box, drawn as one path so
+						     there is no seam between ring and teeth at any zoom. -->
+						<svg class="gear-glyph" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+							<path d="M8 1.6 L9.15 1.85 L9.55 3.2 A4.9 4.9 0 0 1 10.6 3.8 L11.95 3.4 L12.9 4.35 L12.3 5.6 A4.9 4.9 0 0 1 12.75 6.7 L14 7.3 L14 8.7 L12.75 9.3 A4.9 4.9 0 0 1 12.3 10.4 L12.9 11.65 L11.95 12.6 L10.6 12.2 A4.9 4.9 0 0 1 9.55 12.8 L9.15 14.15 L7.75 14.15 L7.35 12.8 A4.9 4.9 0 0 1 6.3 12.2 L4.95 12.6 L4 11.65 L4.6 10.4 A4.9 4.9 0 0 1 4.15 9.3 L2.9 8.7 L2.9 7.3 L4.15 6.7 A4.9 4.9 0 0 1 4.6 5.6 L4 4.35 L4.95 3.4 L6.3 3.8 A4.9 4.9 0 0 1 7.35 3.2 Z M8.45 5.9 A2.1 2.1 0 1 0 8.45 10.1 A2.1 2.1 0 1 0 8.45 5.9 Z" />
+						</svg>
 					</button>
 				</div>
 				<div id="clockDate" class="clock-date">&#160;</div>
@@ -925,9 +976,44 @@
 				     socket), the chip says so in place and the next tap tries again -
 				     the same never-latch rule the week strip's day tap keeps. -->
 				<button type="button" id="historyChip" class="head-chip" data-history="" aria-label="Open today's history">History</button>
+
+				<!-- lane C: the grid-zone VIEW SWITCHER. Four chips in the header the
+				     filter and density chips already live in, so the zone keeps one
+				     control strip rather than growing a second one; the identity and
+				     Limits zones are untouched by this feature.
+				     They are the LAST items in the row on purpose: the tappable run of
+				     header that still opens the Today timeline is the left-hand half,
+				     where the heading and its visible hint are, and every chip added
+				     here has to stay out of it.
+				     The Sessions chip carries a count badge. An alert must never hide
+				     behind a view, and it must never yank the glass out from under a
+				     fingertip either, so a session that flips to needs input while
+				     another view is up is COUNTED here and the view does not change.
+				     The badge is a span inside the button rather than a pseudo-element:
+				     it carries a number, and a number belongs in the DOM where the
+				     aria-label can name it. -->
+				<button type="button" id="chipViewSessions" class="head-chip view-chip" data-view="sessions" aria-label="Grid view: session cards">Sessions<span id="viewBadge" class="view-badge" aria-hidden="true"></span></button>
+				<button type="button" id="chipViewBurn" class="head-chip view-chip" data-view="burn" aria-label="Grid view: today's burn">Burn</button>
+				<button type="button" id="chipViewWeek" class="head-chip view-chip" data-view="week" aria-label="Grid view: the last seven days">Week</button>
+				<button type="button" id="chipViewDetail" class="head-chip view-chip" data-view="detail" aria-label="Grid view: one session in full">Detail</button>
 			</div>
 			<div id="cards" class="cards"></div>
 			<div id="gridEmpty" class="grid-empty">No active Claude sessions</div>
+
+			<!-- lane C: the three other views of this zone. Siblings of the card grid
+			     rather than children of it, because renderSessions empties #cards on
+			     every rebuild and anything inside it would go with the cards.
+			     THE CARD GRID IS NEVER display:none WHILE A VIEW IS UP, and that is a
+			     trap rather than a preference: gridCapacity reads the COMPUTED track
+			     lists off #cards, and a display:none grid computes both axes to the
+			     single token "none" — trackCount would fall back to its 4x2 default and
+			     a compact or narrow slot would get the wrong capacity the moment the
+			     operator came back. A zero-height flex child still resolves its tracks
+			     to a list of lengths, so the count survives. See the lane C block at the
+			     end of the stylesheet. -->
+			<div id="viewBurn" class="grid-view" data-view="burn" aria-hidden="true"></div>
+			<div id="viewWeek" class="grid-view" data-view="week" aria-hidden="true"></div>
+			<div id="viewDetail" class="grid-view" data-view="detail" aria-hidden="true"></div>
 		</section>
 
 	</div>
@@ -1071,8 +1157,10 @@
 			<!-- Tap-to-continue (v0.12.0), the done/working detail sheet's own control
 			     row. The three default buttons are hardcoded; any strings the feed
 			     carries in a top-level continuePrompts array render as EXTRA buttons
-			     after them (presence-gated — an older crabd echoes none and just the
-			     three show). Each button's label is short; its data-continue-prompt is
+			     after them, and then (lane D, v0.33.0) this session's own
+			     sessions[].continuePrompts, the project vocabulary for its repo
+			     (presence-gated — an older crabd echoes neither and just the three
+			     show). Each button's label is short; its data-continue-prompt is
 			     the FULL instruction that goes on the wire. Shown only when the sheet
 			     is data-continue="1" (a working or done session). Its own status line
 			     lives inside it because the shared sheet-status is hidden in detail
@@ -1102,8 +1190,27 @@
 			     it has no pending state and nothing is sent to crabd. -->
 			<div class="sheet-pin-actions">
 				<button type="button" id="sheetPin" class="sheet-btn sheet-btn-pin" data-pinned="0">Pin session</button>
+				<!-- lane C: the way into the Detail view. It rides in the PIN row rather
+				     than in a row of its own because that row is already gated to the two
+				     modes that carry a session (action and detail) and a new row would
+				     have to be hidden again in each of the five that do not.
+				     Not an affordance on the CARD, and the number is why: every control
+				     on this panel wears the 48 px fingertip floor, the card header is a
+				     single line box, and a floor-sized control in it would take that
+				     height off the card body at the density where the cards are already
+				     tightest (v0.28.2 measured the room down to single pixels). The
+				     Detail chip in the header reaches the view in one tap as well, so the
+				     feature is not behind this button alone. -->
+				<button type="button" id="sheetFullView" class="sheet-btn sheet-btn-full" data-full-view="1">Full view</button>
 			</div>
 			<div id="sheetEvents" class="sheet-events"></div>
+			<!-- Panel settings (lane B), the eighth mode of the same panel. Empty
+			     markup on purpose, the host-history region's idiom: JS builds the
+			     rows, so thirty controls are thirty things that cannot be an
+			     unclosed element in a file iCUE parses as strict XML. It carries no
+			     session, so every session-scoped sync is skipped; the region
+			     collapses in every other mode, so nothing else is disturbed. -->
+			<div id="sheetSettings" class="sheet-settings"></div>
 		</div>
 	</div>
 

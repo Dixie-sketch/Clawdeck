@@ -196,7 +196,8 @@ if (-not $panelState.Registered -or $panelState.State -eq 'Disabled') {
     if (-not $vline) {
         Add-Result -Check 'panel viewport' -Pass $false -Detail 'no viewport line in panel.log yet - the panel has not loaded'
     } elseif ($vline -match 'viewport: (\d+)x(\d+) css px.*window (\d+)x(\d+) physical') {
-        $same = ([int] $Matches[1] -eq [int] $Matches[3]) -and ([int] $Matches[2] -eq [int] $Matches[4])
+        # Within 2 px is the same size: a 150% monitor corrected by zoom reads back 2561 for 2560.
+        $same = ([math]::Abs([int] $Matches[1] - [int] $Matches[3]) -le 2) -and ([math]::Abs([int] $Matches[2] - [int] $Matches[4]) -le 2)
         Add-Result -Check 'panel viewport' -Pass $same `
                    -Detail "$($Matches[1])x$($Matches[2]) css px on a $($Matches[3])x$($Matches[4]) window$(if (-not $same) { ' - scaled; the host corrects the zoom on its next check' })"
     } else {
@@ -236,6 +237,76 @@ if ($null -eq $state) {
         Add-Result -Check 'state freshness' -Pass ($lag -lt $MaxLagSec) -Detail "generatedAt lag ${lag}s (limit ${MaxLagSec}s)"
     }
 }
+
+# -- 3b. the host sensor sources (lane A) ----------------------------------------------
+# ABSENCE IS A STATE, NOT A FAULT, and that is the whole shape of this row. HWiNFO may not
+# be installed, its Sensors window may be closed (the mapping exists only while it is open),
+# this machine may have no NVIDIA card, and an older crabd serves none of these members at
+# all. Every one of those is a PASS with a note that says which. What fails is a block that
+# is present and MALFORMED - available missing or not a boolean, a stale flag that is not
+# one, an available source with no poll time - because that is the shape that would let the
+# panel render an old reading as a current one.
+function Test-SensorBlock {
+    <# ($ok, $detail) for host.sensors / host.sensorsSource / host.gpu. Defensive against
+       Set-StrictMode: every member is checked for presence before it is read. #>
+    param($State)
+
+    function Has { param($Object, [string] $Name)
+        $null -ne $Object -and (@($Object.PSObject.Properties.Name) -contains $Name) }
+
+    if (-not (Has $State 'host')) {
+        return @($true, 'no host block - crabd older than 0.22.0, or no kernel counters')
+    }
+    $host_ = $State.host
+    $parts = @()
+
+    if (-not (Has $host_ 'sensorsSource')) {
+        $parts += 'sensors n/a (crabd has no HWiNFO reader)'
+    } else {
+        $src = $host_.sensorsSource
+        foreach ($k in 'provider', 'available', 'stale') {
+            if (-not (Has $src $k)) { return @($false, "sensorsSource missing '$k'") }
+        }
+        if ($src.available -isnot [bool]) { return @($false, 'sensorsSource.available is not a boolean') }
+        if ($src.stale -isnot [bool])     { return @($false, 'sensorsSource.stale is not a boolean') }
+        if ($src.available) {
+            if (-not (Has $src 'pollTime') -or [string]::IsNullOrWhiteSpace("$($src.pollTime)")) {
+                return @($false, 'sensorsSource is available with no pollTime - freshness unknowable')
+            }
+            if (-not (Has $host_ 'sensors') -or $host_.sensors -isnot [array]) {
+                return @($false, 'sensorsSource is available but host.sensors is not a list')
+            }
+            foreach ($row in @($host_.sensors)) {
+                foreach ($k in 'name', 'kind', 'unit', 'value') {
+                    if (-not (Has $row $k)) { return @($false, "a sensor row is missing '$k'") }
+                }
+            }
+            $age = if (Has $src 'ageSec') { "$($src.ageSec)s" } else { 'unknown age' }
+            $parts += if ($src.stale) {
+                          "sensors STALE ($(@($host_.sensors).Count) readings, $age) - $($src.note)"
+                      } else {
+                          "sensors ok ($(@($host_.sensors).Count) readings, $age)"
+                      }
+        } else {
+            # The honest note carries the reason; an absent source is not a failing test.
+            $parts += "sensors absent - $($src.note)"
+        }
+    }
+
+    if (-not (Has $host_ 'gpu')) {
+        $parts += 'gpu n/a (crabd has no GPU reader)'
+    } else {
+        $gpu = $host_.gpu
+        if (-not (Has $gpu 'available'))   { return @($false, 'host.gpu missing available') }
+        if ($gpu.available -isnot [bool])  { return @($false, 'host.gpu.available is not a boolean') }
+        $parts += if ($gpu.available) { "gpu ok ($($gpu.name))" } else { "gpu absent - $($gpu.note)" }
+    }
+
+    return @($true, ($parts -join '; '))
+}
+
+$sensorVerdict = Test-SensorBlock -State $state
+Add-Result -Check 'sensors' -Pass ([bool] $sensorVerdict[0]) -Detail ([string] $sensorVerdict[1])
 
 # -- 4. the hook round trip ------------------------------------------------------------
 if ($SkipHookCycle) {

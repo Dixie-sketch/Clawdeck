@@ -200,6 +200,33 @@ function Show-Status {
         Write-Step "health:  unreachable  ($($health.Uri)) - $($health.Error)"
     }
 
+    # sensors (read-only, one GET). ONE LINE, and it says which of the three sources
+    # answered: an absent HWiNFO mapping, an absent card and an older crabd are all
+    # ordinary states, so none of them is reported as a problem - they are reported as
+    # what they are. Never fails the status view: -Status writes nothing and judges
+    # nothing, it prints what it found.
+    try {
+        $st = Invoke-RestMethod -Uri "$($health.Uri -replace '/v1/health$', '')/v1/state" `
+                                -TimeoutSec 5 -ErrorAction Stop
+        $h = if (@($st.PSObject.Properties.Name) -contains 'host') { $st.host } else { $null }
+        $bits = @()
+        if ($null -eq $h) {
+            $bits += 'no host block'
+        } else {
+            $names = @($h.PSObject.Properties.Name)
+            if ($names -notcontains 'sensorsSource') { $bits += 'hwinfo: not served by this crabd' }
+            elseif (-not $h.sensorsSource.available)  { $bits += "hwinfo: $($h.sensorsSource.note)" }
+            elseif ($h.sensorsSource.stale)           { $bits += "hwinfo: STALE $($h.sensorsSource.ageSec)s - $($h.sensorsSource.note)" }
+            else { $bits += "hwinfo: $(@($h.sensors).Count) readings, $($h.sensorsSource.ageSec)s old" }
+            if ($names -notcontains 'gpu')  { $bits += 'gpu: not served by this crabd' }
+            elseif ($h.gpu.available)       { $bits += "gpu: $($h.gpu.name) $($h.gpu.tempC)C $($h.gpu.utilPct)%" }
+            else                            { $bits += "gpu: $($h.gpu.note)" }
+        }
+        Write-Step "sensors: $($bits -join '  |  ')"
+    } catch {
+        Write-Step "sensors: not read - $($_.Exception.Message)"
+    }
+
     $settings = $null
     try { $settings = Read-SideCrabSettings -SettingsPath $SettingsPath }
     catch { Write-Step "hooks:   $SettingsPath unreadable - $($_.Exception.Message)" }

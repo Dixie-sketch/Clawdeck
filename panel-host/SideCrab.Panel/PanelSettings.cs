@@ -11,7 +11,7 @@ namespace SideCrab.Panel;
 /// {
 ///   "crabdPort": 2722,
 ///   "display": { "deviceId": "CRXED00", "width": 2560, "height": 720 },
-///   "props":   { "clock24": true, "accentColor": "#BE7E6E", "touchDiag": false }
+///   "props":   { "clock24": true, "accentColor": "#6F94CC", "touchDiag": false }
 /// }
 /// </code>
 ///

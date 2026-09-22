@@ -98,13 +98,13 @@ Describe 'SideCrab setup' {
             ($bad -join ' | ') | Should -Be ''
         }
 
-        It 'the eleven setup scripts all exist' {
+        It 'the twelve setup scripts all exist' {
             foreach ($n in 'SideCrab.Common.ps1', 'Install-SideCrab.ps1',
                            'Uninstall-SideCrab.ps1', 'Update-SideCrab.ps1',
                            'Register-SideCrabAumid.ps1', 'Register-SideCrabProtocol.ps1',
                            'Test-SideCrab.ps1', 'Verify-PanelApproval.ps1',
                            'Restore-SideCrab.ps1', 'Repair-SideCrab.ps1',
-                           'Build-SideCrabPanel.ps1') {
+                           'Build-SideCrabPanel.ps1', 'Register-HwinfoRelaunch.ps1') {
                 (Test-Path -LiteralPath (Join-Path $script:SetupDir $n)) | Should -BeTrue
             }
         }
@@ -3070,6 +3070,208 @@ Describe 'SideCrab setup' {
             ($fn -match 'Get-SideCrabAumidIconDecision') | Should -BeTrue
             # the naive comparison is gone
             ($fn -match '\$iconUri -eq \$spec\.IconUri')  | Should -BeFalse
+        }
+    }
+
+    Context 'host sensors (lane A)' {
+
+        BeforeAll {
+            $script:SmokeSensorText   = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Test-SideCrab.ps1') -Raw -Encoding utf8
+            $script:InstallSensorText = Get-Content -LiteralPath (Join-Path $script:SetupDir 'Install-SideCrab.ps1') -Raw -Encoding utf8
+            $script:HwinfoPath = Join-Path $script:SetupDir 'Register-HwinfoRelaunch.ps1'
+            $script:HwinfoText = Get-Content -LiteralPath $script:HwinfoPath -Raw -Encoding utf8
+
+            script:Import-AstFunction -Path (Join-Path $script:SetupDir 'Test-SideCrab.ps1') `
+                                      -Name @('Test-SensorBlock')
+            script:Import-AstFunction -Path $script:HwinfoPath `
+                                      -Name @('Get-HwinfoStopCommand', 'Get-HwinfoStartCommand', 'Get-HwinfoIniState')
+
+            function script:StateWith {
+                param($HostBlock)
+                if ($null -eq $HostBlock) { return [pscustomobject]@{ schema = 5 } }
+                [pscustomobject]@{ schema = 5; host = $HostBlock }
+            }
+            function script:FreshSource {
+                [pscustomobject]@{ provider = 'hwinfo'; pollTime = '2026-09-21T23:14:49Z'
+                                   ageSec = 1.9; stale = $false; available = $true; note = $null }
+            }
+            function script:SensorRow {
+                [pscustomobject]@{ name = 'CPU (Tctl/Tdie)'; device = 'CPU'; kind = 'temp'
+                                   unit = 'C'; value = 62.1 }
+            }
+        }
+
+        It 'a crabd with no host block at all PASSES - an older companion is not a fault' {
+            $r = Test-SensorBlock -State (script:StateWith $null)
+            $r[0] | Should -BeTrue
+            "$($r[1])" | Should -Match 'no host block'
+        }
+
+        It 'a host block with none of the new members PASSES and says which are missing' {
+            $r = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{ cpuPct = 34.2 }))
+            $r[0] | Should -BeTrue
+            "$($r[1])" | Should -Match 'crabd has no HWiNFO reader'
+        }
+
+        It 'HWiNFO absent PASSES and carries crabd own note, never a bare failure' {
+            $h = [pscustomobject]@{
+                sensors = @()
+                sensorsSource = [pscustomobject]@{ provider = 'hwinfo'; pollTime = $null; ageSec = $null
+                                                   stale = $false; available = $false
+                                                   note = 'HWiNFO not running, its Sensors window closed, or Shared Memory Support off' }
+            }
+            $r = Test-SensorBlock -State (script:StateWith $h)
+            $r[0] | Should -BeTrue
+            "$($r[1])" | Should -Match 'Sensors window closed'
+        }
+
+        It 'no NVIDIA card PASSES - absence is a state, not a fault' {
+            $h = [pscustomobject]@{ gpu = [pscustomobject]@{ available = $false
+                                                             note = 'nvidia-smi not found - no NVIDIA driver on this machine' } }
+            $r = Test-SensorBlock -State (script:StateWith $h)
+            $r[0] | Should -BeTrue
+            "$($r[1])" | Should -Match 'nvidia-smi not found'
+        }
+
+        It 'a STALE source still PASSES and says so with its note and its age' {
+            $src = script:FreshSource
+            $src.stale = $true
+            $src.ageSec = 43200.0
+            $src.note = 'HWiNFO stopped publishing (free build 12-hour limit): relaunch HWiNFO'
+            $h = [pscustomobject]@{ sensors = @(script:SensorRow); sensorsSource = $src }
+            $r = Test-SensorBlock -State (script:StateWith $h)
+            $r[0] | Should -BeTrue
+            "$($r[1])" | Should -Match 'STALE'
+            "$($r[1])" | Should -Match '12-hour limit'
+        }
+
+        It 'MUTATION: an available source with NO pollTime FAILS - freshness unknowable' {
+            # The row must fail exactly where the panel would be unable to tell an old
+            # reading from a current one. Same block, pollTime emptied: pass becomes fail.
+            $ok = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{
+                      sensors = @(script:SensorRow); sensorsSource = (script:FreshSource) }))
+            $ok[0] | Should -BeTrue
+
+            $broken = script:FreshSource
+            $broken.pollTime = ''
+            $bad = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{
+                       sensors = @(script:SensorRow); sensorsSource = $broken }))
+            $bad[0] | Should -BeFalse
+            "$($bad[1])" | Should -Match 'freshness unknowable'
+        }
+
+        It 'a stale flag that is not a boolean FAILS' {
+            $broken = script:FreshSource
+            $broken.stale = 'no'
+            $bad = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{
+                       sensors = @(script:SensorRow); sensorsSource = $broken }))
+            $bad[0] | Should -BeFalse
+            "$($bad[1])" | Should -Match 'not a boolean'
+        }
+
+        It 'an available source whose sensors are not a list FAILS' {
+            $bad = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{
+                       sensors = 'lots'; sensorsSource = (script:FreshSource) }))
+            $bad[0] | Should -BeFalse
+            "$($bad[1])" | Should -Match 'not a list'
+        }
+
+        It 'a sensor row missing a contract member FAILS' {
+            $row = [pscustomobject]@{ name = 'CPU'; kind = 'temp'; unit = 'C' }   # no value
+            $bad = Test-SensorBlock -State (script:StateWith ([pscustomobject]@{
+                       sensors = @($row); sensorsSource = (script:FreshSource) }))
+            $bad[0] | Should -BeFalse
+            "$($bad[1])" | Should -Match "missing 'value'"
+        }
+
+        It 'the smoke test adds a sensors row and says absence is not a fault' {
+            ($script:SmokeSensorText -match "Add-Result -Check 'sensors'") | Should -BeTrue
+            ($script:SmokeSensorText -match 'ABSENCE IS A STATE, NOT A FAULT') | Should -BeTrue
+        }
+
+        It 'install -Status prints one sensors line' {
+            ($script:InstallSensorText -match 'Write-Step "sensors: ') | Should -BeTrue
+        }
+
+        It 'the relaunch task stops HWiNFO by PID filtered on the exact exe path' {
+            # Never by name alone: a name match takes down a portable copy or a second
+            # install that has nothing to do with this task.
+            $cmd = Get-HwinfoStopCommand -Path 'C:\Program Files\HWiNFO64\HWiNFO64.EXE'
+            $cmd | Should -Match 'Get-Process -Name HWiNFO64'
+            $cmd | Should -Match 'Path -eq'
+            $cmd | Should -Match 'HWiNFO64\.EXE'
+            $cmd | Should -Match 'Stop-Process'
+        }
+
+        It 'a path with a quote in it cannot break out of the stop command' {
+            $cmd = Get-HwinfoStopCommand -Path "C:\it's here\HWiNFO64.EXE"
+            $cmd | Should -Match "it''s here"
+        }
+
+        It 'the relaunch task starts HWiNFO through ShellExecute, never as a second task action' {
+            # HWiNFO64.EXE's manifest is requireAdministrator + uiAccess="true". Task
+            # Scheduler's own CreateProcessAsUser launch of it fails with 740 even at
+            # RunLevel Highest (measured 2026-09-21: event 203, result 0x800702E4, every
+            # run). Start-Process is ShellExecuteEx, which goes through AppInfo and gets
+            # the UIAccess token; from the elevated action there is no prompt.
+            $cmd = Get-HwinfoStartCommand -Path 'C:\Program Files\HWiNFO64\HWiNFO64.EXE'
+            $cmd | Should -Match 'Start-Sleep -Seconds 3'
+            $cmd | Should -Match 'Start-Process -FilePath'
+            $cmd | Should -Match 'HWiNFO64\.EXE'
+            ($script:HwinfoText -match '-Execute \$ExePath')                   | Should -BeFalse
+            ($script:HwinfoText -match 'New-ScheduledTask -Action \$relaunch') | Should -BeTrue
+        }
+
+        It 'a path with a quote in it cannot break out of the start command either' {
+            $cmd = Get-HwinfoStartCommand -Path "C:\it's here\HWiNFO64.EXE"
+            $cmd | Should -Match "it''s here"
+        }
+
+        It 'the INI read reports Shared Memory Support and the Sensors window, read-only' {
+            $dir = Join-Path ([IO.Path]::GetTempPath()) ('sc-ini-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            try {
+                $ini = Join-Path $dir 'HWiNFO64.INI'
+                Set-Content -LiteralPath $ini -Encoding utf8 -Value @(
+                    '[Settings]', 'SensorsSM=1', 'MinimalizeSensors=1', 'OpenSensors=1')
+                $on = Get-HwinfoIniState -IniPath $ini
+                $on.Present        | Should -BeTrue
+                $on.SharedMemory   | Should -BeTrue
+                $on.SensorsAtStart | Should -BeTrue
+
+                Set-Content -LiteralPath $ini -Encoding utf8 -Value @('[Settings]', 'Theme=1')
+                $off = Get-HwinfoIniState -IniPath $ini
+                $off.SharedMemory   | Should -BeFalse
+                $off.SensorsAtStart | Should -BeFalse
+
+                $missing = Get-HwinfoIniState -IniPath (Join-Path $dir 'nope.ini')
+                $missing.Present | Should -BeFalse
+            } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'the relaunch task is registered elevated, parallel, and on two triggers' {
+            # Every one of these is load-bearing: HWiNFO needs admin for its driver, a
+            # logon instance still in its three-second sleep must not let IgnoreNew swallow
+            # a 04:00 relaunch beside it, and this build does not always create its own
+            # auto-start entry.
+            ($script:HwinfoText -match 'RunLevel Highest')                  | Should -BeTrue
+            ($script:HwinfoText -match 'MultipleInstances Parallel')        | Should -BeTrue
+            ($script:HwinfoText -match 'New-ScheduledTaskTrigger -AtLogOn') | Should -BeTrue
+            ($script:HwinfoText -match 'New-ScheduledTaskTrigger -Daily')   | Should -BeTrue
+            ($script:HwinfoText -match "TaskName = 'SideCrab-hwinfo'")      | Should -BeTrue
+        }
+
+        It 'the relaunch script refuses a non-elevated shell and supports -WhatIf and -Remove' {
+            ($script:HwinfoText -match 'SupportsShouldProcess')               | Should -BeTrue
+            ($script:HwinfoText -match 'Test-IsElevated')                     | Should -BeTrue
+            ($script:HwinfoText -match 'WindowsBuiltInRole\]::Administrator')  | Should -BeTrue
+            ($script:HwinfoText -match 'Unregister-ScheduledTask')            | Should -BeTrue
+            ($script:HwinfoText -match 'ShouldProcess\(\$TaskName')           | Should -BeTrue
+        }
+
+        It 'the relaunch script says the Pro licence removes the need for it' {
+            ($script:HwinfoText -match 'PRO LICENCE REMOVES THE NEED') | Should -BeTrue
+            ($script:HwinfoText -match 'NON-COMMERCIAL')               | Should -BeTrue
         }
     }
 }

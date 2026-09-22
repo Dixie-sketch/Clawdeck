@@ -90,6 +90,7 @@
   "sessions": [
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50001",
+      "continuePrompts": ["Run the ordering tests", "Rebuild the panel bundle", "Check the state contract", "Take the screenshots", "Update the changelog", "Draft the release notes"],
       "title": "crabd 0.6.1 — schema rework rollout",
       "cwd": "C:\\Dev\\sidecrab",
       "repo": "sidecrab",
@@ -122,6 +123,7 @@
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50002",
+      "continuePrompts": ["Run the ordering tests", "Rebuild the panel bundle", "Check the state contract", "Take the screenshots", "Update the changelog", "Draft the release notes"],
       "title": "SideCrab widget — presence gating audit",
       "cwd": "C:\\Dev\\sidecrab",
       "repo": "sidecrab",
@@ -153,6 +155,7 @@
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50003",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "build agent 3 — disk health walk",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -178,6 +181,7 @@
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50004",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "dependency audit — npm advisories",
       "cwd": "C:\\Dev\\acme-api",
       "repo": "acme-api",
@@ -202,6 +206,7 @@
     },
     {
       "id": "b21c8d55-ae32-4019-c4f7-6d8b02f50005",
+      "continuePrompts": ["Rebuild the report", "Run the migrations"],
       "title": "acme-api",
       "titleSource": "cwd",
       "cwd": "C:\\Dev\\acme-api",
@@ -243,7 +248,45 @@
 
   "fleet": { "glow": "running", "toast": "stopped" },
 
-  "host": { "cpuPct": 34.2, "memPct": 58.4, "memUsedGB": 18.7, "memTotalGB": 32.0 },
+  "host": {
+    "cpuPct": 34.2, "memPct": 58.4, "memUsedGB": 18.7, "memTotalGB": 32.0,
+    "sensors": [
+      { "name": "CPU (Tctl/Tdie)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 60.4 },
+      { "name": "CPU Die (average)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 56.6 },
+      { "name": "CPU CCD1 (Tdie)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 51.1 },
+      { "name": "CPU CCD2 (Tdie)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 43.1 },
+      { "name": "GPU Temperature", "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070", "kind": "temp", "unit": "°C", "value": 48.1 },
+      { "name": "GPU Hot Spot Temperature", "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070", "kind": "temp", "unit": "°C", "value": 53.1 },
+      { "name": "GPU Memory Junction Temperature", "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070", "kind": "temp", "unit": "°C", "value": 52.0 },
+      { "name": "GPU Temperature", "device": "iGPU [#1]: AMD Radeon", "kind": "temp", "unit": "°C", "value": 48.3 },
+      { "name": "CPU VDDCR_VDD VRM (SVI3 TFN)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 47.3 },
+      { "name": "CPU VDDCR_SOC VRM (SVI3 TFN)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 42.0 },
+      { "name": "CPU VDD_MISC VRM (SVI3 TFN)", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "temp", "unit": "°C", "value": 51.1 },
+      { "name": "VRM", "device": "ASUS EC", "kind": "temp", "unit": "°C", "value": 47.0 },
+      { "name": "Drive Temperature", "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]", "kind": "temp", "unit": "°C", "value": 51.0 },
+      { "name": "Drive Temperature 2", "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]", "kind": "temp", "unit": "°C", "value": 51.0 },
+      { "name": "Drive Temperature 3", "device": "S.M.A.R.T.: Samsung SSD 990 PRO 2TB [C:]", "kind": "temp", "unit": "°C", "value": 57.0 },
+      { "name": "Motherboard", "device": "ASUS ROG CROSSHAIR X870E HERO BTF (Nuvoton NCT6701D)", "kind": "temp", "unit": "°C", "value": 41.0 },
+      { "name": "Chipset 1 (xHCI)", "device": "ASUS ROG CROSSHAIR X870E HERO BTF (AMD Chipset)", "kind": "temp", "unit": "°C", "value": 64.6 },
+      { "name": "Chipset 2 (xHCI)", "device": "ASUS ROG CROSSHAIR X870E HERO BTF (AMD Chipset)", "kind": "temp", "unit": "°C", "value": 66.4 },
+      { "name": "CPU Package Power", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "power", "unit": "W", "value": 93.7 },
+      { "name": "CPU PPT", "device": "CPU [#0]: AMD Ryzen 9 9950X3D2: Enhanced", "kind": "power", "unit": "W", "value": 93.5 },
+      { "name": "AIO Pump", "device": "ASUS ROG CROSSHAIR X870E HERO BTF (Nuvoton NCT6701D)", "kind": "fan", "unit": "RPM", "value": 3435 },
+      { "name": "CPU_OPT", "device": "ASUS EC", "kind": "fan", "unit": "RPM", "value": 1133 },
+      { "name": "GPU Fan1", "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070", "kind": "fan", "unit": "RPM", "value": 0 },
+      { "name": "GPU Fan2", "device": "dGPU [#0]: NVIDIA GeForce RTX 5070: ASUS PRIME GeForce RTX 5070", "kind": "fan", "unit": "RPM", "value": 0 }
+    ],
+    "sensorsSource": { "provider": "hwinfo", "pollTime": "2026-08-26T18:04:59Z", "ageSec": 1.2,
+                       "stale": false, "available": true, "note": null },
+    "gpu": { "name": "NVIDIA GeForce RTX 5070", "driver": "610.74", "tempC": 48.0,
+             "utilPct": 4.0, "memUsedMB": 4000.0, "memTotalMB": 12227.0,
+             "powerW": 12.3, "powerLimitW": 250.0, "clockMHz": 382.0,
+             "available": true, "note": null, "sampledAt": "2026-08-26T18:04:58Z" },
+    "load": { "diskReadBps": 1267326, "diskWriteBps": 410492, "netRxBps": 36919,
+              "netTxBps": 125770, "commitPct": 45.5,
+              "topProcess": { "name": "pwsh.exe", "pid": 8124, "cpuPct": 3.1 },
+              "sampledAt": "2026-08-26T18:04:58Z" }
+  },
 
   "toast": {
     "thresholdSec": 120,
