@@ -3203,7 +3203,7 @@ class ActionEndpointTests(ServedOverASocket):
         are all additive and none moves it."""
         self.assertEqual(self.state()["schema"], 5)
         self.assertEqual(crabd.SCHEMA_BREAKING, 5)
-        self.assertEqual(crabd.VERSION, "0.36.0")
+        self.assertEqual(crabd.VERSION, "0.37.1")
 
     def test_the_v6_fields_ride_on_schema_5_in_the_served_document(self):
         """The compat contract in ONE test: the fields the deployed v0.5.0 widget has
@@ -4737,6 +4737,35 @@ class HistoryReplayReadTests(HistoryTempFile):
         self.write('{"ts":100,"kind":"turn finished","sessionId":"s-1","title":42}\n')
         self.assertIsNone(self.log().replay()[0][3])
 
+    def test_a_ts_too_large_for_a_float_is_skipped_not_fatal(self):
+        """SC-03. json.loads hands back an unbounded int and float() of one past ~1.8e308
+        raised OverflowError out of _parse_ts, and main() replays this file outside every
+        try: one such line stopped crabd at startup, and the scheduled task restarted it
+        into the same crash. GET /v1/history (day_index) dropped its connection too."""
+        huge = "1" + "0" * 400
+        self.write('{"ts":100,"kind":"turn finished","sessionId":"s-1","title":null}\n'
+                   '{"ts":' + huge + ',"kind":"turn finished","sessionId":"s-2"}\n'
+                   '{"ts":-' + huge + ',"kind":"turn finished","sessionId":"s-3"}\n')
+        log = self.log()
+        entries = log.replay()
+        self.assertEqual([(e[0], e[2]) for e in entries], [(100.0, "s-1")])
+        self.assertEqual(sum(len(v) for v in log.day_index().values()), 1)
+        crabd.HookTracker().replay(entries)          # what main() does at startup
+        self.assertIsNone(crabd._parse_ts(10 ** 400))
+        self.assertIsNone(crabd._parse_ts(-(10 ** 400)))
+
+    def test_a_unicode_line_break_inside_a_record_does_not_split_it(self):
+        """SC-07. The writer delimits with "\\n" and json.dumps(ensure_ascii=False) writes
+        U+2028, U+2029 and U+0085 raw; str.splitlines() also breaks at those, which cut such
+        a record in two and dropped the event. Written through the real append path."""
+        log = self.log()
+        titles = ["line separator", "paragraph separator", "next\u0085line"]
+        for n, title in enumerate(titles, 1):
+            log.append(100.0 * n, "turn finished", f"s-{n}", title)
+        entries = crabd.HistoryLog(self.path).replay()
+        self.assertEqual([e[3] for e in entries], titles)
+        self.assertEqual(sum(len(v) for v in crabd.HistoryLog(self.path).day_index().values()), 3)
+
     def test_a_missing_file_replays_as_nothing(self):
         self.assertEqual(self.log().replay(), [])
 
@@ -5974,7 +6003,7 @@ class HistoryEndpointTests(ServedOverASocket):
 
     def test_state_and_health_are_untouched_by_the_new_route(self):
         self.assertIn("schema", self.state())
-        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.36.0")
+        self.assertEqual(self.client.get("/v1/health").json()["version"], "0.37.1")
 
     def test_the_endpoint_does_not_write_to_the_history_file(self):
         """Read-only by contract. A GET that touched the file would also invalidate its
@@ -6188,15 +6217,12 @@ class ConfigWhitelistQuadTests(ServedOverASocket):
         for mask in range(1, 2 ** len(keys)):
             yield {name: value for i, (name, value) in enumerate(keys) if mask >> i & 1}
 
-    def test_the_whitelist_is_these_four_keys_and_the_continue_vocabulary(self):
-        """C6 (v0.34.0, provisional) added the three continuePrompt* keys. The four
-        original keys are still whitelisted and the combination sweep below still
-        covers them; panelApprovals, allowReply, allowContinue and recapRepos are still
-        out, which is what test_one_bad_key... and the SEC-2 tests prove."""
-        self.assertTrue(set(self.KEYS) <= set(crabd.Handler.CONFIG_WRITABLE))
-        self.assertEqual(set(crabd.Handler.CONFIG_WRITABLE) - set(self.KEYS),
-                         {"continuePrompts", "continuePromptsByRepo",
-                          "continuePromptsByPath"})
+    def test_the_whitelist_is_exactly_these_four_keys(self):
+        """SC-01 (v0.37.0): the three continuePrompt* keys C6 added in v0.34.0 are out
+        again, because they are the whitelist queue-continue enforces. panelApprovals,
+        allowReply, allowContinue and recapRepos stay out too, which is what
+        test_one_bad_key..., the SEC-2 tests and ContinueVocabularyIsFileOnlyTests prove."""
+        self.assertEqual(set(crabd.Handler.CONFIG_WRITABLE), set(self.KEYS))
         self.assertEqual(len(list(self.all_combinations())), 15)
 
     def test_every_combination_of_the_three_writes_all_of_its_keys(self):

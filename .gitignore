@@ -23,3 +23,9 @@ node_modules/
 # .NET build output (panel-host)
 bin/
 obj/
+
+# The staged host update keeps one generation beside dist (Update-SideCrab.ps1); build output, never tracked.
+panel-host/dist.last-good/
+panel-host/dist.last-good.old/
+panel-host/dist.staging/
+panel-host/dist.failed/

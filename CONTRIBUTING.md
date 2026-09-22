@@ -63,13 +63,6 @@ that reports success forever.
   shown by `panel-host/`. There is nothing to package and nothing to import.
 - Its version is `widget/version.json`. CI runs all three suites, parses that file and parses
   `widget/index.html` as HTML; each one is a merge gate.
-- **Nothing in current product surface may name the retired vendor integration.** CI greps the
-  tree for its names and fails on a hit; the exact pattern and the exemptions are in
-  `.github/workflows/ci.yml`, step "No retired vendor integration in current surface". Dated
-  history under `docs/history/`, `docs/findings/`, `CHANGELOG.md`, `docs/BACKLOG.md`,
-  `widget/DEV.md`, `docs/notes/` and `setup/tests/` are exempt: they are the record, and
-  rewriting a record is falsifying it. If you find something historically useful, move it to
-  `docs/history/` with a date and a sentence saying why, and delete the instruction.
 
 ## Pull requests
 

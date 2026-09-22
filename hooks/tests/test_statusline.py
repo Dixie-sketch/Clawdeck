@@ -9,6 +9,7 @@ file, a fake opener standing in for urlopen, and a real short subprocess for the
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -123,6 +124,38 @@ class RunChained(unittest.TestCase):
         # whitespace prior never reaches here - load_prior_command rejects it first.
         out = sl.run_chained(f'"{sys.executable}" -c "pass"', b"x")
         self.assertEqual(out, "")
+
+
+class MainWritesUtf8Bytes(unittest.TestCase):
+    """SC-02. On Windows a piped stdout is encoded with the ANSI code page, strictly, so a
+    status line written as TEXT raised on the crab emoji (or on any glyph in a chained
+    line) and main() exited 0 having printed nothing. Each case runs main() against a
+    cp1252 text stdout and reads the BYTES that reached the pipe."""
+
+    DOC = json.dumps({"model": {"display_name": "Opus"},
+                      "workspace": {"current_dir": "C:\\Work\\acme"}}).encode("utf-8")
+
+    def run_main(self, prior=None, chained=None):
+        stdin = io.TextIOWrapper(io.BytesIO(self.DOC), encoding="utf-8")
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        with mock.patch.object(sl.sys, "stdin", stdin), \
+                mock.patch.object(sl.sys, "stdout", stdout), \
+                mock.patch.object(sl, "post_statusline", lambda document: None), \
+                mock.patch.object(sl, "load_prior_command", lambda path: prior), \
+                mock.patch.object(sl, "run_chained", lambda command, document: chained):
+            code = sl.main()
+        self.assertEqual(code, 0)
+        return stdout.buffer.getvalue()
+
+    def test_the_minimal_line_survives_an_ansi_code_page_pipe(self):
+        written = self.run_main()
+        self.assertEqual(written, sl.minimal_status(self.DOC).encode("utf-8"))
+        self.assertTrue(written.startswith("\U0001f980 sidecrab".encode("utf-8")))
+
+    def test_a_chained_line_with_glyphs_survives_an_ansi_code_page_pipe(self):
+        line = "\u26a1 main \u2713 \ue0b0"
+        self.assertEqual(self.run_main(prior="their-command", chained=line),
+                         line.encode("utf-8"))
 
 
 if __name__ == "__main__":

@@ -2730,27 +2730,63 @@ function Measure-SideCrabPackageHash {
     $map
 }
 
+function Get-SideCrabSwappedHostVerdict {
+    <# Was panel-host\dist replaced after the package shipped, by a host its own build record
+       vouches for? Pure: both maps are package-relative path -> SHA-256, already measured.
+
+       SC-05. Update-SideCrab.ps1 -Package swaps a newer host into dist, so the manifest stops
+       describing it, and the installer then refused the folder as a corrupt download on every
+       later run. The build record travels with the host and outranks the manifest here, as it
+       does in Get-SideCrabExpectedHostHash - but only when the executable hashes to it. A record
+       that differs from the manifest while the bytes beside it do not match it is a damaged
+       download, and then every file is checked. #>
+    param([hashtable] $Expected, [hashtable] $Actual, $Record)
+
+    $recordKey = 'panel-host/dist/build-record.json'
+    $exeKey    = 'panel-host/dist/SideCrab.Panel.exe'
+    $asShipped = [pscustomobject]@{ Replaced = $false; Expected = $Expected; Reason = '' }
+    if (-not $Actual.ContainsKey($recordKey) -or -not $Actual.ContainsKey($exeKey)) { return $asShipped }
+    if ("$($Actual[$recordKey])".ToLowerInvariant() -eq "$($Expected[$recordKey])".ToLowerInvariant()) { return $asShipped }
+    if ($null -eq $Record -or -not $Record.Present) { return $asShipped }
+    if ("$($Record.Sha256)".ToLowerInvariant() -ne "$($Actual[$exeKey])".ToLowerInvariant()) { return $asShipped }
+
+    $rest = @{}
+    foreach ($k in @($Expected.Keys)) {
+        if (-not $k.StartsWith('panel-host/dist/', [StringComparison]::OrdinalIgnoreCase)) { $rest[$k] = $Expected[$k] }
+    }
+    $which = if ("$($Record.Version)".Trim()) { "host $($Record.Version)" } else { 'a host' }
+    [pscustomobject]@{
+        Replaced = $true
+        Expected = $rest
+        Reason   = "panel-host\dist is $which swapped in after this package shipped, and its executable matches its own build record"
+    }
+}
+
 function Test-SideCrabPackageIntegrity {
     <# Verify an extracted package against its own manifest. {Checked, Ok, Reason, ...}.
-       Present=$false when there is no manifest, which is how a source checkout reads. #>
+       Present=$false when there is no manifest, which is how a source checkout reads. A host
+       an update swapped in is judged by its build record (Get-SideCrabSwappedHostVerdict). #>
     param([Parameter(Mandatory)][string] $RepoRoot)
 
     $read = Read-SideCrabPackageManifest -RepoRoot $RepoRoot
     if (-not $read.Present) {
         return [pscustomobject]@{ Checked = $false; Ok = $true; Present = $false
-                                  Identity = ''; Reason = $read.Reason; FirstMismatch = $null }
+                                  Identity = ''; Reason = $read.Reason; FirstMismatch = $null; HostReplaced = $false }
     }
     $expected = @{}
     foreach ($k in @($read.Manifest['files'].Keys)) { $expected[$k] = "$($read.Manifest['files'][$k])" }
     $actual  = Measure-SideCrabPackageHash -Root $RepoRoot
-    $verdict = Get-SideCrabPackageVerifyVerdict -Expected $expected -Actual $actual
+    $record  = Get-SideCrabHostBuildRecord -DistPath (Join-Path (Join-Path $RepoRoot 'panel-host') 'dist')
+    $swapped = Get-SideCrabSwappedHostVerdict -Expected $expected -Actual $actual -Record $record
+    $verdict = Get-SideCrabPackageVerifyVerdict -Expected $swapped.Expected -Actual $actual
     [pscustomobject]@{
         Checked       = $true
         Present       = $true
         Ok            = $verdict.Ok
         Identity      = (Get-SideCrabPackageIdentity -Manifest $read.Manifest)
-        Reason        = $verdict.Reason
+        Reason        = "$($verdict.Reason)$(if ($swapped.Replaced) { "; $($swapped.Reason)" })"
         FirstMismatch = $verdict.FirstMismatch
+        HostReplaced  = $swapped.Replaced
         Manifest      = $read.Manifest
     }
 }
@@ -3117,7 +3153,13 @@ function Invoke-SideCrabHostSwap {
        failure part way through leaves half the host in one place and half in the other - the
        exact state this function exists to make impossible. Directory.Move is one rename: it
        either happens or it does not. The three directories are always siblings, so the
-       same-volume restriction never bites. #>
+       same-volume restriction never bites.
+
+       THE KEPT GENERATION IS DELETED LAST (SC-04). It used to be deleted before the live host
+       was moved aside, so the likeliest failure below lost it while reporting that nothing was
+       swapped, and Restore-SideCrab.ps1 -Host then had nothing to restore. It is renamed to
+       <last-good>.old, deleted only once the new host is in place, and every failure puts it
+       back. #>
     param(
         [Parameter(Mandatory)][string] $DistPath,
         [Parameter(Mandatory)][string] $StagingPath,
@@ -3127,20 +3169,45 @@ function Invoke-SideCrabHostSwap {
     if (-not (Test-Path -LiteralPath $StagingPath)) {
         return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false; Reason = "$StagingPath is not there - nothing to swap in" }
     }
+    $older = "$LastGoodPath.old"
+    # On a failure: a kept generation at .old goes back where Restore-SideCrab.ps1 -Host looks.
+    $putOlderBack = {
+        if (-not (Test-Path -LiteralPath $older)) { return '' }
+        if (Test-Path -LiteralPath $LastGoodPath) { return " The kept host is at $older." }
+        try { [IO.Directory]::Move($older, $LastGoodPath); return '' }
+        catch { return " The kept host could not be put back and is at $older - $($_.Exception.Message)." }
+    }
     $kept = $false
     if (Test-Path -LiteralPath $DistPath) {
+        # A leftover .old is a swap that died between two renames or could not finish its
+        # delete. Beside a last-good it is the older of the two and goes; alone, it IS the kept
+        # generation, already where this run would set it aside.
+        if ((Test-Path -LiteralPath $older) -and (Test-Path -LiteralPath $LastGoodPath)) {
+            try { Remove-Item -LiteralPath $older -Recurse -Force -ErrorAction Stop }
+            catch {
+                return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
+                                          Reason = "an older generation at $older could not be cleared - $($_.Exception.Message). Nothing was swapped; the last-good host is untouched." }
+            }
+        }
+        if (Test-Path -LiteralPath $LastGoodPath) {
+            try { [IO.Directory]::Move($LastGoodPath, $older) }
+            catch {
+                return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
+                                          Reason = "the last-good host could not be set aside - $($_.Exception.Message). Nothing was swapped." }
+            }
+        }
         # THE LIKELIEST FAILURE IN THIS WHOLE PATH, and it has to be a returned verdict rather
         # than an exception: Windows refuses to rename a directory whose executable is running,
         # so a panel task that did not stop in time lands exactly here. Thrown, it would take
         # the update script down with a stack trace instead of a FAIL line and a live host.
         try {
-            if (Test-Path -LiteralPath $LastGoodPath) { Remove-Item -LiteralPath $LastGoodPath -Recurse -Force }
             [IO.Directory]::Move($DistPath, $LastGoodPath)
         } catch {
+            $why = $_.Exception.Message
             return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
-                                      Reason = ("the host that is live could not be moved aside - $($_.Exception.Message). " +
+                                      Reason = ("the host that is live could not be moved aside - $why. " +
                                                 'Nothing was swapped; it is still running. A panel host that is still ' +
-                                                'executing is the usual cause: stop SideCrab-panel and try again.') }
+                                                'executing is the usual cause: stop SideCrab-panel and try again.' + (& $putOlderBack)) }
         }
         $kept = $true
     }
@@ -3148,12 +3215,23 @@ function Invoke-SideCrabHostSwap {
         [IO.Directory]::Move($StagingPath, $DistPath)
     } catch {
         # The one moment with no live host. Put the old one straight back rather than leaving
-        # the panel with no directory at all.
-        if ($kept -and -not (Test-Path -LiteralPath $DistPath)) { [IO.Directory]::Move($LastGoodPath, $DistPath) }
+        # the panel with no directory at all, then the generation before it.
+        $why  = $_.Exception.Message
+        $back = if ($kept) { 'the host that was live is back in place' } else { 'no host was live before it' }
+        if ($kept -and -not (Test-Path -LiteralPath $DistPath)) {
+            try { [IO.Directory]::Move($LastGoodPath, $DistPath) }
+            catch { $back = "the host that was live COULD NOT be put back ($($_.Exception.Message)): it is at $LastGoodPath, so run setup\Restore-SideCrab.ps1 -Host" }
+        }
         return [pscustomobject]@{ Swapped = $false; KeptLastGood = $false
-                                  Reason = "the staged host could not be moved into place - $($_.Exception.Message); the last-good host was put back" }
+                                  Reason = "the staged host could not be moved into place - $why; $back.$(& $putOlderBack)" }
     }
-    $why = if ($kept) { "swapped; the last-good host is kept at $LastGoodPath" } else { 'swapped; there was no previous host to keep' }
+    $done = ''
+    # Beside a last-good only: a .old with none is the one kept generation there is.
+    if ((Test-Path -LiteralPath $older) -and (Test-Path -LiteralPath $LastGoodPath)) {
+        try { Remove-Item -LiteralPath $older -Recurse -Force -ErrorAction Stop }
+        catch { $done = "; the generation before it could not be deleted from $older and goes at the next update" }
+    }
+    $why = if ($kept) { "swapped; the last-good host is kept at $LastGoodPath$done" } else { 'swapped; there was no previous host to keep' }
     [pscustomobject]@{ Swapped = $true; KeptLastGood = $kept; Reason = $why }
 }
 

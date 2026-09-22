@@ -35,7 +35,10 @@ The two things an attacker on this machine, or a web page you visit, could want 
   as one JSON object (never as bare globals) that no other page ever loads.
 - **Fixed vocabulary, never free text.** `POST /v1/action` accepts acknowledge, dismiss, pin,
   one of the configured continue prompts, and approve/deny. `reply` with arbitrary text answers
-  `501` and will keep doing so until a supported injection mechanism exists.
+  `501` and will keep doing so until a supported injection mechanism exists. The vocabulary
+  itself is configured only in `~/.sidecrab/config.json`: `POST /v1/config` refuses the three
+  continue-prompt keys (crabd 0.37.0), so nothing reachable over HTTP can widen what
+  `queue-continue` accepts.
 - **Panel approvals ship OFF.** The installer asks. Every failure mode of the approval path
   (timeout, no tap, disabled, malformed, companion down) is a pass-through to the normal terminal
   dialog. The terminal dialog is raced, not suppressed.
@@ -61,12 +64,10 @@ The two things an attacker on this machine, or a web page you visit, could want 
 - **A same-user local process can read the pairing code.** It can also read `~/.claude`, drive
   the terminal dialog and inject keystrokes, so it was never inside the threat model of a
   localhost service; the gate exists for the web-page vector, which it closes.
-- **`/v1/state` is readable by a forged `null` Origin** (the original SEC-4 read gate refuses
-  `http(s)` origins only). It discloses what your sessions are doing, not a way to act on them.
-- **queue-continue is always on and unauthenticated.** Bounded by the server-side whitelist: the
-  worst case is a canned "Continue" / "Run the tests" / "Commit + push" pushed into a live
-  session by a local process or a forged-origin page. Not remote code execution; still a nudge you
-  did not send.
+- **queue-continue is always on and unauthenticated.** Bounded by the server-side whitelist,
+  which only `config.json` can change: the worst case is one of your own configured prompts, such
+  as "Continue" / "Run the tests" / "Commit + push", pushed into a live session by a local process.
+  Not remote code execution; still a nudge you did not send.
 
 ## Closed
 
@@ -76,9 +77,16 @@ The two things an attacker on this machine, or a web page you visit, could want 
   0.27.0** by the pairing code above: the forged page has the origin but not the code.
 - **WID-a - no per-request id on `decide`.** Closed in the same release: `pendingPermission.requestId`
   is echoed by the tap and a mismatch is `409`, decided under the broker's lock.
+- **A forged `null` Origin could read `/v1/state`** (the SEC-4 residual). Closed in crabd 0.34.0,
+  when the origin gate began refusing `null` and every non-web scheme on reads and writes alike.
+- **SC-01 - the continue vocabulary was writable over HTTP** (crabd 0.34.0 to 0.36.0).
+  `POST /v1/config` accepted the three continue-prompt keys, so any process able to reach the
+  port without an `Origin` header could add its own instruction to the whitelist, queue it, and
+  have the next `Stop` hook hand it to a live session. **Closed in crabd 0.37.0**: the keys are
+  file-only again.
 
-The full audit trail, including the findings that are now fixed (SEC-1 to SEC-5), is in
-`docs/findings/audit-security.md` and `docs/findings/QA-Audit-2026-08-28.md`.
+The full audit trail, including the findings that are now fixed (SEC-1 to SEC-5 and SC-01), is
+kept in the maintainers' audit findings.
 
 ## Reporting a vulnerability
 

@@ -20,6 +20,31 @@
 > The "Schema 6" section below is retitled in place: its FIELDS are unchanged and live; only
 > the schema NUMBER they ride on is now 5.
 
+## v0.37.0 (2026-09-22 — TRANSPORT: the continue vocabulary is file-only again; schema stays 5)
+
+One write path is narrower. Nothing in `/v1/state` changes, and no consumer that shipped is
+affected.
+
+### 1. `POST /v1/config` refuses the three continue-prompt keys
+
+`CONFIG_WRITABLE` is `quietHours`, `toast`, `digest` and `budget`, which is what it was before
+v0.34.0. A body naming `continuePrompts`, `continuePromptsByRepo` or `continuePromptsByPath` is
+a **400** that writes nothing, with or without other keys beside it and whatever the value,
+`null` included. The reply to an accepted write keeps its v0.34.0 shape, `{applied, warnings}`;
+`warnings` is always empty now, because the keys that produced warnings are the ones removed.
+
+**Why.** The continue vocabulary is the whitelist `queue-continue` enforces, and that whitelist
+is the only bound on what a panel tap can say to a live session. The origin gate admits a
+request with no `Origin` header by design, which is every native client, so over `/v1/config` any
+process able to reach the port could write its own instruction into the vocabulary, queue it,
+and have the next `Stop` hook deliver it to the model as the session's next turn. Measured end to
+end against crabd 0.36.0 (SC-01). Before v0.34.0 the vocabulary was file-only, and it is again.
+
+**Who notices.** Nobody that shipped: the panel page lists project prompts read-only and never
+wrote these keys, and no setup script, the notifier or the panel host sends them. Configure the
+vocabulary in `~/.sidecrab/config.json`, exactly as before. `sessions[].continuePrompts`, the
+top-level `continuePrompts` and `queue-continue` itself are unchanged.
+
 ## v0.36.0 (2026-09-22 — ADDITIVE: a failed session, exact subagent counts, the hook routes; schema stays 5)
 
 Two additive members on `sessions[]`, one new value for `sessions[].state`, and the hook
@@ -494,7 +519,7 @@ body naming any of them is still rejected whole.
 ### 6. REMOVED: `fleet.glow`
 
 `fleet` is now `{"toast": "running"|"stopped"|"absent"|"unknown"}`. The glow component
-was retired with the Corsair RGB path (`docs/history/RGB-retired-2026-09-21.md`), and a
+was retired with the Corsair RGB path (the maintainers' history), and a
 key that could only ever report a task that is not there is a fault light nobody can
 clear. **A consumer reading `fleet.glow` must stop.** Everything else about `fleet` -
 the four outcomes, the ~60 s cache, `unknown` never being folded into `stopped` - is
@@ -1700,7 +1725,7 @@ Costs nothing new on the wire: crabd already parses these records for `burn` and
 
 ### 3. A parked `pendingPermission` is retired by the next `Stop` / `UserPromptSubmit` / `SessionEnd`
 
-Follows from the v0.12.0 spike finding (`docs/spikes/live-verify.md` §3.3, SC-LV-2): **the terminal
+Follows from the v0.12.0 spike finding (the maintainers' spike notes §3.3, SC-LV-2): **the terminal
 dialog is not suppressed, it is RACED** — it renders immediately while crabd is still holding the
 55 s long poll. So the operator can answer it at t=2 s, the tool runs, the turn finishes — and the
 card goes on offering Approve / Deny for another 53 s on a decision already made, where a tap is a
@@ -1783,7 +1808,7 @@ The write→read guarantee is the existing one: the **next** `/v1/state` after a
 
 No field is added, removed or renamed, so `schema` stays **5** and no widget import is
 needed. What changed is what three existing values are allowed to SAY. crabd `VERSION` →
-`0.17.0`. (Audit `docs/findings/audit-crabd.md`, items F3, F4, F6, F7, plus two backlog
+`0.17.0`. (The maintainers' audit findings, items F3, F4, F6, F7, plus two backlog
 items.)
 
 ### 1. `exhaustAt` is null when the window carries no parseable `resetsAt` (audit F6)

@@ -78,7 +78,7 @@ from pathlib import Path, PureWindowsPath
 # redeploy together, so shipping schema N+1 dead-feeds the on-glass panel until the page
 # crabd serves has been updated too.
 SCHEMA_BREAKING = 5
-VERSION = "0.36.0"
+VERSION = "0.37.1"
 
 HOST = "127.0.0.1"
 # 2722 is the production port and the Scheduled Task owns it. CRABD_PORT exists so a
@@ -1343,7 +1343,13 @@ def _parse_ts(value) -> float | None:
         return None
     if isinstance(value, (int, float)):
         # Epoch seconds vs milliseconds: anything past year ~2286 in seconds is ms.
-        epoch = float(value) / 1000.0 if value > 1e11 else float(value)
+        # SC-03: json.loads hands back an unbounded int, and float() of one past ~1.8e308
+        # raises OverflowError. Unguarded, one such `ts` in history.jsonl stopped crabd at
+        # startup (main() replays the file outside every try) and dropped GET /v1/history.
+        try:
+            epoch = float(value) / 1000.0 if value > 1e11 else float(value)
+        except OverflowError:
+            return None
     elif isinstance(value, str):
         text = value.strip()
         if not text:
@@ -2295,7 +2301,10 @@ class HistoryLog:
     @staticmethod
     def _parse(raw: str) -> list[tuple[float, str, str, str | None]]:
         out = []
-        for line in raw.splitlines():
+        # "\n", the writer's delimiter, and NOT splitlines() (SC-07): that also breaks at
+        # U+2028, U+2029 and U+0085, which json.dumps(ensure_ascii=False) writes raw inside a
+        # field, so one such title cut its record in two and the event was dropped.
+        for line in raw.split("\n"):
             line = line.strip()
             if not line:
                 continue
@@ -9730,17 +9739,20 @@ class Handler(BaseHTTPRequestHandler):
     # panelApprovals is deliberately NOT writable via /v1/config (SEC-2, 2026-08-27) and
     # must never be added - flipping the approvals security flag over loopback is exactly
     # the CSRF the origin gate exists to bound (SEC-c, 2026-08-28).
-    # v0.34.0 (provisional), C6 / MF-001: the three continue-prompt keys join the
-    # whitelist so the settings sheet can edit the vocabulary it already draws.
-    # panelApprovals, allowReply, allowContinue and recapRepos stay OUT and must: the
-    # first three gate security or a feature, and recapRepos points the git half at an
-    # arbitrary path.
-    CONFIG_WRITABLE = ("quietHours", "toast", "digest", "budget",
-                       "continuePrompts", "continuePromptsByRepo",
-                       "continuePromptsByPath")
-    CONFIG_WRITABLE_ERROR = (b'{"error":"quietHours, toast, digest, budget, '
-                             b'continuePrompts, continuePromptsByRepo and '
-                             b'continuePromptsByPath are the only writable keys"}')
+    # THE CONTINUE VOCABULARY IS FILE-ONLY (SC-01, v0.37.0) and must stay so. v0.34.0 (C6)
+    # made continuePrompts, continuePromptsByRepo and continuePromptsByPath writable here,
+    # and those three ARE the whitelist queue-continue enforces: any client reaching this
+    # port with no Origin header could write an instruction into the vocabulary, queue it,
+    # and the next Stop hook handed it to the model as its next turn. Measured end to end
+    # on 2026-09-22. No shipped client ever wrote them (the settings sheet lists project
+    # prompts read-only); an on-glass editor would need decide's pairing-code gate, never
+    # the bare loopback.
+    # panelApprovals, allowReply, allowContinue and recapRepos stay OUT too: the first
+    # three gate security or a feature, and recapRepos points the git half at an arbitrary
+    # path.
+    CONFIG_WRITABLE = ("quietHours", "toast", "digest", "budget")
+    CONFIG_WRITABLE_ERROR = (b'{"error":"quietHours, toast, digest and budget are the '
+                             b'only writable keys"}')
 
     def _do_config(self, raw: bytes) -> None:
         """POST /v1/config - the writable keys, and NOTHING else.
@@ -9753,12 +9765,10 @@ class Handler(BaseHTTPRequestHandler):
         validation, which is why every key is validated before the single write below.
 
         THE ANSWER CARRIES WHAT WAS WRITTEN (C6): 200 with {"applied", "warnings"}
-        rather than the old bare 204. The continue-prompt keys are parsed the way the
-        FILE parser parses them - entries that are not strings, blank, over-long,
-        duplicated or past a cap are dropped rather than failing the write - and a drop
-        the operator cannot see is a setting that silently did not take. `applied` is
-        the normalised value now on disk, so the sheet can render what it actually got:
-        "7:5" comes back as "07:05".
+        rather than the old bare 204. `applied` is the normalised value now on disk, so
+        the sheet can render what it actually got: "7:5" comes back as "07:05".
+        `warnings` keeps its place in the shape and is empty since v0.37.0: the keys that
+        produced warnings (the continue vocabulary) are file-only again (SC-01).
         """
         body = self._json_body(raw)
         if (not isinstance(body, dict) or not body
@@ -9793,135 +9803,13 @@ class Handler(BaseHTTPRequestHandler):
                                 b'100000..100000000}, or null"}')
                 return
             values["budget"] = normalized
-        # panelApprovals intentionally has no branch here - it is not in CONFIG_WRITABLE
-        # (SEC-2). A body naming it is already rejected 400 by the whitelist check above.
-        for key, validator in (("continuePrompts", self._validate_continue_prompts),
-                               ("continuePromptsByRepo", self._validate_by_repo),
-                               ("continuePromptsByPath", self._validate_by_path)):
-            if key not in body:
-                continue
-            ok, normalized, said = validator(body[key])
-            if not ok:
-                self._send(400, dump_state(
-                    {"error": f"{key} must be the shape the config file uses, or null"}))
-                return
-            values[key] = normalized
-            warnings.extend(said)
+        # panelApprovals and the continue vocabulary intentionally have no branch here -
+        # they are not in CONFIG_WRITABLE (SEC-2, SC-01). A body naming any of them is
+        # already rejected 400 by the whitelist check above.
         if not self.builder.config.set_keys(values):
             self._send(500, b'{"error":"could not write config"}')
             return
         self._send(200, dump_state({"applied": values, "warnings": warnings}))
-
-    # ---- C6 / MF-001: the continue-prompt keys, parsed as the FILE parser parses them
-    # Each returns (ok, normalized, warnings). `ok` False means the KEY's own shape is
-    # wrong - not a list, not an object - which is a caller bug and a 400. Anything the
-    # file parser would DROP is dropped here too and named in a warning, because the
-    # sheet has to be able to show the operator that their entry did not take.
-
-    @staticmethod
-    def _clean_prompt_list(raw, where: str, cap: int, drop_builtins: bool):
-        """-> (list, warnings), applying exactly the rules continue_extras and
-        _project_list apply: strings only, whitespace collapsed, 1..CONTINUE_PROMPT_MAX,
-        deduped, capped."""
-        out: list[str] = []
-        warnings: list[str] = []
-        for entry in raw:
-            if len(out) >= cap:
-                warnings.append(f"{where}: kept the first {cap} prompts")
-                break
-            if not isinstance(entry, str):
-                warnings.append(f"{where}: dropped an entry that is not text")
-                continue
-            prompt = " ".join(entry.split())
-            if not prompt:
-                warnings.append(f"{where}: dropped a blank entry")
-            elif len(prompt) > CONTINUE_PROMPT_MAX:
-                warnings.append(f"{where}: dropped an entry over "
-                                f"{CONTINUE_PROMPT_MAX} characters")
-            elif prompt in out:
-                warnings.append(f"{where}: dropped a duplicate of {prompt!r}")
-            elif drop_builtins and prompt in CONTINUE_PROMPTS_BUILTIN:
-                warnings.append(f"{where}: {prompt!r} is already a builtin button")
-            else:
-                out.append(prompt)
-                continue
-        return out, warnings
-
-    @classmethod
-    def _validate_continue_prompts(cls, value):
-        if value is None:
-            return True, None, []
-        if not isinstance(value, list):
-            return False, None, []
-        # drop_builtins: continue_extras refuses a duplicate of a builtin because the
-        # widget draws builtins then extras, and the button would appear twice.
-        out, warnings = cls._clean_prompt_list(value, "continuePrompts",
-                                               CONTINUE_PROMPTS_CAP, True)
-        return True, out, warnings
-
-    @classmethod
-    def _validate_by_repo(cls, value):
-        if value is None:
-            return True, None, []
-        if not isinstance(value, dict):
-            return False, None, []
-        out: dict = {}
-        warnings: list[str] = []
-        seen: set[str] = set()
-        for key, entry in list(value.items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
-            name = key.strip() if isinstance(key, str) else ""
-            if not name:
-                warnings.append("continuePromptsByRepo: dropped a blank key")
-                continue
-            if name.casefold() in seen:
-                # The file parser's first-wins rule, reported rather than merged.
-                warnings.append(f"continuePromptsByRepo: {name!r} differs from an "
-                                f"earlier key only in case - the first one is used")
-                continue
-            seen.add(name.casefold())
-            if not isinstance(entry, list):
-                warnings.append(f"continuePromptsByRepo[{name}]: dropped, not a list")
-                continue
-            # An EMPTY list is kept (SCA-011): it is precedence-bearing configuration,
-            # not an absent key, and the sheet must be able to write one.
-            prompts, said = cls._clean_prompt_list(
-                entry, f"continuePromptsByRepo[{name}]",
-                CONTINUE_PROMPTS_PROJECT_CAP, False)
-            out[name] = prompts
-            warnings.extend(said)
-        if len(value) > CONTINUE_PROMPTS_PROJECT_KEYS:
-            warnings.append(f"continuePromptsByRepo: kept the first "
-                            f"{CONTINUE_PROMPTS_PROJECT_KEYS} projects")
-        return True, out, warnings
-
-    @classmethod
-    def _validate_by_path(cls, value):
-        if value is None:
-            return True, None, []
-        if not isinstance(value, dict):
-            return False, None, []
-        out: dict = {}
-        warnings: list[str] = []
-        for key, entry in list(value.items())[:CONTINUE_PROMPTS_PROJECT_KEYS]:
-            root = key.strip() if isinstance(key, str) else ""
-            if not root or not os.path.isabs(root):
-                # A relative key can never match a session cwd, which is absolute, so
-                # the file parser refuses it rather than keeping a key that never fires.
-                warnings.append(f"continuePromptsByPath: dropped {str(key)[:64]!r}, "
-                                f"not an absolute path")
-                continue
-            if not isinstance(entry, list):
-                warnings.append(f"continuePromptsByPath[{root}]: dropped, not a list")
-                continue
-            prompts, said = cls._clean_prompt_list(
-                entry, f"continuePromptsByPath[{root}]",
-                CONTINUE_PROMPTS_PROJECT_CAP, False)
-            out[root] = prompts
-            warnings.extend(said)
-        if len(value) > CONTINUE_PROMPTS_PROJECT_KEYS:
-            warnings.append(f"continuePromptsByPath: kept the first "
-                            f"{CONTINUE_PROMPTS_PROJECT_KEYS} paths")
-        return True, out, warnings
 
     @staticmethod
     def _validate_quiet_hours(value):

@@ -4150,6 +4150,7 @@ Describe 'SideCrab setup' {
                 'Get-SideCrabPackageManifestName', 'Get-SideCrabPackageVerifyVerdict',
                 'Read-SideCrabPackageManifest', 'Get-SideCrabPackageIdentity',
                 'Measure-SideCrabPackageHash', 'Test-SideCrabPackageIntegrity',
+                'Get-SideCrabSwappedHostVerdict',
                 'Test-SideCrabFragmentNeedsCurl',
                 'Get-SideCrabWebView2Verdict', 'Get-SideCrabWebView2State',
                 'Get-SideCrabDotnetRuntimeVerdict', 'Get-SideCrabDotnetRuntimeState',
@@ -4385,6 +4386,72 @@ Describe 'SideCrab setup' {
             $v.Checked | Should -BeFalse
             $v.Ok      | Should -BeTrue          # nothing to verify is not a verification failure
             $v.Reason  | Should -Match 'source checkout'
+        }
+
+        # ---- SC-05: a host an update swapped in is judged by its own build record -------------
+
+        It 'SC-05: a host swapped in after the package shipped is vouched for by its build record' {
+            $expected = @{ 'companion/crabd.py' = 'c1'; 'panel-host/dist/SideCrab.Panel.exe' = 'e1'
+                           'panel-host/dist/build-record.json' = 'r1'; 'panel-host/dist/WebView2Loader.dll' = 'w1' }
+            $actual   = @{ 'companion/crabd.py' = 'c1'; 'panel-host/dist/SideCrab.Panel.exe' = 'e2'
+                           'panel-host/dist/build-record.json' = 'r2'; 'panel-host/dist/WebView2Loader.dll' = 'w2' }
+            $record   = [pscustomobject]@{ Present = $true; Sha256 = 'E2'; Version = '0.5.2' }
+            $v = Get-SideCrabSwappedHostVerdict -Expected $expected -Actual $actual -Record $record
+            $v.Replaced | Should -BeTrue
+            $v.Expected.Count | Should -Be 1                           # the rest is still checked
+            $v.Expected.ContainsKey('companion/crabd.py') | Should -BeTrue
+            $v.Reason   | Should -Match 'host 0\.5\.2 swapped in'
+        }
+
+        It 'SC-05: a build record the executable does not match is a damaged download' {
+            # Only the bytes can vouch for the record. Without this, a corrupt download that
+            # happened to damage build-record.json would skip every host file.
+            $expected = @{ 'panel-host/dist/SideCrab.Panel.exe' = 'e1'; 'panel-host/dist/build-record.json' = 'r1' }
+            $actual   = @{ 'panel-host/dist/SideCrab.Panel.exe' = 'e9'; 'panel-host/dist/build-record.json' = 'r2' }
+            $record   = [pscustomobject]@{ Present = $true; Sha256 = 'e2'; Version = '0.5.2' }
+            $v = Get-SideCrabSwappedHostVerdict -Expected $expected -Actual $actual -Record $record
+            $v.Replaced | Should -BeFalse
+            $v.Expected.Count | Should -Be 2
+            (Get-SideCrabSwappedHostVerdict -Expected $expected -Actual $actual `
+                -Record ([pscustomobject]@{ Present = $false; Sha256 = ''; Version = '' })).Replaced | Should -BeFalse
+        }
+
+        It 'SC-05: a host that still matches the manifest is checked like everything else' {
+            $expected = @{ 'panel-host/dist/SideCrab.Panel.exe' = 'e1'; 'panel-host/dist/build-record.json' = 'r1' }
+            $actual   = @{ 'panel-host/dist/SideCrab.Panel.exe' = 'e7'; 'panel-host/dist/build-record.json' = 'r1' }
+            $record   = [pscustomobject]@{ Present = $true; Sha256 = 'e7'; Version = '0.5.1' }
+            (Get-SideCrabSwappedHostVerdict -Expected $expected -Actual $actual -Record $record).Replaced | Should -BeFalse
+        }
+
+        It 'SC-05: an install run after a host-only package update verifies, and still names an edit' {
+            # The real sequence: a package folder, then what Update-SideCrab.ps1 -Package leaves
+            # in it. The installer turned this into "download the release zip again".
+            $pkg  = Join-Path $script:TempQ 'pkg-swapped'
+            $dist = Join-Path $pkg 'panel-host\dist'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pkg 'companion'), $dist | Out-Null
+            Set-Content -LiteralPath (Join-Path $pkg 'companion\crabd.py') -Value 'VERSION = "9.9.9"' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $dist 'SideCrab.Panel.exe') -Value 'host 0.5.1' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $dist 'build-record.json') -Value '{"sha256":"shipped"}' -Encoding utf8NoBOM
+            $files = @{}
+            $hashes = Measure-SideCrabPackageHash -Root $pkg
+            foreach ($k in @($hashes.Keys)) { $files[$k] = $hashes[$k] }
+            Set-Content -LiteralPath (Join-Path $pkg 'package-manifest.json') `
+                        -Value (@{ version = '9.9.9'; files = $files } | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM
+            (Test-SideCrabPackageIntegrity -RepoRoot $pkg).Ok | Should -BeTrue
+
+            Set-Content -LiteralPath (Join-Path $dist 'SideCrab.Panel.exe') -Value 'host 0.5.2' -Encoding utf8NoBOM
+            $sha = (Get-FileHash -LiteralPath (Join-Path $dist 'SideCrab.Panel.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath (Join-Path $dist 'build-record.json') `
+                        -Value (@{ sha256 = $sha; version = '0.5.2' } | ConvertTo-Json) -Encoding utf8NoBOM
+            $after = Test-SideCrabPackageIntegrity -RepoRoot $pkg
+            $after.Ok           | Should -BeTrue
+            $after.HostReplaced | Should -BeTrue
+            $after.Reason       | Should -Match 'swapped in'
+
+            Add-Content -LiteralPath (Join-Path $pkg 'companion\crabd.py') -Value 'tampered'
+            $bad = Test-SideCrabPackageIntegrity -RepoRoot $pkg
+            $bad.Ok            | Should -BeFalse
+            $bad.FirstMismatch | Should -Be 'companion/crabd.py'
         }
 
         It 'the identity line says which build this is, in the manifest''s own words' {
@@ -4742,6 +4809,36 @@ Describe 'SideCrab setup' {
             (script:MarkerOf $c.Dist)     | Should -Be 'new'
             # ONE generation: the host from two updates ago is gone, not stacked up
             (script:MarkerOf $c.LastGood) | Should -Be 'old'
+            (Test-Path -LiteralPath "$($c.LastGood).old") | Should -BeFalse
+        }
+
+        It 'SC-04: a leftover .old beside a last-good is the older one and goes' {
+            # What a swap leaves when its final delete fails. It must not block the next swap,
+            # and it must not become the kept generation over a newer one.
+            $c = script:NewCase 'swap-leftover'
+            script:MakeHostDir -Path "$($c.LastGood).old" -Marker 'stale'
+            script:MakeHostDir -Path $c.LastGood -Marker 'kept'
+            script:MakeHostDir -Path $c.Dist     -Marker 'old'
+            script:MakeHostDir -Path $c.Staging  -Marker 'new'
+            $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+            $r.Swapped | Should -BeTrue
+            (script:MarkerOf $c.Dist)     | Should -Be 'new'
+            (script:MarkerOf $c.LastGood) | Should -Be 'old'
+            (Test-Path -LiteralPath "$($c.LastGood).old") | Should -BeFalse
+        }
+
+        It 'SC-04: a leftover .old with no last-good is the kept generation until the swap lands' {
+            # What a run leaves when it dies between setting the kept host aside and moving the
+            # live one. Deleting it up front would be SC-04 again.
+            $c = script:NewCase 'swap-orphan'
+            script:MakeHostDir -Path "$($c.LastGood).old" -Marker 'kept'
+            script:MakeHostDir -Path $c.Dist    -Marker 'old'
+            script:MakeHostDir -Path $c.Staging -Marker 'new'
+            $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+            $r.Swapped | Should -BeTrue
+            (script:MarkerOf $c.Dist)     | Should -Be 'new'
+            (script:MarkerOf $c.LastGood) | Should -Be 'old'
+            (Test-Path -LiteralPath "$($c.LastGood).old") | Should -BeFalse
         }
 
         It 'MF-006: nothing to swap in is refused rather than deleting what is live' {
@@ -4969,6 +5066,40 @@ Describe 'SideCrab setup' {
                 $r.Swapped | Should -BeFalse
                 $r.Reason  | Should -Match 'could not be moved aside'
                 (script:MarkerOf $c.Dist) | Should -Be 'old'      # still live, nothing lost
+            } finally { $lock.Dispose() }
+        }
+
+        It 'SC-04: a live host that cannot be moved aside leaves the kept generation where it was' {
+            # The case above with a kept generation already there, which it never had. The swap
+            # used to delete dist.last-good BEFORE trying the move, so this failure, the likeliest
+            # in the path, reported "nothing was swapped" with nothing left to restore.
+            $c = script:NewCase 'swap-locked-kept'
+            script:MakeHostDir -Path $c.LastGood -Marker 'kept'
+            script:MakeHostDir -Path $c.Dist     -Marker 'old'
+            script:MakeHostDir -Path $c.Staging  -Marker 'new'
+            $lock = [IO.File]::Open((Join-Path $c.Dist 'SideCrab.Panel.exe'), 'Open', 'Read', 'None')
+            try {
+                $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+                $r.Swapped | Should -BeFalse
+                (script:MarkerOf $c.Dist)     | Should -Be 'old'
+                (script:MarkerOf $c.LastGood) | Should -Be 'kept'
+                (Test-Path -LiteralPath "$($c.LastGood).old") | Should -BeFalse
+            } finally { $lock.Dispose() }
+        }
+
+        It 'SC-04: a staged host that cannot be moved in puts the live host and the kept one back' {
+            $c = script:NewCase 'swap-staging-locked'
+            script:MakeHostDir -Path $c.LastGood -Marker 'kept'
+            script:MakeHostDir -Path $c.Dist     -Marker 'old'
+            script:MakeHostDir -Path $c.Staging  -Marker 'new'
+            $lock = [IO.File]::Open((Join-Path $c.Staging 'SideCrab.Panel.exe'), 'Open', 'Read', 'None')
+            try {
+                $r = Invoke-SideCrabHostSwap -DistPath $c.Dist -StagingPath $c.Staging -LastGoodPath $c.LastGood
+                $r.Swapped | Should -BeFalse
+                $r.Reason  | Should -Match 'could not be moved into place'
+                (script:MarkerOf $c.Dist)     | Should -Be 'old'
+                (script:MarkerOf $c.LastGood) | Should -Be 'kept'
+                (Test-Path -LiteralPath "$($c.LastGood).old") | Should -BeFalse
             } finally { $lock.Dispose() }
         }
 

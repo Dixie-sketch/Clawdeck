@@ -700,7 +700,7 @@ is `~/.sidecrab/logs/panel.log`.
 
 ## Known issues
 
-The honest list lives in `docs/BACKLOG.md`. Worth knowing before you install:
+The honest list lives in the maintainers' backlog. Worth knowing before you install:
 
 - **Panel approvals need pairing** - a widget older than 0.27.0 or a companion older than
   0.29.0 cannot approve anything: the tap is refused and the terminal dialog decides. Update

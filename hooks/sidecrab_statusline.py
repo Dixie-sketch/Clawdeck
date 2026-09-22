@@ -168,6 +168,22 @@ def run_chained(command: str, document: bytes, timeout: float = CHAIN_TIMEOUT_SE
     return result.stdout.decode("utf-8", "replace")
 
 
+def write_out(text: str, stream: Any = None) -> None:
+    """Write the status line as UTF-8 BYTES, never through the text layer.
+
+    SC-02: Claude Code reads this process's stdout through a pipe, and on Windows Python
+    3.13 encodes a piped stdout with the ANSI code page (cp1252 on a Western-language
+    install), strictly. The minimal line starts with a crab emoji and a chained status
+    line often carries emoji or Powerline glyphs, so ``sys.stdout.write`` raised
+    UnicodeEncodeError, the outer catch exited 0, and the status line rendered EMPTY: the
+    operator's own line vanished the moment SideCrab was installed. Reproduced 2026-09-22
+    with PYTHONIOENCODING=cp1252.
+    """
+    out = stream if stream is not None else sys.stdout.buffer
+    out.write(text.encode("utf-8"))
+    out.flush()
+
+
 def main() -> int:
     document = sys.stdin.buffer.read()
 
@@ -179,13 +195,13 @@ def main() -> int:
     if prior is not None:
         chained = run_chained(prior, document)
         if chained is not None:
-            sys.stdout.write(chained)
+            write_out(chained)
             return 0
 
     # 3. No prior (or it failed to run): a minimal line, or nothing.
     line = minimal_status(document)
     if line:
-        sys.stdout.write(line)
+        write_out(line)
     return 0
 
 
