@@ -106,7 +106,7 @@ jobs:
           "version=$($m.version)"  >> $env:GITHUB_OUTPUT
           Write-Host "$($zip.Name) - $('{0:N0}' -f $zip.Length) bytes, $($m.fileCount) files, $($m.deployment)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: dist/*.zip
